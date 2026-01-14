@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "anyhow"
+version = "1.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -124,6 +130,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "editor_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "editor_tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor_core",
+ "minui",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,12 +154,6 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "figlet-rs"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4742a071cd9694fc86f9fa1a08fa3e53d40cc899d7ee532295da2d085639fbc5"
 
 [[package]]
 name = "libc"
@@ -180,13 +196,12 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "minui"
-version = "0.6.0"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5949b6e1c33dd5237c02eb516a18a35e36b79feaf60be68e6b73f9383aaddf"
+checksum = "6bf0524b5dd28c6f9ff49db2a8c763b7674a881130d2ca05d7f92d8017b60f34"
 dependencies = [
  "crokey",
  "crossterm 0.28.1",
- "figlet-rs",
  "thiserror",
 ]
 
@@ -247,13 +262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "redox"
-version = "0.1.0"
-dependencies = [
- "minui",
 ]
 
 [[package]]

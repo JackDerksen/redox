@@ -1,0 +1,9 @@
+[package]
+name = "editor_tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+editor_core = { path = "../editor_core" }
+minui = "0.6.3"
+anyhow = { workspace = true }

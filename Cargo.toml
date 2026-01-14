@@ -1,7 +1,11 @@
-[package]
-name = "redox"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/editor_core",
+    "crates/editor_tui",
+]
 
-[dependencies]
-minui = "0.6.0"
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "1.0"

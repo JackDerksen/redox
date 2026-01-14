@@ -1,8 +1,11 @@
+use editor_core::*;
+
 use minui::prelude::*;
 
 fn main() -> minui::Result<()> {
     let mut app = App::new(())?;
 
+    // Application handler for event loops and rendering updates
     app.run(
         |_state, event| {
             // Closure for handling input and updates.
