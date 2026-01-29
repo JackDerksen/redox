@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="250" height="156" alt="Redox Logo 5 Alt" src="https://github.com/user-attachments/assets/068509d2-a39a-4da7-97d6-18b8f9c0d1ef" />
+  <img width="250" height="130" alt="Redox Logo 6" src="https://github.com/user-attachments/assets/a0bea6c3-b40e-4f56-b904-9da08b13b2ee" />
 </p>
 
 <h1 align="center">
