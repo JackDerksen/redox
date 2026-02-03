@@ -17,7 +17,8 @@ fn main() -> minui::Result<()> {
         },
         |_state, window| {
             // Closure for rendering the application state.
-            let label = Label::new("Press 'q' to quit").with_alignment(Alignment::Center);
+            let label = Label::new("Welcome to Redox (WIP). Press 'q' to quit")
+                .with_alignment(Alignment::Center);
 
             label.draw(window)?;
 
