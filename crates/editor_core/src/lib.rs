@@ -12,6 +12,7 @@
 //!   but those are not used as the primary index type in this crate.
 
 pub mod buffer;
+pub mod io;
 pub mod logic;
 pub mod text;
 
