@@ -191,25 +191,17 @@ pub fn snapshot_lines_wrapped_cached(
     let mut skipped_rows = 0usize;
     let mut out_rows: Vec<String> = Vec::with_capacity(max_rows);
 
-    for line_idx in 0..buffer.len_lines() {
-        if out_rows.len() >= max_rows {
-            break;
-        }
+    // Start from a line that could contribute to visible rows after scrolling.
+    // This optimization avoids iterating through all lines when scroll_y is large.
+    let start_line_estimate = if viewport.scroll_x == 0 {
+        // When not horizontally scrolled, estimate starting line by scroll_y
+        viewport.scroll_y.min(buffer.len_lines())
+    } else {
+        // With horizontal scroll, lines might wrap differently, start from beginning
+        0
+    };
 
-        let line_text = buffer.line_string(line_idx);
-        let graphemes = cache.graphemes_for_line(line_idx, &line_text);
-
-        let start_g = viewport.scroll_x.min(graphemes.len());
-        let mut remaining = &graphemes[start_g..];
-
-        // If the line is empty after scroll, it still occupies one visual row.
-        if remaining.is_empty() {
-            if skipped_rows < viewport.scroll_y {
-                skipped_rows += 1;
-            } else if out_rows.len() < max_rows {
-                out_rows.push(String::new());
-            }
-            continue;
+    for line_idx in start_line_estimate..buffer.len_lines() {
         }
 
         while !remaining.is_empty() {
