@@ -7,3 +7,4 @@ edition = "2024"
 editor_core = { path = "../editor_core" }
 minui = "0.6.3"
 anyhow = { workspace = true }
+unicode-segmentation = "1.11.0"

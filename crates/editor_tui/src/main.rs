@@ -6,11 +6,18 @@ use editor_core::io::load_buffer;
 
 use minui::{Window, prelude::*};
 
+mod input;
+mod ui;
+
+use input::{InputAction, map_event};
+use ui::{GraphemeCache, TextViewport, draw_snapshot, snapshot_lines_wrapped_cached};
+
 #[derive(Debug)]
 struct EditorState {
     buffer: TextBuffer,
     scroll_x: usize,
     scroll_y: usize,
+    grapheme_cache: GraphemeCache,
 }
 
 impl EditorState {
@@ -19,65 +26,35 @@ impl EditorState {
             buffer,
             scroll_x: 0,
             scroll_y: 0,
+            // Cache a few screens worth of lines. Will tune this later.
+            grapheme_cache: GraphemeCache::new(512),
+        }
+    }
+
+    fn apply_input(&mut self, action: InputAction) {
+        match action {
+            InputAction::ScrollBy { dx, dy } => {
+                self.scroll_x = apply_scroll_delta(self.scroll_x, dx);
+                self.scroll_y = apply_scroll_delta(self.scroll_y, dy);
+            }
+            InputAction::Quit | InputAction::None => {}
         }
     }
 }
 
-struct TextViewport {
-    scroll_x: usize,
-    scroll_y: usize,
-    width: u16,
-    height: u16,
-}
-
-impl TextViewport {
-    fn from_window(window: &dyn Window, scroll_x: usize, scroll_y: usize) -> Self {
-        let (width, height) = window.get_size();
-        Self {
-            scroll_x,
-            scroll_y,
-            width,
-            height,
-        }
+fn apply_scroll_delta(current: usize, delta: i32) -> usize {
+    if delta >= 0 {
+        current.saturating_add(delta as usize)
+    } else {
+        current.saturating_sub((-delta) as usize)
     }
 }
 
-fn snapshot_lines(buffer: &TextBuffer, viewport: &TextViewport) -> Vec<String> {
-    let mut lines = Vec::with_capacity(viewport.height as usize);
-    let first_line = viewport.scroll_y;
-    let last_line = first_line.saturating_add(viewport.height as usize);
-
-    for line_idx in first_line..last_line {
-        if line_idx >= buffer.len_lines() {
-            break;
-        }
-
-        let mut line = buffer.line_string(line_idx);
-
-        if viewport.scroll_x > 0 {
-            let skip = viewport.scroll_x.min(line.chars().count());
-            line = line.chars().skip(skip).collect();
-        }
-
-        if line.chars().count() > viewport.width as usize {
-            line = line.chars().take(viewport.width as usize).collect();
-        }
-
-        lines.push(line);
-    }
-
-    lines
-}
-
-fn draw_buffer_view(state: &EditorState, window: &mut dyn Window) -> minui::Result<()> {
+fn draw_buffer_view(state: &mut EditorState, window: &mut dyn Window) -> minui::Result<()> {
     let viewport = TextViewport::from_window(window, state.scroll_x, state.scroll_y);
-    let lines = snapshot_lines(&state.buffer, &viewport);
-
-    for (row, line) in lines.iter().enumerate() {
-        window.write_str(row as u16, 0, line)?;
-    }
-
-    Ok(())
+    let snapshot =
+        snapshot_lines_wrapped_cached(&state.buffer, &viewport, &mut state.grapheme_cache);
+    draw_snapshot(&snapshot, window)
 }
 
 fn parse_path_arg() -> anyhow::Result<PathBuf> {
@@ -96,12 +73,14 @@ fn main() -> minui::Result<()> {
 
     // Application handler for event loops and rendering updates
     app.run(
-        |_state, event| {
+        |state, event| {
             // Closure for handling input and updates.
-            match event {
-                Event::KeyWithModifiers(k) if matches!(k.key, KeyKind::Char('q')) => false,
-                Event::Character('q') => false,
-                _ => true,
+            match map_event(&event) {
+                InputAction::Quit => false,
+                action => {
+                    state.apply_input(action);
+                    true
+                }
             }
         },
         |state, window| {
