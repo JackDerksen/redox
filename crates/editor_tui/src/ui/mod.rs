@@ -210,13 +210,12 @@ pub fn snapshot_lines_wrapped_cached(
             }
 
             // Consume up to `max_cells` worth of graphemes, preferring to wrap on spaces.
-            // Policy:
-            // - Take as many graphemes as fit by cell width.
-            // - If the taken chunk contains spaces, wrap at the last space (dropping that space).
-            // - If the next row would start with spaces, skip them (so wraps don't indent).
-            // - If no spaces fit (single long "word"), fall back to a hard wrap at cell boundary.
-            let (row, consumed) = take_graphemes_by_cells_word_wrap(remaining, max_cells);
-
+            // Ensure forward progress even if a single grapheme is wider than the viewport.
+            let consumed = if consumed == 0 && !remaining.is_empty() {
+                1
+            } else {
+                consumed
+            };
             // Ensure forward progress even if a single grapheme is wider than the viewport.
             let consumed = if consumed == 0 {
                 1.min(remaining.len())
