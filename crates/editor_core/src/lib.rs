@@ -14,6 +14,7 @@
 pub mod buffer;
 pub mod io;
 pub mod logic;
+pub mod motion;
 pub mod text;
 
 // Prefer using the rope-backed buffer implementation from `buffer`.

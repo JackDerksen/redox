@@ -11,7 +11,7 @@ use super::{Pos, TextBuffer};
 /// I can make this configurable (Vim `'iskeyword'`-style) or Unicode-aware later.
 #[inline]
 pub(crate) fn is_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
+    !ch.is_whitespace()
 }
 
 /// Returns the smaller of two positions after clamping them into the buffer.
@@ -22,7 +22,11 @@ pub(crate) fn is_word_char(ch: char) -> bool {
 pub(crate) fn min_pos(buf: &TextBuffer, a: Pos, b: Pos) -> Pos {
     let a = buf.clamp_pos(a);
     let b = buf.clamp_pos(b);
-    if a <= b { a } else { b }
+    if a <= b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Returns the larger of two positions after clamping them into the buffer.
@@ -33,5 +37,9 @@ pub(crate) fn min_pos(buf: &TextBuffer, a: Pos, b: Pos) -> Pos {
 pub(crate) fn max_pos(buf: &TextBuffer, a: Pos, b: Pos) -> Pos {
     let a = buf.clamp_pos(a);
     let b = buf.clamp_pos(b);
-    if a >= b { a } else { b }
+    if a >= b {
+        a
+    } else {
+        b
+    }
 }
