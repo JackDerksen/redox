@@ -9,52 +9,77 @@ use minui::{Window, prelude::*};
 mod input;
 mod ui;
 
-use input::{InputAction, map_event};
+use input::cursor::CursorController;
+use input::{InputAction, InputState, map_event_with_state};
+
 use ui::{GraphemeCache, TextViewport, draw_snapshot, snapshot_lines_wrapped_cached};
 
 #[derive(Debug)]
 struct EditorState {
     buffer: TextBuffer,
-    scroll_x: usize,
-    scroll_y: usize,
+    cursor: CursorController,
     grapheme_cache: GraphemeCache,
+
+    /// Stateful key handling (e.g. `gg`, counts).
+    input: InputState,
+
+    /// Most recent input action received from the update loop.
+    ///
+    /// Apply it during draw because draw has access to the current window size.
+    pending_action: Option<InputAction>,
 }
 
 impl EditorState {
     fn new(buffer: TextBuffer) -> Self {
         Self {
             buffer,
-            scroll_x: 0,
-            scroll_y: 0,
+            cursor: CursorController::new(),
             // Cache a few screens worth of lines. Will tune this later.
             grapheme_cache: GraphemeCache::new(512),
+            input: InputState::new(),
+            pending_action: None,
         }
     }
 
-    fn apply_input(&mut self, action: InputAction) {
+    fn apply_input(&mut self, action: InputAction, window: &dyn Window) {
+        let (w, h) = window.get_size();
+        let vw = w as usize;
+        let vh = h as usize;
+
         match action {
-            InputAction::ScrollBy { dx, dy } => {
-                self.scroll_x = apply_scroll_delta(self.scroll_x, dx);
-                self.scroll_y = apply_scroll_delta(self.scroll_y, dy);
+            InputAction::Motion { motion, count } => {
+                // Navigation semantics are in `editor_core::motion`.
+                // The cursor controller handles viewport following + projection only.
+                self.cursor
+                    .apply_motion(&self.buffer, motion, count, vw, vh);
             }
             InputAction::Quit | InputAction::None => {}
         }
     }
 }
 
-fn apply_scroll_delta(current: usize, delta: i32) -> usize {
-    if delta >= 0 {
-        current.saturating_add(delta as usize)
-    } else {
-        current.saturating_sub((-delta) as usize)
-    }
-}
-
 fn draw_buffer_view(state: &mut EditorState, window: &mut dyn Window) -> minui::Result<()> {
-    let viewport = TextViewport::from_window(window, state.scroll_x, state.scroll_y);
+    let (vw, vh) = window.get_size();
+    let (scroll_x, scroll_y) = state.cursor.viewport_scroll();
+
+    let viewport = TextViewport {
+        scroll_x,
+        scroll_y,
+        width: vw,
+        height: vh,
+    };
+
     let snapshot =
         snapshot_lines_wrapped_cached(&state.buffer, &viewport, &mut state.grapheme_cache);
-    draw_snapshot(&snapshot, window)
+    draw_snapshot(&snapshot, window)?;
+
+    // Cursor rendering via MinUI deferred cursor request.
+    let spec = state
+        .cursor
+        .cursor_spec(&state.buffer, vw as usize, vh as usize);
+    window.request_cursor(spec);
+
+    Ok(())
 }
 
 fn parse_path_arg() -> anyhow::Result<PathBuf> {
@@ -71,25 +96,34 @@ fn main() -> minui::Result<()> {
 
     let mut app = App::new(EditorState::new(buffer))?;
 
-    // Application handler for event loops and rendering updates
     app.run(
         |state, event| {
-            // Closure for handling input and updates.
-            match map_event(&event) {
+            let action = map_event_with_state(&mut state.input, &event);
+            match action {
                 InputAction::Quit => false,
                 action => {
-                    state.apply_input(action);
+                    // Store the action for the next draw call where we know the viewport size.
+                    state.pending_action = Some(action);
                     true
                 }
             }
         },
         |state, window| {
-            // Closure for rendering the application state.
+            // Deferred cursor model (MinUI):
+            // - clear per-frame cursor request
+            // - draw (requests cursor)
+            // - end_frame applies cursor + flushes
+            window.clear_cursor_request();
+
+            // Apply pending input based on window size.
+            if let Some(action) = state.pending_action.take() {
+                state.apply_input(action, window);
+            }
+
             draw_buffer_view(state, window)?;
 
-            window.flush()?;
-
-            Ok(()) // Drawing succeeded
+            window.end_frame()?;
+            Ok(())
         },
     )?;
 

@@ -3,9 +3,9 @@
 //! Goals (current):
 //! - Provide a small viewport abstraction for rendering a `TextBuffer` into a MinUI `Window`.
 //! - Be reasonably efficient for large files / very long lines (still some work to do here).
-//! - Use grapheme clusters for horizontal scrolling (so combined characters stay intact).
+//! - Use grapheme clusters for horizontal slicing (so combined characters stay intact).
 //! - Clip by terminal *cell width* (so wide glyphs don’t overflow the viewport).
-//! - Support *soft wrapping* (visual-only wrapping; does not modify the buffer).
+//! - **Do not soft wrap**: long lines continue off-screen (like many modal editors).
 //!
 //! Notes:
 //! - This module is UI-only and should not leak into `editor_core`.
@@ -22,30 +22,24 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// Viewport parameters for rendering a slice of the buffer.
 ///
-/// `scroll_x` is measured in **grapheme clusters**.
+/// `scroll_x` is measured in **terminal cells** (columns), not graphemes/chars/bytes.
 ///
-/// NOTE: once soft-wrapping is enabled, `scroll_y` will be a bit more tricky. For wrapped
-/// rendering this interprets `scroll_y` as a **visual row offset** (wrapped rows),
-/// not as a rope line index.
+/// `scroll_y` is measured in **document lines** (not wrapped visual rows).
 #[derive(Debug, Clone, Copy)]
 pub struct TextViewport {
+    /// Horizontal scroll offset in terminal cells.
     pub scroll_x: usize,
+    /// Vertical scroll offset in document lines.
     pub scroll_y: usize,
     pub width: u16,
     pub height: u16,
 }
 
 impl TextViewport {
-    /// Build a viewport using the current window size.
-    pub fn from_window(window: &dyn Window, scroll_x: usize, scroll_y: usize) -> Self {
-        let (width, height) = window.get_size();
-        Self {
-            scroll_x,
-            scroll_y,
-            width,
-            height,
-        }
-    }
+    // Intentionally no `from_window(...)` constructor for now.
+    //
+    // The current code constructs `TextViewport` directly at call sites. If/when we
+    // need a helper again, we can reintroduce it.
 }
 
 /// Snapshot of visible text lines for the current frame.
@@ -67,7 +61,7 @@ impl RenderSnapshot {
 /// Cache for grapheme boundary segmentation.
 ///
 /// This is a simple LRU-ish cache keyed by `(line_idx, line_hash)`.
-/// It’s designed for the current “read-only rendering” stage where the buffer
+/// It’s designed for the current "read-only rendering" stage where the buffer
 /// doesn’t change during runtime (so the cache stays hot).
 ///
 /// When editing is added, the caller can invalidate the cache when a line changes.
@@ -163,18 +157,13 @@ pub fn draw_snapshot(snapshot: &RenderSnapshot, window: &mut dyn Window) -> minu
     Ok(())
 }
 
-/// Build a *soft-wrapped* snapshot of visible rows.
+/// Build a *non-wrapping* snapshot of visible **document lines**.
 ///
-/// - Soft wrap is visual-only: it does not modify the underlying buffer.
-/// - Horizontal scrolling is applied first (in grapheme units), then wrap the
-///   remaining content into rows of at most `viewport.width` cells.
-/// - `viewport.scroll_y` is interpreted as a visual row offset into the wrapped
-///   row stream.
-///
-/// TODO:
-/// - For now this still allocates `String` per *source line* via `line_string`.
-///   For very large single-line files, that's still expensive; later, this should
-///   avoid allocating the full line when we only need a window into it.
+/// - Long lines are not wrapped; they continue off-screen.
+/// - Horizontal scrolling is applied first (in terminal cell units), then the
+///   remaining content is clipped to `viewport.width` cells.
+/// - `viewport.scroll_y` is interpreted as a **document line offset**.
+/// - Vertical scrolling is clamped by the caller (typically to `len_lines - height`).
 pub fn snapshot_lines_wrapped_cached(
     buffer: &TextBuffer,
     viewport: &TextViewport,
@@ -187,63 +176,24 @@ pub fn snapshot_lines_wrapped_cached(
         return RenderSnapshot::new(0, Vec::new());
     }
 
-    // Generate wrapped rows for the whole document, skipping until scroll_y.
-    let mut skipped_rows = 0usize;
+    let first_line = viewport.scroll_y.min(buffer.len_lines().saturating_sub(1));
+    let last_line = (first_line + max_rows).min(buffer.len_lines());
+
     let mut out_rows: Vec<String> = Vec::with_capacity(max_rows);
 
-    // Start from a line that could contribute to visible rows after scrolling.
-    // This optimization avoids iterating through all lines when scroll_y is large.
-    let start_line_estimate = if viewport.scroll_x == 0 {
-        // When not horizontally scrolled, estimate starting line by scroll_y
-        viewport.scroll_y.min(buffer.len_lines())
-    } else {
-        // With horizontal scroll, lines might wrap differently, start from beginning
-        0
-    };
+    for line_idx in first_line..last_line {
+        let line_text = buffer.line_string(line_idx);
+        let graphemes = cache.graphemes_for_line(line_idx, &line_text);
 
-    for line_idx in start_line_estimate..buffer.len_lines() {
-        }
+        // Horizontal scroll is in terminal cells.
+        let start_g = skip_graphemes_by_cells(graphemes, viewport.scroll_x);
 
-        while !remaining.is_empty() {
-            if out_rows.len() >= max_rows {
-                break;
-            }
-
-            // Consume up to `max_cells` worth of graphemes, preferring to wrap on spaces.
-            // Ensure forward progress even if a single grapheme is wider than the viewport.
-            let consumed = if consumed == 0 && !remaining.is_empty() {
-                1
-            } else {
-                consumed
-            };
-            // Ensure forward progress even if a single grapheme is wider than the viewport.
-            let consumed = if consumed == 0 {
-                1.min(remaining.len())
-            } else {
-                consumed
-            };
-
-            if skipped_rows < viewport.scroll_y {
-                skipped_rows += 1;
-            } else {
-                out_rows.push(row);
-            }
-
-            remaining = &remaining[consumed..];
-
-            // Skip leading spaces on the next visual row.
-            while let Some(g) = remaining.first() {
-                if g.as_ref() == " " {
-                    remaining = &remaining[1..];
-                } else {
-                    break;
-                }
-            }
-        }
+        // Clip to viewport width (no wrapping).
+        let visible = clip_graphemes_to_cells(&graphemes[start_g..], max_cells);
+        out_rows.push(visible);
     }
 
-    // first_line is not super meaningful for wrapped mode yet so keep as 0 for now.
-    RenderSnapshot::new(0, out_rows)
+    RenderSnapshot::new(first_line, out_rows)
 }
 
 /// Build a grapheme-aware + cell-width-clipped snapshot of visible lines.
@@ -319,6 +269,31 @@ pub fn snapshot_lines(buffer: &TextBuffer, viewport: &TextViewport) -> RenderSna
     snapshot_lines_uncached(buffer, viewport)
 }
 
+/// Skip graphemes from the start of a line until at least `skip_cells` terminal cells have been skipped.
+///
+/// Returns the grapheme index to start rendering from.
+///
+/// Notes:
+/// - Uses MinUI `cell_width` to count cells (tab-aware via `TabPolicy::Fixed(4)`).
+/// - Never splits graphemes.
+/// - If `skip_cells` lands in the middle of a wide grapheme, the whole grapheme is skipped.
+fn skip_graphemes_by_cells(graphemes: &[Box<str>], skip_cells: usize) -> usize {
+    if skip_cells == 0 || graphemes.is_empty() {
+        return 0;
+    }
+
+    let mut skipped = 0usize;
+    for (i, g) in graphemes.iter().enumerate() {
+        if skipped >= skip_cells {
+            return i;
+        }
+        let w = cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        skipped = skipped.saturating_add(w);
+    }
+
+    graphemes.len()
+}
+
 /// Clip cached graphemes (`Box<str>`) to a maximum number of terminal cells.
 ///
 /// - Does **not** split graphemes.
@@ -352,73 +327,6 @@ fn clip_graphemes_to_cells(graphemes: &[Box<str>], max_cells: usize) -> String {
     }
 
     out
-}
-
-/// Take as many graphemes as fit within `max_cells`, returning:
-/// - the concatenated row string
-/// - the number of graphemes consumed
-///
-/// This does not split graphemes and stops before the first non-fitting grapheme.
-fn take_graphemes_by_cells(graphemes: &[Box<str>], max_cells: usize) -> (String, usize) {
-    if max_cells == 0 || graphemes.is_empty() {
-        return (String::new(), 0);
-    }
-
-    let mut out = String::new();
-    let mut used_cells = 0usize;
-    let mut consumed = 0usize;
-
-    for g in graphemes {
-        let w = cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
-
-        if w > 0 && used_cells + w > max_cells {
-            break;
-        }
-
-        out.push_str(g);
-        used_cells = used_cells.saturating_add(w);
-        consumed += 1;
-
-        if used_cells >= max_cells {
-            break;
-        }
-    }
-
-    (out, consumed)
-}
-
-/// Like `take_graphemes_by_cells`, but prefers wrapping on spaces within the chunk.
-///
-/// Returns:
-/// - row text (with any trailing space removed if we wrapped at a space)
-/// - number of graphemes consumed from the input (including the space we wrapped at)
-fn take_graphemes_by_cells_word_wrap(graphemes: &[Box<str>], max_cells: usize) -> (String, usize) {
-    let (chunk, consumed) = take_graphemes_by_cells(graphemes, max_cells);
-    if consumed == 0 {
-        return (chunk, consumed);
-    }
-
-    // Find last space within the consumed graphemes.
-    let mut last_space: Option<usize> = None;
-    for i in 0..consumed {
-        if graphemes[i].as_ref() == " " {
-            last_space = Some(i);
-        }
-    }
-
-    // Cut at the last space if possible, otherwise hard wrap at cell boundary.
-    if let Some(space_idx) = last_space {
-        // Build string from graphemes[0..space_idx]
-        let mut out = String::new();
-        for g in &graphemes[..space_idx] {
-            out.push_str(g);
-        }
-        // Consume through the space so the next row starts after it.
-        return (out, space_idx + 1);
-    }
-
-    // No spaces: hard wrap at cell boundary.
-    (chunk, consumed)
 }
 
 /// Clip uncached graphemes (`&str`) to a maximum number of terminal cells.
