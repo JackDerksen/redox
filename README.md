@@ -29,6 +29,13 @@ crates
 - The core uses character indices (Unicode scalar values) as its primary indexing model to match Ropey’s APIs.
 - Higher-level features like Vim motions, undo/redo, and viewport/rendering logic will be layered on top of the core.
 
+### What currently works:
+- File input and parsing into a rope buffer (will be optimized futher)
+- Drawing that rope buffer to the screen in a MinUI viewport (will be optimized further)
+- Cursor drawing and movement
+- Viewport scrolling (follows cursor)
+- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`)
+
 ## License
 
 TBD!
