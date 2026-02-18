@@ -16,7 +16,7 @@ The intent is to keep the editor’s behavior and data structures (buffer, index
 crates
 ├── editor_core  # Logic
 └── editor_tui   # UI
-- File input and parsing into a rope buffer (will be optimized further)
+```
 
 - `crates/editor_core`  
   Editor core library. Owns the text buffer implementation (Ropey-backed), text/indexing utilities, and core editing primitives intended to be UI-independent.
