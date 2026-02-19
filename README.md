@@ -26,15 +26,16 @@ crates
 
 ## Development notes
 
-- The core uses character indices (Unicode scalar values) as its primary indexing model to match Ropey’s APIs.
-- Higher-level features like Vim motions, undo/redo, and viewport/rendering logic will be layered on top of the core.
+At the moment, you can run the program with `cargo run -p editor_tui -- ./<file_path>`. This will be cleaned up soon!
 
 ### What currently works:
 - File input and parsing into a rope buffer (will be optimized futher)
 - Drawing that rope buffer to the screen in a MinUI viewport (will be optimized further)
 - Cursor drawing and movement
 - Viewport scrolling (follows cursor)
-- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`)
+- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`, `i`, `a`, `I`, `A`, `:`)
+- Normal/insert/command modes (not yet functional, but differentiated in the code)
+- Statusline with current mode (colour coded) and cursor position
 
 ## License
 
