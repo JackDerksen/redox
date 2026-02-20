@@ -19,6 +19,9 @@
 use minui::widgets::Widget;
 use minui::{ColorPair, Result, Window};
 
+use crate::app::{EditorMode, EditorState};
+use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
+
 /// Horizontal alignment of a segment within its allotted region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
@@ -63,14 +66,6 @@ impl Segment {
         self.min_width = Some(width);
         self
     }
-
-    pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
-    }
-
-    pub fn set_colors(&mut self, colors: ColorPair) {
-        self.colors = Some(colors);
-    }
 }
 
 /// Segment-based status bar widget.
@@ -106,10 +101,6 @@ impl EditorStatusBar {
         self
     }
 
-    pub fn set_bg(&mut self, colors: Option<ColorPair>) {
-        self.bg_colors = colors;
-    }
-
     pub fn with_height(mut self, height: u16) -> Self {
         self.height = height.max(1);
         self
@@ -118,22 +109,6 @@ impl EditorStatusBar {
     pub fn add_segment(mut self, segment: Segment) -> Self {
         self.segments.push(segment);
         self
-    }
-
-    pub fn push(&mut self, segment: Segment) {
-        self.segments.push(segment);
-    }
-
-    pub fn clear(&mut self) {
-        self.segments.clear();
-    }
-
-    pub fn segments(&self) -> &[Segment] {
-        &self.segments
-    }
-
-    pub fn segment_mut(&mut self, index: usize) -> Option<&mut Segment> {
-        self.segments.get_mut(index)
     }
 
     fn calculate_y(&self, window_height: u16) -> u16 {
@@ -302,4 +277,51 @@ impl Widget for EditorStatusBar {
     fn get_position(&self) -> (u16, u16) {
         (0, 0)
     }
+}
+
+/// Build the editor's standard bottom status bar from state + style.
+pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
+    let (mode_label, mode_colors) = match state.mode {
+        EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
+        EditorMode::Insert => ("INSERT", style.palette.mode_insert),
+        EditorMode::Command => ("COMMAND", style.palette.mode_command),
+    };
+
+    let mut left_text = format!(" {} ", mode_label);
+    if state.dirty {
+        left_text.push('*');
+        left_text.push(' ');
+    }
+
+    let center_text = if state.mode == EditorMode::Command {
+        format!(" :{} ", state.command_line)
+    } else if let Some(msg) = &state.status_msg {
+        format!(" {} ", msg)
+    } else {
+        format!(" {} ", state.path.display())
+    };
+
+    let cursor = state.cursor.cursor;
+    let right_text = format!(" Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
+
+    EditorStatusBar::new()
+        .with_height(STATUS_BAR_HEIGHT_CELLS)
+        .with_bg(style.palette.status_bar_bg)
+        .add_segment(
+            Segment::new(left_text)
+                .with_color(mode_colors)
+                .with_align(Align::Left)
+                .with_min_width(style.layout.status_left_min_width),
+        )
+        .add_segment(
+            Segment::new(center_text)
+                .with_color(style.palette.status_bar_bg)
+                .with_align(Align::Center),
+        )
+        .add_segment(
+            Segment::new(right_text)
+                .with_color(style.palette.status_bar_bg)
+                .with_align(Align::Right)
+                .with_min_width(style.layout.status_right_min_width),
+        )
 }

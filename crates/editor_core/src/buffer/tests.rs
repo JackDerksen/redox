@@ -68,7 +68,36 @@ fn word_motions_ascii() {
     let start = b.word_start_before(p);
     assert_eq!(start, Pos::new(0, 5));
     let end = b.word_end_after(start);
-    assert_eq!(end, Pos::new(0, 11));
+    assert_eq!(end, Pos::new(0, 10));
+
+    let symbol = b.word_start_after(start);
+    assert_eq!(symbol, Pos::new(0, 11));
+
+    let back_to_symbol = b.word_start_before(Pos::new(0, 12));
+    assert_eq!(back_to_symbol, Pos::new(0, 11));
+}
+
+#[test]
+fn word_motions_visit_symbols() {
+    let b = TextBuffer::from_str("(normal/insert/command)");
+
+    let p1 = b.word_start_after(Pos::new(0, 0));
+    assert_eq!(p1, Pos::new(0, 1)); // normal
+
+    let p2 = b.word_start_after(p1);
+    assert_eq!(p2, Pos::new(0, 7)); // /
+
+    let p3 = b.word_start_after(p2);
+    assert_eq!(p3, Pos::new(0, 8)); // insert
+
+    let p4 = b.word_start_after(p3);
+    assert_eq!(p4, Pos::new(0, 14)); // /
+
+    let p5 = b.word_start_after(p4);
+    assert_eq!(p5, Pos::new(0, 15)); // command
+
+    let p6 = b.word_start_after(p5);
+    assert_eq!(p6, Pos::new(0, 22)); // )
 }
 
 #[test]

@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(start, Pos::new(0, 5));
 
         let end = apply_motion(&b, start, Motion::WordEndAfter);
-        assert_eq!(end, Pos::new(0, 11));
+        assert_eq!(end, Pos::new(0, 10));
     }
 
     #[test]
@@ -242,5 +242,49 @@ mod tests {
 
         // Vim's 'e' motion stops at the last character of the last word.
         assert_eq!(p2, Pos::new(0, 5));
+    }
+
+    #[test]
+    fn word_start_after_visits_symbol_tokens() {
+        let b = TextBuffer::from_str("(normal/insert/command)\n");
+        let mut p = Pos::new(0, 0);
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 1)); // normal
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 7)); // /
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 8)); // insert
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 14)); // /
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 15)); // command
+
+        p = apply_motion(&b, p, Motion::WordStartAfter);
+        assert_eq!(p, Pos::new(0, 22)); // )
+    }
+
+    #[test]
+    fn word_start_before_stops_on_symbol_token() {
+        let b = TextBuffer::from_str("(normal/insert)\n");
+        let p = Pos::new(0, 15); // after ')'
+        let p2 = apply_motion(&b, p, Motion::WordStartBefore);
+        assert_eq!(p2, Pos::new(0, 14)); // )
+    }
+
+    #[test]
+    fn word_end_after_can_land_on_symbol_token() {
+        let b = TextBuffer::from_str("alpha / beta\n");
+
+        let p = Pos::new(0, 0);
+        let p = apply_motion(&b, p, Motion::WordEndAfter);
+        assert_eq!(p, Pos::new(0, 4)); // alpha
+
+        let p = apply_motion(&b, p, Motion::WordEndAfter);
+        assert_eq!(p, Pos::new(0, 6)); // /
     }
 }

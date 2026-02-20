@@ -1,40 +1,14 @@
-//! Input handling for `editor_tui`.
+//! Input mapping for `editor_tui`.
 //!
-//! This module is intentionally TUI-specific: it translates MinUI events into
-//! higher-level editor intents (now mode-aware for normal, insert, and command modes).
-//!
-//! Supported (currently):
-//! - Normal mode:
-//!   - Arrow keys / `hjkl`: basic cursor motions (count partially working, see below)
-//!   - `w`: word forward
-//!   - `e`: word end
-//!   - `b`: word backward
-//!   - `gg`: file start
-//!   - `G`: file end
-//!   - `i` / `a`: enter Insert mode (insert/append)
-//!     - As well as `I` / `A` for line start/end
-//!   - `:`: enter Command mode
-//!   - `q`: quit (temporary, will become `:q` later)
-//! - Insert mode:
-//!   - Arrow keys: cursor motion (no `hjkl` because those should type, obviously)
-//!   - `Esc`: return to Normal mode
-//!   - text input is forwarded as `InsertChar` / `InsertText`
-//!   - Backspace / Enter are forwarded as actions
-//! - Command mode:
-//!   - `Esc`: cancel and return to Normal mode
-//!   - characters build a command line buffer (execution is handled elsewhere)
-//!
-//! Notes:
-//! - This file maintains a tiny key-sequence state machine for `gg`.
-//! - Counts (e.g. `3w`) are scaffolded but only partially wired.
+//! This module translates raw MinUI events into mode-aware editor actions.
+//! It also tracks normal-mode key prefixes used by `gg` and count motions.
 
 use editor_core::motion::Motion;
 use minui::prelude::*;
 
 pub mod cursor;
 
-/// Editor input mode (Vim-like).
-/// I'll be adding visual mode later!
+/// Editor input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -63,12 +37,9 @@ pub enum InsertKind {
 /// These are *mode-aware*; the main editor loop decides how to apply them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
-    /// Quit the application.
-    Quit,
-
     /// Bracketed paste payload.
     ///
-    /// In insert mode, this should be treated like bulk text insertion.
+    /// Treated as bulk text insertion in editable modes.
     Paste(String),
 
     /// Apply a document motion (UI-agnostic) with a Vim-style count.
@@ -96,7 +67,6 @@ pub enum InputAction {
 
     /// Insert/editing actions.
     InsertChar(char),
-    InsertText(String),
     Backspace,
     Enter,
 
@@ -136,12 +106,9 @@ impl InputState {
     }
 }
 
-/// Map a MinUI `Event` to a TUI `InputAction`, updating the key-sequence state.
-///
-/// Callers must pass the current `mode` so mapping can be mode-aware.
+/// Map a MinUI `Event` to an `InputAction`, updating key-prefix state.
 pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Event) -> InputAction {
     match event {
-        // Prefer the specific key events for these special keys.
         Event::Escape => match mode {
             InputMode::Insert => InputAction::SetMode(InputMode::Normal),
             InputMode::Command => InputAction::CommandCancel,
@@ -160,30 +127,23 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
             InputMode::Normal => InputAction::None,
         },
 
-        // Key events (arrows, etc).
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, *k),
 
-        // Text input.
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
-            InputMode::Normal => {
-                if *c == 'q' {
-                    InputAction::Quit
-                } else if *c == ':' {
-                    InputAction::EnterCommand
-                } else if *c == 'i' {
-                    InputAction::EnterInsert(InsertKind::Insert)
-                } else if *c == 'a' {
-                    InputAction::EnterInsert(InsertKind::Append)
-                } else {
-                    // Most normal-mode character commands are handled via KeyWithModifiers -> KeyKind::Char.
-                    // Fall back to None so we don't accidentally consume input twice.
-                    InputAction::None
-                }
-            }
+            InputMode::Normal => normal_char_action(*c),
         },
 
+        _ => InputAction::None,
+    }
+}
+
+fn normal_char_action(c: char) -> InputAction {
+    match c {
+        ':' => InputAction::EnterCommand,
+        'i' => InputAction::EnterInsert(InsertKind::Insert),
+        'a' => InputAction::EnterInsert(InsertKind::Append),
         _ => InputAction::None,
     }
 }
@@ -193,16 +153,11 @@ fn map_key_with_state(
     mode: InputMode,
     key: KeyWithModifiers,
 ) -> InputAction {
-    // Inspect `key.mods` here later for special keys like `Ctrl` and `Alt`.
     let mods = key.mods;
     let key = key.key;
 
     match mode {
         InputMode::Insert => {
-            // Insert mode: arrow keys move; characters should type.
-            //
-            // Backend could deliver normal typing as key events (`KeyKind::Char`)
-            // instead of `Event::Character`, so handle that here too.
             return match key {
                 KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
                 KeyKind::Backspace => InputAction::Backspace,
@@ -246,11 +201,7 @@ fn map_key_with_state(
 
     // Normal mode below.
 
-    // Shift-modified insert commands:
-    // - `I`: insert at beginning of line (first non-whitespace in Vim, but for now just BOL)
-    // - `A`: append at end of line
-    //
-    // NOTE: These are detected via modifiers so we don't rely on `Event::Character` emitting uppercase.
+    // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
     if mods.shift {
         if let KeyKind::Char('I') = key {
             state.reset_prefixes();
@@ -262,7 +213,7 @@ fn map_key_with_state(
         }
     }
 
-    // Count prefix: accumulate digits (Vim: leading 0 is special, but for now treat any digit as count)
+    // Count prefix: leading zero has Vim-specific semantics; keep this simple for now.
     if let KeyKind::Char(c) = key {
         if let Some(d) = c.to_digit(10) {
             state.push_count_digit(d as u8);
@@ -276,25 +227,15 @@ fn map_key_with_state(
 
         if matches!(key, KeyKind::Char('g')) {
             let count = state.take_count_or_1();
-            // NOTE: In real Vim, `{count}gg` goes to line {count}. I don't have that motion yet,
-            // so `count` currently just repeats FileStart (no effect beyond 1).
+            // TODO: map `{count}gg` to line `{count}` when that motion exists.
             return InputAction::Motion {
                 motion: Motion::FileStart,
                 count,
             };
         }
-
-        // If it wasn't a second `g`, fall through and treat the new key normally.
-        // Intentionally keep the count prefix for the next key.
     }
 
     match key {
-        // Quit (temporary; will become `:q` later).
-        KeyKind::Char('q') => {
-            state.reset_prefixes();
-            InputAction::Quit
-        }
-
         // Enter modes
         KeyKind::Char('i') => {
             state.reset_prefixes();
@@ -309,7 +250,6 @@ fn map_key_with_state(
             InputAction::EnterCommand
         }
 
-        // Start `g` sequence
         KeyKind::Char('g') => {
             state.pending_g = true;
             InputAction::None
@@ -353,11 +293,75 @@ fn map_key_with_state(
             count: state.take_count_or_1(),
         },
 
-        // Unknown key: clear pending `g` but keep count? In Vim, an unused count is consumed by
-        // the next command; clear it here to avoid surprising behaviour.
         _ => {
             state.reset_prefixes();
             InputAction::None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_mode_character_q_is_not_quit() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('q'));
+        assert_eq!(action, InputAction::None);
+    }
+
+    #[test]
+    fn normal_mode_character_colon_enters_command() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(':'));
+        assert_eq!(action, InputAction::EnterCommand);
+    }
+
+    #[test]
+    fn normal_mode_shift_i_enters_insert_line_start() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('I'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::EnterInsert(InsertKind::InsertLineStart)
+        );
+    }
+
+    #[test]
+    fn normal_mode_count_prefix_applies_to_motion() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('3'),
+                mods: KeyModifiers::none(),
+            }),
+        );
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('w'),
+                mods: KeyModifiers::none(),
+            }),
+        );
+
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::WordStartAfter,
+                count: 3
+            }
+        );
     }
 }

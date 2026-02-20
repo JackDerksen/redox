@@ -5,4 +5,4 @@
 
 pub mod status_bar;
 
-pub use status_bar::{Align, EditorStatusBar, Segment};
+pub use status_bar::build_editor_status_bar;
