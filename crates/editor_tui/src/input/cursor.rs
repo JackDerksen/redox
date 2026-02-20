@@ -79,6 +79,35 @@ impl CursorController {
         Self::default()
     }
 
+    /// Reconcile cursor + viewport after an edit.
+    ///
+    /// This clamps the cursor to real buffer content and then updates scroll offsets
+    /// to keep the cursor visible, **without** applying any motion semantics.
+    ///
+    /// Useful after mutations like insert/backspace/newline where the cursor
+    /// is already updated by the caller.
+    pub fn reconcile_after_edit(
+        &mut self,
+        buffer: &TextBuffer,
+        viewport_width_cells: usize,
+        viewport_height_rows: usize,
+    ) {
+        // Clamp the cursor first (edits can invalidate col/line).
+        self.cursor = buffer.clamp_pos(self.cursor);
+
+        // Clamp scroll to content first (keeps state sane).
+        self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
+
+        // Compute cursor visual position under current scroll.
+        let info = self.cursor_visual_info(buffer, viewport_width_cells);
+
+        // Follow cursor with margins.
+        self.follow_cursor(buffer, info, viewport_width_cells, viewport_height_rows);
+
+        // Final clamp (ensures no negative scroll).
+        self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
+    }
+
     /// Apply a core (UI-agnostic) motion with a Vim-style count, then adjust scrolling
     /// to keep the cursor visible.
     ///

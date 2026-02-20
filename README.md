@@ -22,19 +22,21 @@ crates
   Editor core library. Owns the text buffer implementation (Ropey-backed), text/indexing utilities, and core editing primitives intended to be UI-independent.
 
 - `crates/editor_tui`  
-  MinUI TUI application. Hosts the event loop and rendering and will integrate `editor_core` to provide an interactive editor experience.
+  MinUI TUI application. Hosts the event loop, input, rendering, and integrates `editor_core` to provide an interactive editor experience.
 
 ## Development notes
 
-- The core uses character indices (Unicode scalar values) as its primary indexing model to match Ropey’s APIs.
-- Higher-level features like Vim motions, undo/redo, and viewport/rendering logic will be layered on top of the core.
+At the moment, you can run the program with `cargo run -p editor_tui -- ./<file_path>`. This will be cleaned up soon!
 
 ### What currently works:
 - File input and parsing into a rope buffer (will be optimized futher)
 - Drawing that rope buffer to the screen in a MinUI viewport (will be optimized further)
 - Cursor drawing and movement
 - Viewport scrolling (follows cursor)
-- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`)
+- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`, `i`, `a`, `I`, `A`, `:`)
+- Normal/insert/command modes, along with basic functionality for each 
+    - Editing and writing to files **does** work now!
+- Statusline with current mode (colour coded) and cursor position
 
 ## License
 
