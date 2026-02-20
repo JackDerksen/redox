@@ -66,6 +66,11 @@ pub enum InputAction {
     /// Quit the application.
     Quit,
 
+    /// Bracketed paste payload.
+    ///
+    /// In insert mode, this should be treated like bulk text insertion.
+    Paste(String),
+
     /// Apply a document motion (UI-agnostic) with a Vim-style count.
     ///
     /// `count` is always >= 1.
@@ -194,8 +199,10 @@ fn map_key_with_state(
 
     match mode {
         InputMode::Insert => {
-            // Insert mode: arrow keys move; everything else should generally be typed via `Event::Character`.
-            // (We still handle Escape/Backspace/Enter via both Event variants and KeyKind variants.)
+            // Insert mode: arrow keys move; characters should type.
+            //
+            // Backend could deliver normal typing as key events (`KeyKind::Char`)
+            // instead of `Event::Character`, so handle that here too.
             return match key {
                 KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
                 KeyKind::Backspace => InputAction::Backspace,
@@ -218,6 +225,8 @@ fn map_key_with_state(
                     count: 1,
                 },
 
+                KeyKind::Char(c) => InputAction::InsertChar(c),
+
                 _ => InputAction::None,
             };
         }
@@ -227,6 +236,7 @@ fn map_key_with_state(
                 KeyKind::Escape => InputAction::CommandCancel,
                 KeyKind::Backspace => InputAction::CommandBackspace,
                 KeyKind::Enter => InputAction::CommandEnter,
+                KeyKind::Char(c) => InputAction::CommandChar(c),
                 _ => InputAction::None,
             };
         }
