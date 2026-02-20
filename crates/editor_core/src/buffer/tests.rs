@@ -124,3 +124,71 @@ fn apply_edit_replace() {
     assert_eq!(b.to_string(), "smitten");
     assert_eq!(cur, Pos::new(0, 4));
 }
+
+#[test]
+fn slice_chars_clamps_and_swaps_indices() {
+    let b = TextBuffer::from_str("abcdef");
+    assert_eq!(b.slice_chars(2, 5), "cde");
+    assert_eq!(b.slice_chars(5, 2), "cde");
+    assert_eq!(b.slice_chars(0, 999), "abcdef");
+}
+
+#[test]
+fn slice_pos_range_is_order_independent() {
+    let b = TextBuffer::from_str("hello world");
+    let a = Pos::new(0, 1);
+    let bpos = Pos::new(0, 5);
+    assert_eq!(b.slice_pos_range(a, bpos), "ello");
+    assert_eq!(b.slice_pos_range(bpos, a), "ello");
+}
+
+#[test]
+fn replace_selection_replaces_non_empty_range() {
+    let mut b = TextBuffer::from_str("hello world");
+    let sel = Selection::new(Pos::new(0, 6), Pos::new(0, 11));
+    let out = b.replace_selection(sel, "rust");
+    assert_eq!(out, Selection::empty(Pos::new(0, 10)));
+    assert_eq!(b.to_string(), "hello rust");
+}
+
+#[test]
+fn insert_newline_replaces_selection() {
+    let mut b = TextBuffer::from_str("ab");
+    let sel = Selection::new(Pos::new(0, 0), Pos::new(0, 2));
+    let out = b.insert_newline(sel);
+    assert_eq!(out.cursor, Pos::new(1, 0));
+    assert_eq!(b.to_string(), "\n");
+}
+
+#[test]
+fn delete_forward_at_eof_is_noop() {
+    let mut b = TextBuffer::from_str("abc");
+    let sel = Selection::empty(Pos::new(0, 3));
+    let out = b.delete(sel);
+    assert_eq!(out.cursor, Pos::new(0, 3));
+    assert_eq!(b.to_string(), "abc");
+}
+
+#[test]
+fn char_queries_handle_line_end_and_start() {
+    let b = TextBuffer::from_str("ab\n");
+    assert_eq!(b.char_at(Pos::new(0, 0)), Some('a'));
+    assert_eq!(b.char_at(Pos::new(0, 2)), None);
+    assert_eq!(b.char_before(Pos::new(0, 0)), None);
+    assert_eq!(b.char_before(Pos::new(0, 1)), Some('a'));
+}
+
+#[test]
+fn line_and_char_index_conversion_clamps() {
+    let b = TextBuffer::from_str("a\nbb\n");
+    assert_eq!(b.line_to_char(999), b.line_to_char(2));
+    assert_eq!(b.char_to_line(999), 2);
+}
+
+#[test]
+fn apply_edit_normalizes_reversed_range() {
+    let mut b = TextBuffer::from_str("abcdef");
+    let cur = b.apply_edit(Edit::replace(4..2, "XY"));
+    assert_eq!(b.to_string(), "abXYef");
+    assert_eq!(cur, Pos::new(0, 4));
+}

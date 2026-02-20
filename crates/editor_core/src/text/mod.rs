@@ -377,3 +377,75 @@ pub fn clamp_cursor_to_line_editable(
 ) -> CharIdx {
     CharIdx(max(line_start.0, min(cursor.0, editable_end.0)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_to_line_col_uses_binary_search_correctly() {
+        let line_starts = [0usize, 4, 6];
+        let line_count = line_starts.len();
+
+        let pos = char_to_line_col(CharIdx(5), line_count, |line| line_starts[line]);
+        assert_eq!(pos, LineCol::new(1, 1));
+    }
+
+    #[test]
+    fn line_col_to_char_clamps_line_and_column() {
+        let line_starts = [0usize, 4, 6];
+        let line_lens = [3usize, 1, 0];
+        let line_count = line_starts.len();
+
+        let idx = line_col_to_char(
+            LineCol::new(99, 99),
+            line_count,
+            |line| line_starts[line],
+            |line| line_lens[line],
+        );
+        assert_eq!(idx, CharIdx(6));
+    }
+
+    #[test]
+    fn clamp_helpers_keep_values_in_bounds() {
+        assert_eq!(clamp_char(CharIdx(9), 4), CharIdx(4));
+        assert_eq!(clamp_col_to_line(ColIdx(8), 3), ColIdx(3));
+        assert_eq!(apply_goal_col(ColIdx(8), 3), ColIdx(3));
+    }
+
+    #[test]
+    fn clamp_range_normalizes_and_clamps() {
+        let out = clamp_range(CharRange::new(CharIdx(9), CharIdx(2)), 5);
+        assert_eq!(out.start, CharIdx(2));
+        assert_eq!(out.end, CharIdx(5));
+    }
+
+    #[test]
+    fn line_helpers_respect_newline_exclusion() {
+        assert_eq!(line_len_without_newline(5, true), 4);
+        assert_eq!(line_len_without_newline(5, false), 5);
+
+        let (start, end) = line_editable_bounds(CharIdx(10), 4, true);
+        assert_eq!(start, CharIdx(10));
+        assert_eq!(end, CharIdx(13));
+
+        assert_eq!(
+            clamp_cursor_to_line_editable(CharIdx(20), start, end),
+            CharIdx(13)
+        );
+        assert_eq!(
+            clamp_cursor_to_line_editable(CharIdx(8), start, end),
+            CharIdx(10)
+        );
+    }
+
+    #[test]
+    fn movement_and_ordering_helpers_are_saturating() {
+        assert_eq!(move_char_clamped(CharIdx(2), -5, 10), CharIdx(0));
+        assert_eq!(move_char_clamped(CharIdx(2), 99, 10), CharIdx(10));
+        assert_eq!(
+            ordered_pair(CharIdx(9), CharIdx(3)),
+            (CharIdx(3), CharIdx(9))
+        );
+    }
+}
