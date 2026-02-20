@@ -9,20 +9,22 @@ mod app;
 mod input;
 mod ui;
 
-use app::{EditorMode, EditorState};
+use app::EditorState;
 use input::{InputAction, map_event_with_state};
 
 use ui::{
-    Align, EditorStatusBar, Segment, TextViewport, draw_snapshot, snapshot_lines_wrapped_cached,
+    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar, draw_snapshot,
+    snapshot_lines_wrapped_cached,
 };
-
-use minui::ColorPair;
-
-fn draw_buffer_view(state: &mut EditorState, window: &mut dyn Window) -> minui::Result<()> {
+fn draw_buffer_view(
+    state: &mut EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
 
     // Reserve one row for the status bar at the bottom.
-    let status_h: u16 = 1;
+    let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
 
     let (scroll_x, scroll_y) = state.cursor.viewport_scroll();
@@ -39,52 +41,7 @@ fn draw_buffer_view(state: &mut EditorState, window: &mut dyn Window) -> minui::
     draw_snapshot(&snapshot, window)?;
 
     // --- Status bar (bottom row) ---
-    let bar_bg = ColorPair::new(Color::LightGray, Color::Black);
-
-    let (mode_label, mode_colors) = match state.mode {
-        EditorMode::Normal => ("NORMAL", ColorPair::new(Color::Black, Color::Red)),
-        EditorMode::Insert => ("INSERT", ColorPair::new(Color::Black, Color::Blue)),
-        EditorMode::Command => ("COMMAND", ColorPair::new(Color::Black, Color::Cyan)),
-    };
-
-    let cursor = state.cursor.cursor;
-
-    let mut left_text = format!(" {} ", mode_label);
-    if state.dirty {
-        left_text.push('*');
-        left_text.push(' ');
-    }
-
-    let center_text = if state.mode == EditorMode::Command {
-        format!(" :{} ", state.command_line)
-    } else if let Some(msg) = &state.status_msg {
-        format!(" {} ", msg)
-    } else {
-        format!(" {} ", state.path.display())
-    };
-
-    let right_text = format!(" Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
-
-    let status = EditorStatusBar::new()
-        .with_height(1)
-        .with_bg(bar_bg)
-        .add_segment(
-            Segment::new(left_text)
-                .with_color(mode_colors)
-                .with_align(Align::Left)
-                .with_min_width(12),
-        )
-        .add_segment(
-            Segment::new(center_text)
-                .with_color(bar_bg)
-                .with_align(Align::Center),
-        )
-        .add_segment(
-            Segment::new(right_text)
-                .with_color(bar_bg)
-                .with_align(Align::Right)
-                .with_min_width(18),
-        );
+    let status = build_editor_status_bar(state, style);
 
     status.draw(window)?;
 
@@ -110,6 +67,7 @@ fn main() -> minui::Result<()> {
     let buffer = load_buffer(&path).expect("failed to load file");
 
     let mut app = App::new(EditorState::new(path, buffer))?;
+    let style = UiStyle::default();
 
     app.run(
         |state, event| {
@@ -118,24 +76,16 @@ fn main() -> minui::Result<()> {
                 _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
             };
 
-            match action {
-                InputAction::Quit => false,
-                action => {
-                    // Store the action for the next draw call where we know the viewport size.
-                    state.pending_action = Some(action);
-                    true
-                }
-            }
+            let (w, h) = state.viewport_size();
+            state.apply_input(action, w, h);
+            !state.should_quit
         },
         |state, window| {
             window.clear_cursor_request();
+            let (w, h) = window.get_size();
+            state.set_viewport_size(w as usize, h as usize);
 
-            if let Some(action) = state.pending_action.take() {
-                let (w, h) = window.get_size();
-                state.apply_input(action, w as usize, h as usize);
-            }
-
-            draw_buffer_view(state, window)?;
+            draw_buffer_view(state, style, window)?;
 
             window.end_frame()?;
             Ok(())

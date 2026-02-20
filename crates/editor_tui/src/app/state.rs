@@ -1,13 +1,7 @@
-//! Editor application state for `editor_tui`.
+//! Editor state and action application for `editor_tui`.
 //!
-//! This module owns:
-//! - the current buffer + cursor controller
-//! - modal state (normal/insert/command)
-//! - command-line buffer and status messages
-//! - applying high-level `InputAction`s to mutate state
-//!
-//! Rendering and event-loop glue stay in `main.rs`.
-//! Terminal-agnostic editing logic stays in `editor_core`.
+//! This module keeps UI-facing state (mode, command line, status, cursor viewport
+//! reconciliation) while delegating text editing primitives to `editor_core`.
 
 use std::path::PathBuf;
 
@@ -15,10 +9,9 @@ use editor_core::{Selection, TextBuffer};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputAction, InputMode, InputState, InsertKind};
+use crate::ui::{GraphemeCache, STATUS_BAR_HEIGHT_ROWS};
 
-use crate::ui::GraphemeCache;
-
-/// Vim-like editor mode for the frontend.
+/// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
     Normal,
@@ -34,44 +27,23 @@ impl EditorMode {
             EditorMode::Command => InputMode::Command,
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            EditorMode::Normal => "NORMAL",
-            EditorMode::Insert => "INSERT",
-            EditorMode::Command => "COMMAND",
-        }
-    }
 }
 
-/// TUI app state for a single-buffer editor MVP.
+/// Single-buffer editor state.
 #[derive(Debug)]
 pub struct EditorState {
-    /// Path of the file currently being edited (single-buffer editor for now).
     pub path: PathBuf,
-
     pub buffer: TextBuffer,
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
-
     pub mode: EditorMode,
-
-    /// Whether the in-memory buffer has diverged from the file on disk.
     pub dirty: bool,
-
-    /// Stateful key handling (eg. `gg`, counts).
     pub input: InputState,
-
-    /// Command-line buffer for `:` commands.
     pub command_line: String,
-
-    /// Status / error message (rendered in status bar).
     pub status_msg: Option<String>,
-
-    /// Most recent input action received from the update loop.
-    ///
-    /// Apply it during draw because draw has access to the current window size.
-    pub pending_action: Option<InputAction>,
+    pub should_quit: bool,
+    viewport_width_cells: usize,
+    viewport_height_rows: usize,
 }
 
 impl EditorState {
@@ -80,14 +52,15 @@ impl EditorState {
             path,
             buffer,
             cursor: CursorController::new(),
-            // Cache a few screens worth of lines. Will tune this later.
             grapheme_cache: GraphemeCache::new(512),
             mode: EditorMode::Normal,
             dirty: false,
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
-            pending_action: None,
+            should_quit: false,
+            viewport_width_cells: 80,
+            viewport_height_rows: 24,
         }
     }
 
@@ -99,19 +72,23 @@ impl EditorState {
         self.status_msg = None;
     }
 
-    /// Apply an input action to this state, using the current viewport size to reconcile cursor+scroll.
-    ///
-    /// This is kept in `editor_tui` because it is UI/terminal aware (viewport dimensions)
-    /// and orchestrates `editor_core` operations.
+    pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {
+        self.viewport_width_cells = width_cells;
+        self.viewport_height_rows = height_rows;
+    }
+
+    pub fn viewport_size(&self) -> (usize, usize) {
+        (self.viewport_width_cells, self.viewport_height_rows)
+    }
+
+    /// Apply a high-level input action using the active viewport size for cursor reconciliation.
     pub fn apply_input(
         &mut self,
         action: InputAction,
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
-        // Keep this consistent with rendering (reserve one row at the bottom for the status bar).
-        let status_h: usize = 1;
-        let text_vh = viewport_height_rows.saturating_sub(status_h);
+        let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
 
         match action {
             InputAction::Motion { motion, count } => {
@@ -134,7 +111,6 @@ impl EditorState {
                     InputMode::Command => EditorMode::Command,
                 };
 
-                // Vim behavior: when leaving insert mode, cursor rests on the previous char.
                 if leaving_insert_to_normal {
                     if self.cursor.cursor.col > 0 {
                         self.cursor.cursor.col -= 1;
@@ -149,21 +125,17 @@ impl EditorState {
             InputAction::EnterInsert(kind) => {
                 match kind {
                     InsertKind::Insert => {}
-
                     InsertKind::Append => {
                         let line = self.buffer.clamp_line(self.cursor.cursor.line);
                         let line_text = self.buffer.line_string(line);
                         let line_len_chars = line_text.chars().count();
-
                         if self.cursor.cursor.col < line_len_chars {
                             self.cursor.cursor.col += 1;
                         }
                     }
-
                     InsertKind::InsertLineStart => {
                         self.cursor.cursor.col = 0;
                     }
-
                     InsertKind::AppendLineEnd => {
                         let line = self.buffer.clamp_line(self.cursor.cursor.line);
                         let line_text = self.buffer.line_string(line);
@@ -174,7 +146,6 @@ impl EditorState {
                 self.mode = EditorMode::Insert;
                 self.clear_status();
                 self.input.reset_prefixes();
-
                 self.cursor
                     .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
             }
@@ -205,73 +176,13 @@ impl EditorState {
             }
 
             InputAction::CommandEnter => {
-                if self.mode == EditorMode::Command {
-                    let cmd = self.command_line.trim().to_string();
-                    self.command_line.clear();
-                    self.mode = EditorMode::Normal;
-
-                    match cmd.as_str() {
-                        "w" => {
-                            // MVP: write whole buffer back to the original file.
-                            match std::fs::write(&self.path, self.buffer.to_string()) {
-                                Ok(()) => {
-                                    self.dirty = false;
-                                    self.set_status("written");
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("write failed: {e}"));
-                                }
-                            }
-                        }
-                        "q" => {
-                            if self.dirty {
-                                self.set_status("no write since last change (use :q! to quit)");
-                            } else {
-                                // Quit is handled elsewhere (event loop). Keep messaging consistent for now.
-                                self.set_status("use q to quit (temporary)");
-                            }
-                        }
-                        "q!" => {
-                            self.set_status("use q to quit (temporary)");
-                        }
-                        "wq" => match std::fs::write(&self.path, self.buffer.to_string()) {
-                            Ok(()) => {
-                                self.dirty = false;
-                                self.set_status("written (use q to quit)");
-                            }
-                            Err(e) => {
-                                self.set_status(format!("write failed: {e}"));
-                            }
-                        },
-                        "" => {
-                            // Empty command: no-op.
-                        }
-                        _ => {
-                            self.set_status(format!("unknown command: {cmd}"));
-                        }
-                    }
-                }
+                self.execute_command_line();
             }
 
             InputAction::InsertChar(c) => {
                 if self.mode == EditorMode::Insert {
-                    let new_pos = self.buffer.insert(self.cursor.cursor, &c.to_string());
-                    self.cursor.cursor = new_pos;
-                    self.dirty = true;
-
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::InsertText(text) => {
-                if self.mode == EditorMode::Insert && !text.is_empty() {
-                    let new_pos = self.buffer.insert(self.cursor.cursor, &text);
-                    self.cursor.cursor = new_pos;
-                    self.dirty = true;
-
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+                    let s = c.to_string();
+                    self.insert_text_at_cursor(&s, viewport_width_cells, text_vh);
                 }
             }
 
@@ -299,19 +210,181 @@ impl EditorState {
                 }
             }
 
-            // Paste handling: treat as bulk insert in Insert mode.
-            InputAction::Paste(text) => {
-                if self.mode == EditorMode::Insert && !text.is_empty() {
-                    let new_pos = self.buffer.insert(self.cursor.cursor, &text);
-                    self.cursor.cursor = new_pos;
-                    self.dirty = true;
+            InputAction::Paste(text) => match self.mode {
+                EditorMode::Insert | EditorMode::Normal => {
+                    self.insert_text_at_cursor(&text, viewport_width_cells, text_vh);
+                }
+                EditorMode::Command => {}
+            },
 
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+            InputAction::None => {}
+        }
+    }
+
+    fn insert_text_at_cursor(&mut self, text: &str, viewport_width_cells: usize, text_vh: usize) {
+        if text.is_empty() {
+            return;
+        }
+
+        let new_pos = self.buffer.insert(self.cursor.cursor, text);
+        self.cursor.cursor = new_pos;
+        self.dirty = true;
+
+        self.cursor
+            .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+    }
+
+    fn execute_command_line(&mut self) {
+        if self.mode != EditorMode::Command {
+            return;
+        }
+
+        let cmd = self.command_line.trim().to_string();
+        self.command_line.clear();
+        self.mode = EditorMode::Normal;
+
+        match cmd.as_str() {
+            "" => {}
+            "w" => {
+                self.write_current_file();
+            }
+            "q" => {
+                if self.dirty {
+                    self.set_status("no write since last change (use :q! to quit)");
+                } else {
+                    self.should_quit = true;
                 }
             }
-
-            InputAction::Quit | InputAction::None => {}
+            "q!" => {
+                self.should_quit = true;
+            }
+            "wq" => {
+                if self.write_current_file() {
+                    self.should_quit = true;
+                }
+            }
+            _ => {
+                self.set_status(format!("unknown command: {cmd}"));
+            }
         }
+    }
+
+    fn write_current_file(&mut self) -> bool {
+        match std::fs::write(&self.path, self.buffer.to_string()) {
+            Ok(()) => {
+                self.dirty = false;
+                self.set_status("written");
+                true
+            }
+            Err(e) => {
+                self.set_status(format!("write failed: {e}"));
+                false
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("redox_state_test_{tag}_{nanos}.txt"))
+    }
+
+    fn state_with_text(path: PathBuf, text: &str) -> EditorState {
+        EditorState::new(path, TextBuffer::from_str(text))
+    }
+
+    #[test]
+    fn normal_mode_paste_inserts_text_and_marks_dirty() {
+        let path = temp_file_path("paste_normal");
+        let mut state = state_with_text(path.clone(), "hello");
+
+        state.apply_input(InputAction::Paste(" world".to_string()), 80, 24);
+
+        assert_eq!(state.buffer.to_string(), " worldhello");
+        assert!(state.dirty);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn command_q_quits_when_clean() {
+        let path = temp_file_path("q_clean");
+        let mut state = state_with_text(path.clone(), "abc");
+        state.mode = EditorMode::Command;
+        state.command_line = "q".to_string();
+        state.dirty = false;
+
+        state.apply_input(InputAction::CommandEnter, 80, 24);
+
+        assert!(state.should_quit);
+        assert_eq!(state.mode, EditorMode::Normal);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn command_q_does_not_quit_when_dirty() {
+        let path = temp_file_path("q_dirty");
+        let mut state = state_with_text(path.clone(), "abc");
+        state.mode = EditorMode::Command;
+        state.command_line = "q".to_string();
+        state.dirty = true;
+
+        state.apply_input(InputAction::CommandEnter, 80, 24);
+
+        assert!(!state.should_quit);
+        assert_eq!(
+            state.status_msg.as_deref(),
+            Some("no write since last change (use :q! to quit)")
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn command_wq_writes_file_and_quits() {
+        let path = temp_file_path("wq_success");
+        fs::write(&path, "old").expect("failed to write temp file");
+
+        let mut state = state_with_text(path.clone(), "new");
+        state.mode = EditorMode::Command;
+        state.command_line = "wq".to_string();
+        state.dirty = true;
+
+        state.apply_input(InputAction::CommandEnter, 80, 24);
+
+        assert!(state.should_quit);
+        assert!(!state.dirty);
+        let on_disk = fs::read_to_string(&path).expect("failed to read temp file");
+        assert_eq!(on_disk, "new");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn command_wq_write_failure_does_not_quit() {
+        let path = std::env::temp_dir();
+        let mut state = state_with_text(path, "new");
+        state.mode = EditorMode::Command;
+        state.command_line = "wq".to_string();
+        state.dirty = true;
+
+        state.apply_input(InputAction::CommandEnter, 80, 24);
+
+        assert!(!state.should_quit);
+        assert!(state.dirty);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|msg| msg.starts_with("write failed:"))
+        );
     }
 }
