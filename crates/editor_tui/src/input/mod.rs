@@ -162,6 +162,7 @@ fn map_key_with_state(
                 KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
                 KeyKind::Backspace => InputAction::Backspace,
                 KeyKind::Enter => InputAction::Enter,
+                KeyKind::Tab => InputAction::InsertChar('\t'),
 
                 KeyKind::Up => InputAction::Motion {
                     motion: Motion::Up,
@@ -363,5 +364,19 @@ mod tests {
                 count: 3
             }
         );
+    }
+
+    #[test]
+    fn insert_mode_tab_key_inserts_tab_char() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Tab,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(action, InputAction::InsertChar('\t'));
     }
 }
