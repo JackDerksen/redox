@@ -20,6 +20,12 @@ use editor_core::TextBuffer;
 use minui::{Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// For very long lines, avoid full-line allocation and grapheme hashing/caching.
+///
+/// This keeps startup and redraw latency reasonable for pathological cases
+/// (single-line minified JSON, base64 blobs, logs with giant records, etc.).
+const LONG_LINE_FAST_PATH_THRESHOLD_CHARS: usize = 8 * 1024;
+
 /// Viewport parameters for rendering a slice of the buffer.
 ///
 /// `scroll_x` is measured in **terminal cells** (columns), not graphemes/chars/bytes.
@@ -182,15 +188,25 @@ pub fn snapshot_lines_wrapped_cached(
     let mut out_rows: Vec<String> = Vec::with_capacity(max_rows);
 
     for line_idx in first_line..last_line {
-        let line_text = buffer.line_string(line_idx);
-        let graphemes = cache.graphemes_for_line(line_idx, &line_text);
+        let line_len = buffer.line_len_chars(line_idx);
+        if line_len > LONG_LINE_FAST_PATH_THRESHOLD_CHARS {
+            out_rows.push(render_line_window_fast(
+                buffer,
+                line_idx,
+                viewport.scroll_x,
+                max_cells,
+            ));
+        } else {
+            let line_text = buffer.line_string(line_idx);
+            let graphemes = cache.graphemes_for_line(line_idx, &line_text);
 
-        // Horizontal scroll is in terminal cells.
-        let start_g = skip_graphemes_by_cells(graphemes, viewport.scroll_x);
+            // Horizontal scroll is in terminal cells.
+            let start_g = skip_graphemes_by_cells(graphemes, viewport.scroll_x);
 
-        // Clip to viewport width (no wrapping).
-        let visible = clip_graphemes_to_cells(&graphemes[start_g..], max_cells);
-        out_rows.push(visible);
+            // Clip to viewport width (no wrapping).
+            let visible = clip_graphemes_to_cells(&graphemes[start_g..], max_cells);
+            out_rows.push(visible);
+        }
     }
 
     RenderSnapshot::new(first_line, out_rows)
@@ -322,7 +338,11 @@ fn clip_graphemes_to_cells(graphemes: &[Box<str>], max_cells: usize) -> String {
             break;
         }
 
-        out.push_str(g);
+        if g.as_ref() == "\t" {
+            out.extend(std::iter::repeat_n(' ', w));
+        } else {
+            out.push_str(g);
+        }
         used = used.saturating_add(w);
     }
 
@@ -351,7 +371,11 @@ fn clip_graphemes_to_cells_ref(graphemes: &[&str], max_cells: usize) -> String {
             break;
         }
 
-        out.push_str(g);
+        if *g == "\t" {
+            out.extend(std::iter::repeat_n(' ', w));
+        } else {
+            out.push_str(g);
+        }
         used = used.saturating_add(w);
     }
 
@@ -371,4 +395,99 @@ fn hash64(s: &str) -> u64 {
         h = h.wrapping_mul(FNV_PRIME);
     }
     h
+}
+
+/// Render a clipped horizontal window for a single line directly from rope chars.
+///
+/// This intentionally avoids allocating the full line string, which is expensive
+/// for extremely long lines.
+fn render_line_window_fast(
+    buffer: &TextBuffer,
+    line_idx: usize,
+    scroll_x_cells: usize,
+    max_cells: usize,
+) -> String {
+    if max_cells == 0 {
+        return String::new();
+    }
+
+    let range = buffer.line_char_range(line_idx);
+    if range.start >= range.end {
+        return String::new();
+    }
+
+    let mut skipped_cells = 0usize;
+    let mut used_cells = 0usize;
+    let mut out = String::new();
+
+    for char_idx in range.start..range.end {
+        let ch = buffer.rope().char(char_idx);
+        let w = cell_width_for_char(ch);
+
+        if skipped_cells < scroll_x_cells {
+            skipped_cells = skipped_cells.saturating_add(w);
+            continue;
+        }
+
+        if used_cells >= max_cells {
+            break;
+        }
+
+        if w > 0 && used_cells + w > max_cells {
+            break;
+        }
+
+        if ch == '\t' {
+            out.extend(std::iter::repeat_n(' ', w));
+        } else {
+            out.push(ch);
+        }
+        used_cells = used_cells.saturating_add(w);
+    }
+
+    out
+}
+
+#[inline]
+fn cell_width_for_char(ch: char) -> usize {
+    let mut buf = [0_u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    cell_width(s, minui::prelude::TabPolicy::Fixed(4)) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor_core::TextBuffer;
+
+    #[test]
+    fn fast_path_clips_and_scrolls_ascii_lines() {
+        let b = TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
+        let out = render_line_window_fast(&b, 0, 5, 4);
+        assert_eq!(out, "fghi");
+    }
+
+    #[test]
+    fn fast_path_handles_empty_and_short_ranges() {
+        let b = TextBuffer::from_str("\n");
+        assert_eq!(render_line_window_fast(&b, 0, 0, 10), "");
+        assert_eq!(render_line_window_fast(&b, 0, 5, 10), "");
+    }
+
+    #[test]
+    fn tab_expands_to_spaces_for_rendering() {
+        let b = TextBuffer::from_str("\tab\n");
+        let mut cache = GraphemeCache::new(4);
+        let snap = snapshot_lines_wrapped_cached(
+            &b,
+            &TextViewport {
+                scroll_x: 0,
+                scroll_y: 0,
+                width: 8,
+                height: 1,
+            },
+            &mut cache,
+        );
+        assert_eq!(snap.lines[0], "    ab");
+    }
 }

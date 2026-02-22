@@ -24,9 +24,41 @@ crates
 - `crates/editor_tui`  
   MinUI TUI application. Hosts the event loop, input, rendering, and integrates `editor_core` to provide an interactive editor experience.
 
+## Build and install
+
+Build in release mode:
+
+```bash
+cargo build --release -p editor_tui
+```
+
+Install the CLI binary (`redox`) so it can be run from anywhere:
+
+```bash
+cargo install --path crates/editor_tui --force
+```
+
+This installs the executable to `~/.cargo/bin/redox` by default.
+
+If `redox` is not found in your shell, add this to your shell config (for zsh: `~/.zshrc`):
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Run the editor:
+
+```bash
+redox <file_name/location>
+```
+
 ## Development notes
 
-At the moment, you can run the program with `cargo run -p editor_tui -- ./<file_path>`. This will be cleaned up soon!
+For local development, you can run the program directly with:
+
+```bash
+cargo run -p editor_tui -- ./<file_path>
+```
 
 ### What currently works:
 - File input and parsing into a rope buffer (will be optimized futher)

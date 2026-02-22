@@ -19,6 +19,7 @@ use editor_core::motion::{Motion, apply_motion_n};
 use editor_core::{Pos, TextBuffer};
 use minui::prelude::TabPolicy;
 use minui::{cell_width, window::CursorSpec};
+use std::cmp::min;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// How the viewport should follow the cursor.
@@ -60,6 +61,7 @@ pub struct CursorController {
     pub follow: FollowConfig,
 
     tab_policy: TabPolicy,
+    preferred_col: Option<usize>,
 }
 
 impl Default for CursorController {
@@ -70,6 +72,7 @@ impl Default for CursorController {
             scroll_y_lines: 0,
             follow: FollowConfig::default(),
             tab_policy: TabPolicy::Fixed(4),
+            preferred_col: None,
         }
     }
 }
@@ -94,6 +97,7 @@ impl CursorController {
     ) {
         // Clamp the cursor first (edits can invalidate col/line).
         self.cursor = buffer.clamp_pos(self.cursor);
+        self.preferred_col = None;
 
         // Clamp scroll to content first (keeps state sane).
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
@@ -123,10 +127,15 @@ impl CursorController {
     ) {
         let count = count.max(1);
 
-        // Apply motion semantics in core.
-        let start = buffer.clamp_pos(self.cursor);
-        let next = apply_motion_n(buffer, start, motion, count);
-        self.cursor = buffer.clamp_pos(next);
+        self.cursor = buffer.clamp_pos(self.cursor);
+        match motion {
+            Motion::Up | Motion::Down => self.apply_vertical_motion(buffer, motion, count),
+            _ => {
+                let next = apply_motion_n(buffer, self.cursor, motion, count);
+                self.cursor = buffer.clamp_pos(next);
+                self.preferred_col = None;
+            }
+        }
 
         // Clamp scroll to content first (keeps state sane).
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
@@ -139,6 +148,33 @@ impl CursorController {
 
         // Final clamp (ensures no negative scroll).
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
+    }
+
+    fn apply_vertical_motion(&mut self, buffer: &TextBuffer, motion: Motion, count: usize) {
+        let preferred_col = self.preferred_col.unwrap_or(self.cursor.col);
+
+        for _ in 0..count {
+            let next_line = match motion {
+                Motion::Up if self.cursor.line > 0 => self.cursor.line - 1,
+                Motion::Down => {
+                    let last = buffer.len_lines().saturating_sub(1);
+                    if self.cursor.line >= last {
+                        break;
+                    }
+                    self.cursor.line + 1
+                }
+                _ => break,
+            };
+
+            let next_col = min(preferred_col, buffer.line_len_chars(next_line));
+            let next = Pos::new(next_line, next_col);
+            if next == self.cursor {
+                break;
+            }
+            self.cursor = next;
+        }
+
+        self.preferred_col = Some(preferred_col);
     }
 
     /// Produce a MinUI `CursorSpec` for the current cursor under the current scroll offsets.
@@ -374,4 +410,38 @@ fn graphemes_cell_width(graphemes: &[&str], tab_policy: TabPolicy) -> usize {
         w += cell_width(*g, tab_policy) as usize;
     }
     w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertical_motion_keeps_preferred_column() {
+        let buffer = TextBuffer::from_str("aaaa\nb\ncccccc\n");
+        let mut cursor = CursorController::new();
+        cursor.cursor = Pos::new(0, 3);
+
+        cursor.apply_motion(&buffer, Motion::Down, 1, 80, 24);
+        assert_eq!(cursor.cursor, Pos::new(1, 1));
+
+        cursor.apply_motion(&buffer, Motion::Down, 1, 80, 24);
+        assert_eq!(cursor.cursor, Pos::new(2, 3));
+    }
+
+    #[test]
+    fn horizontal_motion_clears_preferred_column() {
+        let buffer = TextBuffer::from_str("aaaa\nb\ncccccc\n");
+        let mut cursor = CursorController::new();
+        cursor.cursor = Pos::new(0, 3);
+
+        cursor.apply_motion(&buffer, Motion::Down, 1, 80, 24);
+        assert_eq!(cursor.cursor, Pos::new(1, 1));
+
+        cursor.apply_motion(&buffer, Motion::Right, 1, 80, 24);
+        assert_eq!(cursor.cursor, Pos::new(2, 0));
+
+        cursor.apply_motion(&buffer, Motion::Up, 1, 80, 24);
+        assert_eq!(cursor.cursor, Pos::new(1, 0));
+    }
 }
