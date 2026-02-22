@@ -6,70 +6,116 @@
   A terminal-based text editor, built with MinUI
 </h1>
 
-Redox is a terminal-based, Vim-like text editor built in Rust for my final capstone project. The code is structured as a cargo workspace with a small, testable core logic library and a TUI front-end wrapper (MinUI).
+Redox is a terminal-based, Vim-like text editor written in Rust for my final capstone project. The code is structured as a Cargo workspace with a small, testable core logic library and a TUI front-end wrapper (built with MinUI).
 
-The intent is to keep the editor’s behavior and data structures (buffer, indexing, edit operations, motions) independent of any particular UI, so the core logic is testable and so I can make changes to MinUI without massively breaking the editor.
+The intent is to keep the editor's behaviour and data structures (buffer, indexing, edit operations, motions) independent of any particular UI, so the core logic is testable and so I can make changes to MinUI without massively breaking the editor.
 
-## Workspace crates
+## Project structure
 
+```text
+redox/
+├── Cargo.toml                  # Workspace manifest
+└── crates/
+    ├── editor_core/            # UI-agnostic editing primitives and session model
+    │   └── src/
+    │       ├── buffer/         # Rope-backed text buffer, editing, positions
+    │       ├── motion.rs       # Vim-style motion logic
+    │       ├── io.rs           # File read/write helpers
+    │       └── session/        # Multi-buffer session management
+    └── editor_tui/             # MinUI front-end application
+        └── src/
+            ├── app/            # Editor app state + command handling
+            ├── input/          # Key/event mapping + cursor controller
+            └── ui/             # Rendering and interface widgets such as the statusline
 ```
-crates
-├── editor_core  # Logic
-└── editor_tui   # UI
-```
 
-- `crates/editor_core`  
-  Editor core library. Owns the text buffer implementation (Ropey-backed), text/indexing utilities, and core editing primitives intended to be UI-independent.
+## Installation and usage
 
-- `crates/editor_tui`  
-  MinUI TUI application. Hosts the event loop, input, rendering, and integrates `editor_core` to provide an interactive editor experience.
+### Requirements
 
-## Build and install
+- Rust toolchain (`cargo` + `rustc`)
+- A terminal that supports basic ANSI features and raw mode (and ideally full colour support)
 
-Build in release mode:
+### Build
 
 ```bash
 cargo build --release -p editor_tui
 ```
 
-Install the CLI binary (`redox`) so it can be run from anywhere:
+### Install CLI
 
 ```bash
 cargo install --path crates/editor_tui --force
 ```
 
-This installs the executable to `~/.cargo/bin/redox` by default.
+This installs the `redox` binary into `~/.cargo/bin` by default.
 
-If `redox` is not found in your shell, add this to your shell config (for zsh: `~/.zshrc`):
+If needed, add that location to your `PATH` (example for zsh):
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-Run the editor:
+### Run
 
 ```bash
-redox <file_name/location>
+redox <file_path>
 ```
 
-## Development notes
-
-For local development, you can run the program directly with:
+Example:
 
 ```bash
-cargo run -p editor_tui -- ./<file_path>
+redox ./editor_tui/readme.md
 ```
 
-### What currently works:
-- File input and parsing into a rope buffer (will be optimized futher)
-- Drawing that rope buffer to the screen in a MinUI viewport (will be optimized further)
-- Cursor drawing and movement
-- Viewport scrolling (follows cursor)
-- Basic vim navigation motions (`h`, `j`, `k`, `l`, `gg`, `G`, `w`, `e`, `b`, `i`, `a`, `I`, `A`, `:`)
-- Normal/insert/command modes, along with basic functionality for each 
-    - Editing and writing to files **does** work now!
-- Statusline with current mode (colour coded) and cursor position
+### Command mode quick reference
+
+| Command | Behaviour |
+| ------- | --------- |
+| `:w` | Write current buffer |
+| `:q` | Quit Redox (if all buffers are clean) |
+| `:q!` | Force quit |
+| `:wq` | Write current buffer, then quit if all buffers are clean |
+| `:e <path>` | Open/witch buffer for a specified file path |
+| `:bn` / `:bnext` | Switch to next buffer (MRU order) |
+| `:bp` / `:bprev` | Switch to previous buffer (MRU order) |
+| `:ls` | Show summary of open buffers |
+
+
+## Currently working Vim motions
+
+| Keys | Behaviour |
+| --- | --- |
+| `h` / `j` / `k` / `l` | Left / down / up / right cursor motion |
+| `w` | Move to start of next word |
+| `b` | Move to start of previous word |
+| `e` | Move to end of current/next word |
+| `gg` | Jump to start of file |
+| `G` | Jump to end of file |
+
+Notes:
+- Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
+- Arrow keys are also mapped for basic directional motion.
+- Current motions are aligned with Vim's standard, but future ones are subject to change based on my opinionated preferences.
+
+## Roadmap (current progress)
+
+- [x] Rope-backed text buffer core (`editor_core`)
+- [x] TUI rendering with statusline + cursor projection
+- [x] Text insertion, newline insertion, and backspace editing
+- [x] Vim-style mode system (Normal / Insert / Command)
+- [x] Core motion model with reusable UI-agnostic logic
+- [x] Unit test coverage across core and TUI state logic
+- [x] Per-buffer cursor/viewport state preservation
+- [x] File open and write flows
+- [x] Multi-buffer session architecture in core
+- [x] Buffer switching commands (`:e`, `:bn`, `:bp`, `:ls`)
+- [x] Intelligent dirty tracking (dirty clears when content returns to saved/original state)
+- [ ] Visual mode and visual line mode
+- [ ] File picker widget
+- [ ] More Vim motions
+- [ ] Local search (`/`, `f`, `F`)
 
 ## License
 
-TBD!
+TBD.

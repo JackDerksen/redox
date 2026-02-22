@@ -2,12 +2,12 @@
 //!
 //! This is a small custom status bar widget, different from MinUI's built-in `StatusBar`
 //! (see `minui::widgets::statusbar`). This one is generalized to support an arbitrary
-//! number of segments with per-segment colors and alignment, and just be generally
+//! number of segments with per-segment colours and alignment, and just be generally
 //! more configurable.
 //!
 //! Design goals:
 //! - single-row by default (height=1), anchored at the bottom of the window, just like vim.
-//! - optional background fill (useful for a bar background color)
+//! - optional background fill (useful for a bar background colour)
 //! - multiple segments, each aligned Left/Center/Right within its own allocated region
 //!
 //! Notes:
@@ -124,7 +124,7 @@ impl EditorStatusBar {
         }
 
         if let Some(bg) = self.bg_colors {
-            // Fill full line with spaces in the background color.
+            // Fill full line with spaces in the background colour.
             // Matches MinUI's approach.
             let full = " ".repeat(width as usize);
             window.write_str_colored(y, 0, &full, bg)?;
@@ -288,9 +288,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     };
 
     let mut left_text = format!(" {} ", mode_label);
-    if state.dirty {
-        left_text.push('*');
-        left_text.push(' ');
+    if state.active_dirty() {
+        left_text.push_str("[+] ");
     }
 
     let center_text = if state.mode == EditorMode::Command {
@@ -298,11 +297,11 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     } else if let Some(msg) = &state.status_msg {
         format!(" {} ", msg)
     } else {
-        format!(" {} ", state.path.display())
+        format!(" {} ", state.active_display_name())
     };
 
-    let cursor = state.cursor.cursor;
-    let right_text = format!(" Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
+    let cursor = state.active_cursor_pos();
+    let right_text = format!(" {}:{} ", cursor.line + 1, cursor.col + 1);
 
     EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)

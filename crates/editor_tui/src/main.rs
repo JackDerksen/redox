@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use editor_core::io::load_buffer;
+use editor_core::session::EditorSession;
 
 use minui::{Window, prelude::*};
 
@@ -27,17 +27,20 @@ fn draw_buffer_view(
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
 
-    let (scroll_x, scroll_y) = state.cursor.viewport_scroll();
-
-    let viewport = TextViewport {
-        scroll_x,
-        scroll_y,
-        width: vw,
-        height: text_h,
-    };
-
-    let snapshot =
-        snapshot_lines_wrapped_cached(&state.buffer, &viewport, &mut state.grapheme_cache);
+    let (snapshot, spec) = state.with_active_buffer_view_mut(|buffer, view| {
+        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+        let viewport = TextViewport {
+            scroll_x,
+            scroll_y,
+            width: vw,
+            height: text_h,
+        };
+        let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+        let spec = view
+            .cursor
+            .cursor_spec(buffer, vw as usize, text_h as usize);
+        (snapshot, spec)
+    });
     draw_snapshot(&snapshot, window)?;
 
     // --- Status bar (bottom row) ---
@@ -45,10 +48,6 @@ fn draw_buffer_view(
 
     status.draw(window)?;
 
-    // Cursor rendering via MinUI deferred cursor request.
-    let spec = state
-        .cursor
-        .cursor_spec(&state.buffer, vw as usize, text_h as usize);
     window.request_cursor(spec);
 
     Ok(())
@@ -64,9 +63,9 @@ fn parse_path_arg() -> anyhow::Result<PathBuf> {
 
 fn main() -> minui::Result<()> {
     let path = parse_path_arg().expect("file path required (e.g. editor_tui ./file.txt)");
-    let buffer = load_buffer(&path).expect("failed to load file");
+    let session = EditorSession::open_initial_file(path).expect("failed to open initial file");
 
-    let mut app = App::new(EditorState::new(path, buffer))?;
+    let mut app = App::new(EditorState::new(session))?;
     let style = UiStyle::default();
 
     app.run(

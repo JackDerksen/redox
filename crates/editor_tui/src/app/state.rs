@@ -3,9 +3,10 @@
 //! This module keeps UI-facing state (mode, command line, status, cursor viewport
 //! reconciliation) while delegating text editing primitives to `editor_core`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use editor_core::{Selection, TextBuffer};
+use editor_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputAction, InputMode, InputState, InsertKind};
@@ -29,35 +30,51 @@ impl EditorMode {
     }
 }
 
-/// Single-buffer editor state.
+/// Per-buffer UI/view state that is not persisted in `editor_core`.
 #[derive(Debug)]
-pub struct EditorState {
-    pub path: PathBuf,
-    pub buffer: TextBuffer,
+pub struct BufferViewState {
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
+}
+
+impl Default for BufferViewState {
+    fn default() -> Self {
+        Self {
+            cursor: CursorController::new(),
+            grapheme_cache: GraphemeCache::new(512),
+        }
+    }
+}
+
+/// Multi-buffer editor state for the TUI frontend.
+#[derive(Debug)]
+pub struct EditorState {
+    pub session: EditorSession,
+    pub views: HashMap<BufferId, BufferViewState>,
     pub mode: EditorMode,
-    pub dirty: bool,
     pub input: InputState,
     pub command_line: String,
     pub status_msg: Option<String>,
+    status_msg_ephemeral: bool,
     pub should_quit: bool,
     viewport_width_cells: usize,
     viewport_height_rows: usize,
 }
 
 impl EditorState {
-    pub fn new(path: PathBuf, buffer: TextBuffer) -> Self {
+    pub fn new(session: EditorSession) -> Self {
+        let active = session.active_id();
+        let mut views = HashMap::new();
+        views.insert(active, BufferViewState::default());
+
         Self {
-            path,
-            buffer,
-            cursor: CursorController::new(),
-            grapheme_cache: GraphemeCache::new(512),
+            session,
+            views,
             mode: EditorMode::Normal,
-            dirty: false,
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
+            status_msg_ephemeral: false,
             should_quit: false,
             viewport_width_cells: 80,
             viewport_height_rows: 24,
@@ -66,10 +83,17 @@ impl EditorState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
+        self.status_msg_ephemeral = false;
+    }
+
+    fn set_status_ephemeral(&mut self, msg: impl Into<String>) {
+        self.status_msg = Some(msg.into());
+        self.status_msg_ephemeral = true;
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
+        self.status_msg_ephemeral = false;
     }
 
     pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {
@@ -81,6 +105,35 @@ impl EditorState {
         (self.viewport_width_cells, self.viewport_height_rows)
     }
 
+    pub fn active_dirty(&self) -> bool {
+        self.session.active_meta().dirty
+    }
+
+    pub fn active_display_name(&self) -> &str {
+        &self.session.active_meta().display_name
+    }
+
+    pub fn active_cursor_pos(&self) -> Pos {
+        let id = self.session.active_id();
+        self.views
+            .get(&id)
+            .map(|view| view.cursor.cursor)
+            .unwrap_or(Pos::zero())
+    }
+
+    pub fn with_active_buffer_view_mut<R>(
+        &mut self,
+        f: impl FnOnce(&TextBuffer, &mut BufferViewState) -> R,
+    ) -> R {
+        let active_id = self.session.active_id();
+        let buffer = self
+            .session
+            .buffer(active_id)
+            .expect("active buffer must exist in session map");
+        let view = self.views.entry(active_id).or_default();
+        f(buffer, view)
+    }
+
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.
     pub fn apply_input(
         &mut self,
@@ -88,17 +141,20 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
+        if self.status_msg_ephemeral {
+            self.clear_status();
+        }
+
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
 
         match action {
             InputAction::Motion { motion, count } => {
-                self.cursor.apply_motion(
-                    &self.buffer,
-                    motion,
-                    count,
-                    viewport_width_cells,
-                    text_vh,
-                );
+                let active_id = self.session.active_id();
+                let view = self.views.entry(active_id).or_default();
+                let buffer = self.session.active_buffer();
+
+                view.cursor
+                    .apply_motion(buffer, motion, count, viewport_width_cells, text_vh);
             }
 
             InputAction::SetMode(mode) => {
@@ -112,42 +168,52 @@ impl EditorState {
                 };
 
                 if leaving_insert_to_normal {
-                    if self.cursor.cursor.col > 0 {
-                        self.cursor.cursor.col -= 1;
+                    let active_id = self.session.active_id();
+                    let view = self.views.entry(active_id).or_default();
+
+                    if view.cursor.cursor.col > 0 {
+                        view.cursor.cursor.col -= 1;
                     }
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+
+                    let buffer = self.session.active_buffer();
+                    view.cursor
+                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                 }
 
                 self.input.reset_prefixes();
             }
 
             InputAction::EnterInsert(kind) => {
-                match kind {
-                    InsertKind::Insert => {}
-                    InsertKind::Append => {
-                        let line = self.buffer.clamp_line(self.cursor.cursor.line);
-                        let line_text = self.buffer.line_string(line);
-                        let line_len_chars = line_text.chars().count();
-                        if self.cursor.cursor.col < line_len_chars {
-                            self.cursor.cursor.col += 1;
-                        }
-                    }
-                    InsertKind::InsertLineStart => {
-                        self.cursor.cursor.col = 0;
-                    }
-                    InsertKind::AppendLineEnd => {
-                        let line = self.buffer.clamp_line(self.cursor.cursor.line);
-                        let line_text = self.buffer.line_string(line);
-                        self.cursor.cursor.col = line_text.chars().count();
-                    }
-                }
-
                 self.mode = EditorMode::Insert;
                 self.clear_status();
                 self.input.reset_prefixes();
-                self.cursor
-                    .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+
+                {
+                    let active_id = self.session.active_id();
+                    let view = self.views.entry(active_id).or_default();
+                    let buffer = self.session.active_buffer();
+
+                    match kind {
+                        InsertKind::Insert => {}
+                        InsertKind::Append => {
+                            let line = buffer.clamp_line(view.cursor.cursor.line);
+                            let line_len_chars = buffer.line_len_chars(line);
+                            if view.cursor.cursor.col < line_len_chars {
+                                view.cursor.cursor.col += 1;
+                            }
+                        }
+                        InsertKind::InsertLineStart => {
+                            view.cursor.cursor.col = 0;
+                        }
+                        InsertKind::AppendLineEnd => {
+                            let line = buffer.clamp_line(view.cursor.cursor.line);
+                            view.cursor.cursor.col = buffer.line_len_chars(line);
+                        }
+                    }
+
+                    view.cursor
+                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                }
             }
 
             InputAction::EnterCommand => {
@@ -188,25 +254,37 @@ impl EditorState {
 
             InputAction::Backspace => {
                 if self.mode == EditorMode::Insert {
-                    let sel = Selection::empty(self.cursor.cursor);
-                    let sel = self.buffer.backspace(sel);
-                    self.cursor.cursor = sel.cursor;
-                    self.dirty = true;
+                    let active_id = self.session.active_id();
+                    let view = self.views.entry(active_id).or_default();
+                    let sel = Selection::empty(view.cursor.cursor);
 
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+                    {
+                        let buffer = self.session.active_buffer_mut();
+                        let sel = buffer.backspace(sel);
+                        view.cursor.cursor = sel.cursor;
+                        view.cursor
+                            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                    }
+
+                    let _ = self.session.recompute_active_dirty();
                 }
             }
 
             InputAction::Enter => {
                 if self.mode == EditorMode::Insert {
-                    let sel = Selection::empty(self.cursor.cursor);
-                    let sel = self.buffer.insert_newline(sel);
-                    self.cursor.cursor = sel.cursor;
-                    self.dirty = true;
+                    let active_id = self.session.active_id();
+                    let view = self.views.entry(active_id).or_default();
+                    let sel = Selection::empty(view.cursor.cursor);
 
-                    self.cursor
-                        .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+                    {
+                        let buffer = self.session.active_buffer_mut();
+                        let sel = buffer.insert_newline(sel);
+                        view.cursor.cursor = sel.cursor;
+                        view.cursor
+                            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                    }
+
+                    let _ = self.session.recompute_active_dirty();
                 }
             }
 
@@ -226,12 +304,18 @@ impl EditorState {
             return;
         }
 
-        let new_pos = self.buffer.insert(self.cursor.cursor, text);
-        self.cursor.cursor = new_pos;
-        self.dirty = true;
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
 
-        self.cursor
-            .reconcile_after_edit(&self.buffer, viewport_width_cells, text_vh);
+        {
+            let buffer = self.session.active_buffer_mut();
+            let new_pos = buffer.insert(view.cursor.cursor, text);
+            view.cursor.cursor = new_pos;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        let _ = self.session.recompute_active_dirty();
     }
 
     fn execute_command_line(&mut self) {
@@ -239,18 +323,25 @@ impl EditorState {
             return;
         }
 
-        let cmd = self.command_line.trim().to_string();
+        let cmd_raw = self.command_line.trim().to_string();
         self.command_line.clear();
         self.mode = EditorMode::Normal;
 
-        match cmd.as_str() {
-            "" => {}
+        if cmd_raw.is_empty() {
+            return;
+        }
+
+        let mut parts = cmd_raw.splitn(2, char::is_whitespace);
+        let cmd = parts.next().unwrap_or("");
+        let arg = parts.next().map(str::trim).unwrap_or("");
+
+        match cmd {
             "w" => {
                 self.write_current_file();
             }
             "q" => {
-                if self.dirty {
-                    self.set_status("no write since last change (use :q! to quit)");
+                if self.session.any_dirty() {
+                    self.set_status(self.unsaved_changes_quit_message());
                 } else {
                     self.should_quit = true;
                 }
@@ -260,19 +351,105 @@ impl EditorState {
             }
             "wq" => {
                 if self.write_current_file() {
-                    self.should_quit = true;
+                    if self.session.any_dirty() {
+                        self.set_status(self.unsaved_changes_message());
+                    } else {
+                        self.should_quit = true;
+                    }
                 }
             }
+            "e" => {
+                self.command_edit(arg);
+            }
+            "bn" | "bnext" => {
+                self.command_buffer_cycle_next();
+            }
+            "bp" | "bprev" => {
+                self.command_buffer_cycle_prev();
+            }
+            "ls" => {
+                self.command_list_buffers();
+            }
             _ => {
-                self.set_status(format!("unknown command: {cmd}"));
+                self.set_status(format!("unknown command: {cmd_raw}"));
             }
         }
     }
 
+    fn command_edit(&mut self, path_arg: &str) {
+        if path_arg.is_empty() {
+            self.set_status("usage: e <path>");
+            return;
+        }
+
+        let path = PathBuf::from(path_arg);
+        match self.session.open_file(path) {
+            Ok(id) => {
+                let _ = self.views.entry(id).or_default();
+                self.clear_status();
+            }
+            Err(e) => {
+                self.set_status(format!("open failed: {e}"));
+            }
+        }
+    }
+
+    fn command_buffer_cycle_next(&mut self) {
+        let count = self.session.summaries().len();
+        if count <= 1 {
+            self.set_status("only one buffer");
+            return;
+        }
+
+        if let Some(id) = self.session.switch_next_mru() {
+            let _ = self.views.entry(id).or_default();
+            self.clear_status();
+        }
+    }
+
+    fn command_buffer_cycle_prev(&mut self) {
+        let count = self.session.summaries().len();
+        if count <= 1 {
+            self.set_status("only one buffer");
+            return;
+        }
+
+        if let Some(id) = self.session.switch_prev_mru() {
+            let _ = self.views.entry(id).or_default();
+            self.clear_status();
+        }
+    }
+
+    fn command_list_buffers(&mut self) {
+        let summaries = self.session.summaries();
+        if summaries.is_empty() {
+            self.set_status("no buffers");
+            return;
+        }
+
+        let mut msg = String::new();
+
+        for (idx, summary) in summaries.iter().enumerate() {
+            if idx > 0 {
+                msg.push_str(" | ");
+            }
+
+            let active = if summary.is_active { '%' } else { '-' };
+            let dirty = if summary.dirty { '+' } else { '-' };
+            let new_file = if summary.is_new_file { 'n' } else { '-' };
+            msg.push_str(&format!(
+                "[{active}{dirty}{new_file}]{}:{}",
+                summary.id.get(),
+                summary.display_name
+            ));
+        }
+
+        self.set_status_ephemeral(msg);
+    }
+
     fn write_current_file(&mut self) -> bool {
-        match std::fs::write(&self.path, self.buffer.to_string()) {
+        match self.session.save_active() {
             Ok(()) => {
-                self.dirty = false;
                 self.set_status("written");
                 true
             }
@@ -282,13 +459,37 @@ impl EditorState {
             }
         }
     }
+
+    fn unsaved_changes_message(&self) -> String {
+        let dirty: Vec<editor_core::BufferSummary> = self
+            .session
+            .summaries()
+            .into_iter()
+            .filter(|summary| summary.dirty)
+            .collect();
+
+        if dirty.is_empty() {
+            return "unsaved changes".to_string();
+        }
+
+        let first_name = dirty[0].display_name.clone();
+        if dirty.len() == 1 {
+            format!("unsaved changes in {first_name}")
+        } else {
+            format!("unsaved changes in {first_name} (+{})", dirty.len() - 1)
+        }
+    }
+
+    fn unsaved_changes_quit_message(&self) -> String {
+        format!("{} (use :q! to quit)", self.unsaved_changes_message())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use editor_core::motion::Motion;
     use std::fs;
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_file_path(tag: &str) -> PathBuf {
@@ -300,7 +501,15 @@ mod tests {
     }
 
     fn state_with_text(path: PathBuf, text: &str) -> EditorState {
-        EditorState::new(path, TextBuffer::from_str(text))
+        fs::write(&path, text).expect("failed to write test file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        EditorState::new(session)
+    }
+
+    fn run_command(state: &mut EditorState, cmd: &str) {
+        state.mode = EditorMode::Command;
+        state.command_line = cmd.to_string();
+        state.apply_input(InputAction::CommandEnter, 80, 24);
     }
 
     #[test]
@@ -310,81 +519,195 @@ mod tests {
 
         state.apply_input(InputAction::Paste(" world".to_string()), 80, 24);
 
-        assert_eq!(state.buffer.to_string(), " worldhello");
-        assert!(state.dirty);
+        assert_eq!(state.session.active_buffer().to_string(), " worldhello");
+        assert!(state.session.active_meta().dirty);
 
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn command_q_quits_when_clean() {
-        let path = temp_file_path("q_clean");
-        let mut state = state_with_text(path.clone(), "abc");
-        state.mode = EditorMode::Command;
-        state.command_line = "q".to_string();
-        state.dirty = false;
+    fn switching_buffers_preserves_cursor_and_scroll_state() {
+        let path_a = temp_file_path("switch_preserve_a");
+        let path_b = temp_file_path("switch_preserve_b");
+        let mut state = state_with_text(path_a.clone(), "aaaa\nbbbb\n");
+        fs::write(&path_b, "cccc\ndddd\n").expect("failed to write test file");
 
-        state.apply_input(InputAction::CommandEnter, 80, 24);
+        let id_a = state.session.active_id();
+        {
+            let view = state
+                .views
+                .get_mut(&id_a)
+                .expect("missing view for buffer A");
+            view.cursor.cursor = Pos::new(1, 2);
+            view.cursor.scroll_x_cells = 4;
+            view.cursor.scroll_y_lines = 1;
+        }
 
-        assert!(state.should_quit);
-        assert_eq!(state.mode, EditorMode::Normal);
-        let _ = fs::remove_file(path);
+        run_command(&mut state, &format!("e {}", path_b.display()));
+        let id_b = state.session.active_id();
+
+        {
+            let view = state
+                .views
+                .get_mut(&id_b)
+                .expect("missing view for buffer B");
+            view.cursor.cursor = Pos::new(0, 3);
+            view.cursor.scroll_x_cells = 7;
+            view.cursor.scroll_y_lines = 0;
+        }
+
+        run_command(&mut state, "bp");
+
+        assert_eq!(state.session.active_id(), id_a);
+        let view_a = state.views.get(&id_a).expect("missing view for buffer A");
+        assert_eq!(view_a.cursor.cursor, Pos::new(1, 2));
+        assert_eq!(view_a.cursor.scroll_x_cells, 4);
+        assert_eq!(view_a.cursor.scroll_y_lines, 1);
+
+        let _ = fs::remove_file(path_a);
+        let _ = fs::remove_file(path_b);
     }
 
     #[test]
-    fn command_q_does_not_quit_when_dirty() {
-        let path = temp_file_path("q_dirty");
-        let mut state = state_with_text(path.clone(), "abc");
-        state.mode = EditorMode::Command;
-        state.command_line = "q".to_string();
-        state.dirty = true;
+    fn command_q_does_not_quit_when_hidden_buffer_is_dirty() {
+        let path_a = temp_file_path("q_hidden_dirty_a");
+        let path_b = temp_file_path("q_hidden_dirty_b");
+        let mut state = state_with_text(path_a.clone(), "aaa");
+        fs::write(&path_b, "bbb").expect("failed to write test file");
 
-        state.apply_input(InputAction::CommandEnter, 80, 24);
+        run_command(&mut state, &format!("e {}", path_b.display()));
+        run_command(&mut state, "bp");
+        state.apply_input(InputAction::Paste("x".to_string()), 80, 24);
+        run_command(&mut state, "bn");
+
+        run_command(&mut state, "q");
 
         assert!(!state.should_quit);
-        assert_eq!(
-            state.status_msg.as_deref(),
-            Some("no write since last change (use :q! to quit)")
+        let msg = state.status_msg.as_deref().expect("missing quit warning");
+        let leaf_a = path_a
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("path should have a file name");
+        assert!(msg.contains("unsaved changes in"));
+        assert!(msg.contains(leaf_a));
+        assert!(msg.contains("use :q! to quit"));
+
+        let _ = fs::remove_file(path_a);
+        let _ = fs::remove_file(path_b);
+    }
+
+    #[test]
+    fn command_w_writes_active_buffer_only() {
+        let path_a = temp_file_path("write_active_a");
+        let path_b = temp_file_path("write_active_b");
+        let mut state = state_with_text(path_a.clone(), "alpha");
+        fs::write(&path_b, "bravo").expect("failed to write test file");
+
+        run_command(&mut state, &format!("e {}", path_b.display()));
+        let id_b = state.session.active_id();
+
+        state.apply_input(InputAction::Paste("Z".to_string()), 80, 24);
+        assert!(state.session.meta(id_b).expect("missing meta").dirty);
+
+        run_command(&mut state, "bp");
+        run_command(&mut state, "w");
+
+        assert!(state.session.meta(id_b).expect("missing meta").dirty);
+        let on_disk_b = fs::read_to_string(&path_b).expect("failed to read file B");
+        assert_eq!(on_disk_b, "bravo");
+
+        let _ = fs::remove_file(path_a);
+        let _ = fs::remove_file(path_b);
+    }
+
+    #[test]
+    fn command_ls_populates_compact_status_summary() {
+        let path_a = temp_file_path("ls_a");
+        let path_b = temp_file_path("ls_b");
+        let mut state = state_with_text(path_a.clone(), "alpha");
+        fs::write(&path_b, "bravo").expect("failed to write test file");
+
+        state.apply_input(InputAction::Paste("!".to_string()), 80, 24);
+        run_command(&mut state, &format!("e {}", path_b.display()));
+        run_command(&mut state, "ls");
+
+        let msg = state.status_msg.as_deref().expect("missing ls status");
+        assert!(msg.contains("|"));
+        assert!(msg.contains("%"));
+        assert!(msg.contains("+"));
+        assert!(msg.contains(" | "));
+        for summary in state.session.summaries() {
+            assert!(msg.contains(&summary.display_name));
+        }
+
+        let _ = fs::remove_file(path_a);
+        let _ = fs::remove_file(path_b);
+    }
+
+    #[test]
+    fn command_ls_status_is_cleared_on_next_input() {
+        let path = temp_file_path("ls_ephemeral");
+        let mut state = state_with_text(path.clone(), "alpha");
+
+        run_command(&mut state, "ls");
+        assert!(state.status_msg.is_some());
+
+        state.apply_input(
+            InputAction::Motion {
+                motion: Motion::Right,
+                count: 1,
+            },
+            80,
+            24,
         );
+
+        assert!(state.status_msg.is_none());
+
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn command_wq_writes_file_and_quits() {
-        let path = temp_file_path("wq_success");
-        fs::write(&path, "old").expect("failed to write temp file");
+    fn command_e_uses_trimmed_remainder_as_path() {
+        let path_a = temp_file_path("e_trimmed_a");
+        let path_b = temp_file_path("e_trimmed_b");
+        let mut state = state_with_text(path_a.clone(), "alpha");
+        fs::write(&path_b, "bravo").expect("failed to write test file");
 
-        let mut state = state_with_text(path.clone(), "new");
-        state.mode = EditorMode::Command;
-        state.command_line = "wq".to_string();
-        state.dirty = true;
+        run_command(&mut state, &format!("e    {}", path_b.display()));
 
-        state.apply_input(InputAction::CommandEnter, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "bravo");
 
+        let _ = fs::remove_file(path_a);
+        let _ = fs::remove_file(path_b);
+    }
+
+    #[test]
+    fn dirty_tracking_clears_after_reverting_to_original_content() {
+        let path = temp_file_path("dirty_revert_state");
+        let mut state = state_with_text(path.clone(), "hello");
+
+        state.apply_input(InputAction::Paste("x".to_string()), 80, 24);
+        assert!(state.session.active_meta().dirty);
+
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.apply_input(InputAction::Backspace, 80, 24);
+        assert!(!state.session.active_meta().dirty);
+
+        run_command(&mut state, "q");
         assert!(state.should_quit);
-        assert!(!state.dirty);
-        let on_disk = fs::read_to_string(&path).expect("failed to read temp file");
-        assert_eq!(on_disk, "new");
+
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn command_wq_write_failure_does_not_quit() {
-        let path = std::env::temp_dir();
-        let mut state = state_with_text(path, "new");
-        state.mode = EditorMode::Command;
-        state.command_line = "wq".to_string();
-        state.dirty = true;
+    fn unknown_command_sets_status_message() {
+        let path = temp_file_path("unknown_command");
+        let mut state = state_with_text(path.clone(), "alpha");
 
-        state.apply_input(InputAction::CommandEnter, 80, 24);
+        run_command(&mut state, "zzzz");
 
-        assert!(!state.should_quit);
-        assert!(state.dirty);
-        assert!(
-            state
-                .status_msg
-                .as_deref()
-                .is_some_and(|msg| msg.starts_with("write failed:"))
-        );
+        assert_eq!(state.status_msg.as_deref(), Some("unknown command: zzzz"));
+
+        let _ = fs::remove_file(path);
     }
 }
