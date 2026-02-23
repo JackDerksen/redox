@@ -10,7 +10,7 @@ Redox is a terminal-based, Vim-like text editor written in Rust for my final cap
 
 The intent is to keep the editor's behaviour and data structures (buffer, indexing, edit operations, motions) independent of any particular UI, so the core logic is testable and so I can make changes to MinUI without massively breaking the editor.
 
-## Project structure
+## General project structure
 
 ```text
 redox/
@@ -76,7 +76,7 @@ redox ./editor_tui/readme.md
 | `:q` | Quit Redox (if all buffers are clean) |
 | `:q!` | Force quit |
 | `:wq` | Write current buffer, then quit if all buffers are clean |
-| `:e <path>` | Open/witch buffer for a specified file path |
+| `:e <path>` | Open/switch buffer for a specified file path |
 | `:bn` / `:bnext` | Switch to next buffer (MRU order) |
 | `:bp` / `:bprev` | Switch to previous buffer (MRU order) |
 | `:ls` | Show summary of open buffers |
@@ -92,6 +92,13 @@ redox ./editor_tui/readme.md
 | `e` | Move to end of current/next word |
 | `gg` | Jump to start of file |
 | `G` | Jump to end of file |
+| `i` | Insert before cursor |
+| `I` | Insert at the start of the line |
+| `a` | Insert after cursor |
+| `A` | Insert at the end of the line |
+| `o` | Insert below cursor |
+| `O` | Insert above cursor |
+| `<space>e` | Toggle file explorer |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
@@ -111,10 +118,16 @@ Notes:
 - [x] Multi-buffer session architecture in core
 - [x] Buffer switching commands (`:e`, `:bn`, `:bp`, `:ls`)
 - [x] Intelligent dirty tracking (dirty clears when content returns to saved/original state)
-- [ ] Visual mode and visual line mode
-- [ ] File picker widget
+- [x] File explorer/picker widget
+- [ ] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [ ] More Vim motions
+- [ ] Modify style module to use more absolute colours (RGB or something)
+- [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)
+- [ ] `:about` "About Redox" screen with version info, checkhealth functionality, etc.
+- [ ] The ability to open redox into the entire current working directory with `$ redox .`
+- [ ] A dashboard screen with similar functionality to nvim dashboards
+- [ ] Improve editor styling (eg. darken backgrounds when a floating window is open)
 
 ## License
 
