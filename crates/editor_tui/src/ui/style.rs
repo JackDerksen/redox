@@ -11,6 +11,8 @@ pub struct Palette {
     pub mode_normal: ColorPair,
     pub mode_insert: ColorPair,
     pub mode_command: ColorPair,
+    pub minimap: ColorPair,
+    pub minimap_alt: ColorPair,
 }
 
 impl Default for Palette {
@@ -20,6 +22,8 @@ impl Default for Palette {
             mode_normal: ColorPair::new(Color::Black, Color::Red),
             mode_insert: ColorPair::new(Color::Black, Color::Blue),
             mode_command: ColorPair::new(Color::Black, Color::Cyan),
+            minimap: ColorPair::new(Color::White, Color::Transparent),
+            minimap_alt: ColorPair::new(Color::Transparent, Color::White),
         }
     }
 }

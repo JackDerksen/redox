@@ -17,10 +17,57 @@
 //! - This widget draws at x=0 and computes y based on window height.
 
 use minui::widgets::Widget;
-use minui::{ColorPair, Result, Window};
+use minui::{Color, ColorPair, Result, Window};
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
+
+const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
+const SCROLL_MINIMAP_WIDTH: u16 = 1;
+
+fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {
+    if total_lines <= 1 {
+        return 0;
+    }
+
+    let max_line = total_lines.saturating_sub(1);
+    let clamped_line = cursor_line.min(max_line);
+    let ratio = clamped_line as f32 / max_line as f32;
+    let idx = ((SCROLL_MINIMAP_GLYPHS.len() - 1) as f32 * ratio).round() as usize;
+    idx.min(SCROLL_MINIMAP_GLYPHS.len() - 1)
+}
+
+fn resolve_transparent_to(color: Color, fallback: Color) -> Color {
+    if matches!(color, Color::Transparent) {
+        fallback
+    } else {
+        color
+    }
+}
+
+fn resolve_minimap_pair(base: ColorPair, status_bg: Color) -> ColorPair {
+    ColorPair::new(
+        resolve_transparent_to(base.fg, status_bg),
+        resolve_transparent_to(base.bg, status_bg),
+    )
+}
+
+fn scroll_minimap_cell(
+    cursor_line: usize,
+    total_lines: usize,
+    minimap: ColorPair,
+    minimap_alt: ColorPair,
+    status_bg: Color,
+) -> (&'static str, ColorPair) {
+    let idx = scroll_progress_idx(cursor_line, total_lines);
+    let glyph = SCROLL_MINIMAP_GLYPHS[idx];
+    let colors = if idx < 4 {
+        resolve_minimap_pair(minimap_alt, status_bg)
+    } else {
+        resolve_minimap_pair(minimap, status_bg)
+    };
+    (glyph, colors)
+}
 
 /// Horizontal alignment of a segment within its allotted region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +348,14 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     };
 
     let cursor = state.active_cursor_pos();
+    let total_lines = state.session.active_buffer().len_lines();
+    let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
+        cursor.line,
+        total_lines,
+        style.palette.minimap,
+        style.palette.minimap_alt,
+        style.palette.status_bar_bg.bg,
+    );
     let right_text = format!(" {}:{} ", cursor.line + 1, cursor.col + 1);
 
     EditorStatusBar::new()
@@ -323,4 +378,77 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_align(Align::Right)
                 .with_min_width(style.layout.status_right_min_width),
         )
+        .add_segment(
+            Segment::new(scroll_glyph)
+                .with_color(scroll_colors)
+                .with_align(Align::Right)
+                .with_min_width(SCROLL_MINIMAP_WIDTH),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_minimap_clamps_for_empty_or_single_line() {
+        let palette = UiStyle::default().palette;
+        let (glyph_a, _) = scroll_minimap_cell(
+            0,
+            0,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        let (glyph_b, _) = scroll_minimap_cell(
+            0,
+            1,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        let (glyph_c, _) = scroll_minimap_cell(
+            10,
+            1,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        assert_eq!(glyph_a, "▇");
+        assert_eq!(glyph_b, "▇");
+        assert_eq!(glyph_c, "▇");
+    }
+
+    #[test]
+    fn scroll_minimap_moves_from_top_to_bottom() {
+        let palette = UiStyle::default().palette;
+        let (top_glyph, top_colors) = scroll_minimap_cell(
+            0,
+            100,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        let (mid_glyph, _) = scroll_minimap_cell(
+            50,
+            100,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        let (bottom_glyph, bottom_colors) = scroll_minimap_cell(
+            99,
+            100,
+            palette.minimap,
+            palette.minimap_alt,
+            palette.status_bar_bg.bg,
+        );
+        assert_eq!(top_glyph, "▇");
+        assert_eq!(bottom_glyph, "▁");
+        assert_ne!(mid_glyph, top_glyph);
+        assert_eq!(top_colors.bg, Color::White);
+        assert_eq!(bottom_colors.fg, Color::White);
+        assert_eq!(top_colors.fg, palette.status_bar_bg.bg);
+        assert_eq!(bottom_colors.bg, palette.status_bar_bg.bg);
+    }
 }
