@@ -6,11 +6,19 @@
   A terminal-based text editor, built with MinUI
 </h1>
 
-Redox is a terminal-based, Vim-like text editor written in Rust for my final capstone project. The code is structured as a Cargo workspace with a small, testable core logic library and a TUI front-end wrapper (built with MinUI).
+<p align="center">
+  Redox is a terminal-based, Vim-like text editor written in Rust for my final capstone project. 
+</p>
 
-The intent is to keep the editor's behaviour and data structures (buffer, indexing, edit operations, motions) independent of any particular UI, so the core logic is testable and so I can make changes to MinUI without massively breaking the editor.
+<p align="center">
+  <img width="917" height="648" alt="CleanShot 2026-02-24 at 13 55 24@2x" src="https://github.com/user-attachments/assets/c66ae6ad-8e39-4d37-a115-a6dfa0d2443b" />
+</p>
 
 ## General project structure
+
+The code is structured as a Cargo workspace with a small, testable core logic library and a TUI front-end wrapper (built with MinUI).
+
+The intent is to keep the editor's behaviour and data structures (buffer, indexing, edit operations, motions) independent of any particular UI, so the core logic is testable and so I can make changes to MinUI without massively breaking the editor.
 
 ```text
 redox/
