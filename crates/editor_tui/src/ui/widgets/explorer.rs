@@ -14,8 +14,9 @@ pub fn draw_explorer_popup_view(
     popup: ExplorerPopup,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let popup_w = compute_popup_dim(vw, style.explorer.width_percent, style.explorer.min_width);
-    let popup_h = compute_popup_dim(vh, style.explorer.height_percent, style.explorer.min_height);
+    let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
+    let popup_w = inner_w.saturating_add(2);
+    let popup_h = inner_h.saturating_add(2);
     let x = (vw.saturating_sub(popup_w)) / 2;
     let y = (vh.saturating_sub(popup_h)) / 2;
     let border_color = style.explorer.border;
@@ -51,8 +52,6 @@ pub fn draw_explorer_popup_view(
     };
     window.write_str_colored(y, x + 2, &title_text, title_color)?;
 
-    let inner_w = popup_w.saturating_sub(2);
-    let inner_h = popup_h.saturating_sub(2);
     let mut view = WindowView {
         window,
         x_offset: x + 1,
@@ -96,6 +95,20 @@ pub fn draw_explorer_popup_view(
     status.draw(window)?;
 
     Ok(())
+}
+
+pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+    let popup_w = compute_popup_dim(
+        term_w,
+        style.explorer.width_percent,
+        style.explorer.min_width,
+    );
+    let popup_h = compute_popup_dim(
+        term_h,
+        style.explorer.height_percent,
+        style.explorer.min_height,
+    );
+    (popup_w.saturating_sub(2), popup_h.saturating_sub(2))
 }
 
 fn compute_popup_dim(total: u16, percent: u16, min: u16) -> u16 {

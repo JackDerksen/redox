@@ -14,7 +14,8 @@ use input::{InputAction, map_event_with_state};
 
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar,
-    draw_explorer_popup_view, draw_snapshot, snapshot_lines_wrapped_cached,
+    draw_explorer_popup_view, draw_snapshot, explorer_popup_inner_size,
+    snapshot_lines_wrapped_cached,
 };
 fn draw_buffer_view(
     state: &mut EditorState,
@@ -24,6 +25,11 @@ fn draw_buffer_view(
     let (vw, vh) = window.get_size();
 
     if let Some(popup) = state.explorer_popup() {
+        let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
         draw_explorer_popup_view(state, style, window, popup)?;
         return Ok(());
     }

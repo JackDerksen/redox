@@ -85,6 +85,8 @@ impl EditorState {
         self.session.mark_active_clean();
         let view = self.views.entry(explorer_id).or_default();
         view.cursor.cursor = Pos::new(initial_cursor_line, 0);
+        view.cursor.follow.top_margin_rows = 0;
+        view.cursor.follow.bottom_margin_rows = 0;
         let buffer = self
             .session
             .buffer(explorer_id)
@@ -254,6 +256,8 @@ impl EditorState {
                 .buffer(explorer_id)
                 .expect("explorer buffer must exist");
             view.cursor.cursor = Pos::zero();
+            view.cursor.follow.top_margin_rows = 0;
+            view.cursor.follow.bottom_margin_rows = 0;
             view.cursor.reconcile_after_edit(
                 buffer,
                 self.viewport_width_cells,
@@ -316,6 +320,8 @@ impl EditorState {
                 .buffer(explorer.buffer_id)
                 .expect("explorer buffer must exist");
             view.cursor.cursor = Pos::zero();
+            view.cursor.follow.top_margin_rows = 0;
+            view.cursor.follow.bottom_margin_rows = 0;
             view.cursor.reconcile_after_edit(
                 buffer,
                 self.viewport_width_cells,

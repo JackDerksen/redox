@@ -154,12 +154,26 @@ impl EditorState {
 
         match action {
             InputAction::Motion { motion, count } => {
+                let is_explorer = self.explorer_is_active();
                 let active_id = self.session.active_id();
                 let view = self.views.entry(active_id).or_default();
                 let buffer = self.session.active_buffer();
+                if is_explorer {
+                    view.cursor.follow.top_margin_rows = 0;
+                    view.cursor.follow.bottom_margin_rows = 0;
+                }
 
                 view.cursor
                     .apply_motion(buffer, motion, count, viewport_width_cells, text_vh);
+                if is_explorer {
+                    let total_lines = buffer.len_lines().max(1);
+                    let max_top = if text_vh == 0 {
+                        total_lines.saturating_sub(1)
+                    } else {
+                        total_lines.saturating_sub(text_vh)
+                    };
+                    view.cursor.scroll_y_lines = view.cursor.scroll_y_lines.min(max_top);
+                }
             }
 
             InputAction::SetMode(mode) => {
@@ -970,6 +984,78 @@ mod tests {
         let _ = fs::remove_file(file_a);
         let _ = fs::remove_file(file_open);
         let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn explorer_motion_uses_no_scrolloff_and_clamps_window_scroll() {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_scrolloff_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_open = dir.join("open.txt");
+        fs::write(&file_open, "open").expect("failed to write fixture");
+        for i in 0..12 {
+            fs::write(dir.join(format!("f{i}.txt")), "x").expect("failed to write fixture");
+        }
+
+        let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        run_command(&mut state, "explorer");
+
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing explorer view")
+            .cursor
+            .cursor
+            .line = 0;
+
+        // Small viewport (text height 5) used to reproduce prior scrolloff behavior.
+        state.apply_input(
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1,
+            },
+            80,
+            6,
+        );
+        assert_eq!(
+            state
+                .views
+                .get(&id)
+                .expect("missing explorer view")
+                .cursor
+                .scroll_y_lines,
+            0
+        );
+
+        state.apply_input(
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 999,
+            },
+            80,
+            6,
+        );
+        let total_lines = state.session.active_buffer().len_lines().max(1);
+        let text_vh = 6usize.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+        let max_top = total_lines.saturating_sub(text_vh);
+        assert!(
+            state
+                .views
+                .get(&id)
+                .expect("missing explorer view")
+                .cursor
+                .scroll_y_lines
+                <= max_top
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

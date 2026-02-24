@@ -6,5 +6,5 @@
 pub mod explorer;
 pub mod status_bar;
 
-pub use explorer::draw_explorer_popup_view;
+pub use explorer::{draw_explorer_popup_view, explorer_popup_inner_size};
 pub use status_bar::build_editor_status_bar;
