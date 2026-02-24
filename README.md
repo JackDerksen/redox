@@ -132,4 +132,4 @@ Notes:
 
 ## License
 
-TBD.
+Redox is under the terms of the MIT License.
