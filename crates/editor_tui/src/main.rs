@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use editor_core::EditorSession;
 
-use minui::{Window, prelude::*};
+use minui::{ColorPair, Window, prelude::*};
 
 mod app;
 mod input;
@@ -14,8 +14,7 @@ use input::{InputAction, map_event_with_state};
 
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar,
-    draw_explorer_popup_view, draw_snapshot, explorer_popup_inner_size,
-    snapshot_lines_wrapped_cached,
+    draw_explorer_popup_view, explorer_popup_inner_size, snapshot_lines_wrapped_cached,
 };
 fn draw_buffer_view(
     state: &mut EditorState,
@@ -23,6 +22,8 @@ fn draw_buffer_view(
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
+    let editor_text = ColorPair::new(style.theme.white, style.theme.bg);
+    fill_background(window, vw, vh, editor_text)?;
 
     if let Some(popup) = state.explorer_popup() {
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
@@ -52,7 +53,9 @@ fn draw_buffer_view(
             .cursor_spec(buffer, vw as usize, text_h as usize);
         (snapshot, spec)
     });
-    draw_snapshot(&snapshot, window)?;
+    for (row, line) in snapshot.lines.iter().enumerate() {
+        window.write_str_colored(row as u16, 0, line, editor_text)?;
+    }
 
     // --- Status bar (bottom row) ---
     let status = build_editor_status_bar(state, style);
@@ -61,6 +64,23 @@ fn draw_buffer_view(
 
     window.request_cursor(spec);
 
+    Ok(())
+}
+
+fn fill_background(
+    window: &mut dyn Window,
+    width: u16,
+    height: u16,
+    colors: ColorPair,
+) -> minui::Result<()> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+
+    let row = " ".repeat(width as usize);
+    for y in 0..height {
+        window.write_str_colored(y, 0, &row, colors)?;
+    }
     Ok(())
 }
 

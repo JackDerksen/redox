@@ -421,7 +421,8 @@ mod tests {
 
     #[test]
     fn scroll_minimap_moves_from_top_to_bottom() {
-        let palette = UiStyle::default().palette;
+        let style = UiStyle::default();
+        let palette = style.palette;
         let (top_glyph, top_colors) = scroll_minimap_cell(
             0,
             100,
@@ -446,8 +447,8 @@ mod tests {
         assert_eq!(top_glyph, "▇");
         assert_eq!(bottom_glyph, "▁");
         assert_ne!(mid_glyph, top_glyph);
-        assert_eq!(top_colors.bg, Color::White);
-        assert_eq!(bottom_colors.fg, Color::White);
+        assert_eq!(top_colors.bg, style.theme.white);
+        assert_eq!(bottom_colors.fg, style.theme.white);
         assert_eq!(top_colors.fg, palette.status_bar_bg.bg);
         assert_eq!(bottom_colors.bg, palette.status_bar_bg.bg);
     }
