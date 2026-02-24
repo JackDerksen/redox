@@ -61,6 +61,12 @@ pub fn draw_explorer_popup_view(
         width: inner_w,
         height: inner_h,
     };
+    if inner_w > 0 && inner_h > 0 {
+        let blank_row = " ".repeat(inner_w as usize);
+        for row in 0..inner_h {
+            view.write_str_colored(row, 0, &blank_row, style.explorer.file)?;
+        }
+    }
 
     let (snapshot, spec, line_styles) =
         state.with_active_buffer_view_mut(|buffer, explorer_view| {

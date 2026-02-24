@@ -14,7 +14,7 @@ pub mod style;
 pub mod widgets;
 
 // Re-export the render helpers/types so call sites can keep using `ui::...`.
-pub use render::{GraphemeCache, TextViewport, draw_snapshot, snapshot_lines_wrapped_cached};
+pub use render::{GraphemeCache, TextViewport, snapshot_lines_wrapped_cached};
 pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
 
 // Re-export common widgets for convenience.

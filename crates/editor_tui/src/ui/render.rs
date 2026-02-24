@@ -156,6 +156,7 @@ impl GraphemeCache {
 }
 
 /// Draw a snapshot into the window.
+#[allow(dead_code)]
 pub fn draw_snapshot(snapshot: &RenderSnapshot, window: &mut dyn Window) -> minui::Result<()> {
     for (row, line) in snapshot.lines.iter().enumerate() {
         window.write_str(row as u16, 0, line)?;
