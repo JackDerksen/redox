@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use editor_core::session::EditorSession;
+use editor_core::EditorSession;
 
 use minui::{Window, prelude::*};
 
@@ -13,8 +13,8 @@ use app::EditorState;
 use input::{InputAction, map_event_with_state};
 
 use ui::{
-    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar, draw_snapshot,
-    snapshot_lines_wrapped_cached,
+    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar,
+    draw_explorer_popup_view, draw_snapshot, snapshot_lines_wrapped_cached,
 };
 fn draw_buffer_view(
     state: &mut EditorState,
@@ -22,6 +22,11 @@ fn draw_buffer_view(
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
+
+    if let Some(popup) = state.explorer_popup() {
+        draw_explorer_popup_view(state, style, window, popup)?;
+        return Ok(());
+    }
 
     // Reserve one row for the status bar at the bottom.
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;

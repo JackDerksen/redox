@@ -39,8 +39,40 @@ impl Default for Layout {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExplorerStyle {
+    pub width_percent: u16,
+    pub height_percent: u16,
+    pub min_width: u16,
+    pub min_height: u16,
+    pub border: ColorPair,
+    pub title: ColorPair,
+    pub file: ColorPair,
+    pub directory: ColorPair,
+    pub executable: ColorPair,
+    pub hidden: ColorPair,
+}
+
+impl Default for ExplorerStyle {
+    fn default() -> Self {
+        Self {
+            width_percent: 64,
+            height_percent: 60,
+            min_width: 20,
+            min_height: 6,
+            border: ColorPair::new(Color::DarkGray, Color::Transparent),
+            title: ColorPair::new(Color::Blue, Color::Transparent),
+            file: ColorPair::new(Color::Reset, Color::Transparent),
+            directory: ColorPair::new(Color::Blue, Color::Transparent),
+            executable: ColorPair::new(Color::Red, Color::Transparent),
+            hidden: ColorPair::new(Color::DarkGray, Color::Transparent),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UiStyle {
     pub palette: Palette,
     pub layout: Layout,
+    pub explorer: ExplorerStyle,
 }

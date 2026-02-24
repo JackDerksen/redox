@@ -18,4 +18,4 @@ pub use render::{GraphemeCache, TextViewport, draw_snapshot, snapshot_lines_wrap
 pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
 
 // Re-export common widgets for convenience.
-pub use widgets::build_editor_status_bar;
+pub use widgets::{build_editor_status_bar, draw_explorer_popup_view};

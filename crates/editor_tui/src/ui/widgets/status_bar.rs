@@ -287,9 +287,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         EditorMode::Command => ("COMMAND", style.palette.mode_command),
     };
 
-    let mut left_text = format!(" {} ", mode_label);
+    let mut left_text = format!("▌{}▐", mode_label);
     if state.active_dirty() {
-        left_text.push_str("[+] ");
+        left_text.push_str("[+]");
     }
 
     let center_text = if state.mode == EditorMode::Command {

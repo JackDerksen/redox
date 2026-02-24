@@ -6,4 +6,4 @@
 
 pub mod state;
 
-pub use state::{EditorMode, EditorState};
+pub use state::{EditorMode, EditorState, ExplorerPopup};

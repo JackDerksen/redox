@@ -55,9 +55,19 @@ pub enum InputAction {
 
     /// Enter insert mode (with Vim-like `i` / `a` semantics).
     EnterInsert(InsertKind),
+    /// Create a new line below current line and enter insert mode (`o`).
+    OpenLineBelow,
+    /// Create a new line above current line and enter insert mode (`O`).
+    OpenLineAbove,
 
     /// Enter command mode (like Vim's `:`).
     EnterCommand,
+    /// Open explorer surface (`<leader>e`).
+    OpenExplorer,
+    /// Open item under cursor in active surface (`Enter` in normal mode).
+    SurfaceOpenSelected,
+    /// Navigate to parent in active surface (`-` in normal mode).
+    SurfaceGoParent,
 
     /// Command-line editing actions (buffer is owned by editor state).
     CommandChar(char),
@@ -79,6 +89,7 @@ pub enum InputAction {
 pub struct InputState {
     pending_g: bool,
     pending_count: Option<usize>,
+    pending_leader: bool,
 }
 
 impl InputState {
@@ -89,6 +100,7 @@ impl InputState {
     pub fn reset_prefixes(&mut self) {
         self.pending_g = false;
         self.pending_count = None;
+        self.pending_leader = false;
     }
 
     fn push_count_digit(&mut self, d: u8) {
@@ -124,7 +136,7 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Enter => match mode {
             InputMode::Insert => InputAction::Enter,
             InputMode::Command => InputAction::CommandEnter,
-            InputMode::Normal => InputAction::None,
+            InputMode::Normal => InputAction::SurfaceOpenSelected,
         },
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, *k),
@@ -132,18 +144,34 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
-            InputMode::Normal => normal_char_action(*c),
+            InputMode::Normal => normal_char_action(state, *c),
         },
 
         _ => InputAction::None,
     }
 }
 
-fn normal_char_action(c: char) -> InputAction {
+fn normal_char_action(state: &mut InputState, c: char) -> InputAction {
+    if state.pending_leader {
+        state.pending_leader = false;
+        return if c == 'e' {
+            InputAction::OpenExplorer
+        } else {
+            InputAction::None
+        };
+    }
+
     match c {
+        ' ' => {
+            state.pending_leader = true;
+            InputAction::None
+        }
         ':' => InputAction::EnterCommand,
         'i' => InputAction::EnterInsert(InsertKind::Insert),
         'a' => InputAction::EnterInsert(InsertKind::Append),
+        'o' => InputAction::OpenLineBelow,
+        'O' => InputAction::OpenLineAbove,
+        '-' => InputAction::SurfaceGoParent,
         _ => InputAction::None,
     }
 }
@@ -202,6 +230,14 @@ fn map_key_with_state(
 
     // Normal mode below.
 
+    if state.pending_leader {
+        state.pending_leader = false;
+        if matches!(key, KeyKind::Char('e')) {
+            return InputAction::OpenExplorer;
+        }
+        return InputAction::None;
+    }
+
     // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
     if mods.shift {
         if let KeyKind::Char('I') = key {
@@ -211,6 +247,10 @@ fn map_key_with_state(
         if let KeyKind::Char('A') = key {
             state.reset_prefixes();
             return InputAction::EnterInsert(InsertKind::AppendLineEnd);
+        }
+        if let KeyKind::Char('O') = key {
+            state.reset_prefixes();
+            return InputAction::OpenLineAbove;
         }
     }
 
@@ -237,6 +277,16 @@ fn map_key_with_state(
     }
 
     match key {
+        KeyKind::Enter => {
+            state.reset_prefixes();
+            InputAction::SurfaceOpenSelected
+        }
+
+        KeyKind::Char(' ') => {
+            state.pending_leader = true;
+            InputAction::None
+        }
+
         // Enter modes
         KeyKind::Char('i') => {
             state.reset_prefixes();
@@ -246,9 +296,21 @@ fn map_key_with_state(
             state.reset_prefixes();
             InputAction::EnterInsert(InsertKind::Append)
         }
+        KeyKind::Char('o') => {
+            state.reset_prefixes();
+            InputAction::OpenLineBelow
+        }
+        KeyKind::Char('O') => {
+            state.reset_prefixes();
+            InputAction::OpenLineAbove
+        }
         KeyKind::Char(':') => {
             state.reset_prefixes();
             InputAction::EnterCommand
+        }
+        KeyKind::Char('-') => {
+            state.reset_prefixes();
+            InputAction::SurfaceGoParent
         }
 
         KeyKind::Char('g') => {
@@ -378,5 +440,62 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::InsertChar('\t'));
+    }
+
+    #[test]
+    fn normal_mode_leader_e_opens_explorer() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('e'));
+        assert_eq!(action, InputAction::OpenExplorer);
+    }
+
+    #[test]
+    fn normal_mode_enter_opens_surface_selected() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Enter);
+        assert_eq!(action, InputAction::SurfaceOpenSelected);
+    }
+
+    #[test]
+    fn normal_mode_dash_goes_parent_in_surface() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('-'));
+        assert_eq!(action, InputAction::SurfaceGoParent);
+    }
+
+    #[test]
+    fn normal_mode_key_with_modifiers_enter_opens_surface_selected() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Enter,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(action, InputAction::SurfaceOpenSelected);
+    }
+
+    #[test]
+    fn normal_mode_o_opens_line_below() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('o'));
+        assert_eq!(action, InputAction::OpenLineBelow);
+    }
+
+    #[test]
+    fn normal_mode_shift_o_opens_line_above() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('O'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::OpenLineAbove);
     }
 }
