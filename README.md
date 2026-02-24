@@ -80,6 +80,7 @@ redox ./editor_tui/readme.md
 | `:bn` / `:bnext` | Switch to next buffer (MRU order) |
 | `:bp` / `:bprev` | Switch to previous buffer (MRU order) |
 | `:ls` | Show summary of open buffers |
+| `:ex` / `:explorer` | Toggle file explorer |
 
 
 ## Currently working Vim motions
