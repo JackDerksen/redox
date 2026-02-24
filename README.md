@@ -128,15 +128,14 @@ Notes:
 - [x] Buffer switching commands (`:e`, `:bn`, `:bp`, `:ls`)
 - [x] Intelligent dirty tracking (dirty clears when content returns to saved/original state)
 - [x] File explorer/picker widget
+- [x] Modify style module to use more absolute colours (RGB or something)
 - [ ] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [ ] More Vim motions
-- [ ] Modify style module to use more absolute colours (RGB or something)
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)
 - [ ] `:about` "About Redox" screen with version info, checkhealth functionality, etc.
 - [ ] The ability to open redox into the entire current working directory with `$ redox .`
 - [ ] A dashboard screen with similar functionality to nvim dashboards
-- [ ] Improve editor styling (eg. darken backgrounds when a floating window is open)
 
 ## License
 
