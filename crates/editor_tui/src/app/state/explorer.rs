@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use editor_core::{BufferId, BufferKind, Pos, TextBuffer};
@@ -453,13 +454,20 @@ fn apply_explorer_changes(
         }
         fs::rename(&old_path, &new_path)?;
     }
-    }
 
     if old_entries.len() > new_entries.len() {
         for old in &old_entries[new_entries.len()..] {
             let path = dir_path.join(&old.name);
             if old.is_dir {
-                fs::remove_dir(&path)?;
+                if let Err(e) = fs::remove_dir(&path) {
+                    if e.kind() == ErrorKind::DirectoryNotEmpty {
+                        anyhow::bail!(
+                            "cannot remove directory '{}': directory is not empty",
+                            old.name
+                        );
+                    }
+                    return Err(e.into());
+                }
             } else {
                 fs::remove_file(&path)?;
             }
@@ -478,4 +486,38 @@ fn apply_explorer_changes(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn deleting_non_empty_directory_returns_clear_error() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("redox_explorer_non_empty_{nanos}"));
+        let doomed = root.join("doomed");
+
+        fs::create_dir_all(&doomed).expect("failed to create directory fixture");
+        fs::write(doomed.join("child.txt"), "x").expect("failed to write child fixture");
+
+        let old_entries = vec![ExplorerEntry {
+            name: "doomed".to_string(),
+            is_dir: true,
+            is_parent: false,
+        }];
+        let new_entries = Vec::new();
+
+        let err = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect_err("expected non-empty directory delete to fail");
+        let msg = err.to_string();
+        assert!(msg.contains("directory is not empty"));
+        assert!(msg.contains("doomed"));
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
