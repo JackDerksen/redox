@@ -441,13 +441,18 @@ fn apply_explorer_changes(
     for i in 0..overlap {
         let old = &old_entries[i];
         let new = &new_entries[i];
-        if old == new {
+        if old.name == new.name {
             continue;
         }
 
+        // Check if target already exists to prevent collisions
         let old_path = dir_path.join(&old.name);
         let new_path = dir_path.join(&new.name);
+        if new_path.exists() && !old_path.exists() {
+            anyhow::bail!("rename target '{}' already exists", new.name);
+        }
         fs::rename(&old_path, &new_path)?;
+    }
     }
 
     if old_entries.len() > new_entries.len() {
