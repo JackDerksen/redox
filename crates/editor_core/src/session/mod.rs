@@ -234,6 +234,17 @@ impl EditorSession {
         rec.meta.dirty
     }
 
+    /// Record the active buffer's current contents as the clean snapshot.
+    pub fn mark_active_clean(&mut self) {
+        let id = self.active_id();
+        let rec = self
+            .buffers
+            .get_mut(&id)
+            .expect("active buffer must exist in session map");
+        rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+        rec.meta.dirty = false;
+    }
+
     #[inline]
     pub fn any_dirty(&self) -> bool {
         self.buffers.values().any(|rec| rec.meta.dirty)
@@ -284,6 +295,37 @@ impl EditorSession {
                 is_active: Some(*id) == active,
             })
             .collect()
+    }
+
+    /// Close a buffer by id, activating the next MRU buffer if needed.
+    ///
+    /// Returns `false` if the id does not exist or this is the last remaining buffer.
+    pub fn close_buffer(&mut self, id: BufferId) -> bool {
+        if !self.buffers.contains_key(&id) || self.buffers.len() <= 1 {
+            return false;
+        }
+
+        if let Some(rec) = self.buffers.remove(&id)
+            && let Some(path) = rec.meta.path
+        {
+            self.path_index.remove(&path);
+        }
+
+        if let Some(pos) = self.mru.iter().position(|cur| *cur == id) {
+            self.mru.remove(pos);
+        }
+
+        if self.active == Some(id) {
+            self.active = self.mru.first().copied();
+        }
+
+        self.active.is_some()
+    }
+
+    /// Close the currently active buffer.
+    #[inline]
+    pub fn close_active_buffer(&mut self) -> bool {
+        self.close_buffer(self.active_id())
     }
 
     /// Save the active file-backed buffer.

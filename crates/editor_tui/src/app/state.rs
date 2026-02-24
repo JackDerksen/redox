@@ -11,6 +11,9 @@ use editor_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 use crate::input::cursor::CursorController;
 use crate::input::{InputAction, InputMode, InputState, InsertKind};
 use crate::ui::{GraphemeCache, STATUS_BAR_HEIGHT_ROWS};
+mod explorer;
+pub use explorer::ExplorerPopup;
+use explorer::ExplorerState;
 
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +54,7 @@ impl Default for BufferViewState {
 pub struct EditorState {
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
+    explorer: Option<ExplorerState>,
     pub mode: EditorMode,
     pub input: InputState,
     pub command_line: String,
@@ -70,6 +74,7 @@ impl EditorState {
         Self {
             session,
             views,
+            explorer: None,
             mode: EditorMode::Normal,
             input: InputState::new(),
             command_line: String::new(),
@@ -216,6 +221,18 @@ impl EditorState {
                 }
             }
 
+            InputAction::OpenLineBelow => {
+                if self.mode == EditorMode::Normal {
+                    self.open_line_and_enter_insert(false, viewport_width_cells, text_vh);
+                }
+            }
+
+            InputAction::OpenLineAbove => {
+                if self.mode == EditorMode::Normal {
+                    self.open_line_and_enter_insert(true, viewport_width_cells, text_vh);
+                }
+            }
+
             InputAction::EnterCommand => {
                 self.mode = EditorMode::Command;
                 self.command_line.clear();
@@ -243,6 +260,24 @@ impl EditorState {
 
             InputAction::CommandEnter => {
                 self.execute_command_line();
+            }
+
+            InputAction::OpenExplorer => {
+                if self.mode == EditorMode::Normal {
+                    self.command_open_explorer();
+                }
+            }
+
+            InputAction::SurfaceOpenSelected => {
+                if self.mode == EditorMode::Normal {
+                    self.surface_open_selected();
+                }
+            }
+
+            InputAction::SurfaceGoParent => {
+                if self.mode == EditorMode::Normal {
+                    self.surface_go_parent();
+                }
             }
 
             InputAction::InsertChar(c) => {
@@ -340,6 +375,15 @@ impl EditorState {
                 self.write_current_file();
             }
             "q" => {
+                if self.active_buffer_is_surface() {
+                    if self.close_active_surface_buffer() {
+                        self.clear_status();
+                    } else {
+                        self.set_status("cannot close the last buffer");
+                    }
+                    return;
+                }
+
                 if self.session.any_dirty() {
                     self.set_status(self.unsaved_changes_quit_message());
                 } else {
@@ -369,6 +413,9 @@ impl EditorState {
             }
             "ls" => {
                 self.command_list_buffers();
+            }
+            "ex" | "explorer" => {
+                self.command_open_explorer();
             }
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
@@ -448,6 +495,10 @@ impl EditorState {
     }
 
     fn write_current_file(&mut self) -> bool {
+        if self.explorer_is_active() {
+            return self.write_explorer_directory();
+        }
+
         match self.session.save_active() {
             Ok(()) => {
                 self.set_status("written");
@@ -458,6 +509,38 @@ impl EditorState {
                 false
             }
         }
+    }
+
+    fn open_line_and_enter_insert(
+        &mut self,
+        above: bool,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        self.mode = EditorMode::Insert;
+        self.clear_status();
+        self.input.reset_prefixes();
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+
+        {
+            let buffer = self.session.active_buffer_mut();
+            let line = buffer.clamp_line(view.cursor.cursor.line);
+            let insert_pos = if above {
+                Pos::new(line, 0)
+            } else {
+                Pos::new(line, buffer.line_len_chars(line))
+            };
+
+            let sel = Selection::empty(insert_pos);
+            let sel = buffer.insert_newline(sel);
+            view.cursor.cursor = if above { Pos::new(line, 0) } else { sel.cursor };
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        let _ = self.session.recompute_active_dirty();
     }
 
     fn unsaved_changes_message(&self) -> String {
@@ -707,6 +790,232 @@ mod tests {
         run_command(&mut state, "zzzz");
 
         assert_eq!(state.status_msg.as_deref(), Some("unknown command: zzzz"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explorer_command_opens_ui_buffer() {
+        let path = temp_file_path("explorer_open");
+        let mut state = state_with_text(path.clone(), "alpha");
+
+        run_command(&mut state, "explorer");
+
+        assert!(state.explorer_popup().is_some());
+        assert!(state.active_display_name().contains("[explorer]"));
+        assert!(
+            state
+                .session
+                .active_buffer()
+                .to_string()
+                .lines()
+                .any(|line| line == "..")
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explorer_write_applies_rename_and_create() {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_a = dir.join("a.txt");
+        let file_open = dir.join("open.txt");
+        fs::write(&file_a, "a").expect("failed to write fixture");
+        fs::write(&file_open, "open").expect("failed to write fixture");
+
+        let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        run_command(&mut state, "explorer");
+        {
+            let buffer = state.session.active_buffer_mut();
+            *buffer = TextBuffer::from_str("..\nrenamed.txt\ncreated.txt");
+        }
+        let _ = state.session.recompute_active_dirty();
+
+        run_command(&mut state, "w");
+
+        assert!(dir.join("renamed.txt").exists());
+        assert!(dir.join("created.txt").exists());
+        assert!(!dir.join("a.txt").exists());
+
+        let _ = fs::remove_file(dir.join("renamed.txt"));
+        let _ = fs::remove_file(dir.join("created.txt"));
+        let _ = fs::remove_file(file_open);
+        let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn explorer_q_closes_surface_buffer_only() {
+        let path = temp_file_path("explorer_q_close");
+        let mut state = state_with_text(path.clone(), "alpha");
+        let return_to = state.session.active_id();
+
+        run_command(&mut state, "explorer");
+        assert!(state.explorer_popup().is_some());
+
+        run_command(&mut state, "q");
+
+        assert!(!state.should_quit);
+        assert!(state.explorer_popup().is_none());
+        assert_eq!(state.session.active_id(), return_to);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explorer_command_toggles_visibility() {
+        let path = temp_file_path("explorer_toggle");
+        let mut state = state_with_text(path.clone(), "alpha");
+        let return_to = state.session.active_id();
+
+        run_command(&mut state, "explorer");
+        assert!(state.explorer_popup().is_some());
+
+        state.apply_input(InputAction::OpenExplorer, 80, 24);
+        assert!(state.explorer_popup().is_none());
+        assert_eq!(state.session.active_id(), return_to);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explorer_enter_opens_file_and_closes_explorer() {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_enter_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_a = dir.join("a.txt");
+        let file_open = dir.join("open.txt");
+        fs::write(&file_a, "aaa").expect("failed to write fixture");
+        fs::write(&file_open, "open").expect("failed to write fixture");
+
+        let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        run_command(&mut state, "explorer");
+
+        {
+            let text = state.session.active_buffer().to_string();
+            let target_line = text
+                .lines()
+                .position(|line| line == "a.txt")
+                .expect("a.txt missing from explorer listing");
+            let id = state.session.active_id();
+            state
+                .views
+                .get_mut(&id)
+                .expect("missing explorer view")
+                .cursor
+                .cursor
+                .line = target_line;
+        }
+
+        state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+        assert!(state.explorer_popup().is_none());
+        assert_eq!(state.session.active_buffer().to_string(), "aaa");
+
+        let _ = fs::remove_file(file_a);
+        let _ = fs::remove_file(file_open);
+        let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn explorer_opens_with_cursor_on_current_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_cursor_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_a = dir.join("a.txt");
+        let file_open = dir.join("open.txt");
+        fs::write(&file_a, "aaa").expect("failed to write fixture");
+        fs::write(&file_open, "open").expect("failed to write fixture");
+
+        let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        run_command(&mut state, "explorer");
+
+        let line_idx = state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .position(|line| line == "open.txt")
+            .expect("open.txt missing from explorer");
+        let active = state.session.active_id();
+        let cursor_line = state
+            .views
+            .get(&active)
+            .expect("missing explorer view")
+            .cursor
+            .cursor
+            .line;
+        assert_eq!(cursor_line, line_idx);
+
+        let _ = fs::remove_file(file_a);
+        let _ = fs::remove_file(file_open);
+        let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn open_line_below_enters_insert_and_inserts_blank_line() {
+        let path = temp_file_path("open_line_below");
+        let mut state = state_with_text(path.clone(), "one\ntwo");
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = Pos::new(0, 0);
+
+        state.apply_input(InputAction::OpenLineBelow, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::Insert);
+        assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
+        assert_eq!(
+            state.views.get(&id).expect("missing view").cursor.cursor,
+            Pos::new(1, 0)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_line_above_enters_insert_and_inserts_blank_line() {
+        let path = temp_file_path("open_line_above");
+        let mut state = state_with_text(path.clone(), "one\ntwo");
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = Pos::new(1, 0);
+
+        state.apply_input(InputAction::OpenLineAbove, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::Insert);
+        assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
+        assert_eq!(
+            state.views.get(&id).expect("missing view").cursor.cursor,
+            Pos::new(1, 0)
+        );
 
         let _ = fs::remove_file(path);
     }
