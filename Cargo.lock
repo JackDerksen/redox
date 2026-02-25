@@ -130,24 +130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "editor_core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ropey",
-]
-
-[[package]]
-name = "editor_tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "editor_core",
- "minui",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -264,6 +246,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "redox-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ropey",
+]
+
+[[package]]
+name = "redox-editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "minui",
+ "redox-core",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "redox-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "minui",
+ "redox-core",
+ "unicode-segmentation",
 ]
 
 [[package]]

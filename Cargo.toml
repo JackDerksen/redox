@@ -1,10 +1,30 @@
+[package]
+name = "redox-editor"
+version = "0.1.0"
+edition = "2024"
+description = "A terminal-based, Vim-like text editor built with MinUI"
+license = "MIT"
+readme = "README.md"
+keywords = ["editor", "tui", "terminal", "vim", "text"]
+categories = ["command-line-utilities", "text-editors"]
+
+[[bin]]
+name = "redox"
+path = "src/main.rs"
+
 [workspace]
 members = [
-    "crates/editor_core",
-    "crates/editor_tui",
+    "crates/redox-core",
+    "crates/redox-tui",
 ]
 
 resolver = "2"
 
 [workspace.dependencies]
 anyhow = "1.0"
+
+[dependencies]
+anyhow = { workspace = true }
+redox-core = { version = "0.1.0", path = "crates/redox-core" }
+minui = "0.6.3"
+unicode-segmentation = "1.11.0"
