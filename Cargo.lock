@@ -260,10 +260,7 @@ dependencies = [
 name = "redox-editor"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "minui",
- "redox-core",
- "unicode-segmentation",
+ "redox-tui",
 ]
 
 [[package]]

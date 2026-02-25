@@ -24,7 +24,4 @@ resolver = "2"
 anyhow = "1.0"
 
 [dependencies]
-anyhow = { workspace = true }
-redox-core = { version = "0.1.0", path = "crates/redox-core" }
-minui = "0.6.3"
-unicode-segmentation = "1.11.0"
+redox-tui = { version = "0.1.0", path = "crates/redox-tui" }

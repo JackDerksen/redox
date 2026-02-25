@@ -1,20 +1,20 @@
 use std::env;
 use std::path::PathBuf;
 
-use editor_core::{BufferId, EditorSession};
+use redox_core::{BufferId, EditorSession};
 
-use minui::{ColorPair, Window, prelude::*};
+use minui::{prelude::*, ColorPair, Window};
 
 mod app;
 mod input;
 mod ui;
 
 use app::EditorState;
-use input::{InputAction, map_event_with_state};
+use input::{map_event_with_state, InputAction};
 
 use ui::{
-    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, build_editor_status_bar,
-    draw_explorer_popup_view, explorer_popup_inner_size, snapshot_lines_wrapped_cached,
+    build_editor_status_bar, draw_explorer_popup_view, explorer_popup_inner_size,
+    snapshot_lines_wrapped_cached, TextViewport, UiStyle, STATUS_BAR_HEIGHT_CELLS,
 };
 fn draw_buffer_view(
     state: &mut EditorState,
@@ -121,8 +121,8 @@ fn parse_path_arg() -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-fn main() -> minui::Result<()> {
-    let path = parse_path_arg().expect("file path required (e.g. editor_tui ./file.txt)");
+pub fn run() -> minui::Result<()> {
+    let path = parse_path_arg().expect("file path required (e.g. redox ./file.txt)");
     let session = EditorSession::open_initial_file(path).expect("failed to open initial file");
 
     let mut app = App::new(EditorState::new(session))?;
