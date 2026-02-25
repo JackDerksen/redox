@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img width="917" height="648" alt="CleanShot 2026-02-24 at 13 55 24@2x" src="https://github.com/user-attachments/assets/c66ae6ad-8e39-4d37-a115-a6dfa0d2443b" />
+  <img width="913" height="648" alt="CleanShot 2026-02-24 at 21 10 12@2x" src="https://github.com/user-attachments/assets/49953806-4478-4bf9-92e6-9f7f5efee83b" />
 </p>
 
 ## General project structure
