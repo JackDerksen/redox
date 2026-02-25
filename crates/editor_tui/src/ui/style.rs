@@ -97,9 +97,9 @@ impl Palette {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             status_bar_bg: ColorPair::new(theme.light_gray, theme.black),
-            mode_normal: ColorPair::new(theme.black, theme.red),
+            mode_normal: ColorPair::new(theme.black, theme.purple),
             mode_insert: ColorPair::new(theme.black, theme.blue),
-            mode_command: ColorPair::new(theme.black, theme.orange),
+            mode_command: ColorPair::new(theme.black, theme.red),
             minimap: ColorPair::new(theme.white, Color::Transparent),
             minimap_alt: ColorPair::new(Color::Transparent, theme.white),
         }
