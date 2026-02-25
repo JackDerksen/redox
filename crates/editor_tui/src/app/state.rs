@@ -139,6 +139,16 @@ impl EditorState {
         f(buffer, view)
     }
 
+    pub fn with_buffer_view_mut<R>(
+        &mut self,
+        id: BufferId,
+        f: impl FnOnce(&TextBuffer, &mut BufferViewState) -> R,
+    ) -> Option<R> {
+        let buffer = self.session.buffer(id)?;
+        let view = self.views.entry(id).or_default();
+        Some(f(buffer, view))
+    }
+
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.
     pub fn apply_input(
         &mut self,

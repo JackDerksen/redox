@@ -36,9 +36,19 @@ impl EditorState {
         }
 
         Some(ExplorerPopup {
-            title: format!(" {} ", explorer.dir_path.display()),
+            title: format!("{}", explorer.dir_path.display()),
             dir_path: explorer.dir_path.clone(),
         })
+    }
+
+    pub fn explorer_background_buffer_id(&self) -> Option<BufferId> {
+        let explorer = self.explorer.as_ref()?;
+        if explorer.buffer_id != self.session.active_id() {
+            return None;
+        }
+        self.session
+            .buffer(explorer.return_to_buffer_id)
+            .map(|_| explorer.return_to_buffer_id)
     }
 
     pub(super) fn command_open_explorer(&mut self) {

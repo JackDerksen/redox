@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use editor_core::EditorSession;
+use editor_core::{BufferId, EditorSession};
 
 use minui::{ColorPair, Window, prelude::*};
 
@@ -24,8 +24,13 @@ fn draw_buffer_view(
     let (vw, vh) = window.get_size();
     let editor_text = ColorPair::new(style.theme.white, style.theme.bg);
     fill_background(window, vw, vh, editor_text)?;
+    let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
+    let text_h = vh.saturating_sub(status_h);
 
     if let Some(popup) = state.explorer_popup() {
+        if let Some(background_id) = state.explorer_background_buffer_id() {
+            draw_buffer_snapshot_for_id(state, background_id, vw, text_h, editor_text, window)?;
+        }
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
         state.set_viewport_size(
             inner_w as usize,
@@ -34,10 +39,6 @@ fn draw_buffer_view(
         draw_explorer_popup_view(state, style, window, popup)?;
         return Ok(());
     }
-
-    // Reserve one row for the status bar at the bottom.
-    let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
-    let text_h = vh.saturating_sub(status_h);
 
     let (snapshot, spec) = state.with_active_buffer_view_mut(|buffer, view| {
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
@@ -81,6 +82,34 @@ fn fill_background(
     for y in 0..height {
         window.write_str_colored(y, 0, &row, colors)?;
     }
+    Ok(())
+}
+
+fn draw_buffer_snapshot_for_id(
+    state: &mut EditorState,
+    buffer_id: BufferId,
+    width: u16,
+    height: u16,
+    colors: ColorPair,
+    window: &mut dyn Window,
+) -> minui::Result<()> {
+    let Some(snapshot) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
+        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+        let viewport = TextViewport {
+            scroll_x,
+            scroll_y,
+            width,
+            height,
+        };
+        snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache)
+    }) else {
+        return Ok(());
+    };
+
+    for (row, line) in snapshot.lines.iter().enumerate() {
+        window.write_str_colored(row as u16, 0, line, colors)?;
+    }
+
     Ok(())
 }
 
