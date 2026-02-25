@@ -17,8 +17,8 @@ pub struct BaseTheme {
     pub blue: Color,
     pub purple: Color,
     pub orange: Color,
-    pub dark_grey: Color,
-    pub light_grey: Color,
+    pub dark_gray: Color,
+    pub light_gray: Color,
 }
 
 impl Default for BaseTheme {
@@ -69,12 +69,12 @@ impl Default for BaseTheme {
                 g: (172),
                 b: (114),
             },
-            dark_grey: Color::Rgb {
+            dark_gray: Color::Rgb {
                 r: (51),
                 g: (49),
                 b: (55),
             },
-            light_grey: Color::Rgb {
+            light_gray: Color::Rgb {
                 r: (104),
                 g: (101),
                 b: (111),
@@ -96,7 +96,7 @@ pub struct Palette {
 impl Palette {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            status_bar_bg: ColorPair::new(theme.light_grey, theme.black),
+            status_bar_bg: ColorPair::new(theme.light_gray, theme.black),
             mode_normal: ColorPair::new(theme.black, theme.red),
             mode_insert: ColorPair::new(theme.black, theme.blue),
             mode_command: ColorPair::new(theme.black, theme.orange),
@@ -148,12 +148,12 @@ impl ExplorerStyle {
             height_percent: 60,
             min_width: 20,
             min_height: 6,
-            border: ColorPair::new(theme.light_grey, theme.bg),
+            border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.blue, theme.bg),
             file: ColorPair::new(theme.white, theme.bg),
             directory: ColorPair::new(theme.blue, theme.bg),
             executable: ColorPair::new(theme.yellow, theme.bg),
-            hidden: ColorPair::new(theme.dark_grey, theme.bg),
+            hidden: ColorPair::new(theme.dark_gray, theme.bg),
         }
     }
 }
