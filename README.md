@@ -24,13 +24,13 @@ The intent is to keep the editor's behaviour and data structures (buffer, indexi
 redox/
 ├── Cargo.toml                  # Workspace manifest
 └── crates/
-    ├── editor_core/            # UI-agnostic editing primitives and session model
+    ├── redox-core/             # UI-agnostic editing primitives and session model
     │   └── src/
     │       ├── buffer/         # Rope-backed text buffer, editing, positions
     │       ├── motion.rs       # Vim-style motion logic
     │       ├── io.rs           # File read/write helpers
     │       └── session/        # Multi-buffer session management
-    └── editor_tui/             # MinUI front-end application
+    └── redox-tui/              # MinUI front-end application
         └── src/
             ├── app/            # Editor app state + command handling
             ├── input/          # Key/event mapping + cursor controller
@@ -47,13 +47,19 @@ redox/
 ### Build
 
 ```bash
-cargo build --release -p editor_tui
+cargo build --release -p redox-editor
 ```
 
-### Install CLI
+### Install via CLI
 
-```bash
-cargo install --path crates/editor_tui --force
+The easiest way to install the editor is to just install the binary from Crates.io:
+```
+cargo install redox-editor
+```
+
+Alternatively, you can install it directly from the source code:
+```
+cargo install --path . --force
 ```
 
 This installs the `redox` binary into `~/.cargo/bin` by default.
@@ -73,7 +79,7 @@ redox <file_path>
 Example:
 
 ```bash
-redox ./editor_tui/readme.md
+redox ./README.md
 ```
 
 ### Command mode quick reference
@@ -116,7 +122,7 @@ Notes:
 
 ## Roadmap (current progress)
 
-- [x] Rope-backed text buffer core (`editor_core`)
+- [x] Rope-backed text buffer core (`redox-core`)
 - [x] TUI rendering with statusline + cursor projection
 - [x] Text insertion, newline insertion, and backspace editing
 - [x] Vim-style mode system (Normal / Insert / Command)
