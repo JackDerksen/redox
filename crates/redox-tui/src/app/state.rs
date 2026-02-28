@@ -15,6 +15,10 @@ mod explorer;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 
+const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
+const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
+const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
+
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
@@ -108,6 +112,37 @@ impl EditorState {
 
     pub fn viewport_size(&self) -> (usize, usize) {
         (self.viewport_width_cells, self.viewport_height_rows)
+    }
+
+    pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {
+        let active_id = self.session.active_id();
+        let scroll_y = self
+            .views
+            .get(&active_id)
+            .map(|v| v.cursor.scroll_y_lines)
+            .unwrap_or(0);
+        let target_line = scroll_y.saturating_add(
+            viewport_height_rows.saturating_mul(VIEWPORT_PREFETCH_MULTIPLIER),
+        );
+
+        let _ = self.session.poll_loading(PREFETCH_PER_FRAME_BYTES);
+        if let Err(e) =
+            self.session
+                .ensure_buffer_loaded_through_line(active_id, target_line, DEMAND_LOAD_BUDGET_BYTES)
+        {
+            self.set_status(format!("load failed: {e}"));
+        }
+    }
+
+    fn ensure_active_fully_loaded_for_edit_or_save(&mut self) -> bool {
+        let active_id = self.session.active_id();
+        match self.session.ensure_buffer_fully_loaded(active_id) {
+            Ok(()) => true,
+            Err(e) => {
+                self.set_status(format!("load failed: {e}"));
+                false
+            }
+        }
     }
 
     pub fn active_dirty(&self) -> bool {
@@ -247,12 +282,18 @@ impl EditorState {
 
             InputAction::OpenLineBelow => {
                 if self.mode == EditorMode::Normal {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     self.open_line_and_enter_insert(false, viewport_width_cells, text_vh);
                 }
             }
 
             InputAction::OpenLineAbove => {
                 if self.mode == EditorMode::Normal {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     self.open_line_and_enter_insert(true, viewport_width_cells, text_vh);
                 }
             }
@@ -306,6 +347,9 @@ impl EditorState {
 
             InputAction::InsertChar(c) => {
                 if self.mode == EditorMode::Insert {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     let s = c.to_string();
                     self.insert_text_at_cursor(&s, viewport_width_cells, text_vh);
                 }
@@ -313,6 +357,9 @@ impl EditorState {
 
             InputAction::Backspace => {
                 if self.mode == EditorMode::Insert {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -331,6 +378,9 @@ impl EditorState {
 
             InputAction::Enter => {
                 if self.mode == EditorMode::Insert {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -349,6 +399,9 @@ impl EditorState {
 
             InputAction::Paste(text) => match self.mode {
                 EditorMode::Insert | EditorMode::Normal => {
+                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                        return;
+                    }
                     self.insert_text_at_cursor(&text, viewport_width_cells, text_vh);
                 }
                 EditorMode::Command => {}
@@ -523,6 +576,10 @@ impl EditorState {
             return self.write_explorer_directory();
         }
 
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return false;
+        }
+
         match self.session.save_active() {
             Ok(()) => {
                 self.set_status("written");
@@ -595,8 +652,9 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redox_core::motion::Motion;
+    use redox_core::{BufferLoadPhase, motion::Motion};
     use std::fs;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_file_path(tag: &str) -> PathBuf {
@@ -611,6 +669,14 @@ mod tests {
         fs::write(&path, text).expect("failed to write test file");
         let session = EditorSession::open_initial_file(&path).expect("failed to open session");
         EditorState::new(session)
+    }
+
+    fn large_text(lines: usize) -> String {
+        let mut out = String::new();
+        for i in 0..lines {
+            out.push_str(&format!("line-{i:05} abcdefghijklmnopqrstuvwxyz\n"));
+        }
+        out
     }
 
     fn run_command(state: &mut EditorState, cmd: &str) {
@@ -1110,6 +1176,100 @@ mod tests {
             state.views.get(&id).expect("missing view").cursor.cursor,
             Pos::new(1, 0)
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn first_edit_forces_full_load_before_mutation() {
+        let path = temp_file_path("edit_force_full_load");
+        let text = large_text(8000);
+        let mut state = state_with_text(path.clone(), &text);
+        assert_eq!(
+            state.session.active_buffer_load_status().phase,
+            BufferLoadPhase::Loading
+        );
+
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.apply_input(InputAction::InsertChar('X'), 80, 24);
+
+        assert_eq!(
+            state.session.active_buffer_load_status().phase,
+            BufferLoadPhase::Complete
+        );
+        assert_eq!(state.session.active_buffer().to_string(), format!("X{text}"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn write_command_forces_full_load_while_loading() {
+        let path = temp_file_path("write_force_full_load");
+        let text = large_text(8500);
+        let mut state = state_with_text(path.clone(), &text);
+        assert_eq!(
+            state.session.active_buffer_load_status().phase,
+            BufferLoadPhase::Loading
+        );
+
+        run_command(&mut state, "w");
+
+        assert_eq!(
+            state.session.active_buffer_load_status().phase,
+            BufferLoadPhase::Complete
+        );
+        assert_eq!(fs::read_to_string(&path).expect("failed to read file"), text);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pump_active_loading_extends_loaded_content() {
+        let path = temp_file_path("pump_loading_growth");
+        let text = large_text(10_000);
+        let mut state = state_with_text(path.clone(), &text);
+        let before_lines = state.session.active_buffer().len_lines();
+
+        for _ in 0..8 {
+            state.pump_active_loading(20);
+            state.apply_input(
+                InputAction::Motion {
+                    motion: Motion::Down,
+                    count: 120,
+                },
+                80,
+                24,
+            );
+        }
+
+        let after_lines = state.session.active_buffer().len_lines();
+        assert!(after_lines > before_lines);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_failure_sets_status_and_blocks_mutation() {
+        let path = temp_file_path("load_failure_status");
+        let mut file = fs::File::create(&path).expect("failed to create temp file");
+        let prefix = "ok\n".repeat(30_000);
+        file.write_all(prefix.as_bytes())
+            .expect("failed to write prefix");
+        file.write_all(&[0xff])
+            .expect("failed to write invalid byte");
+        file.flush().expect("failed to flush");
+
+        let mut state = EditorState::new(
+            EditorSession::open_initial_file(&path).expect("failed to open session"),
+        );
+        let before = state.session.active_buffer().to_string();
+
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.apply_input(InputAction::InsertChar('x'), 80, 24);
+
+        let msg = state.status_msg.as_deref().unwrap_or("");
+        assert!(msg.contains("load failed"));
+        assert_eq!(state.session.active_buffer().to_string(), before);
 
         let _ = fs::remove_file(path);
     }
