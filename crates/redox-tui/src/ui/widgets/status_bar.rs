@@ -18,6 +18,7 @@
 
 use minui::widgets::Widget;
 use minui::{Color, ColorPair, Result, Window};
+use redox_core::BufferLoadPhase;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::{UiStyle, STATUS_BAR_HEIGHT_CELLS};
@@ -344,7 +345,19 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     } else if let Some(msg) = &state.status_msg {
         format!(" {} ", msg)
     } else {
-        format!(" {} ", state.active_display_name())
+        let mut name = state.active_display_name().to_string();
+        let load = state.session.active_buffer_load_status();
+        if load.phase == BufferLoadPhase::Loading {
+            let progress = match load.total_bytes {
+                Some(total) if total > 0 => {
+                    let pct = (load.bytes_loaded.saturating_mul(100) / total).min(100);
+                    format!("{pct}%")
+                }
+                _ => format!("{} bytes", load.bytes_loaded),
+            };
+            name.push_str(&format!(" [loading {progress}]"));
+        }
+        format!(" {name} ")
     };
 
     let cursor = state.active_cursor_pos();
