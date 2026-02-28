@@ -11,9 +11,13 @@ use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 use crate::input::cursor::CursorController;
 use crate::input::{InputAction, InputMode, InputState, InsertKind};
 use crate::ui::{GraphemeCache, STATUS_BAR_HEIGHT_ROWS};
+mod about;
+pub use about::AboutPopup;
+use about::AboutState;
 mod explorer;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+mod surface;
 
 const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
@@ -58,6 +62,7 @@ impl Default for BufferViewState {
 pub struct EditorState {
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
+    about: Option<AboutState>,
     explorer: Option<ExplorerState>,
     pub mode: EditorMode,
     pub input: InputState,
@@ -78,6 +83,7 @@ impl EditorState {
         Self {
             session,
             views,
+            about: None,
             explorer: None,
             mode: EditorMode::Normal,
             input: InputState::new(),
@@ -121,15 +127,15 @@ impl EditorState {
             .get(&active_id)
             .map(|v| v.cursor.scroll_y_lines)
             .unwrap_or(0);
-        let target_line = scroll_y.saturating_add(
-            viewport_height_rows.saturating_mul(VIEWPORT_PREFETCH_MULTIPLIER),
-        );
+        let target_line = scroll_y
+            .saturating_add(viewport_height_rows.saturating_mul(VIEWPORT_PREFETCH_MULTIPLIER));
 
         let _ = self.session.poll_loading(PREFETCH_PER_FRAME_BYTES);
-        if let Err(e) =
-            self.session
-                .ensure_buffer_loaded_through_line(active_id, target_line, DEMAND_LOAD_BUDGET_BYTES)
-        {
+        if let Err(e) = self.session.ensure_buffer_loaded_through_line(
+            active_id,
+            target_line,
+            DEMAND_LOAD_BUDGET_BYTES,
+        ) {
             self.set_status(format!("load failed: {e}"));
         }
     }
@@ -493,6 +499,9 @@ impl EditorState {
             }
             "ex" | "explorer" => {
                 self.command_open_explorer();
+            }
+            "about" => {
+                self.command_open_about();
             }
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
@@ -893,12 +902,14 @@ mod tests {
 
         assert!(state.explorer_popup().is_some());
         assert!(state.active_display_name().contains("[explorer]"));
-        assert!(state
-            .session
-            .active_buffer()
-            .to_string()
-            .lines()
-            .any(|line| line == ".."));
+        assert!(
+            state
+                .session
+                .active_buffer()
+                .to_string()
+                .lines()
+                .any(|line| line == "..")
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -969,6 +980,53 @@ mod tests {
 
         state.apply_input(InputAction::OpenExplorer, 80, 24);
         assert!(state.explorer_popup().is_none());
+        assert_eq!(state.session.active_id(), return_to);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn about_command_opens_ui_buffer() {
+        let path = temp_file_path("about_open");
+        let mut state = state_with_text(path.clone(), "alpha");
+
+        run_command(&mut state, "about");
+
+        assert!(state.about_popup().is_some());
+        assert!(state.active_display_name().contains("[about]"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn about_command_toggles_visibility() {
+        let path = temp_file_path("about_toggle");
+        let mut state = state_with_text(path.clone(), "alpha");
+        let return_to = state.session.active_id();
+
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
+
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_none());
+        assert_eq!(state.session.active_id(), return_to);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn about_q_closes_surface_buffer_only() {
+        let path = temp_file_path("about_q_close");
+        let mut state = state_with_text(path.clone(), "alpha");
+        let return_to = state.session.active_id();
+
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
+
+        run_command(&mut state, "q");
+
+        assert!(!state.should_quit);
+        assert!(state.about_popup().is_none());
         assert_eq!(state.session.active_id(), return_to);
 
         let _ = fs::remove_file(path);
@@ -1197,7 +1255,10 @@ mod tests {
             state.session.active_buffer_load_status().phase,
             BufferLoadPhase::Complete
         );
-        assert_eq!(state.session.active_buffer().to_string(), format!("X{text}"));
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            format!("X{text}")
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -1218,7 +1279,10 @@ mod tests {
             state.session.active_buffer_load_status().phase,
             BufferLoadPhase::Complete
         );
-        assert_eq!(fs::read_to_string(&path).expect("failed to read file"), text);
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read file"),
+            text
+        );
 
         let _ = fs::remove_file(path);
     }

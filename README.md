@@ -95,6 +95,7 @@ redox ./README.md
 | `:bp` / `:bprev` | Switch to previous buffer (MRU order) |
 | `:ls` | Show summary of open buffers |
 | `:ex` / `:explorer` | Toggle file explorer |
+| `:about` | Toggle the "about" popup |
 
 
 ## Currently working Vim motions
@@ -135,11 +136,11 @@ Notes:
 - [x] Intelligent dirty tracking (dirty clears when content returns to saved/original state)
 - [x] File explorer/picker widget
 - [x] Modify style module to use more absolute colours (RGB or something)
+- [x] `:about` "About Redox" screen with version info and stuff
 - [ ] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [ ] More Vim motions
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)
-- [ ] `:about` "About Redox" screen with version info, checkhealth functionality, etc.
 - [ ] The ability to open redox into the entire current working directory with `$ redox .`
 - [ ] A dashboard screen with similar functionality to nvim dashboards
 
