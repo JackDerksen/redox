@@ -11,27 +11,14 @@ use crate::buffer::TextBuffer;
 
 /// Read a UTF-8 file into a `TextBuffer`.
 ///
-/// This is a simple, whole-file read (simple for the early development stage):
-/// - loads entire file into memory
-/// - requires valid UTF-8
-///
-/// Might add higher-level functions for encoding detection and streaming IO later
+/// The file is parsed as UTF-8.
 pub fn load_buffer(path: impl AsRef<Path>) -> Result<TextBuffer> {
-    let path = path.as_ref();
-
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read file: {}", path.to_string_lossy()))?;
-
-    let text = String::from_utf8(bytes)
-        .with_context(|| format!("file is not valid UTF-8: {}", path.to_string_lossy()))?;
-
-    Ok(TextBuffer::from_str(&text))
+    TextBuffer::from_file(path)
 }
 
 /// Write a `TextBuffer` to a UTF-8 file.
 ///
 /// This writes the entire buffer to disk in one go.
-/// Will add variants later for stuff like incremental or atomic writes.
 pub fn save_buffer(path: impl AsRef<Path>, buffer: &TextBuffer) -> Result<()> {
     let path = path.as_ref();
     std::fs::write(path, buffer.to_string())

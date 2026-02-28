@@ -1,6 +1,6 @@
 //! Core `TextBuffer` definition and constructors.
 //!
-//! Note to self: this file intentionally only does a couple of things:
+//! This file intentionally only does a couple of things:
 //! - It defines the `TextBuffer` type and its invariants.
 //! - It provides basic constructors and low-level rope access.
 //!
@@ -9,6 +9,8 @@
 
 use anyhow::{Context as _, Result};
 use ropey::Rope;
+use std::fs::File;
+use std::io::BufReader;
 
 /// A Ropey-backed text buffer.
 ///
@@ -50,22 +52,15 @@ impl TextBuffer {
 
     /// Load a file as UTF-8 and create a buffer.
     ///
-    /// This is intentionally simple for now. It just:
-    /// - reads the whole file into memory
-    /// - requires valid UTF-8
-    ///
-    /// NOTE: If/when I add encoding detection or incremental IO, those should likely
-    /// live in a separate IO-focused module.
+    /// This uses `ropey`'s streaming reader path and requires valid UTF-8.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
-
-        let bytes = std::fs::read(path)
+        let file = File::open(path)
             .with_context(|| format!("failed to read file: {}", path.to_string_lossy()))?;
-
-        let s = String::from_utf8(bytes)
+        let reader = BufReader::new(file);
+        let rope = Rope::from_reader(reader)
             .with_context(|| format!("file is not valid UTF-8: {}", path.to_string_lossy()))?;
-
-        Ok(Self::from_str(&s))
+        Ok(Self { rope })
     }
 
     /// Access the underlying rope.
@@ -78,8 +73,7 @@ impl TextBuffer {
 
     /// Mutable access to the underlying rope (use this sparingly!)
     ///
-    /// Prefer dedicated editing APIs so invariants and future bookkeeping (eg.
-    /// undo/redo, marks, spans) remain easy to maintain.
+    /// Prefer dedicated editing APIs so invariants and bookkeeping remain easy to maintain.
     #[inline]
     pub fn rope_mut(&mut self) -> &mut Rope {
         &mut self.rope

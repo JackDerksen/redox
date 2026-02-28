@@ -14,9 +14,7 @@
 //! Notes:
 //! - Word motions here currently use `TextBuffer`'s existing word helpers
 //!   (`word_start_before`, `word_end_after`), which in turn use `buffer::util::is_word_char`.
-//! - Many Vim details (e.g. inclusive/exclusive, operator-pending behavior,
-//!   `iskeyword`, sentence/paragraph motions) can be layered later without
-//!   changing the frontend.
+//! - This module keeps motion semantics centralized so frontends remain thin.
 //!
 //! This file defines:
 //! - [`Motion`] enum: the set of supported navigation intents.

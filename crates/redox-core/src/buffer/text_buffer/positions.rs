@@ -9,7 +9,7 @@
 //!   matching Ropey's indexing model.
 //! - Methods clamp inputs defensively, so higher-level code can stay simpler.
 //! - Visual column/grapheme cluster concerns are deliberately out of scope here;
-//!   those can be layered on later (eg. a view layer that maps `Pos` <-> screen).
+//!   these are handled in higher layers that map `Pos` to screen coordinates.
 
 use std::cmp::min;
 
@@ -79,9 +79,7 @@ impl TextBuffer {
 
     /// Move up one line, preserving column as much as possible.
     ///
-    /// NOTE: This is a simple version with no goal/preferred column tracking.
-    /// If I decide I want Vim-like vertical motion that remembers a preferred column,
-    /// I should store that in higher-level state and clamp it using `line_len_chars(...)`.
+    /// This implementation does not track a preferred column.
     #[inline]
     pub fn move_up(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);
@@ -95,8 +93,7 @@ impl TextBuffer {
 
     /// Move down one line, preserving column as much as possible.
     ///
-    /// This is a simple version (no goal/preferred column tracking).
-    /// NOTE: Same as above :)
+    /// This implementation does not track a preferred column.
     #[inline]
     pub fn move_down(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);

@@ -7,8 +7,7 @@ use super::{Pos, TextBuffer};
 
 /// Returns whether a character is considered part of a "word".
 ///
-/// NOTE: This is intentionally minimal and ASCII-focused for now.
-/// I can make this configurable (Vim `'iskeyword'`-style) or Unicode-aware later.
+/// This is intentionally ASCII-focused: `[A-Za-z0-9_]`.
 #[inline]
 pub(crate) fn is_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
