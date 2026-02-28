@@ -63,7 +63,10 @@ impl IncrementalFileLoader {
         }
 
         let mut buf = vec![0_u8; max_bytes];
-        let n = self.file.read(&mut buf).context("failed while reading file")?;
+        let n = self
+            .file
+            .read(&mut buf)
+            .context("failed while reading file")?;
         buf.truncate(n);
         self.bytes_loaded = self.bytes_loaded.saturating_add(n);
         if n == 0 {

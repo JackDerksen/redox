@@ -16,8 +16,8 @@
 //! Future work:
 //! - Cursor rendering, selection, and incremental updates.
 
-use redox_core::TextBuffer;
 use minui::{Window, cell_width};
+use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// For very long lines, avoid full-line allocation and grapheme hashing/caching.

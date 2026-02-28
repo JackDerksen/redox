@@ -21,7 +21,7 @@ use minui::{Color, ColorPair, Result, Window};
 use redox_core::BufferLoadPhase;
 
 use crate::app::{EditorMode, EditorState};
-use crate::ui::{UiStyle, STATUS_BAR_HEIGHT_CELLS};
+use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
 const SCROLL_MINIMAP_WIDTH: u16 = 1;

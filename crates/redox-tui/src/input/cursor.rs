@@ -17,7 +17,7 @@
 
 use minui::prelude::TabPolicy;
 use minui::{cell_width, window::CursorSpec};
-use redox_core::motion::{apply_motion_n, Motion};
+use redox_core::motion::{Motion, apply_motion_n};
 use redox_core::{Pos, TextBuffer};
 use std::cmp::min;
 use unicode_segmentation::UnicodeSegmentation;
@@ -556,7 +556,10 @@ mod tests {
 
     #[test]
     fn long_line_fast_path_updates_x_incrementally() {
-        let long = format!("{}\t字", "a".repeat(LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 64));
+        let long = format!(
+            "{}\t字",
+            "a".repeat(LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 64)
+        );
         let buffer = TextBuffer::from_str(&long);
         let mut cursor = CursorController::new();
 

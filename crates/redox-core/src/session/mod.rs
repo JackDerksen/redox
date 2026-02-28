@@ -86,7 +86,6 @@ impl BufferLoadStatus {
             error: None,
         }
     }
-
 }
 
 #[derive(Debug)]
@@ -302,7 +301,8 @@ impl EditorSession {
 
     #[inline]
     pub fn active_buffer_is_fully_loaded(&self) -> bool {
-        self.buffer_is_fully_loaded(self.active_id()).unwrap_or(true)
+        self.buffer_is_fully_loaded(self.active_id())
+            .unwrap_or(true)
     }
 
     #[inline]
@@ -420,7 +420,9 @@ impl EditorSession {
             .map(|rec| rec.load_status.clone())
             .unwrap_or_else(BufferLoadStatus::not_loading);
         if matches!(status.phase, BufferLoadPhase::Failed) {
-            let msg = status.error.unwrap_or_else(|| "buffer load failed".to_string());
+            let msg = status
+                .error
+                .unwrap_or_else(|| "buffer load failed".to_string());
             bail!("{msg}");
         }
         Ok(())
@@ -945,7 +947,10 @@ mod tests {
             .ensure_buffer_fully_loaded(id)
             .expect("full load should succeed");
 
-        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Complete);
+        assert_eq!(
+            session.active_buffer_load_status().phase,
+            BufferLoadPhase::Complete
+        );
         assert_eq!(session.active_buffer().to_string(), text);
 
         let _ = fs::remove_file(path);
@@ -985,7 +990,10 @@ mod tests {
             .ensure_buffer_fully_loaded(id)
             .expect_err("expected invalid utf8 error");
         assert!(err.to_string().contains("not valid UTF-8"));
-        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Failed);
+        assert_eq!(
+            session.active_buffer_load_status().phase,
+            BufferLoadPhase::Failed
+        );
         assert!(!session.active_buffer().is_empty());
 
         let _ = fs::remove_file(path);
@@ -1019,10 +1027,16 @@ mod tests {
         fs::write(&path, &text).expect("failed to write temp file");
 
         let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
-        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Loading);
+        assert_eq!(
+            session.active_buffer_load_status().phase,
+            BufferLoadPhase::Loading
+        );
 
         session.save_active().expect("save should force full load");
-        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Complete);
+        assert_eq!(
+            session.active_buffer_load_status().phase,
+            BufferLoadPhase::Complete
+        );
 
         let on_disk = fs::read_to_string(&path).expect("failed to read file");
         assert_eq!(on_disk, text);

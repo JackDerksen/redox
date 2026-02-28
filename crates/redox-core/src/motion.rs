@@ -115,7 +115,7 @@ pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: u
 
 /// Convenience helpers for motions that take a count.
 pub mod helpers {
-    use super::{apply_motion_n, Motion};
+    use super::{Motion, apply_motion_n};
     use crate::{Pos, TextBuffer};
 
     /// Move forward by words (`w`-ish) by applying `WordStartAfter` repeatedly.
