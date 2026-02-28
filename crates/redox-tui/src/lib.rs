@@ -3,18 +3,19 @@ use std::path::PathBuf;
 
 use redox_core::{BufferId, EditorSession};
 
-use minui::{prelude::*, ColorPair, Window};
+use minui::{ColorPair, Window, prelude::*};
 
 mod app;
 mod input;
 mod ui;
 
 use app::EditorState;
-use input::{map_event_with_state, InputAction};
+use input::{InputAction, map_event_with_state};
 
 use ui::{
-    build_editor_status_bar, draw_explorer_popup_view, explorer_popup_inner_size,
-    snapshot_lines_wrapped_cached, TextViewport, UiStyle, STATUS_BAR_HEIGHT_CELLS,
+    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
+    build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
+    explorer_popup_inner_size, snapshot_lines_wrapped_cached,
 };
 fn draw_buffer_view(
     state: &mut EditorState,
@@ -38,6 +39,19 @@ fn draw_buffer_view(
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
         draw_explorer_popup_view(state, style, window, popup)?;
+        return Ok(());
+    }
+
+    if let Some(popup) = state.about_popup() {
+        if let Some(background_id) = state.about_background_buffer_id() {
+            draw_buffer_snapshot_for_id(state, background_id, vw, text_h, editor_text, window)?;
+        }
+        let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        draw_about_popup_view(state, style, window, popup)?;
         return Ok(());
     }
 

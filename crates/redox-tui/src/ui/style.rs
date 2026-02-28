@@ -165,10 +165,48 @@ impl Default for ExplorerStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct AboutStyle {
+    pub width_percent: u16,
+    pub height_percent: u16,
+    pub min_width: u16,
+    pub min_height: u16,
+    pub border: ColorPair,
+    pub title: ColorPair,
+    pub text: ColorPair,
+    pub logo_red: ColorPair,
+    pub logo_white: ColorPair,
+    pub logo_blue: ColorPair,
+}
+
+impl AboutStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 58,
+            height_percent: 52,
+            min_width: 56,
+            min_height: 12,
+            border: ColorPair::new(theme.light_gray, theme.bg),
+            title: ColorPair::new(theme.blue, theme.bg),
+            text: ColorPair::new(theme.white, theme.bg),
+            logo_red: ColorPair::new(theme.red, theme.bg),
+            logo_white: ColorPair::new(theme.white, theme.bg),
+            logo_blue: ColorPair::new(theme.blue, theme.bg),
+        }
+    }
+}
+
+impl Default for AboutStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
     pub palette: Palette,
     pub layout: Layout,
+    pub about: AboutStyle,
     pub explorer: ExplorerStyle,
 }
 
@@ -179,6 +217,7 @@ impl Default for UiStyle {
             theme,
             palette: Palette::from_theme(theme),
             layout: Layout::default(),
+            about: AboutStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
         }
     }
