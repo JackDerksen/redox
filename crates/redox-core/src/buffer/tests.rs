@@ -192,3 +192,40 @@ fn apply_edit_normalizes_reversed_range() {
     assert_eq!(b.to_string(), "abXYef");
     assert_eq!(cur, Pos::new(0, 4));
 }
+
+#[test]
+fn slice_chars_ref_matches_allocating_variant() {
+    let b = TextBuffer::from_str("abcdef");
+    assert_eq!(b.slice_chars_ref(2, 5).to_string(), b.slice_chars(2, 5));
+    assert_eq!(b.slice_chars_ref(5, 2).to_string(), b.slice_chars(5, 2));
+}
+
+#[test]
+fn line_slice_excludes_trailing_newline() {
+    let b = TextBuffer::from_str("abc\ndef\n");
+    assert_eq!(b.line_slice(0).to_string(), "abc");
+    assert_eq!(b.line_slice(1).to_string(), "def");
+    assert_eq!(b.line_slice(2).to_string(), "");
+}
+
+#[test]
+fn apply_edits_returns_summary_and_final_cursor() {
+    let mut b = TextBuffer::from_str("hello world");
+    let edits = vec![Edit::replace(6..11, "rust"), Edit::insert(10, "!")];
+    let summary = b.apply_edits(&edits);
+
+    assert_eq!(b.to_string(), "hello rust!");
+    assert_eq!(summary.cursor, Pos::new(0, 11));
+    assert_eq!(summary.edits_applied, 2);
+    assert_eq!(summary.changed_range, 6..11);
+}
+
+#[test]
+fn apply_edits_empty_is_noop_summary() {
+    let mut b = TextBuffer::from_str("abc");
+    let summary = b.apply_edits(&[]);
+    assert_eq!(b.to_string(), "abc");
+    assert_eq!(summary.changed_range, 3..3);
+    assert_eq!(summary.cursor, Pos::new(0, 3));
+    assert_eq!(summary.edits_applied, 0);
+}
