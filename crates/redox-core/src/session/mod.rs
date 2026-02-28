@@ -550,12 +550,16 @@ impl EditorSession {
                     .path
                     .as_ref()
                     .context("file buffer is missing path metadata")?;
-                let content = rec.buffer.to_string();
+                let mut content = rec.buffer.to_string();
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                    rec.buffer = TextBuffer::from_str(&content);
+                }
 
                 std::fs::write(path, &content)
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
 
-                rec.clean_fingerprint = hash_text(&content);
+                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
                 rec.meta.dirty = false;
                 rec.meta.is_new_file = false;
                 Ok(())
@@ -857,7 +861,27 @@ mod tests {
 
         assert!(!session.active_meta().dirty);
         let on_disk = fs::read_to_string(&path).expect("failed to read temp file");
-        assert_eq!(on_disk, "old_new");
+        assert_eq!(on_disk, "old_new\n");
+        assert_eq!(session.active_buffer().to_string(), "old_new\n");
+        assert!(!session.recompute_active_dirty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_active_appends_trailing_newline_for_non_empty_file() {
+        let path = temp_path("save_active_trailing_newline");
+        fs::write(&path, "hello").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        session.save_active().expect("save failed");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read temp file"),
+            "hello\n"
+        );
+        assert_eq!(session.active_buffer().to_string(), "hello\n");
+        assert!(!session.recompute_active_dirty());
 
         let _ = fs::remove_file(path);
     }
