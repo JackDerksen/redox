@@ -11,6 +11,8 @@
 
 use std::cmp::min;
 
+use ropey::RopeSlice;
+
 use crate::buffer::TextBuffer;
 
 impl TextBuffer {
@@ -70,10 +72,14 @@ impl TextBuffer {
 
     /// Returns the line content as a `String`, excluding a trailing `'\n'` if present.
     pub fn line_string(&self, line: usize) -> String {
+        self.line_slice(line).to_string()
+    }
+
+    /// Returns a non-allocating line slice excluding a trailing `'\n'` if present.
+    pub fn line_slice(&self, line: usize) -> RopeSlice<'_> {
         let line = self.clamp_line(line);
-        let slice = self.rope.line(line);
-        let s = slice.to_string();
-        s.strip_suffix('\n').unwrap_or(&s).to_string()
+        let range = self.line_char_range(line);
+        self.rope.slice(range)
     }
 
     /// Returns the char range `[start, end)` for the line content, excluding a trailing `'\n'`.

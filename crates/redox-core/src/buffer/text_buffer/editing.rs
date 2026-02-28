@@ -7,26 +7,21 @@
 //! - keep public methods small and composable
 //! - use char indices (ropey’s primary indexing model) internally
 //! - return updated `Pos`/`Selection` to make call sites explicit
-//! - keep it easy to extend later (undo/redo, transactions, multiple cursors, etc.)
+//! - support both single edits and batched edit application
 
-use ropey::Rope;
-
-use crate::buffer::{Edit, Pos, Selection, TextBuffer};
+use crate::buffer::{Edit, EditBatchSummary, Pos, Selection, TextBuffer};
 
 impl TextBuffer {
     /// Insert `text` at the given logical position.
     ///
     /// Returns the new cursor position (at the end of inserted text).
     ///
-    /// NOTE: This is a primitive operation I can build higher-level commands on top of
-    /// (e.g. replace-selection-then-insert, paste, auto-indent, etc).
+    /// This is a primitive operation for higher-level editing commands.
     pub fn insert(&mut self, pos: Pos, text: &str) -> Pos {
         let at = self.pos_to_char(pos);
         self.rope.insert(at, text);
 
-        // Compute end position by converting at + inserted_chars.
-        // We avoid `text.chars().count()` to keep indexing consistent with ropey.
-        let inserted_chars = Rope::from_str(text).len_chars();
+        let inserted_chars = text.chars().count();
         self.char_to_pos(at + inserted_chars)
     }
 
@@ -120,9 +115,6 @@ impl TextBuffer {
 
     /// Apply an `Edit` expressed in char indices.
     ///
-    /// NOTE: This is intended as a low-level building block for future undo/redo
-    /// so I can store `Edit`s, invert them, and replay them.
-    ///
     /// Returns the resulting cursor position (end of inserted text, or start of deletion).
     pub fn apply_edit(&mut self, edit: Edit) -> Pos {
         let maxc = self.len_chars();
@@ -140,10 +132,52 @@ impl TextBuffer {
 
         if !edit.insert.is_empty() {
             self.rope.insert(start, &edit.insert);
-            let inserted_chars = Rope::from_str(&edit.insert).len_chars();
+            let inserted_chars = edit.insert.chars().count();
             self.char_to_pos(start + inserted_chars)
         } else {
             self.char_to_pos(start)
+        }
+    }
+
+    /// Apply multiple edits sequentially and return a transaction-style summary.
+    ///
+    /// Edits are applied in input order against the current buffer state.
+    pub fn apply_edits(&mut self, edits: &[Edit]) -> EditBatchSummary {
+        let mut changed_start = usize::MAX;
+        let mut changed_end = 0usize;
+        let mut cursor = self.char_to_pos(self.len_chars());
+
+        for edit in edits {
+            let maxc = self.len_chars();
+            let start = edit.range.start.min(maxc);
+            let end = edit.range.end.min(maxc);
+            let (start, _) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+
+            cursor = self.apply_edit(edit.clone());
+            let cursor_char = self.pos_to_char(cursor);
+
+            changed_start = changed_start.min(start);
+            changed_end = changed_end.max(cursor_char.max(start));
+        }
+
+        if edits.is_empty() {
+            let cursor = self.char_to_pos(self.len_chars());
+            let at = self.pos_to_char(cursor);
+            return EditBatchSummary {
+                changed_range: at..at,
+                cursor,
+                edits_applied: 0,
+            };
+        }
+
+        EditBatchSummary {
+            changed_range: changed_start..changed_end,
+            cursor,
+            edits_applied: edits.len(),
         }
     }
 
