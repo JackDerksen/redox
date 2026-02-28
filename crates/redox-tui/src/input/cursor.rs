@@ -22,6 +22,9 @@ use redox_core::{Pos, TextBuffer};
 use std::cmp::min;
 use unicode_segmentation::UnicodeSegmentation;
 
+const LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS: usize = 8 * 1024;
+const LONG_LINE_CURSOR_FAST_PATH_MAX_DELTA_CHARS: usize = 4 * 1024;
+
 /// How the viewport should follow the cursor.
 #[derive(Debug, Clone, Copy)]
 pub struct FollowConfig {
@@ -62,6 +65,7 @@ pub struct CursorController {
 
     tab_policy: TabPolicy,
     preferred_col: Option<usize>,
+    visual_cache: Option<VisualCache>,
 }
 
 impl Default for CursorController {
@@ -73,6 +77,7 @@ impl Default for CursorController {
             follow: FollowConfig::default(),
             tab_policy: TabPolicy::Fixed(4),
             preferred_col: None,
+            visual_cache: None,
         }
     }
 }
@@ -98,6 +103,7 @@ impl CursorController {
         // Clamp the cursor first (edits can invalidate col/line).
         self.cursor = buffer.clamp_pos(self.cursor);
         self.preferred_col = None;
+        self.invalidate_visual_cache();
 
         // Clamp scroll to content first (keeps state sane).
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
@@ -181,7 +187,7 @@ impl CursorController {
     ///
     /// If the cursor is not within the current viewport, returns a spec with `visible: false`.
     pub fn cursor_spec(
-        &self,
+        &mut self,
         buffer: &TextBuffer,
         viewport_width_cells: usize,
         viewport_height_rows: usize,
@@ -309,8 +315,11 @@ impl CursorController {
     ) {
         // Horizontal clamp: keep within current line width for sanity.
         let line = buffer.clamp_line(self.cursor.line);
-        let max_x = self.line_cell_width(buffer, line);
-        self.scroll_x_cells = self.scroll_x_cells.min(max_x);
+        let line_len = buffer.line_len_chars(line);
+        if line_len <= LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS {
+            let max_x = self.line_cell_width(buffer, line);
+            self.scroll_x_cells = self.scroll_x_cells.min(max_x);
+        }
 
         // Vertical clamp (line-based, no wrapping):
         //
@@ -334,16 +343,30 @@ impl CursorController {
     /// - `cursor_y_lines` is the document line index (0-based).
     /// - `cursor_x_cells` is the cursor column in terminal cells on that line.
     fn cursor_visual_info(
-        &self,
+        &mut self,
         buffer: &TextBuffer,
         _viewport_width_cells: usize,
     ) -> CursorVisualInfo {
         let pos = buffer.clamp_pos(self.cursor);
         let line_idx = buffer.clamp_line(pos.line);
+        let line_len = buffer.line_len_chars(line_idx);
+
+        if line_len > LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS {
+            let x = self.cursor_x_cells_long_line(buffer, line_idx, pos.col);
+            return CursorVisualInfo {
+                cursor_y_lines: line_idx,
+                cursor_x_cells: x,
+            };
+        }
 
         // Compute x in terminal cells by measuring grapheme widths up to the cursor char column.
         let line_text = buffer.line_string(line_idx);
         if line_text.is_empty() {
+            self.visual_cache = Some(VisualCache {
+                line: line_idx,
+                col: 0,
+                x_cells: 0,
+            });
             return CursorVisualInfo {
                 cursor_y_lines: line_idx,
                 cursor_x_cells: 0,
@@ -354,6 +377,11 @@ impl CursorController {
         let cursor_g = char_col_to_grapheme_index(&graphemes, pos.col);
 
         let x = graphemes_cell_width(&graphemes[..cursor_g.min(graphemes.len())], self.tab_policy);
+        self.visual_cache = Some(VisualCache {
+            line: line_idx,
+            col: pos.col,
+            x_cells: x,
+        });
 
         CursorVisualInfo {
             cursor_y_lines: line_idx,
@@ -372,12 +400,86 @@ impl CursorController {
         }
         width
     }
+
+    fn cursor_x_cells_long_line(
+        &mut self,
+        buffer: &TextBuffer,
+        line_idx: usize,
+        target_col: usize,
+    ) -> usize {
+        let line_start = buffer.line_to_char(line_idx);
+
+        if target_col == 0 {
+            self.visual_cache = Some(VisualCache {
+                line: line_idx,
+                col: 0,
+                x_cells: 0,
+            });
+            return 0;
+        }
+
+        if let Some(cache) = self.visual_cache
+            && cache.line == line_idx
+        {
+            if cache.col == target_col {
+                return cache.x_cells;
+            }
+
+            let delta = cache.col.abs_diff(target_col);
+            if delta <= LONG_LINE_CURSOR_FAST_PATH_MAX_DELTA_CHARS {
+                let mut x = cache.x_cells;
+                if target_col > cache.col {
+                    for col in cache.col..target_col {
+                        let ch = buffer.rope().char(line_start + col);
+                        x = x.saturating_add(cell_width_for_char(ch, self.tab_policy));
+                    }
+                } else {
+                    for col in target_col..cache.col {
+                        let ch = buffer.rope().char(line_start + col);
+                        x = x.saturating_sub(cell_width_for_char(ch, self.tab_policy));
+                    }
+                }
+
+                self.visual_cache = Some(VisualCache {
+                    line: line_idx,
+                    col: target_col,
+                    x_cells: x,
+                });
+                return x;
+            }
+        }
+
+        let mut x = 0usize;
+        for col in 0..target_col {
+            let ch = buffer.rope().char(line_start + col);
+            x = x.saturating_add(cell_width_for_char(ch, self.tab_policy));
+        }
+
+        self.visual_cache = Some(VisualCache {
+            line: line_idx,
+            col: target_col,
+            x_cells: x,
+        });
+        x
+    }
+
+    #[inline]
+    fn invalidate_visual_cache(&mut self) {
+        self.visual_cache = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct CursorVisualInfo {
     cursor_x_cells: usize,
     cursor_y_lines: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VisualCache {
+    line: usize,
+    col: usize,
+    x_cells: usize,
 }
 
 /// Convert a cursor column in char units to a grapheme index into `graphemes`.
@@ -412,6 +514,13 @@ fn graphemes_cell_width(graphemes: &[&str], tab_policy: TabPolicy) -> usize {
     w
 }
 
+#[inline]
+fn cell_width_for_char(ch: char, tab_policy: TabPolicy) -> usize {
+    let mut buf = [0_u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    cell_width(s, tab_policy) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +552,25 @@ mod tests {
 
         cursor.apply_motion(&buffer, Motion::Up, 1, 80, 24);
         assert_eq!(cursor.cursor, Pos::new(1, 0));
+    }
+
+    #[test]
+    fn long_line_fast_path_updates_x_incrementally() {
+        let long = format!("{}\t字", "a".repeat(LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 64));
+        let buffer = TextBuffer::from_str(&long);
+        let mut cursor = CursorController::new();
+
+        cursor.cursor = Pos::new(0, LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 63);
+        let x_before = cursor.cursor_spec(&buffer, 400, 24).x as usize;
+
+        cursor.cursor = Pos::new(0, LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 64);
+        let x_tab = cursor.cursor_spec(&buffer, 400, 24).x as usize;
+        let tab_delta = x_tab.saturating_sub(x_before);
+        assert!((1..=4).contains(&tab_delta));
+
+        cursor.cursor = Pos::new(0, LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 65);
+        let x_wide = cursor.cursor_spec(&buffer, 400, 24).x as usize;
+        let wide_delta = x_wide.saturating_sub(x_tab);
+        assert!(wide_delta >= 1);
     }
 }
