@@ -1,5 +1,7 @@
 //! Multi-buffer session model for higher-level editor frontends.
 
+mod loading;
+
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Component;
@@ -7,7 +9,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::{TextBuffer, io};
+use self::loading::IncrementalFileLoader;
+use crate::TextBuffer;
+
+const INITIAL_LOAD_BYTES: usize = 64 * 1024;
+const FULL_LOAD_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Stable buffer identifier within an [`EditorSession`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -25,7 +31,7 @@ impl BufferId {
 pub enum BufferKind {
     /// File-backed editable buffer.
     File,
-    /// Ephemeral/UI buffer (this is what I'll be using for picker/menu surfaces).
+    /// Ephemeral UI buffer for editor surfaces.
     Ui,
 }
 
@@ -52,11 +58,44 @@ pub struct BufferSummary {
     pub is_active: bool,
 }
 
-#[derive(Debug, Clone)]
+/// Loading phase for a file-backed buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferLoadPhase {
+    NotLoading,
+    Loading,
+    Complete,
+    Failed,
+}
+
+/// Snapshot status for file loading progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferLoadStatus {
+    pub phase: BufferLoadPhase,
+    pub bytes_loaded: usize,
+    pub total_bytes: Option<usize>,
+    pub error: Option<String>,
+}
+
+impl BufferLoadStatus {
+    #[inline]
+    fn not_loading() -> Self {
+        Self {
+            phase: BufferLoadPhase::NotLoading,
+            bytes_loaded: 0,
+            total_bytes: None,
+            error: None,
+        }
+    }
+
+}
+
+#[derive(Debug)]
 struct BufferRecord {
     meta: BufferMeta,
     buffer: TextBuffer,
     clean_fingerprint: u64,
+    loader: Option<IncrementalFileLoader>,
+    load_status: BufferLoadStatus,
 }
 
 /// Multi-buffer editor session with active buffer + MRU ordering.
@@ -110,11 +149,43 @@ impl EditorSession {
         }
 
         let file_exists = normalized.exists();
-        let buffer = if file_exists {
-            io::load_buffer(&normalized)?
-        } else {
-            TextBuffer::new()
-        };
+        let mut buffer = TextBuffer::new();
+        let mut loader = None;
+        let mut load_status = BufferLoadStatus::not_loading();
+
+        if file_exists {
+            let mut incremental = IncrementalFileLoader::open(&normalized)?;
+            load_status = BufferLoadStatus {
+                phase: BufferLoadPhase::Loading,
+                bytes_loaded: 0,
+                total_bytes: incremental.total_bytes(),
+                error: None,
+            };
+
+            match incremental.read_chunk(INITIAL_LOAD_BYTES) {
+                Ok(chunk) => {
+                    if !chunk.text.is_empty() {
+                        let at = buffer.len_chars();
+                        buffer.rope_mut().insert(at, &chunk.text);
+                    }
+
+                    load_status.bytes_loaded = incremental.bytes_loaded();
+                    load_status.total_bytes = incremental.total_bytes();
+                    if chunk.eof {
+                        load_status.phase = BufferLoadPhase::Complete;
+                    } else {
+                        load_status.phase = BufferLoadPhase::Loading;
+                        loader = Some(incremental);
+                    }
+                }
+                Err(err) => {
+                    load_status.phase = BufferLoadPhase::Failed;
+                    load_status.error = Some(err.to_string());
+                    load_status.bytes_loaded = incremental.bytes_loaded();
+                    load_status.total_bytes = incremental.total_bytes();
+                }
+            }
+        }
 
         let id = self.alloc_id();
         let meta = BufferMeta {
@@ -125,7 +196,11 @@ impl EditorSession {
             dirty: false,
             is_new_file: !file_exists,
         };
-        let clean_fingerprint = content_fingerprint(&buffer);
+        let clean_fingerprint = if matches!(load_status.phase, BufferLoadPhase::Complete) {
+            content_fingerprint(&buffer)
+        } else {
+            hash_text("")
+        };
 
         self.buffers.insert(
             id,
@@ -133,6 +208,8 @@ impl EditorSession {
                 meta,
                 buffer,
                 clean_fingerprint,
+                loader,
+                load_status,
             },
         );
         self.path_index.insert(normalized, id);
@@ -141,7 +218,7 @@ impl EditorSession {
         Ok(id)
     }
 
-    /// Open an in-memory UI buffer (future floating picker/menu hook).
+    /// Open an in-memory UI buffer.
     pub fn open_ui_buffer(&mut self, name: impl Into<String>, initial_text: &str) -> BufferId {
         let id = self.alloc_id();
         let meta = BufferMeta {
@@ -159,6 +236,8 @@ impl EditorSession {
                 meta,
                 buffer: TextBuffer::from_str(initial_text),
                 clean_fingerprint: hash_text(initial_text),
+                loader: None,
+                load_status: BufferLoadStatus::not_loading(),
             },
         );
         let _ = self.activate(id);
@@ -216,6 +295,32 @@ impl EditorSession {
     }
 
     #[inline]
+    pub fn active_buffer_load_status(&self) -> BufferLoadStatus {
+        self.buffer_load_status(self.active_id())
+            .unwrap_or_else(BufferLoadStatus::not_loading)
+    }
+
+    #[inline]
+    pub fn active_buffer_is_fully_loaded(&self) -> bool {
+        self.buffer_is_fully_loaded(self.active_id()).unwrap_or(true)
+    }
+
+    #[inline]
+    pub fn buffer_load_status(&self, id: BufferId) -> Option<BufferLoadStatus> {
+        self.buffers.get(&id).map(|rec| rec.load_status.clone())
+    }
+
+    #[inline]
+    pub fn buffer_is_fully_loaded(&self, id: BufferId) -> Option<bool> {
+        self.buffers.get(&id).map(|rec| {
+            matches!(
+                rec.load_status.phase,
+                BufferLoadPhase::NotLoading | BufferLoadPhase::Complete
+            )
+        })
+    }
+
+    #[inline]
     pub fn set_active_dirty(&mut self, dirty: bool) {
         self.active_meta_mut().dirty = dirty;
     }
@@ -248,6 +353,105 @@ impl EditorSession {
     #[inline]
     pub fn any_dirty(&self) -> bool {
         self.buffers.values().any(|rec| rec.meta.dirty)
+    }
+
+    /// Poll incremental loaders and append up to `max_bytes` across open buffers.
+    ///
+    /// Returns the number of bytes read from disk.
+    pub fn poll_loading(&mut self, max_bytes: usize) -> usize {
+        if max_bytes == 0 {
+            return 0;
+        }
+
+        let ids: Vec<BufferId> = self.mru.clone();
+        let mut remaining = max_bytes;
+        let mut total_read = 0usize;
+
+        for id in ids {
+            if remaining == 0 {
+                break;
+            }
+            let want = remaining.min(FULL_LOAD_CHUNK_BYTES);
+            match self.load_step_for(id, want) {
+                Ok(read) => {
+                    total_read = total_read.saturating_add(read);
+                    remaining = remaining.saturating_sub(read);
+                }
+                Err(_) => {
+                    // Error status is stored in-buffer; continue polling others.
+                }
+            }
+        }
+
+        total_read
+    }
+
+    /// Ensure a file-backed buffer has loaded enough text to include `line`,
+    /// or until the bounded read budget is exhausted.
+    pub fn ensure_buffer_loaded_through_line(
+        &mut self,
+        id: BufferId,
+        line: usize,
+        max_bytes: usize,
+    ) -> Result<()> {
+        let mut remaining = max_bytes;
+
+        while self
+            .buffers
+            .get(&id)
+            .map(|rec| {
+                matches!(rec.load_status.phase, BufferLoadPhase::Loading)
+                    && rec.buffer.len_lines() <= line
+            })
+            .unwrap_or(false)
+            && remaining > 0
+        {
+            let want = remaining.min(FULL_LOAD_CHUNK_BYTES);
+            let read = self.load_step_for(id, want)?;
+            if read == 0 {
+                break;
+            }
+            remaining = remaining.saturating_sub(read);
+        }
+
+        let status = self
+            .buffers
+            .get(&id)
+            .map(|rec| rec.load_status.clone())
+            .unwrap_or_else(BufferLoadStatus::not_loading);
+        if matches!(status.phase, BufferLoadPhase::Failed) {
+            let msg = status.error.unwrap_or_else(|| "buffer load failed".to_string());
+            bail!("{msg}");
+        }
+        Ok(())
+    }
+
+    /// Ensure a file-backed buffer is fully loaded to EOF.
+    pub fn ensure_buffer_fully_loaded(&mut self, id: BufferId) -> Result<()> {
+        loop {
+            let phase = self
+                .buffers
+                .get(&id)
+                .map(|rec| rec.load_status.phase)
+                .unwrap_or(BufferLoadPhase::NotLoading);
+            match phase {
+                BufferLoadPhase::NotLoading | BufferLoadPhase::Complete => return Ok(()),
+                BufferLoadPhase::Failed => {
+                    let msg = self
+                        .buffers
+                        .get(&id)
+                        .and_then(|rec| rec.load_status.error.clone())
+                        .unwrap_or_else(|| "buffer load failed".to_string());
+                    bail!("{msg}");
+                }
+                BufferLoadPhase::Loading => {
+                    let read = self.load_step_for(id, FULL_LOAD_CHUNK_BYTES)?;
+                    if read == 0 {
+                        continue;
+                    }
+                }
+            }
+        }
     }
 
     /// Cycle to the next buffer in MRU order.
@@ -331,6 +535,7 @@ impl EditorSession {
     /// Save the active file-backed buffer.
     pub fn save_active(&mut self) -> Result<()> {
         let id = self.active_id();
+        self.ensure_buffer_fully_loaded(id)?;
         let rec = self
             .buffers
             .get_mut(&id)
@@ -370,6 +575,65 @@ impl EditorSession {
     #[inline]
     pub fn meta(&self, id: BufferId) -> Option<&BufferMeta> {
         self.buffers.get(&id).map(|rec| &rec.meta)
+    }
+
+    fn load_step_for(&mut self, id: BufferId, max_bytes: usize) -> Result<usize> {
+        let rec = match self.buffers.get_mut(&id) {
+            Some(rec) => rec,
+            None => return Ok(0),
+        };
+
+        if !matches!(rec.load_status.phase, BufferLoadPhase::Loading) {
+            return Ok(0);
+        }
+
+        let (chunk, bytes_loaded, total_bytes, is_eof) = match rec.loader.as_mut() {
+            Some(loader) => {
+                let chunk = match loader.read_chunk(max_bytes) {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        rec.load_status.phase = BufferLoadPhase::Failed;
+                        rec.load_status.error = Some(err.to_string());
+                        rec.load_status.bytes_loaded = loader.bytes_loaded();
+                        rec.load_status.total_bytes = loader.total_bytes();
+                        rec.loader = None;
+                        return Err(err);
+                    }
+                };
+                (
+                    chunk,
+                    loader.bytes_loaded(),
+                    loader.total_bytes(),
+                    loader.is_eof(),
+                )
+            }
+            None => {
+                rec.load_status.phase = BufferLoadPhase::Complete;
+                rec.load_status.error = None;
+                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+                return Ok(0);
+            }
+        };
+
+        if !chunk.text.is_empty() {
+            let at = rec.buffer.len_chars();
+            rec.buffer.rope_mut().insert(at, &chunk.text);
+        }
+
+        rec.load_status.bytes_loaded = bytes_loaded;
+        rec.load_status.total_bytes = total_bytes;
+
+        if chunk.eof || is_eof {
+            rec.load_status.phase = BufferLoadPhase::Complete;
+            rec.load_status.error = None;
+            rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+            rec.loader = None;
+        } else {
+            rec.load_status.phase = BufferLoadPhase::Loading;
+            rec.load_status.error = None;
+        }
+
+        Ok(chunk.bytes_read)
     }
 
     fn alloc_id(&mut self) -> BufferId {
@@ -456,6 +720,7 @@ mod tests {
     use super::*;
 
     use std::fs;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(tag: &str) -> PathBuf {
@@ -464,6 +729,14 @@ mod tests {
             .expect("clock went backwards")
             .as_nanos();
         std::env::temp_dir().join(format!("redox_session_test_{tag}_{nanos}.txt"))
+    }
+
+    fn large_text(lines: usize) -> String {
+        let mut out = String::new();
+        for i in 0..lines {
+            out.push_str(&format!("line-{i:05} abcdefghijklmnopqrstuvwxyz\n"));
+        }
+        out
     }
 
     #[test]
@@ -600,6 +873,159 @@ mod tests {
         let sel = crate::Selection::empty(crate::Pos::new(0, 6));
         let _ = session.active_buffer_mut().backspace(sel);
         assert!(!session.recompute_active_dirty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn incremental_open_starts_loading_for_large_file() {
+        let path = temp_path("incremental_open");
+        let text = large_text(6000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let status = session.active_buffer_load_status();
+
+        assert_eq!(status.phase, BufferLoadPhase::Loading);
+        assert!(status.bytes_loaded > 0);
+        assert!(status.total_bytes.unwrap_or(0) > status.bytes_loaded);
+        assert!(!session.active_buffer_is_fully_loaded());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn poll_loading_increases_loaded_bytes_monotonically() {
+        let path = temp_path("poll_monotonic");
+        let text = large_text(8000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let mut prev = session.active_buffer_load_status().bytes_loaded;
+
+        for _ in 0..10 {
+            let _ = session.poll_loading(8 * 1024);
+            let now = session.active_buffer_load_status().bytes_loaded;
+            assert!(now >= prev);
+            prev = now;
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn demand_loading_reaches_target_line_or_eof() {
+        let path = temp_path("demand_line");
+        let text = large_text(9000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let id = session.active_id();
+        let target = 3500usize;
+        session
+            .ensure_buffer_loaded_through_line(id, target, 256 * 1024)
+            .expect("demand load failed");
+
+        let loaded_lines = session.active_buffer().len_lines();
+        let phase = session.active_buffer_load_status().phase;
+        assert!(loaded_lines > target || phase == BufferLoadPhase::Complete);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ensure_fully_loaded_completes_and_matches_disk() {
+        let path = temp_path("full_load");
+        let text = large_text(7500);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let id = session.active_id();
+        session
+            .ensure_buffer_fully_loaded(id)
+            .expect("full load should succeed");
+
+        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Complete);
+        assert_eq!(session.active_buffer().to_string(), text);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn full_load_handles_utf8_chunk_boundaries() {
+        let path = temp_path("utf8_boundaries");
+        let text = "😀alpha\nβeta\nこんにちは\n".repeat(7000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let id = session.active_id();
+        session
+            .ensure_buffer_fully_loaded(id)
+            .expect("full load should succeed");
+
+        assert_eq!(session.active_buffer().to_string(), text);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_utf8_sets_failed_phase_and_blocks_full_load() {
+        let path = temp_path("invalid_utf8_incremental");
+        let mut file = fs::File::create(&path).expect("failed to create temp file");
+        let prefix = "ok\n".repeat(30_000);
+        file.write_all(prefix.as_bytes())
+            .expect("failed to write prefix");
+        file.write_all(&[0xff])
+            .expect("failed to write invalid byte");
+        file.flush().expect("failed to flush");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let id = session.active_id();
+        let err = session
+            .ensure_buffer_fully_loaded(id)
+            .expect_err("expected invalid utf8 error");
+        assert!(err.to_string().contains("not valid UTF-8"));
+        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Failed);
+        assert!(!session.active_buffer().is_empty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn background_loading_does_not_mark_dirty() {
+        let path = temp_path("load_not_dirty");
+        let text = large_text(7000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let _ = session.poll_loading(128 * 1024);
+        assert!(!session.active_meta().dirty);
+
+        let id = session.active_id();
+        session
+            .ensure_buffer_fully_loaded(id)
+            .expect("full load should succeed");
+        let end = session.active_buffer().clamp_pos(crate::Pos::new(0, 5));
+        let _ = session.active_buffer_mut().insert(end, "!");
+        assert!(session.recompute_active_dirty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_active_forces_full_load_before_write() {
+        let path = temp_path("save_gate");
+        let text = large_text(8500);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Loading);
+
+        session.save_active().expect("save should force full load");
+        assert_eq!(session.active_buffer_load_status().phase, BufferLoadPhase::Complete);
+
+        let on_disk = fs::read_to_string(&path).expect("failed to read file");
+        assert_eq!(on_disk, text);
 
         let _ = fs::remove_file(path);
     }
