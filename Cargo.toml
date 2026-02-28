@@ -1,6 +1,6 @@
 [package]
 name = "redox-editor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A terminal-based, Vim-like text editor built with MinUI"
 license = "MIT"
