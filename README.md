@@ -137,6 +137,7 @@ Notes:
 - [x] File explorer/picker widget
 - [x] Modify style module to use more absolute colours (RGB or something)
 - [x] `:about` "About Redox" screen with version info and stuff
+- [x] Relative line numbers (no standard line numbers because those are objectively worse)
 - [ ] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [ ] More Vim motions
 - [ ] More extendable leader key system with "whichkey" functionality

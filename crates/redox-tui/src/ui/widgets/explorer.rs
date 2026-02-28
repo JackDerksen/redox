@@ -13,6 +13,7 @@ pub fn draw_explorer_popup_view(
     window: &mut dyn Window,
     popup: ExplorerPopup,
 ) -> minui::Result<()> {
+    const GUTTER_CONTENT_PADDING: u16 = 1;
     let (vw, vh) = window.get_size();
     let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
     let popup_w = inner_w.saturating_add(2);
@@ -68,20 +69,24 @@ pub fn draw_explorer_popup_view(
         }
     }
 
-    let (snapshot, spec, line_styles) =
-        state.with_active_buffer_view_mut(|buffer, explorer_view| {
+    let (snapshot, spec, line_styles, cursor_line, total_lines) = state
+        .with_active_buffer_view_mut(|buffer, explorer_view| {
+            let total_lines = buffer.len_lines().max(1);
+            let gutter_w = line_number_gutter_width(total_lines);
+            let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+            let text_w = inner_w.saturating_sub(content_x);
             let (scroll_x, scroll_y) = explorer_view.cursor.viewport_scroll();
             let viewport = TextViewport {
                 scroll_x,
                 scroll_y,
-                width: inner_w,
+                width: text_w,
                 height: inner_h,
             };
             let snapshot =
                 snapshot_lines_wrapped_cached(buffer, &viewport, &mut explorer_view.grapheme_cache);
             let spec = explorer_view
                 .cursor
-                .cursor_spec(buffer, inner_w as usize, inner_h as usize);
+                .cursor_spec(buffer, text_w as usize, inner_h as usize);
             let line_styles = (0..snapshot.lines.len())
                 .map(|row| {
                     let line_idx = snapshot.first_line + row;
@@ -89,13 +94,38 @@ pub fn draw_explorer_popup_view(
                     explorer_entry_color(style, &popup.dir_path, &source)
                 })
                 .collect::<Vec<_>>();
-            (snapshot, spec, line_styles)
+            (
+                snapshot,
+                spec,
+                line_styles,
+                explorer_view.cursor.cursor.line,
+                total_lines,
+            )
         });
+
+    let gutter_w = line_number_gutter_width(total_lines);
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    draw_relative_line_numbers(
+        &mut view,
+        style,
+        gutter_w,
+        inner_h,
+        snapshot.first_line,
+        cursor_line,
+        total_lines,
+    )?;
+
     for (row, line) in snapshot.lines.iter().enumerate() {
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
-        view.write_str_colored(row as u16, 0, line, color)?;
+        view.write_str_colored(row as u16, content_x, line, color)?;
     }
-    view.request_cursor(spec);
+    if spec.visible {
+        view.request_cursor(minui::window::CursorSpec {
+            x: spec.x.saturating_add(content_x),
+            y: spec.y,
+            visible: true,
+        });
+    }
 
     let status = build_editor_status_bar(state, style);
     status.draw(window)?;
@@ -168,4 +198,68 @@ fn is_executable(path: PathBuf) -> bool {
         let _ = metadata;
         false
     }
+}
+
+fn line_number_gutter_width(total_lines: usize) -> u16 {
+    let digits = total_lines.max(1).ilog10() as u16 + 1;
+    digits.saturating_add(1)
+}
+
+fn draw_relative_line_numbers(
+    view: &mut WindowView<'_>,
+    style: UiStyle,
+    gutter_w: u16,
+    text_h: u16,
+    first_line: usize,
+    cursor_line: usize,
+    total_lines: usize,
+) -> minui::Result<()> {
+    if gutter_w == 0 || text_h == 0 {
+        return Ok(());
+    }
+
+    let sep_x = gutter_w.saturating_sub(1);
+    let number_w = gutter_w.saturating_sub(1) as usize;
+    let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let current_color = ColorPair::new(style.theme.white, style.theme.bg);
+
+    for row in 0..text_h {
+        let line_idx = first_line.saturating_add(row as usize);
+        if line_idx >= total_lines {
+            continue;
+        }
+
+        let num = if line_idx == cursor_line {
+            (line_idx + 1).to_string()
+        } else {
+            line_idx.abs_diff(cursor_line).to_string()
+        };
+        let clipped_num = if num.chars().count() > number_w {
+            num.chars()
+                .rev()
+                .take(number_w)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        } else {
+            num
+        };
+
+        let text = format!("{clipped_num:>number_w$}");
+
+        let color = if line_idx == cursor_line {
+            current_color
+        } else {
+            relative_color
+        };
+
+        if number_w > 0 {
+            view.write_str_colored(row, 0, &text, color)?;
+        }
+
+        view.write_str_colored(row, sep_x, "▕", color)?;
+    }
+
+    Ok(())
 }

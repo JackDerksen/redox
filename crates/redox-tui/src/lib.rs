@@ -17,6 +17,9 @@ use ui::{
     build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
     explorer_popup_inner_size, snapshot_lines_wrapped_cached,
 };
+
+const GUTTER_CONTENT_PADDING: u16 = 1;
+
 fn draw_buffer_view(
     state: &mut EditorState,
     style: UiStyle,
@@ -31,7 +34,15 @@ fn draw_buffer_view(
 
     if let Some(popup) = state.explorer_popup() {
         if let Some(background_id) = state.explorer_background_buffer_id() {
-            draw_buffer_snapshot_for_id(state, background_id, vw, text_h, editor_text, window)?;
+            draw_buffer_snapshot_for_id(
+                state,
+                style,
+                background_id,
+                vw,
+                text_h,
+                editor_text,
+                window,
+            )?;
         }
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
         state.set_viewport_size(
@@ -44,7 +55,15 @@ fn draw_buffer_view(
 
     if let Some(popup) = state.about_popup() {
         if let Some(background_id) = state.about_background_buffer_id() {
-            draw_buffer_snapshot_for_id(state, background_id, vw, text_h, editor_text, window)?;
+            draw_buffer_snapshot_for_id(
+                state,
+                style,
+                background_id,
+                vw,
+                text_h,
+                editor_text,
+                window,
+            )?;
         }
         let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
         state.set_viewport_size(
@@ -55,22 +74,44 @@ fn draw_buffer_view(
         return Ok(());
     }
 
+    let active_cursor_line = state.active_cursor_pos().line;
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let gutter_w = line_number_gutter_width(total_lines);
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let text_w = vw.saturating_sub(content_x);
+    state.set_viewport_size(
+        text_w as usize,
+        text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+    );
+
     let (snapshot, spec) = state.with_active_buffer_view_mut(|buffer, view| {
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
         let viewport = TextViewport {
             scroll_x,
             scroll_y,
-            width: vw,
+            width: text_w,
             height: text_h,
         };
         let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
         let spec = view
             .cursor
-            .cursor_spec(buffer, vw as usize, text_h as usize);
+            .cursor_spec(buffer, text_w as usize, text_h as usize);
         (snapshot, spec)
     });
+
+    draw_relative_line_numbers(
+        window,
+        style,
+        gutter_w,
+        text_h,
+        snapshot.first_line,
+        active_cursor_line,
+        total_lines,
+    )?;
+    draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
+
     for (row, line) in snapshot.lines.iter().enumerate() {
-        window.write_str_colored(row as u16, 0, line, editor_text)?;
+        window.write_str_colored(row as u16, content_x, line, editor_text)?;
     }
 
     // --- Status bar (bottom row) ---
@@ -78,7 +119,98 @@ fn draw_buffer_view(
 
     status.draw(window)?;
 
-    window.request_cursor(spec);
+    if spec.visible {
+        window.request_cursor(minui::window::CursorSpec {
+            x: spec.x.saturating_add(content_x),
+            y: spec.y,
+            visible: true,
+        });
+    }
+
+    Ok(())
+}
+
+fn draw_gutter_padding(
+    window: &mut dyn Window,
+    style: UiStyle,
+    gutter_w: u16,
+    text_h: u16,
+    padding_w: u16,
+) -> minui::Result<()> {
+    if padding_w == 0 || text_h == 0 {
+        return Ok(());
+    }
+
+    let pad = " ".repeat(padding_w as usize);
+    let color = ColorPair::new(style.theme.bg, style.theme.bg);
+    for row in 0..text_h {
+        window.write_str_colored(row, gutter_w, &pad, color)?;
+    }
+    Ok(())
+}
+
+fn line_number_gutter_width(total_lines: usize) -> u16 {
+    let digits = total_lines.max(1).ilog10() as u16 + 1;
+    // digits + separator column
+    digits.saturating_add(1)
+}
+
+fn draw_relative_line_numbers(
+    window: &mut dyn Window,
+    style: UiStyle,
+    gutter_w: u16,
+    text_h: u16,
+    first_line: usize,
+    cursor_line: usize,
+    total_lines: usize,
+) -> minui::Result<()> {
+    if gutter_w == 0 || text_h == 0 {
+        return Ok(());
+    }
+
+    let sep_x = gutter_w.saturating_sub(1);
+    let number_w = gutter_w.saturating_sub(1) as usize;
+    let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let current_color = ColorPair::new(style.theme.white, style.theme.bg);
+
+    for row in 0..text_h {
+        let line_idx = first_line.saturating_add(row as usize);
+        if line_idx >= total_lines {
+            continue;
+        }
+
+        let num = if line_idx == cursor_line {
+            (line_idx + 1).to_string()
+        } else {
+            line_idx.abs_diff(cursor_line).to_string()
+        };
+
+        let clipped_num = if num.chars().count() > number_w {
+            num.chars()
+                .rev()
+                .take(number_w)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        } else {
+            num
+        };
+
+        let text = format!("{clipped_num:>number_w$}");
+
+        let color = if line_idx == cursor_line {
+            current_color
+        } else {
+            relative_color
+        };
+
+        if number_w > 0 {
+            window.write_str_colored(row, 0, &text, color)?;
+        }
+
+        window.write_str_colored(row, sep_x, "▕", color)?;
+    }
 
     Ok(())
 }
@@ -102,27 +234,49 @@ fn fill_background(
 
 fn draw_buffer_snapshot_for_id(
     state: &mut EditorState,
+    style: UiStyle,
     buffer_id: BufferId,
     width: u16,
     height: u16,
     colors: ColorPair,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
-    let Some(snapshot) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
-        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
-        let viewport = TextViewport {
-            scroll_x,
-            scroll_y,
-            width,
-            height,
-        };
-        snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache)
-    }) else {
+    let Some((snapshot, cursor_line, total_lines)) =
+        state.with_buffer_view_mut(buffer_id, |buffer, view| {
+            let total_lines = buffer.len_lines().max(1);
+            let gutter_w = line_number_gutter_width(total_lines);
+            let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+            let text_w = width.saturating_sub(content_x);
+            let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+            let viewport = TextViewport {
+                scroll_x,
+                scroll_y,
+                width: text_w,
+                height,
+            };
+            let snapshot =
+                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+            (snapshot, view.cursor.cursor.line, total_lines)
+        })
+    else {
         return Ok(());
     };
 
+    let gutter_w = line_number_gutter_width(total_lines);
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    draw_relative_line_numbers(
+        window,
+        style,
+        gutter_w,
+        height,
+        snapshot.first_line,
+        cursor_line,
+        total_lines,
+    )?;
+    draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
+
     for (row, line) in snapshot.lines.iter().enumerate() {
-        window.write_str_colored(row as u16, 0, line, colors)?;
+        window.write_str_colored(row as u16, content_x, line, colors)?;
     }
 
     Ok(())
