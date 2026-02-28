@@ -135,6 +135,40 @@ impl EditorSession {
         Ok(session)
     }
 
+    /// Build a new session with one empty unnamed file buffer.
+    pub fn open_initial_unnamed() -> Result<Self> {
+        let launch_dir = std::env::current_dir().context("failed to resolve current directory")?;
+        let launch_dir = std::fs::canonicalize(&launch_dir).unwrap_or(launch_dir);
+
+        let mut session = Self {
+            launch_dir,
+            ..Self::default()
+        };
+        let id = session.alloc_id();
+        let buffer = TextBuffer::new();
+        let meta = BufferMeta {
+            id,
+            kind: BufferKind::File,
+            display_name: "[No Name]".to_string(),
+            path: None,
+            dirty: false,
+            is_new_file: true,
+        };
+
+        session.buffers.insert(
+            id,
+            BufferRecord {
+                meta,
+                buffer,
+                clean_fingerprint: hash_text(""),
+                loader: None,
+                load_status: BufferLoadStatus::not_loading(),
+            },
+        );
+        let _ = session.activate(id);
+        Ok(session)
+    }
+
     /// Open (or switch to) a file-backed buffer.
     ///
     /// - Existing open path: activates and returns existing buffer ID.
@@ -778,6 +812,18 @@ mod tests {
         assert_eq!(session.summaries().len(), 1);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_initial_unnamed_creates_empty_file_buffer() {
+        let session = EditorSession::open_initial_unnamed().expect("open unnamed failed");
+        let meta = session.active_meta();
+
+        assert_eq!(meta.kind, BufferKind::File);
+        assert_eq!(meta.display_name, "[No Name]");
+        assert!(meta.path.is_none());
+        assert!(meta.is_new_file);
+        assert_eq!(session.active_buffer().to_string(), "");
     }
 
     #[test]

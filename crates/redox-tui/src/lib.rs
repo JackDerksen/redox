@@ -20,6 +20,11 @@ use ui::{
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 
+enum LaunchTarget {
+    File(PathBuf),
+    Explorer,
+}
+
 fn draw_buffer_view(
     state: &mut EditorState,
     style: UiStyle,
@@ -282,19 +287,38 @@ fn draw_buffer_snapshot_for_id(
     Ok(())
 }
 
-fn parse_path_arg() -> anyhow::Result<PathBuf> {
+fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     let mut args = env::args().skip(1);
-    let path = args
+    let raw = args
         .next()
         .ok_or_else(|| anyhow::anyhow!("expected a file path argument"))?;
-    Ok(PathBuf::from(path))
+    if raw == "." {
+        return Ok(LaunchTarget::Explorer);
+    }
+    Ok(LaunchTarget::File(PathBuf::from(raw)))
 }
 
 pub fn run() -> minui::Result<()> {
-    let path = parse_path_arg().expect("file path required (e.g. redox ./file.txt)");
-    let session = EditorSession::open_initial_file(path).expect("failed to open initial file");
+    let launch = parse_path_arg().expect("file path required (e.g. redox ./file.txt or redox .)");
+    let launch_explorer = matches!(launch, LaunchTarget::Explorer);
+    let session = match launch {
+        LaunchTarget::File(path) => {
+            EditorSession::open_initial_file(path).expect("failed to open initial file")
+        }
+        LaunchTarget::Explorer => {
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session")
+        }
+    };
 
-    let mut app = App::new(EditorState::new(session))?;
+    let mut state = EditorState::new(session);
+    if launch_explorer {
+        let (w, h) = state.viewport_size();
+        state.mode = app::EditorMode::Command;
+        state.command_line = "explorer".to_string();
+        state.apply_input(InputAction::CommandEnter, w, h);
+    }
+
+    let mut app = App::new(state)?;
     let style = UiStyle::default();
 
     app.run(
