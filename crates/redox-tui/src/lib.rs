@@ -26,6 +26,7 @@ fn draw_buffer_view(
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
+    state.pump_active_loading(text_h as usize);
 
     if let Some(popup) = state.explorer_popup() {
         if let Some(background_id) = state.explorer_background_buffer_id() {
