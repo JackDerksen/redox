@@ -15,7 +15,7 @@ mod util;
 
 pub mod prelude;
 
-pub use edit::Edit;
+pub use edit::{Edit, EditBatchSummary};
 pub use pos::{Pos, Selection};
 pub use text_buffer::TextBuffer;
 

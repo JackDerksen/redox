@@ -20,8 +20,11 @@ pub mod text;
 
 // Prefer using the rope-backed buffer implementation from `buffer`.
 // Re-export the common types here for ergonomic access by downstream crates.
-pub use buffer::{Edit, Pos, Selection, TextBuffer};
-pub use session::{BufferId, BufferKind, BufferMeta, BufferSummary, EditorSession};
+pub use buffer::{Edit, EditBatchSummary, Pos, Selection, TextBuffer};
+pub use session::{
+    BufferId, BufferKind, BufferLoadPhase, BufferLoadStatus, BufferMeta, BufferSummary,
+    EditorSession,
+};
 
 #[cfg(test)]
 mod tests {

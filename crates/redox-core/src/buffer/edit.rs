@@ -18,6 +18,17 @@ pub struct Edit {
     pub insert: String,
 }
 
+/// Summary returned by batched edit application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditBatchSummary {
+    /// Conservative changed character range after applying the batch.
+    pub changed_range: core::ops::Range<usize>,
+    /// Cursor position after the last applied edit.
+    pub cursor: crate::buffer::Pos,
+    /// Number of edits applied from the input slice.
+    pub edits_applied: usize,
+}
+
 impl Edit {
     /// Create an insertion at the given char index.
     pub fn insert(at_char: usize, text: impl Into<String>) -> Self {
