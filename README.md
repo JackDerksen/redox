@@ -82,10 +82,10 @@ Example:
 redox ./README.md
 ```
 
-Open straight into the explorer for the current directory:
+Open straight into the explorer for any specified directory (including `.`):
 
 ```bash
-redox .
+redox src
 ```
 
 ### Command mode quick reference

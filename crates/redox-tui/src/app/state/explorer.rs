@@ -29,6 +29,13 @@ pub(super) struct ExplorerState {
 }
 
 impl EditorState {
+    pub fn open_explorer_at_path(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        if self.active_buffer_is_surface() {
+            let _ = self.close_active_surface_buffer();
+        }
+        self.open_explorer_buffer_with_dir(dir_path)
+    }
+
     pub fn explorer_popup(&self) -> Option<ExplorerPopup> {
         let explorer = self.explorer.as_ref()?;
         if explorer.buffer_id != self.session.active_id() {
@@ -75,8 +82,12 @@ impl EditorState {
     }
 
     pub(super) fn open_explorer_buffer(&mut self) -> anyhow::Result<()> {
-        let return_to = self.session.active_id();
         let dir_path = self.explorer_target_directory()?;
+        self.open_explorer_buffer_with_dir(dir_path)
+    }
+
+    fn open_explorer_buffer_with_dir(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        let return_to = self.session.active_id();
         let entries = list_explorer_entries(&dir_path)?;
         let preferred_name = self.session.active_meta().path.as_ref().and_then(|path| {
             let parent = path.parent().unwrap_or(path.as_path());
