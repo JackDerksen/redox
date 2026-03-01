@@ -333,6 +333,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
         EditorMode::Insert => ("INSERT", style.palette.mode_insert),
         EditorMode::Command => ("COMMAND", style.palette.mode_command),
+        EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
+        EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
     };
 
     let mut left_text = format!("▌{}▐", mode_label);

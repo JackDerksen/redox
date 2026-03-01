@@ -44,20 +44,14 @@ redox/
 - Rust toolchain (`cargo` + `rustc`)
 - A terminal that supports basic ANSI features and raw mode (and ideally full colour support)
 
-### Build
+### Build from source
 
+Build from source after cloning the repository:
 ```bash
 cargo build --release -p redox-editor
 ```
 
-### Install via CLI
-
-The easiest way to install the editor is to just install the binary from Crates.io:
-```
-cargo install redox-editor
-```
-
-Alternatively, you can install it directly from the source code:
+Then install the created binary:
 ```
 cargo install --path . --force
 ```
@@ -70,7 +64,14 @@ If needed, add that location to your `PATH` (example for zsh):
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-### Run
+### Install via CLI
+
+The easiest way to install the editor is to just install the binary from Crates.io:
+```
+cargo install redox-editor
+```
+
+### Run Redox
 
 ```bash
 redox <file_path>
@@ -120,12 +121,24 @@ redox src
 | `A` | Insert at the end of the line |
 | `o` | Insert below cursor |
 | `O` | Insert above cursor |
+| `v` | Visual mode |
+| `V` | Visual line mode |
+| `x` | Delete character under cursor |
+| (visual mode) `x` | Delete selection without copying to register |
+| `y` | Yank selection to private register |
+| `<space>y` | Yank selection to system clipboard |
+| `p` | Paste from private register |
+| `P` | Paste above cursor |
+| (visual mode) `J` | Move selection up |
+| (visual mode) `K` | Move selection down |
+| (visual mode) `tab` | Indent selection |
+| (visual mode) `shift+tab` | Un-ident selection (outdent?) |
 | `<space>e` | Toggle file explorer |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
 - Arrow keys are also mapped for basic directional motion.
-- Current motions are aligned with Vim's standard, but future ones are subject to change based on my opinionated preferences.
+- This is an opinionated editor, so the motions are subject to change based on my personal preferences.
 
 ## Roadmap (current progress)
 
@@ -145,7 +158,7 @@ Notes:
 - [x] `:about` "About Redox" screen with version info and stuff
 - [x] Relative line numbers (no standard line numbers because those are objectively worse)
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
-- [ ] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
+- [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [ ] More Vim motions
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)

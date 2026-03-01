@@ -14,6 +14,8 @@ pub enum InputMode {
     Normal,
     Insert,
     Command,
+    Visual,
+    VisualLine,
 }
 
 /// How to enter insert mode.
@@ -68,6 +70,40 @@ pub enum InputAction {
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
     SurfaceGoParent,
+    /// Yank active visual selection into Redox's private (local) register.
+    YankSelectionPrivate,
+    /// Delete (cut) active visual selection into Redox's private register.
+    DeleteSelectionPrivate,
+    /// Delete active visual selection without yanking.
+    DeleteSelectionNoYank,
+    /// Delete (cut) current line(s) into Redox's private register.
+    DeleteCurrentLinePrivate {
+        count: usize,
+    },
+    /// Yank active visual selection into system clipboard.
+    YankSelectionSystem,
+    /// Paste from Redox's private register.
+    PastePrivateRegister,
+    /// Paste from Redox's private register before cursor / above line.
+    PastePrivateRegisterBefore,
+    /// Delete character under cursor without yanking.
+    DeleteCharNoYank,
+    /// Move visual selection up by line(s).
+    MoveVisualSelectionUp {
+        count: usize,
+    },
+    /// Move visual selection down by line(s).
+    MoveVisualSelectionDown {
+        count: usize,
+    },
+    /// Indent all lines touched by active visual selection.
+    IndentVisualSelection {
+        count: usize,
+    },
+    /// Un-indent all lines touched by active visual selection.
+    OutdentVisualSelection {
+        count: usize,
+    },
 
     /// Command-line editing actions (buffer is owned by editor state).
     CommandChar(char),
@@ -88,6 +124,7 @@ pub enum InputAction {
 #[derive(Debug, Default, Clone)]
 pub struct InputState {
     pending_g: bool,
+    pending_d: bool,
     pending_count: Option<usize>,
     pending_leader: bool,
 }
@@ -99,6 +136,7 @@ impl InputState {
 
     pub fn reset_prefixes(&mut self) {
         self.pending_g = false;
+        self.pending_d = false;
         self.pending_count = None;
         self.pending_leader = false;
     }
@@ -124,18 +162,21 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Escape => match mode {
             InputMode::Insert => InputAction::SetMode(InputMode::Normal),
             InputMode::Command => InputAction::CommandCancel,
+            InputMode::Visual | InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
             InputMode::Normal => InputAction::None,
         },
 
         Event::Backspace => match mode {
             InputMode::Insert => InputAction::Backspace,
             InputMode::Command => InputAction::CommandBackspace,
+            InputMode::Visual | InputMode::VisualLine => InputAction::None,
             InputMode::Normal => InputAction::None,
         },
 
         Event::Enter => match mode {
             InputMode::Insert => InputAction::Enter,
             InputMode::Command => InputAction::CommandEnter,
+            InputMode::Visual | InputMode::VisualLine => InputAction::None,
             InputMode::Normal => InputAction::SurfaceOpenSelected,
         },
 
@@ -144,21 +185,34 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
-            InputMode::Normal => normal_char_action(state, *c),
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {
+                modal_char_action(state, mode, *c)
+            }
         },
 
         _ => InputAction::None,
     }
 }
 
-fn normal_char_action(state: &mut InputState, c: char) -> InputAction {
+fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputAction {
     if state.pending_leader {
         state.pending_leader = false;
-        return if c == 'e' {
-            InputAction::OpenExplorer
-        } else {
-            InputAction::None
+        return match c {
+            'e' => InputAction::OpenExplorer,
+            'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+                InputAction::YankSelectionSystem
+            }
+            _ => InputAction::None,
         };
+    }
+
+    if state.pending_d && mode == InputMode::Normal {
+        state.pending_d = false;
+        if c == 'd' {
+            return InputAction::DeleteCurrentLinePrivate {
+                count: state.take_count_or_1(),
+            };
+        }
     }
 
     match c {
@@ -166,12 +220,73 @@ fn normal_char_action(state: &mut InputState, c: char) -> InputAction {
             state.pending_leader = true;
             InputAction::None
         }
+        'v' => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Normal => InputAction::SetMode(InputMode::Visual),
+                InputMode::Visual => InputAction::SetMode(InputMode::Normal),
+                InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
+                InputMode::Insert | InputMode::Command => InputAction::None,
+            }
+        }
+        'V' => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Normal => InputAction::SetMode(InputMode::VisualLine),
+                InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
+                InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
+                InputMode::Insert | InputMode::Command => InputAction::None,
+            }
+        }
+        'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            state.reset_prefixes();
+            InputAction::YankSelectionPrivate
+        }
+        'd' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            state.reset_prefixes();
+            InputAction::DeleteSelectionPrivate
+        }
+        'x' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            state.reset_prefixes();
+            InputAction::DeleteSelectionNoYank
+        }
+        'd' if mode == InputMode::Normal => {
+            state.pending_d = true;
+            InputAction::None
+        }
+        'x' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::DeleteCharNoYank
+        }
+        'p' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::PastePrivateRegister
+        }
+        'P' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::PastePrivateRegisterBefore
+        }
+        'J' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            InputAction::MoveVisualSelectionDown {
+                count: state.take_count_or_1(),
+            }
+        }
+        'K' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            InputAction::MoveVisualSelectionUp {
+                count: state.take_count_or_1(),
+            }
+        }
+        '\t' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            InputAction::IndentVisualSelection {
+                count: state.take_count_or_1(),
+            }
+        }
         ':' => InputAction::EnterCommand,
-        'i' => InputAction::EnterInsert(InsertKind::Insert),
-        'a' => InputAction::EnterInsert(InsertKind::Append),
-        'o' => InputAction::OpenLineBelow,
-        'O' => InputAction::OpenLineAbove,
-        '-' => InputAction::SurfaceGoParent,
+        'i' if mode == InputMode::Normal => InputAction::EnterInsert(InsertKind::Insert),
+        'a' if mode == InputMode::Normal => InputAction::EnterInsert(InsertKind::Append),
+        'o' if mode == InputMode::Normal => InputAction::OpenLineBelow,
+        'O' if mode == InputMode::Normal => InputAction::OpenLineAbove,
+        '-' if mode == InputMode::Normal => InputAction::SurfaceGoParent,
         _ => InputAction::None,
     }
 }
@@ -225,15 +340,19 @@ fn map_key_with_state(
             };
         }
 
-        InputMode::Normal => {}
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {}
     }
 
-    // Normal mode below.
+    // Modal (normal/visual) handling below.
 
     if state.pending_leader {
         state.pending_leader = false;
-        if matches!(key, KeyKind::Char('e')) {
-            return InputAction::OpenExplorer;
+        match key {
+            KeyKind::Char('e') => return InputAction::OpenExplorer,
+            KeyKind::Char('y') if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+                return InputAction::YankSelectionSystem;
+            }
+            _ => {}
         }
         return InputAction::None;
     }
@@ -241,14 +360,26 @@ fn map_key_with_state(
     // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
     if mods.shift {
         if let KeyKind::Char('I') = key {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             return InputAction::EnterInsert(InsertKind::InsertLineStart);
         }
         if let KeyKind::Char('A') = key {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             return InputAction::EnterInsert(InsertKind::AppendLineEnd);
         }
         if let KeyKind::Char('O') = key {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             return InputAction::OpenLineAbove;
         }
@@ -276,8 +407,29 @@ fn map_key_with_state(
         }
     }
 
+    if state.pending_d && mode == InputMode::Normal {
+        state.pending_d = false;
+        if matches!(key, KeyKind::Char('d')) {
+            return InputAction::DeleteCurrentLinePrivate {
+                count: state.take_count_or_1(),
+            };
+        }
+    }
+
     match key {
+        KeyKind::Escape => {
+            state.reset_prefixes();
+            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                InputAction::SetMode(InputMode::Normal)
+            } else {
+                InputAction::None
+            }
+        }
         KeyKind::Enter => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::SurfaceOpenSelected
         }
@@ -286,21 +438,136 @@ fn map_key_with_state(
             state.pending_leader = true;
             InputAction::None
         }
+        KeyKind::Char('v') => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Normal => InputAction::SetMode(InputMode::Visual),
+                InputMode::Visual => InputAction::SetMode(InputMode::Normal),
+                InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
+                InputMode::Insert | InputMode::Command => InputAction::None,
+            }
+        }
+        KeyKind::Char('V') => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Normal => InputAction::SetMode(InputMode::VisualLine),
+                InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
+                InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
+                InputMode::Insert | InputMode::Command => InputAction::None,
+            }
+        }
+        KeyKind::Char('y') => {
+            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            InputAction::YankSelectionPrivate
+        }
+        KeyKind::Char('d') => {
+            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::DeleteSelectionPrivate;
+            }
+            if mode == InputMode::Normal {
+                state.pending_d = true;
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            InputAction::None
+        }
+        KeyKind::Char('x') => {
+            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::DeleteSelectionNoYank;
+            }
+            if mode == InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::DeleteCharNoYank;
+            }
+            state.reset_prefixes();
+            InputAction::None
+        }
+        KeyKind::Char('p') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            InputAction::PastePrivateRegister
+        }
+        KeyKind::Char('P') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            InputAction::PastePrivateRegisterBefore
+        }
+        KeyKind::Char('J') => {
+            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            InputAction::MoveVisualSelectionDown {
+                count: state.take_count_or_1(),
+            }
+        }
+        KeyKind::Char('K') => {
+            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            InputAction::MoveVisualSelectionUp {
+                count: state.take_count_or_1(),
+            }
+        }
+        KeyKind::Tab => {
+            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            if mods.shift {
+                InputAction::OutdentVisualSelection {
+                    count: state.take_count_or_1(),
+                }
+            } else {
+                InputAction::IndentVisualSelection {
+                    count: state.take_count_or_1(),
+                }
+            }
+        }
 
         // Enter modes
         KeyKind::Char('i') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::EnterInsert(InsertKind::Insert)
         }
         KeyKind::Char('a') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::EnterInsert(InsertKind::Append)
         }
         KeyKind::Char('o') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::OpenLineBelow
         }
         KeyKind::Char('O') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::OpenLineAbove
         }
@@ -309,6 +576,10 @@ fn map_key_with_state(
             InputAction::EnterCommand
         }
         KeyKind::Char('-') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
             state.reset_prefixes();
             InputAction::SurfaceGoParent
         }
@@ -497,5 +768,145 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::OpenLineAbove);
+    }
+
+    #[test]
+    fn normal_mode_v_enters_visual_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('v'));
+        assert_eq!(action, InputAction::SetMode(InputMode::Visual));
+    }
+
+    #[test]
+    fn normal_mode_shift_v_enters_visual_line_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('V'));
+        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
+    }
+
+    #[test]
+    fn normal_mode_shift_v_key_event_enters_visual_line_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('V'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
+    }
+
+    #[test]
+    fn visual_escape_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Escape);
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_escape_key_with_modifiers_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Escape,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_mode_y_yanks_to_private_register() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
+        assert_eq!(action, InputAction::YankSelectionPrivate);
+    }
+
+    #[test]
+    fn visual_mode_d_deletes_to_private_register() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('d'));
+        assert_eq!(action, InputAction::DeleteSelectionPrivate);
+    }
+
+    #[test]
+    fn normal_mode_x_deletes_char_without_yank() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(action, InputAction::DeleteCharNoYank);
+    }
+
+    #[test]
+    fn visual_mode_x_deletes_selection_without_yank() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('x'));
+        assert_eq!(action, InputAction::DeleteSelectionNoYank);
+    }
+
+    #[test]
+    fn normal_mode_dd_deletes_current_line_to_private_register() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        assert_eq!(action, InputAction::DeleteCurrentLinePrivate { count: 1 });
+    }
+
+    #[test]
+    fn normal_mode_shift_p_pastes_private_register_before() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('P'));
+        assert_eq!(action, InputAction::PastePrivateRegisterBefore);
+    }
+
+    #[test]
+    fn visual_mode_shift_j_and_shift_k_move_selection() {
+        let mut state = InputState::new();
+        let down = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('J'));
+        assert_eq!(down, InputAction::MoveVisualSelectionDown { count: 1 });
+        let up = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('K'));
+        assert_eq!(up, InputAction::MoveVisualSelectionUp { count: 1 });
+    }
+
+    #[test]
+    fn visual_mode_tab_and_shift_tab_indent_and_outdent() {
+        let mut state = InputState::new();
+        let indent = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Tab,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(indent, InputAction::IndentVisualSelection { count: 1 });
+
+        let outdent = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Tab,
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(outdent, InputAction::OutdentVisualSelection { count: 1 });
+    }
+
+    #[test]
+    fn visual_mode_leader_y_yanks_to_system_clipboard() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
+        assert_eq!(action, InputAction::YankSelectionSystem);
+    }
+
+    #[test]
+    fn normal_mode_p_pastes_private_register() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
+        assert_eq!(action, InputAction::PastePrivateRegister);
     }
 }

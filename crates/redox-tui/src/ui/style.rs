@@ -9,6 +9,8 @@ pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
 #[allow(dead_code)]
 pub struct BaseTheme {
     pub bg: Color,
+    pub selection_bg: Color,
+    pub selection_fg: Color,
     pub white: Color,
     pub black: Color,
     pub red: Color,
@@ -28,6 +30,16 @@ impl Default for BaseTheme {
                 r: (26),
                 g: (25),
                 b: (28),
+            },
+            selection_bg: Color::Rgb {
+                r: (45),
+                g: (43),
+                b: (48),
+            },
+            selection_fg: Color::Rgb {
+                r: (226),
+                g: (226),
+                b: (227),
             },
             white: Color::Rgb {
                 r: (226),
@@ -89,6 +101,7 @@ pub struct Palette {
     pub mode_normal: ColorPair,
     pub mode_insert: ColorPair,
     pub mode_command: ColorPair,
+    pub mode_visual: ColorPair,
     pub minimap: ColorPair,
     pub minimap_alt: ColorPair,
 }
@@ -100,6 +113,7 @@ impl Palette {
             mode_normal: ColorPair::new(theme.black, theme.purple),
             mode_insert: ColorPair::new(theme.black, theme.blue),
             mode_command: ColorPair::new(theme.black, theme.red),
+            mode_visual: ColorPair::new(theme.black, theme.orange),
             minimap: ColorPair::new(theme.white, Color::Transparent),
             minimap_alt: ColorPair::new(Color::Transparent, theme.white),
         }
