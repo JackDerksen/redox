@@ -348,9 +348,9 @@ dependencies = [
 
 [[package]]
 name = "minui"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bf0524b5dd28c6f9ff49db2a8c763b7674a881130d2ca05d7f92d8017b60f34"
+checksum = "dbd3032ed56da29219772e4f9d16cb4afcc088c233de5d4eca9c9dce486eb82a"
 dependencies = [
  "arboard",
  "crokey",
