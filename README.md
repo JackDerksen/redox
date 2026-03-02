@@ -44,11 +44,19 @@ redox/
 - Rust toolchain (`cargo` + `rustc`)
 - A terminal that supports basic ANSI features and raw mode (and ideally full colour support)
 
+
+### Install via CLI
+
+The easiest way to install the editor is to just install the binary from Crates.io:
+```
+cargo install redox-editor
+```
+
 ### Build from source
 
 Build from source after cloning the repository:
 ```bash
-cargo build --release -p redox-editor
+cargo build --release -p crates/redox-tui
 ```
 
 Then install the created binary:
@@ -62,13 +70,6 @@ If needed, add that location to your `PATH` (example for zsh):
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-### Install via CLI
-
-The easiest way to install the editor is to just install the binary from Crates.io:
-```
-cargo install redox-editor
 ```
 
 ### Run Redox
@@ -134,6 +135,8 @@ redox src
 | (visual mode) `tab` | Indent selection |
 | (visual mode) `shift+tab` | Un-ident selection (outdent?) |
 | `<space>e` | Toggle file explorer |
+| `u` | Undo edit |
+| `ctrl+r` | Redo edit |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
@@ -159,7 +162,9 @@ Notes:
 - [x] Relative line numbers (no standard line numbers because those are objectively worse)
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
 - [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
+- [x] Basic session-bound undo/redo 
 - [ ] More Vim motions
+- [ ] Undo tree with stored history
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)
 - [ ] A dashboard screen with similar functionality to nvim dashboards
