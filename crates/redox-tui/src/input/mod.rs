@@ -70,6 +70,10 @@ pub enum InputAction {
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
     SurfaceGoParent,
+    /// Undo most recent edit in active buffer (`u` in normal mode).
+    Undo,
+    /// Redo most recently undone edit in active buffer (`Ctrl+R` in normal mode).
+    Redo,
     /// Yank active visual selection into Redox's private (local) register.
     YankSelectionPrivate,
     /// Delete (cut) active visual selection into Redox's private register.
@@ -287,6 +291,10 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         'o' if mode == InputMode::Normal => InputAction::OpenLineBelow,
         'O' if mode == InputMode::Normal => InputAction::OpenLineAbove,
         '-' if mode == InputMode::Normal => InputAction::SurfaceGoParent,
+        'u' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::Undo
+        }
         _ => InputAction::None,
     }
 }
@@ -341,6 +349,14 @@ fn map_key_with_state(
         }
 
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {}
+    }
+
+    if mode == InputMode::Normal
+        && mods.ctrl
+        && matches!(key, KeyKind::Char('r') | KeyKind::Char('R'))
+    {
+        state.reset_prefixes();
+        return InputAction::Redo;
     }
 
     // Modal (normal/visual) handling below.
@@ -582,6 +598,14 @@ fn map_key_with_state(
             }
             state.reset_prefixes();
             InputAction::SurfaceGoParent
+        }
+        KeyKind::Char('u') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            InputAction::Undo
         }
 
         KeyKind::Char('g') => {
@@ -908,5 +932,26 @@ mod tests {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
         assert_eq!(action, InputAction::PastePrivateRegister);
+    }
+
+    #[test]
+    fn normal_mode_u_triggers_undo() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
+        assert_eq!(action, InputAction::Undo);
+    }
+
+    #[test]
+    fn normal_mode_ctrl_r_triggers_redo() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('r'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::Redo);
     }
 }

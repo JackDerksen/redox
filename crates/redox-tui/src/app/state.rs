@@ -31,6 +31,18 @@ enum RegisterKind {
     LineWise,
 }
 
+#[derive(Debug, Clone)]
+struct UndoSnapshot {
+    text: String,
+    cursor: Pos,
+}
+
+#[derive(Debug, Default)]
+struct UndoHistory {
+    undo_stack: Vec<UndoSnapshot>,
+    redo_stack: Vec<UndoSnapshot>,
+}
+
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
@@ -59,6 +71,8 @@ pub struct BufferViewState {
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
     pub visual_anchor: Option<Pos>,
+    undo_history: UndoHistory,
+    insert_mode_coalesce_base: Option<UndoSnapshot>,
 }
 
 impl Default for BufferViewState {
@@ -67,6 +81,8 @@ impl Default for BufferViewState {
             cursor: CursorController::new(),
             grapheme_cache: GraphemeCache::new(512),
             visual_anchor: None,
+            undo_history: UndoHistory::default(),
+            insert_mode_coalesce_base: None,
         }
     }
 }
@@ -239,6 +255,131 @@ impl EditorState {
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
         view.visual_anchor = None;
+    }
+
+    fn capture_active_undo_snapshot(&mut self) -> UndoSnapshot {
+        let active_id = self.session.active_id();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let text = self.session.active_buffer().to_string();
+        UndoSnapshot { text, cursor }
+    }
+
+    fn capture_active_insert_coalesced_snapshot(&mut self) -> UndoSnapshot {
+        let active_id = self.session.active_id();
+        if let Some(existing) = self
+            .views
+            .get(&active_id)
+            .and_then(|view| view.insert_mode_coalesce_base.clone())
+        {
+            return existing;
+        }
+
+        let snapshot = self.capture_active_undo_snapshot();
+        let view = self.views.entry(active_id).or_default();
+        view.insert_mode_coalesce_base = Some(snapshot.clone());
+        snapshot
+    }
+
+    fn clear_active_insert_undo_coalesce(&mut self) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        view.insert_mode_coalesce_base = None;
+    }
+
+    fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
+        let active_id = self.session.active_id();
+        let after_text = self.session.active_buffer().to_string();
+        if after_text == before.text {
+            return false;
+        }
+
+        let view = self.views.entry(active_id).or_default();
+        let duplicate_last = view
+            .undo_history
+            .undo_stack
+            .last()
+            .is_some_and(|last| last.text == before.text && last.cursor == before.cursor);
+        if !duplicate_last {
+            view.undo_history.undo_stack.push(before);
+        }
+        view.undo_history.redo_stack.clear();
+        true
+    }
+
+    fn undo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let prev = {
+            let view = self.views.entry(active_id).or_default();
+            view.undo_history.undo_stack.pop()
+        };
+
+        let Some(prev) = prev else {
+            self.set_status_ephemeral("nothing to undo");
+            return;
+        };
+
+        let current = self.capture_active_undo_snapshot();
+        {
+            let view = self.views.entry(active_id).or_default();
+            view.undo_history.redo_stack.push(current);
+        }
+
+        self.restore_active_snapshot(prev, viewport_width_cells, text_vh);
+    }
+
+    fn redo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let next = {
+            let view = self.views.entry(active_id).or_default();
+            view.undo_history.redo_stack.pop()
+        };
+
+        let Some(next) = next else {
+            self.set_status_ephemeral("nothing to redo");
+            return;
+        };
+
+        let current = self.capture_active_undo_snapshot();
+        {
+            let view = self.views.entry(active_id).or_default();
+            view.undo_history.undo_stack.push(current);
+        }
+
+        self.restore_active_snapshot(next, viewport_width_cells, text_vh);
+    }
+
+    fn restore_active_snapshot(
+        &mut self,
+        snapshot: UndoSnapshot,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        {
+            let buffer = self.session.active_buffer_mut();
+            *buffer = TextBuffer::from_str(&snapshot.text);
+        }
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        view.grapheme_cache.clear();
+        view.visual_anchor = None;
+        view.insert_mode_coalesce_base = None;
+
+        self.mode = EditorMode::Normal;
+        let _ = self.session.recompute_active_dirty();
+        self.clear_status();
     }
 }
 

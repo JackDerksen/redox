@@ -50,6 +50,64 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
+fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
+    let path = temp_file_path("undo_redo_basic");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::Paste(" world".to_string()), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), " worldhello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
+
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), " worldhello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn redo_stack_is_cleared_after_new_edit_post_undo() {
+    let path = temp_file_path("redo_cleared_after_new_edit");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "Ahello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
+
+    state.apply_input(InputAction::Paste("B".to_string()), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "Bhello");
+
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "Bhello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_typing_is_coalesced_into_single_undo_step() {
+    let path = temp_file_path("insert_mode_undo_coalesce");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('a'), 80, 24);
+    state.apply_input(InputAction::InsertChar('b'), 80, 24);
+    state.apply_input(InputAction::InsertChar('c'), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "abchello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
+
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "abchello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn switching_buffers_preserves_cursor_and_scroll_state() {
     let path_a = temp_file_path("switch_preserve_a");
     let path_b = temp_file_path("switch_preserve_b");

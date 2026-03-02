@@ -17,6 +17,17 @@ impl EditorState {
         }
 
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+        let keep_insert_coalesce = self.mode == EditorMode::Insert
+            && matches!(
+                &action,
+                InputAction::InsertChar(_)
+                    | InputAction::Backspace
+                    | InputAction::Enter
+                    | InputAction::Paste(_)
+            );
+        if !keep_insert_coalesce {
+            self.clear_active_insert_undo_coalesce();
+        }
 
         match action {
             InputAction::Motion { motion, count } => {
@@ -181,13 +192,25 @@ impl EditorState {
                 }
             }
 
+            InputAction::Undo => {
+                if self.mode == EditorMode::Normal {
+                    self.undo_active(viewport_width_cells, text_vh);
+                }
+            }
+
+            InputAction::Redo => {
+                if self.mode == EditorMode::Normal {
+                    self.redo_active(viewport_width_cells, text_vh);
+                }
+            }
+
             InputAction::InsertChar(c) => {
                 if self.mode == EditorMode::Insert {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
                     let s = c.to_string();
-                    self.insert_text_at_cursor(&s, viewport_width_cells, text_vh);
+                    self.insert_text_at_cursor(&s, viewport_width_cells, text_vh, true);
                 }
             }
 
@@ -196,6 +219,7 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
+                    let before = self.capture_active_insert_coalesced_snapshot();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -208,6 +232,7 @@ impl EditorState {
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
 
+                    let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
             }
@@ -217,6 +242,7 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
+                    let before = self.capture_active_insert_coalesced_snapshot();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -229,6 +255,7 @@ impl EditorState {
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
 
+                    let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
             }
@@ -238,7 +265,8 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
-                    self.insert_text_at_cursor(&text, viewport_width_cells, text_vh);
+                    let coalesce = self.mode == EditorMode::Insert;
+                    self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
                 }
                 EditorMode::Command | EditorMode::Visual | EditorMode::VisualLine => {}
             },
@@ -342,11 +370,22 @@ impl EditorState {
         }
     }
 
-    fn insert_text_at_cursor(&mut self, text: &str, viewport_width_cells: usize, text_vh: usize) {
+    fn insert_text_at_cursor(
+        &mut self,
+        text: &str,
+        viewport_width_cells: usize,
+        text_vh: usize,
+        coalesce_insert_mode: bool,
+    ) {
         if text.is_empty() {
             return;
         }
 
+        let before = if coalesce_insert_mode {
+            self.capture_active_insert_coalesced_snapshot()
+        } else {
+            self.capture_active_undo_snapshot()
+        };
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
 
@@ -358,6 +397,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 }

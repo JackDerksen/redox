@@ -65,6 +65,7 @@ impl EditorState {
         let Some((text, _)) = self.capture_active_visual_selection_text() else {
             return;
         };
+        let before = self.capture_active_undo_snapshot();
 
         self.private_register = text;
         self.private_register_kind = kind;
@@ -82,6 +83,7 @@ impl EditorState {
         self.mode = EditorMode::Normal;
         self.clear_active_visual_anchor();
         self.set_status("deleted");
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -98,6 +100,7 @@ impl EditorState {
         else {
             return;
         };
+        let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -112,6 +115,7 @@ impl EditorState {
         self.mode = EditorMode::Normal;
         self.clear_active_visual_anchor();
         self.set_status("deleted");
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -150,6 +154,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
         let (start_char, end_char, mut cut_text) = {
@@ -186,6 +191,7 @@ impl EditorState {
         }
 
         self.set_status("deleted");
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -197,6 +203,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -210,6 +217,7 @@ impl EditorState {
         }
 
         self.set_status("deleted");
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -224,6 +232,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let text = self.private_register.clone();
         let active_id = self.session.active_id();
@@ -251,6 +260,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -266,6 +276,7 @@ impl EditorState {
         if self.active_visual_selection().is_none() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
         for _ in 0..count {
@@ -302,6 +313,7 @@ impl EditorState {
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -317,6 +329,7 @@ impl EditorState {
         if self.active_visual_selection().is_none() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
         for _ in 0..count {
@@ -358,6 +371,7 @@ impl EditorState {
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -373,6 +387,7 @@ impl EditorState {
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
         };
+        let before = self.capture_active_undo_snapshot();
 
         let indent = "\t".repeat(count);
         {
@@ -396,6 +411,7 @@ impl EditorState {
         let buffer = self.session.active_buffer();
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -413,6 +429,7 @@ impl EditorState {
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
         };
+        let before = self.capture_active_undo_snapshot();
 
         let mut removed_by_line: Vec<(usize, usize)> = Vec::new();
         {
@@ -469,6 +486,7 @@ impl EditorState {
         let buffer = self.session.active_buffer();
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
@@ -479,6 +497,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        let before = self.capture_active_undo_snapshot();
 
         let text = self.private_register.clone();
         let active_id = self.session.active_id();
@@ -516,6 +535,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 }

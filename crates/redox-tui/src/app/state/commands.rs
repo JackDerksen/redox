@@ -177,6 +177,7 @@ impl EditorState {
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
+        let before = self.capture_active_undo_snapshot();
         self.mode = EditorMode::Insert;
         self.clear_status();
         self.input.reset_prefixes();
@@ -200,6 +201,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
