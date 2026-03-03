@@ -105,6 +105,7 @@ pub struct EditorState {
     private_register: String,
     private_register_kind: RegisterKind,
     pending_system_clipboard: Option<String>,
+    explorer_delete_confirmation_token: Option<String>,
 }
 
 impl EditorState {
@@ -129,6 +130,7 @@ impl EditorState {
             private_register: String::new(),
             private_register_kind: RegisterKind::CharWise,
             pending_system_clipboard: None,
+            explorer_delete_confirmation_token: None,
         }
     }
 

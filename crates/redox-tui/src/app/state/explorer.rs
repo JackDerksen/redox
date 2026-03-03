@@ -43,7 +43,7 @@ impl EditorState {
         }
 
         Some(ExplorerPopup {
-            title: format!("{}", explorer.dir_path.display()),
+            title: format_explorer_dir_path(&explorer.dir_path),
             dir_path: explorer.dir_path.clone(),
         })
     }
@@ -87,6 +87,7 @@ impl EditorState {
     }
 
     fn open_explorer_buffer_with_dir(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        self.explorer_delete_confirmation_token = None;
         let return_to = self.session.active_id();
         let entries = list_explorer_entries(&dir_path)?;
         let preferred_name = self.session.active_meta().path.as_ref().and_then(|path| {
@@ -105,7 +106,7 @@ impl EditorState {
             .unwrap_or(0);
         let text = explorer_entries_to_text(&entries);
 
-        let title = format!("[explorer] {}", dir_path.display());
+        let title = format!("[explorer] {}", format_explorer_dir_path(&dir_path));
         let explorer_id = self.session.open_ui_buffer(title, &text);
         self.session.mark_active_clean();
         let view = self.views.entry(explorer_id).or_default();
@@ -230,6 +231,7 @@ impl EditorState {
     }
 
     pub(super) fn refresh_explorer_directory(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        self.explorer_delete_confirmation_token = None;
         let entries = list_explorer_entries(&dir_path)?;
         let text = explorer_entries_to_text(&entries);
 
@@ -268,6 +270,17 @@ impl EditorState {
     }
 
     pub(super) fn write_explorer_directory(&mut self) -> bool {
+        self.write_explorer_directory_internal(false)
+    }
+
+    pub(super) fn confirm_pending_explorer_delete(&mut self) -> bool {
+        if self.explorer_delete_confirmation_token.is_none() {
+            return false;
+        }
+        self.write_explorer_directory_internal(true)
+    }
+
+    fn write_explorer_directory_internal(&mut self, confirm_delete: bool) -> bool {
         let Some(mut explorer) = self.explorer.clone() else {
             self.set_status("explorer state missing");
             return false;
@@ -282,16 +295,44 @@ impl EditorState {
         let desired_entries = match parse_explorer_entries(&current_text) {
             Ok(entries) => entries,
             Err(e) => {
+                self.explorer_delete_confirmation_token = None;
                 self.set_status(format!("explorer parse error: {e}"));
                 return false;
             }
         };
+        let delete_count =
+            pending_explorer_delete_count(&explorer.original_entries, &desired_entries);
+        if delete_count > 0 {
+            let token = explorer_delete_confirmation_token(&explorer.dir_path, &current_text);
+            if !confirm_delete {
+                self.explorer_delete_confirmation_token = Some(token);
+                let noun = if delete_count == 1 {
+                    "entry"
+                } else {
+                    "entries"
+                };
+                self.set_status(format!(
+                    "confirm deletion of {delete_count} {noun}: press y"
+                ));
+                return false;
+            }
+            if self.explorer_delete_confirmation_token.as_deref() != Some(&token) {
+                self.set_status("delete target changed; run :w again");
+                return false;
+            }
+        } else {
+            self.explorer_delete_confirmation_token = None;
+            if confirm_delete {
+                return false;
+            }
+        }
 
         if let Err(e) = apply_explorer_changes(
             &explorer.dir_path,
             &explorer.original_entries,
             &desired_entries,
         ) {
+            self.explorer_delete_confirmation_token = None;
             self.set_status(format!("explorer write failed: {e}"));
             return false;
         }
@@ -329,6 +370,7 @@ impl EditorState {
         explorer.original_entries = refreshed_entries;
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
+        self.explorer_delete_confirmation_token = None;
         self.set_status("written");
         true
     }
@@ -370,12 +412,37 @@ fn explorer_entries_to_text(entries: &[ExplorerEntry]) -> String {
         if idx > 0 {
             out.push('\n');
         }
-        out.push_str(&entry.name);
+        if entry.is_parent {
+            out.push_str("../");
+        } else {
+            out.push_str(&entry.name);
+        }
         if entry.is_dir && !entry.is_parent {
             out.push('/');
         }
     }
     out
+}
+
+fn format_explorer_dir_path(dir_path: &Path) -> String {
+    let mut rendered = format!("~{}", dir_path.display());
+    if !rendered.ends_with('/') {
+        rendered.push('/');
+    }
+    rendered
+}
+
+fn pending_explorer_delete_count(
+    old_entries: &[ExplorerEntry],
+    new_entries: &[ExplorerEntry],
+) -> usize {
+    let old_len = old_entries.iter().filter(|entry| !entry.is_parent).count();
+    let new_len = new_entries.iter().filter(|entry| !entry.is_parent).count();
+    old_len.saturating_sub(new_len)
+}
+
+fn explorer_delete_confirmation_token(dir_path: &Path, current_text: &str) -> String {
+    format!("{}::{current_text}", dir_path.display())
 }
 
 fn parse_explorer_entries(text: &str) -> anyhow::Result<Vec<ExplorerEntry>> {

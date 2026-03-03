@@ -1,5 +1,5 @@
 use super::*;
-use redox_core::{motion::Motion, BufferLoadPhase};
+use redox_core::{BufferLoadPhase, motion::Motion};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -302,12 +302,19 @@ fn explorer_command_opens_ui_buffer() {
 
     assert!(state.explorer_popup().is_some());
     assert!(state.active_display_name().contains("[explorer]"));
-    assert!(state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .any(|line| line == ".."));
+    assert!(
+        state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .any(|line| line == "../")
+    );
+    let popup = state
+        .explorer_popup()
+        .expect("explorer popup should be active");
+    assert!(popup.title.starts_with('~'));
+    assert!(popup.title.ends_with('/'));
 
     let _ = fs::remove_file(path);
 }
@@ -333,7 +340,7 @@ fn explorer_write_applies_rename_and_create() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("..\nrenamed.txt\ncreated.txt");
+        *buffer = TextBuffer::from_str("../\nrenamed.txt\ncreated.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -346,6 +353,46 @@ fn explorer_write_applies_rename_and_create() {
     let _ = fs::remove_file(dir.join("renamed.txt"));
     let _ = fs::remove_file(dir.join("created.txt"));
     let _ = fs::remove_file(file_open);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_requires_confirmation_for_deletes() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_confirm_delete_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_keep = dir.join("a_keep.txt");
+    let file_delete = dir.join("z_delete.txt");
+    fs::write(&file_keep, "keep").expect("failed to write fixture");
+    fs::write(&file_delete, "delete").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_keep).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\na_keep.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    assert!(file_delete.exists());
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 1 entry"));
+
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+    assert!(!file_delete.exists());
+    assert_eq!(state.status_msg.as_deref(), Some("written"));
+
+    let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
 }
 
@@ -1059,6 +1106,37 @@ fn visual_line_delete_private_cuts_full_lines() {
 
     assert_eq!(state.private_register, "one\ntwo\n");
     assert_eq!(state.session.active_buffer().to_string(), "three\n");
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_line_delete_private_cuts_all_selected_lines() {
+    let path = temp_file_path("visual_line_delete_three_lines");
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
+
+    assert_eq!(state.private_register, "one\ntwo\nthree\n");
+    assert_eq!(state.session.active_buffer().to_string(), "four\n");
     assert_eq!(state.mode, EditorMode::Normal);
     assert_eq!(state.status_msg.as_deref(), Some("deleted"));
 

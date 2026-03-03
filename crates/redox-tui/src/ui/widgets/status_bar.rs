@@ -346,6 +346,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         format!(" :{} ", state.command_line)
     } else if let Some(msg) = &state.status_msg {
         format!(" {} ", msg)
+    } else if let Some(popup) = state.explorer_popup() {
+        format!(" {} ", popup.title)
     } else {
         let mut name = state.active_display_name().to_string();
         let load = state.session.active_buffer_load_status();

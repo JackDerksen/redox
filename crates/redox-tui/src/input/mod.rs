@@ -80,6 +80,8 @@ pub enum InputAction {
     Undo,
     /// Redo most recently undone edit in active buffer (`Ctrl+R` in normal mode).
     Redo,
+    /// Confirm a pending explorer deletion prompt (`y` in normal mode).
+    ConfirmExplorerDelete,
     /// Yank active visual selection into Redox's private (local) register.
     YankSelectionPrivate,
     /// Delete (cut) active visual selection into Redox's private register.
@@ -316,6 +318,10 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::Undo
         }
+        'y' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::ConfirmExplorerDelete
+        }
         _ => InputAction::None,
     }
 }
@@ -519,12 +525,16 @@ fn map_key_with_state(
             }
         }
         KeyKind::Char('y') => {
-            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
                 state.reset_prefixes();
-                return InputAction::None;
+                return InputAction::YankSelectionPrivate;
+            }
+            if mode == InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::ConfirmExplorerDelete;
             }
             state.reset_prefixes();
-            InputAction::YankSelectionPrivate
+            InputAction::None
         }
         KeyKind::Char('d') => {
             if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
@@ -653,7 +663,6 @@ fn map_key_with_state(
             state.reset_prefixes();
             InputAction::Undo
         }
-
         KeyKind::Char('g') => {
             state.pending_g = true;
             InputAction::None
@@ -993,6 +1002,13 @@ mod tests {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
         assert_eq!(action, InputAction::Undo);
+    }
+
+    #[test]
+    fn normal_mode_y_confirms_explorer_delete() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
+        assert_eq!(action, InputAction::ConfirmExplorerDelete);
     }
 
     #[test]

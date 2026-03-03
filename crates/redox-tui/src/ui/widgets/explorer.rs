@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, Window};
+use redox_core::Selection;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
@@ -69,7 +71,8 @@ pub fn draw_explorer_popup_view(
         }
     }
 
-    let (snapshot, spec, line_styles, cursor_line, total_lines) = state
+    let visual_selection = state.active_visual_selection();
+    let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x, source_lines) = state
         .with_active_buffer_view_mut(|buffer, explorer_view| {
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
@@ -94,12 +97,20 @@ pub fn draw_explorer_popup_view(
                     explorer_entry_color(style, &popup.dir_path, &source)
                 })
                 .collect::<Vec<_>>();
+            let source_lines = (0..snapshot.lines.len())
+                .map(|row| {
+                    let line_idx = snapshot.first_line + row;
+                    buffer.line_string(line_idx)
+                })
+                .collect::<Vec<_>>();
             (
                 snapshot,
                 spec,
                 line_styles,
                 explorer_view.cursor.cursor.line,
                 total_lines,
+                scroll_x,
+                source_lines,
             )
         });
 
@@ -117,6 +128,27 @@ pub fn draw_explorer_popup_view(
 
     for (row, line) in snapshot.lines.iter().enumerate() {
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
+        let line_idx = snapshot.first_line + row;
+        let source_line = source_lines.get(row).map(String::as_str).unwrap_or("");
+        if let Some((selection, line_mode)) = visual_selection {
+            if let Some((sel_start, sel_end)) =
+                visual_range_for_line(selection, line_mode, line_idx, source_line)
+            {
+                draw_line_with_selection(
+                    &mut view,
+                    row as u16,
+                    content_x,
+                    source_line,
+                    scroll_x,
+                    inner_w.saturating_sub(content_x) as usize,
+                    sel_start,
+                    sel_end,
+                    color,
+                    ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
+                )?;
+                continue;
+            }
+        }
         view.write_str_colored(row as u16, content_x, line, color)?;
     }
     if spec.visible {
@@ -166,7 +198,7 @@ fn explorer_entry_color(style: UiStyle, dir_path: &Path, source_line: &str) -> C
 
     let is_dir = line == ".." || line.ends_with('/');
     let name = line.strip_suffix('/').unwrap_or(line);
-    let is_hidden = name.starts_with('.') && name != "..";
+    let is_hidden = name.starts_with('.');
     if is_hidden {
         return style.explorer.hidden;
     }
@@ -259,6 +291,103 @@ fn draw_relative_line_numbers(
         }
 
         view.write_str_colored(row, sep_x, "▕", color)?;
+    }
+
+    Ok(())
+}
+
+fn visual_range_for_line(
+    selection: Selection,
+    line_mode: bool,
+    line_idx: usize,
+    source_line: &str,
+) -> Option<(usize, usize)> {
+    let line_len = source_line.chars().count();
+    if line_mode {
+        let start_line = selection.anchor.line.min(selection.cursor.line);
+        let end_line = selection.anchor.line.max(selection.cursor.line);
+        if line_idx < start_line || line_idx > end_line {
+            return None;
+        }
+        return Some((0, line_len));
+    }
+
+    let (start, end) = selection.ordered();
+    if line_idx < start.line || line_idx > end.line {
+        return None;
+    }
+    if line_len == 0 {
+        return None;
+    }
+
+    let max_char = line_len.saturating_sub(1);
+    let sel_start = if line_idx == start.line {
+        start.col.min(max_char)
+    } else {
+        0
+    };
+    let sel_end_inclusive = if line_idx == end.line {
+        end.col.min(max_char)
+    } else {
+        max_char
+    };
+    if sel_start > sel_end_inclusive {
+        return None;
+    }
+
+    Some((sel_start, sel_end_inclusive.saturating_add(1)))
+}
+
+fn draw_line_with_selection(
+    view: &mut WindowView<'_>,
+    row: u16,
+    col: u16,
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    sel_start_char: usize,
+    sel_end_char_exclusive: usize,
+    normal_color: ColorPair,
+    selected_color: ColorPair,
+) -> minui::Result<()> {
+    if width_cells == 0 {
+        return Ok(());
+    }
+
+    let mut used_cells = 0usize;
+    let mut line_cells = 0usize;
+    let mut char_idx = 0usize;
+
+    for g in source_line.graphemes(true) {
+        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_chars = g.chars().count();
+        let start_cell = line_cells;
+        let end_cell = line_cells.saturating_add(g_width);
+        let start_char = char_idx;
+        let end_char = char_idx.saturating_add(g_chars);
+
+        line_cells = end_cell;
+        char_idx = end_char;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell < scroll_x {
+            continue;
+        }
+        if used_cells.saturating_add(g_width) > width_cells {
+            break;
+        }
+
+        let is_selected = start_char < sel_end_char_exclusive && end_char > sel_start_char;
+        let color = if is_selected {
+            selected_color
+        } else {
+            normal_color
+        };
+
+        view.write_str_colored(row, col + used_cells as u16, g, color)?;
+        used_cells = used_cells.saturating_add(g_width);
     }
 
     Ok(())

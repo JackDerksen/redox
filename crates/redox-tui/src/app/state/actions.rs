@@ -216,6 +216,12 @@ impl EditorState {
                 }
             }
 
+            InputAction::ConfirmExplorerDelete => {
+                if self.mode == EditorMode::Normal {
+                    self.confirm_pending_explorer_delete();
+                }
+            }
+
             InputAction::Redo => {
                 if self.mode == EditorMode::Normal {
                     self.redo_active(viewport_width_cells, text_vh);

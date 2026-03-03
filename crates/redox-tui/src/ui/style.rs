@@ -166,7 +166,7 @@ impl ExplorerStyle {
             title: ColorPair::new(theme.blue, theme.bg),
             file: ColorPair::new(theme.white, theme.bg),
             directory: ColorPair::new(theme.blue, theme.bg),
-            executable: ColorPair::new(theme.yellow, theme.bg),
+            executable: ColorPair::new(theme.red, theme.bg),
             hidden: ColorPair::new(theme.dark_gray, theme.bg),
         }
     }
