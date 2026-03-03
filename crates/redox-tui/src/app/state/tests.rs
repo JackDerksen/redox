@@ -589,6 +589,117 @@ fn explorer_motion_uses_no_scrolloff_and_clamps_window_scroll() {
 }
 
 #[test]
+fn viewport_down_and_up_center_cursor_in_normal_mode() {
+    let path = temp_file_path("viewport_center_scroll");
+    let text = large_text(300);
+    let mut state = state_with_text(path.clone(), &text);
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(3, 0);
+
+    let viewport_height_rows = 8usize;
+    let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+    let center_row = text_vh / 2;
+
+    state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
+    let view = state.views.get(&id).expect("missing view");
+    assert_eq!(view.cursor.scroll_y_lines, text_vh);
+    assert_eq!(view.cursor.cursor.line, text_vh + center_row);
+
+    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
+    let view = state.views.get(&id).expect("missing view");
+    assert_eq!(view.cursor.scroll_y_lines, 0);
+    assert_eq!(view.cursor.cursor.line, center_row);
+
+    // A further Ctrl+U while already at top behaves like gg.
+    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
+    let view = state.views.get(&id).expect("missing view");
+    assert_eq!(view.cursor.scroll_y_lines, 0);
+    assert_eq!(view.cursor.cursor.line, 0);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn viewport_down_reaches_last_line_after_repeated_presses() {
+    let path = temp_file_path("viewport_down_reaches_eof");
+    let text = large_text(120);
+    let mut state = state_with_text(path.clone(), &text);
+    let id = state.session.active_id();
+    let viewport_height_rows = 8usize;
+    let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+    let center_row = text_vh / 2;
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let last_line = total_lines.saturating_sub(1);
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    for _ in 0..(total_lines / text_vh + 4) {
+        state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
+    }
+
+    let view = state.views.get(&id).expect("missing view");
+    assert_eq!(view.cursor.cursor.line, last_line);
+    assert_eq!(
+        view.cursor.scroll_y_lines,
+        last_line.saturating_sub(center_row)
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn zz_centers_cursor_line_except_at_top_of_file() {
+    let path = temp_file_path("zz_center_line");
+    let text = large_text(120);
+    let mut state = state_with_text(path.clone(), &text);
+    let id = state.session.active_id();
+    let viewport_height_rows = 8usize;
+    let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+    let center_row = text_vh / 2;
+
+    {
+        let view = state.views.get_mut(&id).expect("missing view");
+        view.cursor.cursor = Pos::new(0, 0);
+        view.cursor.scroll_y_lines = 10;
+    }
+    state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
+    assert_eq!(
+        state
+            .views
+            .get(&id)
+            .expect("missing view")
+            .cursor
+            .scroll_y_lines,
+        0
+    );
+
+    let last_line = state.session.active_buffer().len_lines().saturating_sub(1);
+    {
+        let view = state.views.get_mut(&id).expect("missing view");
+        view.cursor.cursor = Pos::new(last_line, 0);
+    }
+    state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
+    let view = state.views.get(&id).expect("missing view");
+    assert_eq!(
+        view.cursor.scroll_y_lines,
+        last_line.saturating_sub(center_row)
+    );
+    assert_eq!(view.cursor.cursor.line, last_line);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn open_line_below_enters_insert_and_inserts_blank_line() {
     let path = temp_file_path("open_line_below");
     let mut state = state_with_text(path.clone(), "one\ntwo");

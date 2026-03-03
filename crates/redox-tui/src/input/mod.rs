@@ -70,6 +70,12 @@ pub enum InputAction {
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
     SurfaceGoParent,
+    /// Scroll down by one viewport and keep cursor near viewport middle (`Ctrl+D` in normal mode).
+    ViewportDownCenter,
+    /// Scroll up by one viewport and keep cursor near viewport middle (`Ctrl+U` in normal mode).
+    ViewportUpCenter,
+    /// Centre current cursor line in viewport (`zz` in normal mode).
+    CenterCursorLine,
     /// Undo most recent edit in active buffer (`u` in normal mode).
     Undo,
     /// Redo most recently undone edit in active buffer (`Ctrl+R` in normal mode).
@@ -128,6 +134,7 @@ pub enum InputAction {
 #[derive(Debug, Default, Clone)]
 pub struct InputState {
     pending_g: bool,
+    pending_z: bool,
     pending_d: bool,
     pending_count: Option<usize>,
     pending_leader: bool,
@@ -140,6 +147,7 @@ impl InputState {
 
     pub fn reset_prefixes(&mut self) {
         self.pending_g = false;
+        self.pending_z = false;
         self.pending_d = false;
         self.pending_count = None;
         self.pending_leader = false;
@@ -219,6 +227,15 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         }
     }
 
+    if state.pending_z && mode == InputMode::Normal {
+        state.pending_z = false;
+        if c == 'z' {
+            state.reset_prefixes();
+            return InputAction::CenterCursorLine;
+        }
+        return InputAction::None;
+    }
+
     match c {
         ' ' => {
             state.pending_leader = true;
@@ -291,6 +308,10 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         'o' if mode == InputMode::Normal => InputAction::OpenLineBelow,
         'O' if mode == InputMode::Normal => InputAction::OpenLineAbove,
         '-' if mode == InputMode::Normal => InputAction::SurfaceGoParent,
+        'z' if mode == InputMode::Normal => {
+            state.pending_z = true;
+            InputAction::None
+        }
         'u' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::Undo
@@ -359,6 +380,22 @@ fn map_key_with_state(
         return InputAction::Redo;
     }
 
+    if mode == InputMode::Normal
+        && mods.ctrl
+        && matches!(key, KeyKind::Char('d') | KeyKind::Char('D'))
+    {
+        state.reset_prefixes();
+        return InputAction::ViewportDownCenter;
+    }
+
+    if mode == InputMode::Normal
+        && mods.ctrl
+        && matches!(key, KeyKind::Char('u') | KeyKind::Char('U'))
+    {
+        state.reset_prefixes();
+        return InputAction::ViewportUpCenter;
+    }
+
     // Modal (normal/visual) handling below.
 
     if state.pending_leader {
@@ -421,6 +458,15 @@ fn map_key_with_state(
                 count,
             };
         }
+    }
+
+    if state.pending_z {
+        state.pending_z = false;
+        if matches!(key, KeyKind::Char('z')) {
+            state.reset_prefixes();
+            return InputAction::CenterCursorLine;
+        }
+        return InputAction::None;
     }
 
     if state.pending_d && mode == InputMode::Normal {
@@ -610,6 +656,14 @@ fn map_key_with_state(
 
         KeyKind::Char('g') => {
             state.pending_g = true;
+            InputAction::None
+        }
+        KeyKind::Char('z') => {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.pending_z = true;
             InputAction::None
         }
 
@@ -953,5 +1007,43 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::Redo);
+    }
+
+    #[test]
+    fn normal_mode_ctrl_d_triggers_viewport_down_center() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('d'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::ViewportDownCenter);
+    }
+
+    #[test]
+    fn normal_mode_ctrl_u_triggers_viewport_up_center() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('u'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::ViewportUpCenter);
+    }
+
+    #[test]
+    fn normal_mode_zz_triggers_center_cursor_line() {
+        let mut state = InputState::new();
+        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('z'));
+        assert_eq!(first, InputAction::None);
+
+        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('z'));
+        assert_eq!(second, InputAction::CenterCursorLine);
     }
 }

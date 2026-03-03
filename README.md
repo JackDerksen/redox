@@ -137,6 +137,9 @@ redox src
 | `<space>e` | Toggle file explorer |
 | `u` | Undo edit |
 | `ctrl+r` | Redo edit |
+| `ctrl+d` | Scroll down by one viewport |
+| `ctrl+u` | Scroll up by one viewport |
+| `zz` | Center cursor line in the viewport |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).

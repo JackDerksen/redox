@@ -1,4 +1,4 @@
-use redox_core::Selection;
+use redox_core::{Pos, Selection};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
@@ -189,6 +189,24 @@ impl EditorState {
             InputAction::SurfaceGoParent => {
                 if self.mode == EditorMode::Normal {
                     self.surface_go_parent();
+                }
+            }
+
+            InputAction::ViewportDownCenter => {
+                if self.mode == EditorMode::Normal {
+                    self.scroll_viewport_and_center_cursor(true, text_vh);
+                }
+            }
+
+            InputAction::ViewportUpCenter => {
+                if self.mode == EditorMode::Normal {
+                    self.scroll_viewport_and_center_cursor(false, text_vh);
+                }
+            }
+
+            InputAction::CenterCursorLine => {
+                if self.mode == EditorMode::Normal {
+                    self.center_active_cursor_line(text_vh);
                 }
             }
 
@@ -399,5 +417,55 @@ impl EditorState {
 
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
+    }
+
+    fn scroll_viewport_and_center_cursor(&mut self, down: bool, text_vh: usize) {
+        if text_vh == 0 {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        let total_lines = buffer.len_lines().max(1);
+        let center_row = text_vh / 2;
+        let max_top = total_lines.saturating_sub(1).saturating_sub(center_row);
+        let step = text_vh;
+        let prev_top = view.cursor.scroll_y_lines;
+        let target_top = if down {
+            prev_top.saturating_add(step).min(max_top)
+        } else {
+            prev_top.saturating_sub(step)
+        };
+        view.cursor.scroll_y_lines = target_top;
+
+        let target_line = if !down && prev_top == 0 && target_top == 0 {
+            0
+        } else {
+            (target_top + center_row).min(total_lines.saturating_sub(1))
+        };
+        let target_col = view.cursor.cursor.col;
+        view.cursor.cursor = buffer.clamp_pos(Pos::new(target_line, target_col));
+    }
+
+    fn center_active_cursor_line(&mut self, text_vh: usize) {
+        if text_vh == 0 {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        let total_lines = buffer.len_lines().max(1);
+        let cursor_line = buffer.clamp_line(view.cursor.cursor.line);
+
+        if cursor_line == 0 {
+            view.cursor.scroll_y_lines = 0;
+            return;
+        }
+
+        let center_row = text_vh / 2;
+        let max_top = total_lines.saturating_sub(1);
+        view.cursor.scroll_y_lines = cursor_line.saturating_sub(center_row).min(max_top);
     }
 }
