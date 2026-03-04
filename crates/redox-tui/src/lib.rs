@@ -58,7 +58,6 @@ fn draw_buffer_view(
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
         draw_explorer_popup_view(state, style, window, popup)?;
-        hide_cursor(window);
         return Ok(());
     }
 
