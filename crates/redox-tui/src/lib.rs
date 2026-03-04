@@ -58,6 +58,7 @@ fn draw_buffer_view(
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
         draw_explorer_popup_view(state, style, window, popup)?;
+        hide_cursor(window);
         return Ok(());
     }
 
@@ -79,6 +80,7 @@ fn draw_buffer_view(
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
         draw_about_popup_view(state, style, window, popup)?;
+        hide_cursor(window);
         return Ok(());
     }
 
@@ -372,6 +374,14 @@ fn fill_background(
         window.write_str_colored(y, 0, &row, colors)?;
     }
     Ok(())
+}
+
+fn hide_cursor(window: &mut dyn Window) {
+    window.request_cursor(minui::window::CursorSpec {
+        x: 0,
+        y: 0,
+        visible: false,
+    });
 }
 
 fn draw_buffer_snapshot_for_id(
