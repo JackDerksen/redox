@@ -58,6 +58,16 @@ impl EditorState {
             .map(|_| explorer.return_to_buffer_id)
     }
 
+    pub fn explorer_background_is_placeholder_blank(&self) -> bool {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return false;
+        };
+        if explorer.buffer_id != self.session.active_id() {
+            return false;
+        }
+        self.is_empty_unnamed_startup_buffer(explorer.return_to_buffer_id)
+    }
+
     pub(super) fn command_open_explorer(&mut self) {
         if self.explorer_is_active() {
             let _ = self.close_active_surface_buffer();
@@ -88,6 +98,7 @@ impl EditorState {
 
     fn open_explorer_buffer_with_dir(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
         self.explorer_delete_confirmation_token = None;
+        let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let return_to = self.session.active_id();
         let entries = list_explorer_entries(&dir_path)?;
         let preferred_name = self.session.active_meta().path.as_ref().and_then(|path| {
@@ -232,6 +243,7 @@ impl EditorState {
 
     pub(super) fn refresh_explorer_directory(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
         self.explorer_delete_confirmation_token = None;
+        let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let entries = list_explorer_entries(&dir_path)?;
         let text = explorer_entries_to_text(&entries);
 
@@ -346,6 +358,11 @@ impl EditorState {
         };
 
         let refreshed_text = explorer_entries_to_text(&refreshed_entries);
+        let previous_cursor_line = self
+            .views
+            .get(&explorer.buffer_id)
+            .map(|view| view.cursor.cursor.line)
+            .unwrap_or(0);
         if let Some(buffer) = self.session.buffer_mut(explorer.buffer_id) {
             *buffer = TextBuffer::from_str(&refreshed_text);
         }
@@ -355,7 +372,8 @@ impl EditorState {
                 .session
                 .buffer(explorer.buffer_id)
                 .expect("explorer buffer must exist");
-            view.cursor.cursor = Pos::zero();
+            let max_line = buffer.len_lines().saturating_sub(1);
+            view.cursor.cursor = Pos::new(previous_cursor_line.min(max_line), 0);
             view.cursor.follow.top_margin_rows = 0;
             view.cursor.follow.bottom_margin_rows = 0;
             view.cursor.reconcile_after_edit(

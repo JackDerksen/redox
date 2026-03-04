@@ -29,6 +29,9 @@ impl EditorState {
                     (about.buffer_id == active_id).then_some(about.return_to_buffer_id)
                 })
             });
+        let should_quit_after_close = is_explorer
+            && return_to
+                .is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
 
         if !self.session.close_active_buffer() {
             return false;
@@ -49,6 +52,26 @@ impl EditorState {
             let _ = self.session.activate(target);
         }
 
+        if should_quit_after_close {
+            self.should_quit = true;
+        }
+
         true
+    }
+
+    pub(super) fn is_empty_unnamed_startup_buffer(&self, id: redox_core::BufferId) -> bool {
+        let Some(meta) = self.session.meta(id) else {
+            return false;
+        };
+        if meta.kind != BufferKind::File {
+            return false;
+        }
+        if meta.path.is_some() || meta.dirty || !meta.is_new_file {
+            return false;
+        }
+
+        self.session
+            .buffer(id)
+            .is_some_and(|buffer| buffer.to_string().is_empty())
     }
 }

@@ -39,7 +39,9 @@ fn draw_buffer_view(
     state.pump_active_loading(text_h as usize);
 
     if let Some(popup) = state.explorer_popup() {
-        if let Some(background_id) = state.explorer_background_buffer_id() {
+        if let Some(background_id) = state.explorer_background_buffer_id()
+            && !state.explorer_background_is_placeholder_blank()
+        {
             draw_buffer_snapshot_for_id(
                 state,
                 style,

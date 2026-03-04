@@ -397,6 +397,109 @@ fn explorer_write_requires_confirmation_for_deletes() {
 }
 
 #[test]
+fn explorer_write_preserves_cursor_line_when_still_in_range() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_cursor_preserve_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    fs::write(dir.join("a.txt"), "a").expect("failed to write fixture");
+    fs::write(dir.join("b.txt"), "b").expect("failed to write fixture");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line = 2;
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\na.txt\nrenamed.txt\nopen.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    let cursor_line = state
+        .views
+        .get(&id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line;
+    assert_eq!(cursor_line, 2);
+
+    let _ = fs::remove_file(dir.join("a.txt"));
+    let _ = fs::remove_file(dir.join("renamed.txt"));
+    let _ = fs::remove_file(file_open);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_clamps_cursor_to_bottom_when_lines_are_removed() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_cursor_clamp_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    fs::write(dir.join("a.txt"), "a").expect("failed to write fixture");
+    fs::write(dir.join("b.txt"), "b").expect("failed to write fixture");
+    fs::write(dir.join("c.txt"), "c").expect("failed to write fixture");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line = 4;
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\na.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    let cursor_line = state
+        .views
+        .get(&id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line;
+    assert_eq!(cursor_line, 1);
+
+    let _ = fs::remove_file(dir.join("a.txt"));
+    let _ = fs::remove_file(file_open);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
 fn explorer_q_closes_surface_buffer_only() {
     let path = temp_file_path("explorer_q_close");
     let mut state = state_with_text(path.clone(), "alpha");
@@ -412,6 +515,58 @@ fn explorer_q_closes_surface_buffer_only() {
     assert_eq!(state.session.active_id(), return_to);
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn explorer_q_from_directory_launch_quits_in_one_step() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_single_q_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    fs::write(dir.join("a.txt"), "alpha").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+    let mut state = EditorState::new(session);
+    state
+        .open_explorer_at_path(dir.clone())
+        .expect("failed to open explorer");
+    assert!(state.explorer_popup().is_some());
+
+    run_command(&mut state, "q");
+
+    assert!(state.should_quit);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explorer_open_at_dot_resolves_title_to_real_directory_path() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+    let mut state = EditorState::new(session);
+
+    state
+        .open_explorer_at_path(PathBuf::from("."))
+        .expect("failed to open explorer at dot");
+    let popup = state.explorer_popup().expect("explorer popup should be active");
+
+    assert!(!popup.title.starts_with("~./"));
+    assert!(popup.title.ends_with('/'));
+}
+
+#[test]
+fn explorer_directory_launch_marks_background_as_placeholder_blank() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+    let mut state = EditorState::new(session);
+
+    state
+        .open_explorer_at_path(PathBuf::from("."))
+        .expect("failed to open explorer at dot");
+
+    assert!(state.explorer_background_is_placeholder_blank());
 }
 
 #[test]
