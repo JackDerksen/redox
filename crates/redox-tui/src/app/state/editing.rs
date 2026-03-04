@@ -3,12 +3,6 @@ use redox_core::{Pos, Selection, TextBuffer};
 use super::{EditorMode, EditorState, RegisterKind};
 
 impl EditorState {
-    fn buffer_lines(buffer: &TextBuffer) -> Vec<String> {
-        (0..buffer.len_lines())
-            .map(|line| buffer.line_string(line))
-            .collect()
-    }
-
     pub(super) fn active_visual_selection_delete_bounds(&self) -> Option<(Pos, Pos, RegisterKind)> {
         let (selection, line_mode) = self.active_visual_selection()?;
         let buffer = self.session.active_buffer();
@@ -290,23 +284,12 @@ impl EditorState {
             let Some((start_line, end_line)) = self.active_visual_line_range() else {
                 break;
             };
-            if start_line == 0 {
-                break;
-            }
-            let mut lines = {
-                let buffer = self.session.active_buffer();
-                Self::buffer_lines(buffer)
-            };
-            let moving = lines.drain(start_line..=end_line).collect::<Vec<_>>();
-            for (offset, line) in moving.into_iter().enumerate() {
-                lines.insert(start_line - 1 + offset, line);
-            }
-
-            let rewritten = lines.join("\n");
-
-            {
+            let moved = {
                 let buffer = self.session.active_buffer_mut();
-                *buffer = TextBuffer::from_str(&rewritten);
+                buffer.move_line_range_up_once(start_line, end_line)
+            };
+            if moved.is_none() {
+                break;
             }
 
             let view = self.views.entry(active_id).or_default();
@@ -341,29 +324,12 @@ impl EditorState {
             let Some((start_line, end_line)) = self.active_visual_line_range() else {
                 break;
             };
-            let can_move_down = {
-                let buffer = self.session.active_buffer();
-                end_line + 1 < buffer.len_lines()
-            };
-            if !can_move_down {
-                break;
-            }
-
-            let mut lines = {
-                let buffer = self.session.active_buffer();
-                Self::buffer_lines(buffer)
-            };
-            let moving = lines.drain(start_line..=end_line).collect::<Vec<_>>();
-            let insert_at = start_line.saturating_add(1);
-            for (offset, line) in moving.into_iter().enumerate() {
-                lines.insert(insert_at + offset, line);
-            }
-
-            let rewritten = lines.join("\n");
-
-            {
+            let moved = {
                 let buffer = self.session.active_buffer_mut();
-                *buffer = TextBuffer::from_str(&rewritten);
+                buffer.move_line_range_down_once(start_line, end_line)
+            };
+            if moved.is_none() {
+                break;
             }
 
             let view = self.views.entry(active_id).or_default();

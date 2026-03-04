@@ -103,4 +103,18 @@ impl TextBuffer {
 
         start..end
     }
+
+    /// Returns the absolute char index of the end of `line`, including a trailing
+    /// `'\n'` when one exists.
+    ///
+    /// This is useful for line-block transforms that need stable slice boundaries
+    /// across both newline-terminated and non-terminated final lines.
+    pub fn line_full_end_char(&self, line: usize) -> usize {
+        let line = self.clamp_line(line);
+        if line + 1 < self.len_lines() {
+            self.rope.line_to_char(line + 1)
+        } else {
+            self.rope.line_to_char(line) + self.line_len_chars(line)
+        }
+    }
 }

@@ -196,4 +196,89 @@ impl TextBuffer {
             Selection::empty(cursor)
         }
     }
+
+    /// Move a contiguous line range up by one line.
+    ///
+    /// Returns the moved range after the operation, or `None` when movement is
+    /// not possible (for example when the range already starts at line 0).
+    pub fn move_line_range_up_once(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+    ) -> Option<(usize, usize)> {
+        let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
+        if start == 0 {
+            return None;
+        }
+
+        let first = start - 1;
+        let last = end;
+        let mut entries = self.collect_line_entries(first, last);
+        entries.rotate_left(1);
+        let mut replacement = entries.join("\n");
+        if last + 1 < self.len_lines() {
+            replacement.push('\n');
+        }
+
+        let replace_start = self.line_to_char(first);
+        let replace_end = self.line_full_end_char(last);
+        self.rope.remove(replace_start..replace_end);
+        self.rope.insert(replace_start, &replacement);
+
+        Some((start - 1, end - 1))
+    }
+
+    /// Move a contiguous line range down by one line.
+    ///
+    /// Returns the moved range after the operation, or `None` when movement is
+    /// not possible (for example when the range already ends at the final line).
+    pub fn move_line_range_down_once(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+    ) -> Option<(usize, usize)> {
+        let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
+        if end + 1 >= self.len_lines() {
+            return None;
+        }
+
+        let first = start;
+        let last = end + 1;
+        let mut entries = self.collect_line_entries(first, last);
+        entries.rotate_right(1);
+        let mut replacement = entries.join("\n");
+        if last + 1 < self.len_lines() {
+            replacement.push('\n');
+        }
+
+        let replace_start = self.line_to_char(first);
+        let replace_end = self.line_full_end_char(last);
+        self.rope.remove(replace_start..replace_end);
+        self.rope.insert(replace_start, &replacement);
+
+        Some((start + 1, end + 1))
+    }
+
+    fn normalized_line_range(
+        &self,
+        start_line: usize,
+        end_line_inclusive: usize,
+    ) -> (usize, usize) {
+        let (start, end) = if start_line <= end_line_inclusive {
+            (start_line, end_line_inclusive)
+        } else {
+            (end_line_inclusive, start_line)
+        };
+        let start = self.clamp_line(start);
+        let end = self.clamp_line(end.max(start));
+        (start, end)
+    }
+
+    fn collect_line_entries(&self, start_line: usize, end_line_inclusive: usize) -> Vec<String> {
+        let mut entries = Vec::with_capacity(end_line_inclusive.saturating_sub(start_line) + 1);
+        for line in start_line..=end_line_inclusive {
+            entries.push(self.line_string(line));
+        }
+        entries
+    }
 }

@@ -229,3 +229,39 @@ fn apply_edits_empty_is_noop_summary() {
     assert_eq!(summary.cursor, Pos::new(0, 3));
     assert_eq!(summary.edits_applied, 0);
 }
+
+#[test]
+fn move_line_range_down_and_up_preserve_content() {
+    let mut b = TextBuffer::from_str("one\ntwo\nthree\nfour\n");
+    let moved = b.move_line_range_down_once(1, 2);
+    assert_eq!(moved, Some((2, 3)));
+    assert_eq!(b.to_string(), "one\nfour\ntwo\nthree\n");
+
+    let moved_back = b.move_line_range_up_once(2, 3);
+    assert_eq!(moved_back, Some((1, 2)));
+    assert_eq!(b.to_string(), "one\ntwo\nthree\nfour\n");
+}
+
+#[test]
+fn move_line_range_down_into_trailing_blank_line_preserves_split() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    let moved = b.move_line_range_down_once(1, 1);
+    assert_eq!(moved, Some((2, 2)));
+    assert_eq!(b.to_string(), "one\n\ntwo");
+}
+
+#[test]
+fn move_line_range_up_at_eof_without_trailing_newline_does_not_join() {
+    let mut b = TextBuffer::from_str("one\ntwo");
+    let moved = b.move_line_range_up_once(1, 1);
+    assert_eq!(moved, Some((0, 0)));
+    assert_eq!(b.to_string(), "two\none");
+}
+
+#[test]
+fn move_line_range_respects_boundaries() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    assert_eq!(b.move_line_range_up_once(0, 0), None);
+    assert_eq!(b.move_line_range_down_once(2, 2), None);
+    assert_eq!(b.to_string(), "one\ntwo\n");
+}
