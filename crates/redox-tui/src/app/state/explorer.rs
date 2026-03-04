@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 use redox_core::{BufferId, Pos, TextBuffer};
 
@@ -523,22 +524,82 @@ fn apply_explorer_changes(
         .cloned()
         .collect();
 
-    let overlap = old_entries.len().min(new_entries.len());
+    let mut seen_names = HashSet::new();
+    for entry in &new_entries {
+        if !seen_names.insert(entry.name.clone()) {
+            anyhow::bail!("duplicate entry name '{}'", entry.name);
+        }
+    }
 
+    let overlap = old_entries.len().min(new_entries.len());
+    #[derive(Debug)]
+    struct PlannedRename {
+        old_name: String,
+        new_name: String,
+        old_path: PathBuf,
+        new_path: PathBuf,
+        temp_path: PathBuf,
+    }
+
+    let mut renames: Vec<PlannedRename> = Vec::new();
     for i in 0..overlap {
         let old = &old_entries[i];
         let new = &new_entries[i];
         if old.name == new.name {
             continue;
         }
+        renames.push(PlannedRename {
+            old_name: old.name.clone(),
+            new_name: new.name.clone(),
+            old_path: dir_path.join(&old.name),
+            new_path: dir_path.join(&new.name),
+            temp_path: PathBuf::new(),
+        });
+    }
 
-        // Check if target already exists to prevent collisions
-        let old_path = dir_path.join(&old.name);
-        let new_path = dir_path.join(&new.name);
-        if new_path.exists() && !old_path.exists() {
-            anyhow::bail!("rename target '{}' already exists", new.name);
+    // Allow targets that are part of the rename source set (swap/cycle); reject all others.
+    let rename_sources: HashSet<&str> = renames.iter().map(|r| r.old_name.as_str()).collect();
+    for rename in &renames {
+        if !rename.old_path.exists() {
+            anyhow::bail!("rename source '{}' does not exist", rename.old_name);
         }
-        fs::rename(&old_path, &new_path)?;
+        if rename.new_path.exists() && !rename_sources.contains(rename.new_name.as_str()) {
+            anyhow::bail!("rename target '{}' already exists", rename.new_name);
+        }
+    }
+
+    // Stage each source to a unique temporary path first so swaps/cycles cannot clobber.
+    let mut reserved_names: HashSet<String> = old_entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .chain(new_entries.iter().map(|entry| entry.name.clone()))
+        .collect();
+
+    for (idx, rename) in renames.iter_mut().enumerate() {
+        let mut attempt = 0usize;
+        loop {
+            let candidate = format!(".redox_rename_tmp_{idx}_{attempt}");
+            let candidate_path = dir_path.join(&candidate);
+            if !reserved_names.contains(&candidate) && !candidate_path.exists() {
+                reserved_names.insert(candidate);
+                rename.temp_path = candidate_path;
+                break;
+            }
+            attempt = attempt.saturating_add(1);
+            if attempt > 10_000 {
+                anyhow::bail!("failed to allocate temporary rename path");
+            }
+        }
+    }
+
+    for rename in &renames {
+        fs::rename(&rename.old_path, &rename.temp_path)?;
+    }
+    for rename in &renames {
+        if rename.new_path.exists() {
+            anyhow::bail!("rename target '{}' already exists", rename.new_name);
+        }
+        fs::rename(&rename.temp_path, &rename.new_path)?;
     }
 
     if old_entries.len() > new_entries.len() {
@@ -579,6 +640,22 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn temp_dir_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("redox_explorer_{tag}_{nanos}"))
+    }
+
+    fn file_entry(name: &str) -> ExplorerEntry {
+        ExplorerEntry {
+            name: name.to_string(),
+            is_dir: false,
+            is_parent: false,
+        }
+    }
+
     #[test]
     fn deleting_non_empty_directory_returns_clear_error() {
         let nanos = SystemTime::now()
@@ -603,6 +680,57 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("directory is not empty"));
         assert!(msg.contains("doomed"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rename_swap_uses_staging_and_preserves_both_files() {
+        let root = temp_dir_path("rename_swap");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+
+        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
+        let new_entries = vec![file_entry("beta.txt"), file_entry("alpha.txt")];
+
+        apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected swap rename to succeed");
+
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
+            "beta"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
+            "alpha"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rename_to_existing_unchanged_target_is_rejected_without_mutation() {
+        let root = temp_dir_path("rename_collision");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+
+        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
+        let new_entries = vec![file_entry("beta.txt")];
+
+        let err = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect_err("expected rename collision to fail");
+        assert!(err.to_string().contains("rename target 'beta.txt' already exists"));
+
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
+            "beta"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
