@@ -1,7 +1,7 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
 
 use redox_core::{BufferId, Pos, TextBuffer};
 
@@ -568,7 +568,7 @@ fn apply_explorer_changes(
         }
     }
 
-    // Stage each source to a unique temporary path first so swaps/cycles cannot clobber.
+    // Stage each source to a unique temporary path first so swaps/cycles cannot conflict.
     let mut reserved_names: HashSet<String> = old_entries
         .iter()
         .map(|entry| entry.name.clone())
@@ -721,7 +721,10 @@ mod tests {
 
         let err = apply_explorer_changes(&root, &old_entries, &new_entries)
             .expect_err("expected rename collision to fail");
-        assert!(err.to_string().contains("rename target 'beta.txt' already exists"));
+        assert!(
+            err.to_string()
+                .contains("rename target 'beta.txt' already exists")
+        );
 
         assert_eq!(
             fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
