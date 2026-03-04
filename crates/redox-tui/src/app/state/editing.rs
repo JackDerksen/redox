@@ -3,6 +3,12 @@ use redox_core::{Pos, Selection, TextBuffer};
 use super::{EditorMode, EditorState, RegisterKind};
 
 impl EditorState {
+    fn buffer_lines(buffer: &TextBuffer) -> Vec<String> {
+        (0..buffer.len_lines())
+            .map(|line| buffer.line_string(line))
+            .collect()
+    }
+
     pub(super) fn active_visual_selection_delete_bounds(&self) -> Option<(Pos, Pos, RegisterKind)> {
         let (selection, line_mode) = self.active_visual_selection()?;
         let buffer = self.session.active_buffer();
@@ -287,25 +293,23 @@ impl EditorState {
             if start_line == 0 {
                 break;
             }
-            let (replace_start_char, replace_end_char, replacement) = {
+            let mut lines = {
                 let buffer = self.session.active_buffer();
-                let (sel_start_char, sel_end_char) =
-                    Self::line_span_char_range(buffer, start_line, end_line);
-                let (above_start_char, above_end_char) =
-                    Self::line_span_char_range(buffer, start_line - 1, start_line - 1);
-                let selected = buffer.slice_chars(sel_start_char, sel_end_char);
-                let above = buffer.slice_chars(above_start_char, above_end_char);
-                (above_start_char, sel_end_char, format!("{selected}{above}"))
+                Self::buffer_lines(buffer)
             };
+            let moving = lines.drain(start_line..=end_line).collect::<Vec<_>>();
+            for (offset, line) in moving.into_iter().enumerate() {
+                lines.insert(start_line - 1 + offset, line);
+            }
 
-            let view = self.views.entry(active_id).or_default();
+            let rewritten = lines.join("\n");
+
             {
                 let buffer = self.session.active_buffer_mut();
-                let replace_start = buffer.char_to_pos(replace_start_char);
-                let replace_end = buffer.char_to_pos(replace_end_char);
-                let _ = buffer.delete_range(replace_start, replace_end);
-                let _ = buffer.insert(replace_start, &replacement);
+                *buffer = TextBuffer::from_str(&rewritten);
             }
+
+            let view = self.views.entry(active_id).or_default();
             if let Some(anchor) = view.visual_anchor.as_mut() {
                 anchor.line = anchor.line.saturating_sub(1);
             }
@@ -345,25 +349,24 @@ impl EditorState {
                 break;
             }
 
-            let (replace_start_char, replace_end_char, replacement) = {
+            let mut lines = {
                 let buffer = self.session.active_buffer();
-                let (sel_start_char, sel_end_char) =
-                    Self::line_span_char_range(buffer, start_line, end_line);
-                let (below_start_char, below_end_char) =
-                    Self::line_span_char_range(buffer, end_line + 1, end_line + 1);
-                let selected = buffer.slice_chars(sel_start_char, sel_end_char);
-                let below = buffer.slice_chars(below_start_char, below_end_char);
-                (sel_start_char, below_end_char, format!("{below}{selected}"))
+                Self::buffer_lines(buffer)
             };
+            let moving = lines.drain(start_line..=end_line).collect::<Vec<_>>();
+            let insert_at = start_line.saturating_add(1);
+            for (offset, line) in moving.into_iter().enumerate() {
+                lines.insert(insert_at + offset, line);
+            }
 
-            let view = self.views.entry(active_id).or_default();
+            let rewritten = lines.join("\n");
+
             {
                 let buffer = self.session.active_buffer_mut();
-                let replace_start = buffer.char_to_pos(replace_start_char);
-                let replace_end = buffer.char_to_pos(replace_end_char);
-                let _ = buffer.delete_range(replace_start, replace_end);
-                let _ = buffer.insert(replace_start, &replacement);
+                *buffer = TextBuffer::from_str(&rewritten);
             }
+
+            let view = self.views.entry(active_id).or_default();
             if let Some(anchor) = view.visual_anchor.as_mut() {
                 anchor.line = anchor.line.saturating_add(1);
             }

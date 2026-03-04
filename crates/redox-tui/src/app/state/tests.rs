@@ -1427,6 +1427,66 @@ fn visual_shift_j_and_k_move_selected_lines() {
 }
 
 #[test]
+fn visual_move_last_line_up_does_not_join_at_eof() {
+    let path = temp_file_path("visual_move_last_line_up_eof");
+    let mut state = state_with_text(path.clone(), "one\ntwo");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "two\none");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_move_second_last_line_down_does_not_join_at_eof() {
+    let path = temp_file_path("visual_move_second_last_down_eof");
+    let mut state = state_with_text(path.clone(), "one\ntwo");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "two\none");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_move_into_newline_only_last_line_does_not_panic_or_join() {
+    let path = temp_file_path("visual_move_into_blank_last_line");
+    let mut state = state_with_text(path.clone(), "one\ntwo\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
     let path = temp_file_path("visual_indent_outdent");
     let mut state = state_with_text(path.clone(), "one\ntwo\n");
