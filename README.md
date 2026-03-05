@@ -61,7 +61,7 @@ cargo build --release -p crates/redox-tui
 
 Then install the created binary:
 ```
-cargo install --path . --force
+cargo install --path crates/redox-tui
 ```
 
 This installs the `redox` binary into `~/.cargo/bin` by default.
