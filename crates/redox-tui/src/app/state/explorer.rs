@@ -232,20 +232,37 @@ impl EditorState {
             return;
         };
 
+        let previous_dir_name = explorer
+            .dir_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string());
         let parent = explorer
             .dir_path
             .parent()
             .unwrap_or(explorer.dir_path.as_path())
             .to_path_buf();
-        if let Err(e) = self.refresh_explorer_directory(parent) {
+        if let Err(e) = self.refresh_explorer_directory_with_selection(parent, previous_dir_name) {
             self.set_status(format!("explorer open failed: {e}"));
         }
     }
 
     pub(super) fn refresh_explorer_directory(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        self.refresh_explorer_directory_with_selection(dir_path, None)
+    }
+
+    fn refresh_explorer_directory_with_selection(
+        &mut self,
+        dir_path: PathBuf,
+        preferred_entry_name: Option<String>,
+    ) -> anyhow::Result<()> {
         self.explorer_delete_confirmation_token = None;
         let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let entries = list_explorer_entries(&dir_path)?;
+        let initial_cursor_line = preferred_entry_name
+            .as_ref()
+            .and_then(|name| entries.iter().position(|entry| entry.name == *name))
+            .unwrap_or(0);
         let text = explorer_entries_to_text(&entries);
 
         let Some(mut explorer) = self.explorer.clone() else {
@@ -265,7 +282,7 @@ impl EditorState {
                 .session
                 .buffer(explorer_id)
                 .expect("explorer buffer must exist");
-            view.cursor.cursor = Pos::zero();
+            view.cursor.cursor = Pos::new(initial_cursor_line, 0);
             view.cursor.follow.top_margin_rows = 0;
             view.cursor.follow.bottom_margin_rows = 0;
             view.cursor.reconcile_after_edit(
