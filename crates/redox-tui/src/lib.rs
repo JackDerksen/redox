@@ -94,28 +94,20 @@ fn draw_buffer_view(
     );
 
     let visual_selection = state.active_visual_selection();
-    let (snapshot, spec, scroll_x, source_lines) =
-        state.with_active_buffer_view_mut(|buffer, view| {
-            let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
-            let viewport = TextViewport {
-                scroll_x,
-                scroll_y,
-                width: text_w,
-                height: text_h,
-            };
-            let snapshot =
-                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-            let spec = view
-                .cursor
-                .cursor_spec(buffer, text_w as usize, text_h as usize);
-            let source_lines = (0..snapshot.lines.len())
-                .map(|row| {
-                    let line_idx = snapshot.first_line + row;
-                    buffer.line_string(line_idx)
-                })
-                .collect::<Vec<_>>();
-            (snapshot, spec, scroll_x, source_lines)
-        });
+    let (snapshot, spec, scroll_x) = state.with_active_buffer_view_mut(|buffer, view| {
+        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+        let viewport = TextViewport {
+            scroll_x,
+            scroll_y,
+            width: text_w,
+            height: text_h,
+        };
+        let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+        let spec = view
+            .cursor
+            .cursor_spec(buffer, text_w as usize, text_h as usize);
+        (snapshot, spec, scroll_x)
+    });
 
     draw_relative_line_numbers(
         window,
@@ -130,16 +122,17 @@ fn draw_buffer_view(
 
     for (row, line) in snapshot.lines.iter().enumerate() {
         let line_idx = snapshot.first_line + row;
-        let source_line = source_lines.get(row).map(String::as_str).unwrap_or("");
         if let Some((selection, line_mode)) = visual_selection {
+            let line_len = state.session.active_buffer().line_len_chars(line_idx);
             if let Some((sel_start, sel_end)) =
-                visual_range_for_line(selection, line_mode, line_idx, source_line)
+                visual_range_for_line(selection, line_mode, line_idx, line_len)
             {
+                let source_line = state.session.active_buffer().line_string(line_idx);
                 draw_line_with_selection(
                     window,
                     row as u16,
                     content_x,
-                    source_line,
+                    &source_line,
                     scroll_x,
                     text_w as usize,
                     sel_start,
@@ -259,9 +252,8 @@ fn visual_range_for_line(
     selection: Selection,
     line_mode: bool,
     line_idx: usize,
-    source_line: &str,
+    line_len: usize,
 ) -> Option<(usize, usize)> {
-    let line_len = source_line.chars().count();
     if line_mode {
         let start_line = selection.anchor.line.min(selection.cursor.line);
         let end_line = selection.anchor.line.max(selection.cursor.line);

@@ -29,9 +29,8 @@ impl EditorState {
                     (about.buffer_id == active_id).then_some(about.return_to_buffer_id)
                 })
             });
-        let should_quit_after_close = is_explorer
-            && return_to
-                .is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
+        let should_quit_after_close =
+            is_explorer && return_to.is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
 
         if !self.session.close_active_buffer() {
             return false;

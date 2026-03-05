@@ -301,13 +301,9 @@ impl EditorState {
         }
 
         let view = self.views.entry(active_id).or_default();
-        let duplicate_last = view
-            .undo_history
-            .undo_stack
-            .last()
-            .is_some_and(|last| {
-                Self::buffers_equal(&last.buffer, &before.buffer) && last.cursor == before.cursor
-            });
+        let duplicate_last = view.undo_history.undo_stack.last().is_some_and(|last| {
+            Self::buffers_equal(&last.buffer, &before.buffer) && last.cursor == before.cursor
+        });
         if !duplicate_last {
             view.undo_history.undo_stack.push(before);
         }

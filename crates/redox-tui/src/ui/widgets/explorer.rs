@@ -72,7 +72,7 @@ pub fn draw_explorer_popup_view(
     }
 
     let visual_selection = state.active_visual_selection();
-    let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x, source_lines) = state
+    let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x) = state
         .with_active_buffer_view_mut(|buffer, explorer_view| {
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
@@ -97,12 +97,6 @@ pub fn draw_explorer_popup_view(
                     explorer_entry_color(style, &popup.dir_path, &source)
                 })
                 .collect::<Vec<_>>();
-            let source_lines = (0..snapshot.lines.len())
-                .map(|row| {
-                    let line_idx = snapshot.first_line + row;
-                    buffer.line_string(line_idx)
-                })
-                .collect::<Vec<_>>();
             (
                 snapshot,
                 spec,
@@ -110,7 +104,6 @@ pub fn draw_explorer_popup_view(
                 explorer_view.cursor.cursor.line,
                 total_lines,
                 scroll_x,
-                source_lines,
             )
         });
 
@@ -129,16 +122,17 @@ pub fn draw_explorer_popup_view(
     for (row, line) in snapshot.lines.iter().enumerate() {
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
         let line_idx = snapshot.first_line + row;
-        let source_line = source_lines.get(row).map(String::as_str).unwrap_or("");
         if let Some((selection, line_mode)) = visual_selection {
+            let line_len = state.session.active_buffer().line_len_chars(line_idx);
             if let Some((sel_start, sel_end)) =
-                visual_range_for_line(selection, line_mode, line_idx, source_line)
+                visual_range_for_line(selection, line_mode, line_idx, line_len)
             {
+                let source_line = state.session.active_buffer().line_string(line_idx);
                 draw_line_with_selection(
                     &mut view,
                     row as u16,
                     content_x,
-                    source_line,
+                    &source_line,
                     scroll_x,
                     inner_w.saturating_sub(content_x) as usize,
                     sel_start,
@@ -300,9 +294,8 @@ fn visual_range_for_line(
     selection: Selection,
     line_mode: bool,
     line_idx: usize,
-    source_line: &str,
+    line_len: usize,
 ) -> Option<(usize, usize)> {
-    let line_len = source_line.chars().count();
     if line_mode {
         let start_line = selection.anchor.line.min(selection.cursor.line);
         let end_line = selection.anchor.line.max(selection.cursor.line);
