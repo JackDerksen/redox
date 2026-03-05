@@ -551,7 +551,9 @@ fn explorer_open_at_dot_resolves_title_to_real_directory_path() {
     state
         .open_explorer_at_path(PathBuf::from("."))
         .expect("failed to open explorer at dot");
-    let popup = state.explorer_popup().expect("explorer popup should be active");
+    let popup = state
+        .explorer_popup()
+        .expect("explorer popup should be active");
 
     assert!(!popup.title.starts_with("~./"));
     assert!(popup.title.ends_with('/'));

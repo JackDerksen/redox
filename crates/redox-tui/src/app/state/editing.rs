@@ -9,7 +9,8 @@ impl EditorState {
         let (start, end_inclusive) = selection.ordered();
 
         if line_mode {
-            let (start_char, end_char) = Self::line_span_char_range(buffer, start.line, end_inclusive.line);
+            let (start_char, end_char) =
+                Self::line_span_char_range(buffer, start.line, end_inclusive.line);
             let start_pos = buffer.char_to_pos(start_char);
             let end_pos = buffer.char_to_pos(end_char);
             Some((start_pos, end_pos, RegisterKind::LineWise))
