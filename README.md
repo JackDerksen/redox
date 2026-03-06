@@ -56,12 +56,12 @@ cargo install redox-editor
 
 Build from source after cloning the repository:
 ```bash
-cargo build --release -p crates/redox-tui
+cargo build --release -p redox-editor
 ```
 
 Then install the created binary:
 ```
-cargo install --path crates/redox-tui
+cargo install --path .
 ```
 
 This installs the `redox` binary into `~/.cargo/bin` by default.
