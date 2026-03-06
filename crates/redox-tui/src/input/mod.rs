@@ -220,11 +220,23 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         };
     }
 
-    if state.pending_d && mode == InputMode::Normal {
-        state.pending_d = false;
-        if c == 'd' {
-            return InputAction::DeleteCurrentLinePrivate {
-                count: state.take_count_or_1(),
+    // Count prefix: leading zero has Vim-specific semantics for moving to the 0th col.
+    // Keep this simple for now, will update later.
+    if let Some(d) = c.to_digit(10) {
+        state.push_count_digit(d as u8);
+        return InputAction::None;
+    }
+
+    // Handle `gg` sequence.
+    // NOTE: I will not be adding the `{count}gg` motion in Redox. I do not like it.
+    if state.pending_g {
+        state.pending_g = false;
+        if c == 'g' {
+            // Consume any pending count so it does not leak to the next action.
+            let _ = state.take_count_or_1();
+            return InputAction::Motion {
+                motion: Motion::FileStart,
+                count: 1,
             };
         }
     }
@@ -236,6 +248,15 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             return InputAction::CenterCursorLine;
         }
         return InputAction::None;
+    }
+
+    if state.pending_d && mode == InputMode::Normal {
+        state.pending_d = false;
+        if c == 'd' {
+            return InputAction::DeleteCurrentLinePrivate {
+                count: state.take_count_or_1(),
+            };
+        }
     }
 
     match c {
@@ -304,16 +325,78 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
                 count: state.take_count_or_1(),
             }
         }
-        ':' => InputAction::EnterCommand,
-        'i' if mode == InputMode::Normal => InputAction::EnterInsert(InsertKind::Insert),
-        'a' if mode == InputMode::Normal => InputAction::EnterInsert(InsertKind::Append),
-        'o' if mode == InputMode::Normal => InputAction::OpenLineBelow,
-        'O' if mode == InputMode::Normal => InputAction::OpenLineAbove,
-        '-' if mode == InputMode::Normal => InputAction::SurfaceGoParent,
+        ':' => {
+            state.reset_prefixes();
+            InputAction::EnterCommand
+        }
+        'i' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::EnterInsert(InsertKind::Insert)
+        }
+        'a' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::EnterInsert(InsertKind::Append)
+        }
+        'I' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::EnterInsert(InsertKind::InsertLineStart)
+        }
+        'A' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::EnterInsert(InsertKind::AppendLineEnd)
+        }
+        'o' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::OpenLineBelow
+        }
+        'O' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::OpenLineAbove
+        }
+        '-' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::SurfaceGoParent
+        }
+        'g' => {
+            state.pending_g = true;
+            InputAction::None
+        }
         'z' if mode == InputMode::Normal => {
             state.pending_z = true;
             InputAction::None
         }
+        'h' => InputAction::Motion {
+            motion: Motion::Left,
+            count: state.take_count_or_1(),
+        },
+        'j' => InputAction::Motion {
+            motion: Motion::Down,
+            count: state.take_count_or_1(),
+        },
+        'k' => InputAction::Motion {
+            motion: Motion::Up,
+            count: state.take_count_or_1(),
+        },
+        'l' => InputAction::Motion {
+            motion: Motion::Right,
+            count: state.take_count_or_1(),
+        },
+        'w' => InputAction::Motion {
+            motion: Motion::WordStartAfter,
+            count: state.take_count_or_1(),
+        },
+        'b' => InputAction::Motion {
+            motion: Motion::WordStartBefore,
+            count: state.take_count_or_1(),
+        },
+        'e' => InputAction::Motion {
+            motion: Motion::WordEndAfter,
+            count: state.take_count_or_1(),
+        },
+        'G' => InputAction::Motion {
+            motion: Motion::FileEnd,
+            count: state.take_count_or_1(),
+        },
         'u' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::Undo
@@ -322,7 +405,10 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::ConfirmExplorerDelete
         }
-        _ => InputAction::None,
+        _ => {
+            state.reset_prefixes();
+            InputAction::None
+        }
     }
 }
 
@@ -402,23 +488,9 @@ fn map_key_with_state(
         return InputAction::ViewportUpCenter;
     }
 
-    // Modal (normal/visual) handling below.
-
-    if state.pending_leader {
-        state.pending_leader = false;
-        match key {
-            KeyKind::Char('e') => return InputAction::OpenExplorer,
-            KeyKind::Char('y') if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
-                return InputAction::YankSelectionSystem;
-            }
-            _ => {}
-        }
-        return InputAction::None;
-    }
-
     // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
     if mods.shift {
-        if let KeyKind::Char('I') = key {
+        if matches!(key, KeyKind::Char('I') | KeyKind::Char('i')) {
             if mode != InputMode::Normal {
                 state.reset_prefixes();
                 return InputAction::None;
@@ -426,7 +498,7 @@ fn map_key_with_state(
             state.reset_prefixes();
             return InputAction::EnterInsert(InsertKind::InsertLineStart);
         }
-        if let KeyKind::Char('A') = key {
+        if matches!(key, KeyKind::Char('A') | KeyKind::Char('a')) {
             if mode != InputMode::Normal {
                 state.reset_prefixes();
                 return InputAction::None;
@@ -434,53 +506,13 @@ fn map_key_with_state(
             state.reset_prefixes();
             return InputAction::EnterInsert(InsertKind::AppendLineEnd);
         }
-        if let KeyKind::Char('O') = key {
+        if matches!(key, KeyKind::Char('O') | KeyKind::Char('o')) {
             if mode != InputMode::Normal {
                 state.reset_prefixes();
                 return InputAction::None;
             }
             state.reset_prefixes();
             return InputAction::OpenLineAbove;
-        }
-    }
-
-    // Count prefix: leading zero has Vim-specific semantics; keep this simple for now.
-    if let KeyKind::Char(c) = key {
-        if let Some(d) = c.to_digit(10) {
-            state.push_count_digit(d as u8);
-            return InputAction::None;
-        }
-    }
-
-    // Handle `gg` sequence.
-    if state.pending_g {
-        state.pending_g = false;
-
-        if matches!(key, KeyKind::Char('g')) {
-            let count = state.take_count_or_1();
-            // TODO: map `{count}gg` to line `{count}` when that motion exists.
-            return InputAction::Motion {
-                motion: Motion::FileStart,
-                count,
-            };
-        }
-    }
-
-    if state.pending_z {
-        state.pending_z = false;
-        if matches!(key, KeyKind::Char('z')) {
-            state.reset_prefixes();
-            return InputAction::CenterCursorLine;
-        }
-        return InputAction::None;
-    }
-
-    if state.pending_d && mode == InputMode::Normal {
-        state.pending_d = false;
-        if matches!(key, KeyKind::Char('d')) {
-            return InputAction::DeleteCurrentLinePrivate {
-                count: state.take_count_or_1(),
-            };
         }
     }
 
@@ -501,99 +533,6 @@ fn map_key_with_state(
             state.reset_prefixes();
             InputAction::SurfaceOpenSelected
         }
-
-        KeyKind::Char(' ') => {
-            state.pending_leader = true;
-            InputAction::None
-        }
-        KeyKind::Char('v') => {
-            state.reset_prefixes();
-            match mode {
-                InputMode::Normal => InputAction::SetMode(InputMode::Visual),
-                InputMode::Visual => InputAction::SetMode(InputMode::Normal),
-                InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
-                InputMode::Insert | InputMode::Command => InputAction::None,
-            }
-        }
-        KeyKind::Char('V') => {
-            state.reset_prefixes();
-            match mode {
-                InputMode::Normal => InputAction::SetMode(InputMode::VisualLine),
-                InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
-                InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
-                InputMode::Insert | InputMode::Command => InputAction::None,
-            }
-        }
-        KeyKind::Char('y') => {
-            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
-                state.reset_prefixes();
-                return InputAction::YankSelectionPrivate;
-            }
-            if mode == InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::ConfirmExplorerDelete;
-            }
-            state.reset_prefixes();
-            InputAction::None
-        }
-        KeyKind::Char('d') => {
-            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
-                state.reset_prefixes();
-                return InputAction::DeleteSelectionPrivate;
-            }
-            if mode == InputMode::Normal {
-                state.pending_d = true;
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::None
-        }
-        KeyKind::Char('x') => {
-            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
-                state.reset_prefixes();
-                return InputAction::DeleteSelectionNoYank;
-            }
-            if mode == InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::DeleteCharNoYank;
-            }
-            state.reset_prefixes();
-            InputAction::None
-        }
-        KeyKind::Char('p') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::PastePrivateRegister
-        }
-        KeyKind::Char('P') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::PastePrivateRegisterBefore
-        }
-        KeyKind::Char('J') => {
-            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            InputAction::MoveVisualSelectionDown {
-                count: state.take_count_or_1(),
-            }
-        }
-        KeyKind::Char('K') => {
-            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            InputAction::MoveVisualSelectionUp {
-                count: state.take_count_or_1(),
-            }
-        }
         KeyKind::Tab => {
             if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
                 state.reset_prefixes();
@@ -609,111 +548,23 @@ fn map_key_with_state(
                 }
             }
         }
-
-        // Enter modes
-        KeyKind::Char('i') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::EnterInsert(InsertKind::Insert)
-        }
-        KeyKind::Char('a') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::EnterInsert(InsertKind::Append)
-        }
-        KeyKind::Char('o') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::OpenLineBelow
-        }
-        KeyKind::Char('O') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::OpenLineAbove
-        }
-        KeyKind::Char(':') => {
-            state.reset_prefixes();
-            InputAction::EnterCommand
-        }
-        KeyKind::Char('-') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::SurfaceGoParent
-        }
-        KeyKind::Char('u') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.reset_prefixes();
-            InputAction::Undo
-        }
-        KeyKind::Char('g') => {
-            state.pending_g = true;
-            InputAction::None
-        }
-        KeyKind::Char('z') => {
-            if mode != InputMode::Normal {
-                state.reset_prefixes();
-                return InputAction::None;
-            }
-            state.pending_z = true;
-            InputAction::None
-        }
-
-        // Motions with optional counts
-        KeyKind::Up | KeyKind::Char('k') => InputAction::Motion {
+        KeyKind::Up => InputAction::Motion {
             motion: Motion::Up,
             count: state.take_count_or_1(),
         },
-        KeyKind::Down | KeyKind::Char('j') => InputAction::Motion {
+        KeyKind::Down => InputAction::Motion {
             motion: Motion::Down,
             count: state.take_count_or_1(),
         },
-        KeyKind::Left | KeyKind::Char('h') => InputAction::Motion {
+        KeyKind::Left => InputAction::Motion {
             motion: Motion::Left,
             count: state.take_count_or_1(),
         },
-        KeyKind::Right | KeyKind::Char('l') => InputAction::Motion {
+        KeyKind::Right => InputAction::Motion {
             motion: Motion::Right,
             count: state.take_count_or_1(),
         },
-
-        KeyKind::Char('w') => InputAction::Motion {
-            motion: Motion::WordStartAfter,
-            count: state.take_count_or_1(),
-        },
-
-        KeyKind::Char('b') => InputAction::Motion {
-            motion: Motion::WordStartBefore,
-            count: state.take_count_or_1(),
-        },
-
-        KeyKind::Char('e') => InputAction::Motion {
-            motion: Motion::WordEndAfter,
-            count: state.take_count_or_1(),
-        },
-
-        KeyKind::Char('G') => InputAction::Motion {
-            motion: Motion::FileEnd,
-            count: state.take_count_or_1(),
-        },
-
+        KeyKind::Char(c) => modal_char_action(state, mode, c),
         _ => {
             state.reset_prefixes();
             InputAction::None
@@ -782,6 +633,33 @@ mod tests {
             InputAction::Motion {
                 motion: Motion::WordStartAfter,
                 count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_count_prefix_is_ignored_by_gg_and_cleared() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('1'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
+
+        let gg = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
+        assert_eq!(gg, InputAction::None);
+        let gg = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
+        assert_eq!(
+            gg,
+            InputAction::Motion {
+                motion: Motion::FileStart,
+                count: 1,
+            }
+        );
+
+        let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
+        assert_eq!(
+            next,
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1,
             }
         );
     }

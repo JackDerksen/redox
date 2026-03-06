@@ -93,6 +93,7 @@ struct BufferRecord {
     meta: BufferMeta,
     buffer: TextBuffer,
     clean_fingerprint: u64,
+    clean_len_chars: usize,
     loader: Option<IncrementalFileLoader>,
     load_status: BufferLoadStatus,
 }
@@ -161,6 +162,7 @@ impl EditorSession {
                 meta,
                 buffer,
                 clean_fingerprint: hash_text(""),
+                clean_len_chars: 0,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -234,6 +236,11 @@ impl EditorSession {
         } else {
             hash_text("")
         };
+        let clean_len_chars = if matches!(load_status.phase, BufferLoadPhase::Complete) {
+            buffer.len_chars()
+        } else {
+            0
+        };
 
         self.buffers.insert(
             id,
@@ -241,6 +248,7 @@ impl EditorSession {
                 meta,
                 buffer,
                 clean_fingerprint,
+                clean_len_chars,
                 loader,
                 load_status,
             },
@@ -269,6 +277,7 @@ impl EditorSession {
                 meta,
                 buffer: TextBuffer::from_str(initial_text),
                 clean_fingerprint: hash_text(initial_text),
+                clean_len_chars: initial_text.chars().count(),
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -368,6 +377,12 @@ impl EditorSession {
             .get_mut(&id)
             .expect("active buffer must exist in session map");
 
+        let current_len = rec.buffer.len_chars();
+        if current_len != rec.clean_len_chars {
+            rec.meta.dirty = true;
+            return true;
+        }
+
         let current = content_fingerprint(&rec.buffer);
         rec.meta.dirty = current != rec.clean_fingerprint;
         rec.meta.dirty
@@ -381,6 +396,7 @@ impl EditorSession {
             .get_mut(&id)
             .expect("active buffer must exist in session map");
         rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+        rec.clean_len_chars = rec.buffer.len_chars();
         rec.meta.dirty = false;
     }
 
@@ -594,6 +610,7 @@ impl EditorSession {
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
 
                 rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+                rec.clean_len_chars = rec.buffer.len_chars();
                 rec.meta.dirty = false;
                 rec.meta.is_new_file = false;
                 Ok(())
@@ -651,6 +668,7 @@ impl EditorSession {
                 rec.load_status.phase = BufferLoadPhase::Complete;
                 rec.load_status.error = None;
                 rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+                rec.clean_len_chars = rec.buffer.len_chars();
                 return Ok(0);
             }
         };
@@ -667,6 +685,7 @@ impl EditorSession {
             rec.load_status.phase = BufferLoadPhase::Complete;
             rec.load_status.error = None;
             rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+            rec.clean_len_chars = rec.buffer.len_chars();
             rec.loader = None;
         } else {
             rec.load_status.phase = BufferLoadPhase::Loading;
@@ -746,7 +765,11 @@ fn relative_path(path: &Path, base: &Path) -> Option<PathBuf> {
 }
 
 fn content_fingerprint(buffer: &TextBuffer) -> u64 {
-    hash_text(&buffer.to_string())
+    let mut hasher = DefaultHasher::new();
+    for chunk in buffer.rope().chunks() {
+        chunk.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn hash_text(text: &str) -> u64 {

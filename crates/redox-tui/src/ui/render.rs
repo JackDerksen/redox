@@ -103,16 +103,16 @@ impl GraphemeCache {
         self.tick = 0;
     }
 
-    /// Get grapheme slices for `line_text`.
+    /// Get grapheme slices for a buffer line.
     ///
     /// Returned as a slice of `Box<str>` stored in the cache.
     pub fn graphemes_for_line<'a>(
         &'a mut self,
+        buffer: &TextBuffer,
         line_idx: usize,
-        line_text: &str,
     ) -> &'a [Box<str>] {
         self.tick = self.tick.wrapping_add(1);
-        let h = hash64(line_text);
+        let h = hash64_line(buffer, line_idx);
 
         if let Some(pos) = self
             .entries
@@ -125,10 +125,19 @@ impl GraphemeCache {
         }
 
         // Miss: segment and insert.
-        let graphemes: Vec<Box<str>> = line_text
-            .graphemes(true)
-            .map(|g| g.to_owned().into_boxed_str())
-            .collect();
+        let line = buffer.line_slice(line_idx);
+        let graphemes: Vec<Box<str>> = if let Some(line_text) = line.as_str() {
+            line_text
+                .graphemes(true)
+                .map(|g| g.to_owned().into_boxed_str())
+                .collect()
+        } else {
+            let line_text = line.to_string();
+            line_text
+                .graphemes(true)
+                .map(|g| g.to_owned().into_boxed_str())
+                .collect()
+        };
 
         if self.entries.len() >= self.max_entries {
             // Evict least recently used
@@ -198,8 +207,7 @@ pub fn snapshot_lines_wrapped_cached(
                 max_cells,
             ));
         } else {
-            let line_text = buffer.line_string(line_idx);
-            let graphemes = cache.graphemes_for_line(line_idx, &line_text);
+            let graphemes = cache.graphemes_for_line(buffer, line_idx);
 
             // Horizontal scroll is in terminal cells.
             let start_g = skip_graphemes_by_cells(graphemes, viewport.scroll_x);
@@ -235,10 +243,7 @@ pub fn snapshot_lines_cached(
             break;
         }
 
-        // Rope -> String allocation for the line (no trailing '\n').
-        let line_text = buffer.line_string(line_idx);
-
-        let graphemes = cache.graphemes_for_line(line_idx, &line_text);
+        let graphemes = cache.graphemes_for_line(buffer, line_idx);
 
         // Horizontal scroll is in grapheme units.
         let start_g = viewport.scroll_x.min(graphemes.len());
@@ -383,17 +388,16 @@ fn clip_graphemes_to_cells_ref(graphemes: &[&str], max_cells: usize) -> String {
     out
 }
 
-/// Simple 64-bit FNV-1a hash for strings.
-///
-/// Not cryptographic but good enough.
-fn hash64(s: &str) -> u64 {
+fn hash64_line(buffer: &TextBuffer, line_idx: usize) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
     let mut h = FNV_OFFSET;
-    for &b in s.as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
+    for chunk in buffer.line_slice(line_idx).chunks() {
+        for &b in chunk.as_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
     }
     h
 }

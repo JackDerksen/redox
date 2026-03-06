@@ -16,7 +16,9 @@ mod core;
 mod editing;
 mod lines;
 mod positions;
+mod selection;
 mod slicing;
 mod words;
 
 pub use core::TextBuffer;
+pub use selection::VisualSelectionEditPlan;

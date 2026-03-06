@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, Window};
-use redox_core::Selection;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
@@ -72,7 +71,7 @@ pub fn draw_explorer_popup_view(
     }
 
     let visual_selection = state.active_visual_selection();
-    let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x, source_lines) = state
+    let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x) = state
         .with_active_buffer_view_mut(|buffer, explorer_view| {
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
@@ -97,12 +96,6 @@ pub fn draw_explorer_popup_view(
                     explorer_entry_color(style, &popup.dir_path, &source)
                 })
                 .collect::<Vec<_>>();
-            let source_lines = (0..snapshot.lines.len())
-                .map(|row| {
-                    let line_idx = snapshot.first_line + row;
-                    buffer.line_string(line_idx)
-                })
-                .collect::<Vec<_>>();
             (
                 snapshot,
                 spec,
@@ -110,7 +103,6 @@ pub fn draw_explorer_popup_view(
                 explorer_view.cursor.cursor.line,
                 total_lines,
                 scroll_x,
-                source_lines,
             )
         });
 
@@ -129,20 +121,22 @@ pub fn draw_explorer_popup_view(
     for (row, line) in snapshot.lines.iter().enumerate() {
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
         let line_idx = snapshot.first_line + row;
-        let source_line = source_lines.get(row).map(String::as_str).unwrap_or("");
         if let Some((selection, line_mode)) = visual_selection {
-            if let Some((sel_start, sel_end)) =
-                visual_range_for_line(selection, line_mode, line_idx, source_line)
+            if let Some(sel_range) = state
+                .session
+                .active_buffer()
+                .visual_selection_char_range_on_line(selection, line_mode, line_idx)
             {
+                let source_line = state.session.active_buffer().line_string(line_idx);
                 draw_line_with_selection(
                     &mut view,
                     row as u16,
                     content_x,
-                    source_line,
+                    &source_line,
                     scroll_x,
                     inner_w.saturating_sub(content_x) as usize,
-                    sel_start,
-                    sel_end,
+                    sel_range.start,
+                    sel_range.end,
                     color,
                     ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
                 )?;
@@ -294,48 +288,6 @@ fn draw_relative_line_numbers(
     }
 
     Ok(())
-}
-
-fn visual_range_for_line(
-    selection: Selection,
-    line_mode: bool,
-    line_idx: usize,
-    source_line: &str,
-) -> Option<(usize, usize)> {
-    let line_len = source_line.chars().count();
-    if line_mode {
-        let start_line = selection.anchor.line.min(selection.cursor.line);
-        let end_line = selection.anchor.line.max(selection.cursor.line);
-        if line_idx < start_line || line_idx > end_line {
-            return None;
-        }
-        return Some((0, line_len));
-    }
-
-    let (start, end) = selection.ordered();
-    if line_idx < start.line || line_idx > end.line {
-        return None;
-    }
-    if line_len == 0 {
-        return None;
-    }
-
-    let max_char = line_len.saturating_sub(1);
-    let sel_start = if line_idx == start.line {
-        start.col.min(max_char)
-    } else {
-        0
-    };
-    let sel_end_inclusive = if line_idx == end.line {
-        end.col.min(max_char)
-    } else {
-        max_char
-    };
-    if sel_start > sel_end_inclusive {
-        return None;
-    }
-
-    Some((sel_start, sel_end_inclusive.saturating_add(1)))
 }
 
 fn draw_line_with_selection(

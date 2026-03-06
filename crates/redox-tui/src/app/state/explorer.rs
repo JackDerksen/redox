@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -231,20 +232,37 @@ impl EditorState {
             return;
         };
 
+        let previous_dir_name = explorer
+            .dir_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string());
         let parent = explorer
             .dir_path
             .parent()
             .unwrap_or(explorer.dir_path.as_path())
             .to_path_buf();
-        if let Err(e) = self.refresh_explorer_directory(parent) {
+        if let Err(e) = self.refresh_explorer_directory_with_selection(parent, previous_dir_name) {
             self.set_status(format!("explorer open failed: {e}"));
         }
     }
 
     pub(super) fn refresh_explorer_directory(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
+        self.refresh_explorer_directory_with_selection(dir_path, None)
+    }
+
+    fn refresh_explorer_directory_with_selection(
+        &mut self,
+        dir_path: PathBuf,
+        preferred_entry_name: Option<String>,
+    ) -> anyhow::Result<()> {
         self.explorer_delete_confirmation_token = None;
         let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let entries = list_explorer_entries(&dir_path)?;
+        let initial_cursor_line = preferred_entry_name
+            .as_ref()
+            .and_then(|name| entries.iter().position(|entry| entry.name == *name))
+            .unwrap_or(0);
         let text = explorer_entries_to_text(&entries);
 
         let Some(mut explorer) = self.explorer.clone() else {
@@ -264,7 +282,7 @@ impl EditorState {
                 .session
                 .buffer(explorer_id)
                 .expect("explorer buffer must exist");
-            view.cursor.cursor = Pos::zero();
+            view.cursor.cursor = Pos::new(initial_cursor_line, 0);
             view.cursor.follow.top_margin_rows = 0;
             view.cursor.follow.bottom_margin_rows = 0;
             view.cursor.reconcile_after_edit(
@@ -523,51 +541,149 @@ fn apply_explorer_changes(
         .cloned()
         .collect();
 
-    let overlap = old_entries.len().min(new_entries.len());
-
-    for i in 0..overlap {
-        let old = &old_entries[i];
-        let new = &new_entries[i];
-        if old.name == new.name {
-            continue;
+    let mut seen_names = HashSet::new();
+    for entry in &new_entries {
+        if !seen_names.insert(entry.name.clone()) {
+            anyhow::bail!("duplicate entry name '{}'", entry.name);
         }
-
-        // Check if target already exists to prevent collisions
-        let old_path = dir_path.join(&old.name);
-        let new_path = dir_path.join(&new.name);
-        if new_path.exists() && !old_path.exists() {
-            anyhow::bail!("rename target '{}' already exists", new.name);
-        }
-        fs::rename(&old_path, &new_path)?;
     }
 
-    if old_entries.len() > new_entries.len() {
-        for old in &old_entries[new_entries.len()..] {
-            let path = dir_path.join(&old.name);
-            if old.is_dir {
-                if let Err(e) = fs::remove_dir(&path) {
-                    if e.kind() == ErrorKind::DirectoryNotEmpty {
-                        anyhow::bail!(
-                            "cannot remove directory '{}': directory is not empty",
-                            old.name
-                        );
-                    }
-                    return Err(e.into());
+    #[derive(Debug)]
+    struct PlannedRename {
+        old_name: String,
+        new_name: String,
+        old_path: PathBuf,
+        new_path: PathBuf,
+        temp_path: PathBuf,
+    }
+
+    let old_index_by_name: HashMap<&str, usize> = old_entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (entry.name.as_str(), idx))
+        .collect();
+    let new_index_by_name: HashMap<&str, usize> = new_entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (entry.name.as_str(), idx))
+        .collect();
+
+    let mut old_missing: Vec<(usize, ExplorerEntry)> = old_entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
+        .map(|(idx, entry)| (idx, entry.clone()))
+        .collect();
+    let mut new_added: Vec<(usize, ExplorerEntry)> = new_entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
+        .map(|(idx, entry)| (idx, entry.clone()))
+        .collect();
+
+    old_missing.sort_by_key(|(idx, _)| *idx);
+    new_added.sort_by_key(|(idx, _)| *idx);
+
+    let paired_rename_count = old_missing.len().min(new_added.len());
+    let mut renames: Vec<PlannedRename> = Vec::new();
+    for i in 0..paired_rename_count {
+        let (_, old) = &old_missing[i];
+        let (_, new) = &new_added[i];
+        if old.is_dir != new.is_dir {
+            anyhow::bail!(
+                "cannot change entry kind from '{}' to '{}'",
+                old.name,
+                new.name
+            );
+        }
+
+        renames.push(PlannedRename {
+            old_name: old.name.clone(),
+            new_name: new.name.clone(),
+            old_path: dir_path.join(&old.name),
+            new_path: dir_path.join(&new.name),
+            temp_path: PathBuf::new(),
+        });
+    }
+    let deletions: Vec<ExplorerEntry> = old_missing
+        .into_iter()
+        .skip(paired_rename_count)
+        .map(|(_, entry)| entry)
+        .collect();
+    let creations: Vec<ExplorerEntry> = new_added
+        .into_iter()
+        .skip(paired_rename_count)
+        .map(|(_, entry)| entry)
+        .collect();
+
+    // Allow targets that are part of the rename source set (swap/cycle); reject all others.
+    let rename_sources: HashSet<&str> = renames.iter().map(|r| r.old_name.as_str()).collect();
+    for rename in &renames {
+        if !rename.old_path.exists() {
+            anyhow::bail!("rename source '{}' does not exist", rename.old_name);
+        }
+        if rename.new_path.exists() && !rename_sources.contains(rename.new_name.as_str()) {
+            anyhow::bail!("rename target '{}' already exists", rename.new_name);
+        }
+    }
+
+    // Stage each source to a unique temporary path first so swaps/cycles cannot conflict.
+    let mut reserved_names: HashSet<String> = old_entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .chain(new_entries.iter().map(|entry| entry.name.clone()))
+        .collect();
+
+    for (idx, rename) in renames.iter_mut().enumerate() {
+        let mut attempt = 0usize;
+        loop {
+            let candidate = format!(".redox_rename_tmp_{idx}_{attempt}");
+            let candidate_path = dir_path.join(&candidate);
+            if !reserved_names.contains(&candidate) && !candidate_path.exists() {
+                reserved_names.insert(candidate);
+                rename.temp_path = candidate_path;
+                break;
+            }
+            attempt = attempt.saturating_add(1);
+            if attempt > 10_000 {
+                anyhow::bail!("failed to allocate temporary rename path");
+            }
+        }
+    }
+
+    for rename in &renames {
+        fs::rename(&rename.old_path, &rename.temp_path)?;
+    }
+    for rename in &renames {
+        if rename.new_path.exists() {
+            anyhow::bail!("rename target '{}' already exists", rename.new_name);
+        }
+        fs::rename(&rename.temp_path, &rename.new_path)?;
+    }
+
+    for old in &deletions {
+        let path = dir_path.join(&old.name);
+        if old.is_dir {
+            if let Err(e) = fs::remove_dir(&path) {
+                if e.kind() == ErrorKind::DirectoryNotEmpty {
+                    anyhow::bail!(
+                        "cannot remove directory '{}': directory is not empty",
+                        old.name
+                    );
                 }
-            } else {
-                fs::remove_file(&path)?;
+                return Err(e.into());
             }
+        } else {
+            fs::remove_file(&path)?;
         }
     }
 
-    if new_entries.len() > old_entries.len() {
-        for new in &new_entries[old_entries.len()..] {
-            let path = dir_path.join(&new.name);
-            if new.is_dir {
-                fs::create_dir(&path)?;
-            } else {
-                let _ = fs::File::create(&path)?;
-            }
+    for new in &creations {
+        let path = dir_path.join(&new.name);
+        if new.is_dir {
+            fs::create_dir(&path)?;
+        } else {
+            let _ = fs::File::create(&path)?;
         }
     }
 
@@ -578,6 +694,22 @@ fn apply_explorer_changes(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("redox_explorer_{tag}_{nanos}"))
+    }
+
+    fn file_entry(name: &str) -> ExplorerEntry {
+        ExplorerEntry {
+            name: name.to_string(),
+            is_dir: false,
+            is_parent: false,
+        }
+    }
 
     #[test]
     fn deleting_non_empty_directory_returns_clear_error() {
@@ -603,6 +735,86 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("directory is not empty"));
         assert!(msg.contains("doomed"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reorder_only_does_not_mutate_file_contents() {
+        let root = temp_dir_path("reorder_only");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+
+        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
+        let new_entries = vec![file_entry("beta.txt"), file_entry("alpha.txt")];
+
+        apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected reorder-only write to succeed");
+
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
+            "beta"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_and_keep_entry_succeeds_without_rename_collision() {
+        let root = temp_dir_path("delete_keep");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+
+        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
+        let new_entries = vec![file_entry("beta.txt")];
+
+        apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected delete+keep write to succeed");
+
+        assert!(!root.join("alpha.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
+            "beta"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inserting_new_entry_in_middle_preserves_existing_file_contents() {
+        let root = temp_dir_path("insert_middle");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+
+        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
+        let new_entries = vec![
+            file_entry("alpha.txt"),
+            file_entry("new.txt"),
+            file_entry("beta.txt"),
+        ];
+
+        apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected mid-list insert to succeed");
+
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
+            "beta"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("new.txt")).expect("failed to read new file"),
+            ""
+        );
 
         let _ = fs::remove_dir_all(root);
     }

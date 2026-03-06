@@ -64,4 +64,11 @@ impl Selection {
     pub fn is_empty(&self) -> bool {
         self.anchor == self.cursor
     }
+
+    /// Returns the ordered inclusive line range touched by this selection.
+    #[inline]
+    pub fn line_range(&self) -> (usize, usize) {
+        let (start, end) = self.ordered();
+        (start.line, end.line)
+    }
 }

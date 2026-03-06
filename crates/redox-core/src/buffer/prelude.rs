@@ -8,3 +8,4 @@ pub use super::Edit;
 pub use super::Pos;
 pub use super::Selection;
 pub use super::TextBuffer;
+pub use super::VisualSelectionEditPlan;

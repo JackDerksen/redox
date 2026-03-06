@@ -229,3 +229,219 @@ fn apply_edits_empty_is_noop_summary() {
     assert_eq!(summary.cursor, Pos::new(0, 3));
     assert_eq!(summary.edits_applied, 0);
 }
+
+#[test]
+fn line_span_char_range_preserves_line_boundaries() {
+    let b = TextBuffer::from_str("one\ntwo");
+    let r0 = b.line_span_char_range(0, 0);
+    assert_eq!(b.slice_chars(r0.start, r0.end), "one\n");
+
+    let r1 = b.line_span_char_range(1, 1);
+    assert_eq!(b.slice_chars(r1.start, r1.end), "two");
+}
+
+#[test]
+fn line_span_text_linewise_register_always_has_trailing_newline() {
+    let b = TextBuffer::from_str("one\ntwo");
+    let text = b.line_span_text_linewise_register(1, 1);
+    assert_eq!(text, "two\n");
+}
+
+#[test]
+fn selection_line_range_is_order_independent() {
+    let sel = Selection::new(Pos::new(3, 0), Pos::new(1, 9));
+    assert_eq!(sel.line_range(), (1, 3));
+}
+
+#[test]
+fn visual_charwise_range_is_inclusive_of_end_cursor() {
+    let b = TextBuffer::from_str("abcd");
+    let sel = Selection::new(Pos::new(0, 1), Pos::new(0, 2));
+    assert_eq!(b.visual_charwise_text(sel), "bc");
+}
+
+#[test]
+fn visual_linewise_text_uses_linewise_register_semantics() {
+    let b = TextBuffer::from_str("one\ntwo");
+    let sel = Selection::new(Pos::new(1, 0), Pos::new(1, 0));
+    assert_eq!(b.visual_linewise_text(sel), "two\n");
+}
+
+#[test]
+fn visual_selection_helpers_dispatch_by_visual_mode() {
+    let b = TextBuffer::from_str("abcd\nef\n");
+    let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 0));
+
+    assert_eq!(
+        b.visual_selection_pos_range(sel, false),
+        (Pos::new(0, 1), Pos::new(1, 1))
+    );
+    assert_eq!(b.visual_selection_text(sel, false), "bcd\ne");
+
+    assert_eq!(
+        b.visual_selection_pos_range(sel, true),
+        (Pos::new(0, 0), Pos::new(2, 0))
+    );
+    assert_eq!(b.visual_selection_text(sel, true), "abcd\nef\n");
+}
+
+#[test]
+fn visual_selection_edit_plan_bundles_delete_bounds_and_text() {
+    let b = TextBuffer::from_str("abcd\nef\n");
+    let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 0));
+
+    let charwise = b.visual_selection_edit_plan(sel, false);
+    assert_eq!(charwise.delete_start, Pos::new(0, 1));
+    assert_eq!(charwise.delete_end, Pos::new(1, 1));
+    assert_eq!(charwise.text, "bcd\ne");
+    assert!(!charwise.line_mode);
+
+    let linewise = b.visual_selection_edit_plan(sel, true);
+    assert_eq!(linewise.delete_start, Pos::new(0, 0));
+    assert_eq!(linewise.delete_end, Pos::new(2, 0));
+    assert_eq!(linewise.text, "abcd\nef\n");
+    assert!(linewise.line_mode);
+}
+
+#[test]
+fn visual_selection_char_range_on_line_matches_visual_semantics() {
+    let b = TextBuffer::from_str("abcd\nefgh\n");
+    let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 2));
+
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, false, 0),
+        Some(1..4)
+    );
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, false, 1),
+        Some(0..3)
+    );
+    assert_eq!(b.visual_selection_char_range_on_line(sel, false, 2), None);
+
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, true, 0),
+        Some(0..4)
+    );
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, true, 1),
+        Some(0..4)
+    );
+}
+
+#[test]
+fn move_line_range_down_and_up_preserve_content() {
+    let mut b = TextBuffer::from_str("one\ntwo\nthree\nfour\n");
+    let moved = b.move_line_range_down_once(1, 2);
+    assert_eq!(moved, Some((2, 3)));
+    assert_eq!(b.to_string(), "one\nfour\ntwo\nthree\n");
+
+    let moved_back = b.move_line_range_up_once(2, 3);
+    assert_eq!(moved_back, Some((1, 2)));
+    assert_eq!(b.to_string(), "one\ntwo\nthree\nfour\n");
+}
+
+#[test]
+fn move_line_range_down_into_trailing_blank_line_preserves_split() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    let moved = b.move_line_range_down_once(1, 1);
+    assert_eq!(moved, Some((2, 2)));
+    assert_eq!(b.to_string(), "one\n\ntwo");
+}
+
+#[test]
+fn move_line_range_up_at_eof_without_trailing_newline_does_not_join() {
+    let mut b = TextBuffer::from_str("one\ntwo");
+    let moved = b.move_line_range_up_once(1, 1);
+    assert_eq!(moved, Some((0, 0)));
+    assert_eq!(b.to_string(), "two\none");
+}
+
+#[test]
+fn move_line_range_respects_boundaries() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    assert_eq!(b.move_line_range_up_once(0, 0), None);
+    assert_eq!(b.move_line_range_down_once(2, 2), None);
+    assert_eq!(b.to_string(), "one\ntwo\n");
+}
+
+#[test]
+fn move_line_range_up_multi_step_stops_at_top() {
+    let mut b = TextBuffer::from_str("one\ntwo\nthree\nfour\n");
+    let moved = b.move_line_range_up(2, 2, 5);
+
+    assert_eq!(moved, Some((0, 0)));
+    assert_eq!(b.to_string(), "three\none\ntwo\nfour\n");
+}
+
+#[test]
+fn move_line_range_down_multi_step_stops_at_bottom() {
+    let mut b = TextBuffer::from_str("one\ntwo\nthree\nfour\n");
+    let moved = b.move_line_range_down(0, 0, 5);
+
+    assert_eq!(moved, Some((4, 4)));
+    assert_eq!(b.to_string(), "two\nthree\nfour\n\none");
+}
+
+#[test]
+fn move_line_range_multi_step_returns_none_when_unmoved() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    assert_eq!(b.move_line_range_up(0, 0, 1), None);
+    assert_eq!(b.move_line_range_down(2, 2, 3), None);
+}
+
+#[test]
+fn indent_line_span_adds_tabs_and_reports_counts() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    let added = b.indent_line_span(0, 1, 2);
+
+    assert_eq!(added, vec![(0, 2), (1, 2)]);
+    assert_eq!(b.to_string(), "\t\tone\n\t\ttwo\n");
+}
+
+#[test]
+fn outdent_line_span_removes_tabs_and_spaces() {
+    let mut b = TextBuffer::from_str("\t  one\n    two\nthree\n");
+    let removed = b.outdent_line_span(0, 2, 1);
+
+    assert_eq!(removed, vec![(0, 1), (1, 4), (2, 0)]);
+    assert_eq!(b.to_string(), "  one\ntwo\nthree\n");
+}
+
+#[test]
+fn paste_before_charwise_inserts_at_cursor_and_advances() {
+    let mut b = TextBuffer::from_str("abcd");
+    let new_cursor = b.paste_before(Pos::new(0, 1), "X", false);
+
+    assert_eq!(b.to_string(), "aXbcd");
+    assert_eq!(new_cursor, Pos::new(0, 2));
+}
+
+#[test]
+fn paste_before_linewise_inserts_at_line_start_and_keeps_cursor() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    let new_cursor = b.paste_before(Pos::new(1, 2), "zero\n", true);
+
+    assert_eq!(b.to_string(), "one\nzero\ntwo\n");
+    assert_eq!(new_cursor, Pos::new(1, 0));
+}
+
+#[test]
+fn paste_after_charwise_inserts_after_cursor_and_clamps_at_eol() {
+    let mut b = TextBuffer::from_str("abcd");
+    let new_cursor = b.paste_after(Pos::new(0, 1), "X", false);
+    assert_eq!(b.to_string(), "abXcd");
+    assert_eq!(new_cursor, Pos::new(0, 3));
+
+    let end_cursor = b.paste_after(Pos::new(0, 5), "!", false);
+    assert_eq!(b.to_string(), "abXcd!");
+    assert_eq!(end_cursor, Pos::new(0, 6));
+}
+
+#[test]
+fn paste_after_linewise_inserts_at_next_line_start_and_keeps_cursor() {
+    let mut b = TextBuffer::from_str("one\ntwo\n");
+    let new_cursor = b.paste_after(Pos::new(0, 1), "x\n", true);
+
+    assert_eq!(b.to_string(), "one\nx\ntwo\n");
+    assert_eq!(new_cursor, Pos::new(1, 0));
+}

@@ -33,7 +33,7 @@ enum RegisterKind {
 
 #[derive(Debug, Clone)]
 struct UndoSnapshot {
-    text: String,
+    buffer: TextBuffer,
     cursor: Pos,
 }
 
@@ -109,6 +109,11 @@ pub struct EditorState {
 }
 
 impl EditorState {
+    #[inline]
+    fn buffers_equal(a: &TextBuffer, b: &TextBuffer) -> bool {
+        a.rope() == b.rope()
+    }
+
     pub fn new(session: EditorSession) -> Self {
         let active = session.active_id();
         let mut views = HashMap::new();
@@ -262,8 +267,8 @@ impl EditorState {
     fn capture_active_undo_snapshot(&mut self) -> UndoSnapshot {
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-        let text = self.session.active_buffer().to_string();
-        UndoSnapshot { text, cursor }
+        let buffer = self.session.active_buffer().clone();
+        UndoSnapshot { buffer, cursor }
     }
 
     fn capture_active_insert_coalesced_snapshot(&mut self) -> UndoSnapshot {
@@ -290,17 +295,15 @@ impl EditorState {
 
     fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
         let active_id = self.session.active_id();
-        let after_text = self.session.active_buffer().to_string();
-        if after_text == before.text {
+        let after_buffer = self.session.active_buffer();
+        if Self::buffers_equal(after_buffer, &before.buffer) {
             return false;
         }
 
         let view = self.views.entry(active_id).or_default();
-        let duplicate_last = view
-            .undo_history
-            .undo_stack
-            .last()
-            .is_some_and(|last| last.text == before.text && last.cursor == before.cursor);
+        let duplicate_last = view.undo_history.undo_stack.last().is_some_and(|last| {
+            Self::buffers_equal(&last.buffer, &before.buffer) && last.cursor == before.cursor
+        });
         if !duplicate_last {
             view.undo_history.undo_stack.push(before);
         }
@@ -360,13 +363,13 @@ impl EditorState {
 
     fn restore_active_snapshot(
         &mut self,
-        snapshot: UndoSnapshot,
+        mut snapshot: UndoSnapshot,
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
         {
             let buffer = self.session.active_buffer_mut();
-            *buffer = TextBuffer::from_str(&snapshot.text);
+            *buffer = std::mem::take(&mut snapshot.buffer);
         }
 
         let active_id = self.session.active_id();
