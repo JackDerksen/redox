@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "Core text editing primitives for the redox-editor project"
 license = "MIT"
+repository = "https://github.com/JackDerksen/redox"
 readme = "README.md"
 keywords = ["editor", "text", "buffer", "rope", "terminal"]
 categories = ["text-editors", "data-structures"]
