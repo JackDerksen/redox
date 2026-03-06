@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "TUI frontend runtime for redox-editor"
 license = "MIT"
+repository = "https://github.com/JackDerksen/redox"
 readme = "README.md"
 keywords = ["editor", "tui", "terminal", "vim", "text"]
 categories = ["command-line-utilities", "text-editors"]
@@ -13,7 +14,7 @@ name = "redox"
 path = "src/main.rs"
 
 [dependencies]
-redox-core = { version = "0.1.0", path = "../redox-core" }
+redox-core = { version = "0.2.0", path = "../redox-core" }
 minui = { version = "0.6.4", features = ["clipboard"] }
 anyhow = { workspace = true }
 unicode-segmentation = "1.11.0"

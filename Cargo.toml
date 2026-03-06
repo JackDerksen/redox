@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "A terminal-based, Vim-like text editor built with MinUI"
 license = "MIT"
+repository = "https://github.com/JackDerksen/redox"
 readme = "README.md"
 keywords = ["editor", "tui", "terminal", "vim", "text"]
 categories = ["command-line-utilities", "text-editors"]
@@ -24,4 +25,4 @@ resolver = "2"
 anyhow = "1.0"
 
 [dependencies]
-redox-tui = { version = "0.1.0", path = "crates/redox-tui" }
+redox-tui = { version = "0.2.0", path = "crates/redox-tui" }
