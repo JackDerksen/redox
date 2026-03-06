@@ -296,9 +296,9 @@ impl EditorState {
             },
 
             InputAction::YankSelectionPrivate => {
-                if let Some((text, kind)) = self.capture_active_visual_selection_text() {
-                    self.private_register = text;
-                    self.private_register_kind = kind;
+                if let Some(plan) = self.active_visual_selection_edit_plan() {
+                    self.private_register = plan.text;
+                    self.private_register_kind = Self::register_kind_from_line_mode(plan.line_mode);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
                     self.set_status("yanked");
@@ -331,10 +331,10 @@ impl EditorState {
             }
 
             InputAction::YankSelectionSystem => {
-                if let Some((text, kind)) = self.capture_active_visual_selection_text() {
-                    self.private_register = text.clone();
-                    self.private_register_kind = kind;
-                    self.pending_system_clipboard = Some(text);
+                if let Some(plan) = self.active_visual_selection_edit_plan() {
+                    self.private_register = plan.text.clone();
+                    self.private_register_kind = Self::register_kind_from_line_mode(plan.line_mode);
+                    self.pending_system_clipboard = Some(plan.text);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
                 }

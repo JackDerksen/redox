@@ -17,7 +17,7 @@ pub mod prelude;
 
 pub use edit::{Edit, EditBatchSummary};
 pub use pos::{Pos, Selection};
-pub use text_buffer::TextBuffer;
+pub use text_buffer::{TextBuffer, VisualSelectionEditPlan};
 
 #[cfg(test)]
 mod tests;

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, Window};
-use redox_core::Selection;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
@@ -123,9 +122,10 @@ pub fn draw_explorer_popup_view(
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
         let line_idx = snapshot.first_line + row;
         if let Some((selection, line_mode)) = visual_selection {
-            let line_len = state.session.active_buffer().line_len_chars(line_idx);
-            if let Some((sel_start, sel_end)) =
-                visual_range_for_line(selection, line_mode, line_idx, line_len)
+            if let Some(sel_range) = state
+                .session
+                .active_buffer()
+                .visual_selection_char_range_on_line(selection, line_mode, line_idx)
             {
                 let source_line = state.session.active_buffer().line_string(line_idx);
                 draw_line_with_selection(
@@ -135,8 +135,8 @@ pub fn draw_explorer_popup_view(
                     &source_line,
                     scroll_x,
                     inner_w.saturating_sub(content_x) as usize,
-                    sel_start,
-                    sel_end,
+                    sel_range.start,
+                    sel_range.end,
                     color,
                     ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
                 )?;
@@ -288,47 +288,6 @@ fn draw_relative_line_numbers(
     }
 
     Ok(())
-}
-
-fn visual_range_for_line(
-    selection: Selection,
-    line_mode: bool,
-    line_idx: usize,
-    line_len: usize,
-) -> Option<(usize, usize)> {
-    if line_mode {
-        let start_line = selection.anchor.line.min(selection.cursor.line);
-        let end_line = selection.anchor.line.max(selection.cursor.line);
-        if line_idx < start_line || line_idx > end_line {
-            return None;
-        }
-        return Some((0, line_len));
-    }
-
-    let (start, end) = selection.ordered();
-    if line_idx < start.line || line_idx > end.line {
-        return None;
-    }
-    if line_len == 0 {
-        return None;
-    }
-
-    let max_char = line_len.saturating_sub(1);
-    let sel_start = if line_idx == start.line {
-        start.col.min(max_char)
-    } else {
-        0
-    };
-    let sel_end_inclusive = if line_idx == end.line {
-        end.col.min(max_char)
-    } else {
-        max_char
-    };
-    if sel_start > sel_end_inclusive {
-        return None;
-    }
-
-    Some((sel_start, sel_end_inclusive.saturating_add(1)))
 }
 
 fn draw_line_with_selection(

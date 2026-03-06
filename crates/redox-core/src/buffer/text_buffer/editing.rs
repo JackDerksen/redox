@@ -197,6 +197,52 @@ impl TextBuffer {
         }
     }
 
+    /// Paste text before the given cursor.
+    ///
+    /// When `linewise` is true, insertion happens at the start of the current line
+    /// and the returned cursor stays at that insertion point.
+    /// When `linewise` is false, insertion happens at the cursor and the returned
+    /// cursor is at the end of inserted text.
+    pub fn paste_before(&mut self, cursor: Pos, text: &str, linewise: bool) -> Pos {
+        let insert_pos = if linewise {
+            let line = self.clamp_line(cursor.line);
+            self.clamp_pos(Pos::new(line, 0))
+        } else {
+            self.clamp_pos(cursor)
+        };
+
+        let end_pos = self.insert(insert_pos, text);
+        if linewise { insert_pos } else { end_pos }
+    }
+
+    /// Paste text after the given cursor.
+    ///
+    /// When `linewise` is true, insertion happens at the beginning of the next
+    /// logical line (clamped at the buffer boundary), and the returned cursor
+    /// stays at the insertion point.
+    /// When `linewise` is false, insertion happens after the cursor char on the
+    /// current line (or at line end when already at EOL), and the returned cursor
+    /// is at the end of inserted text.
+    pub fn paste_after(&mut self, cursor: Pos, text: &str, linewise: bool) -> Pos {
+        let insert_pos = if linewise {
+            let line = self.clamp_line(cursor.line);
+            let target_line = (line + 1).min(self.len_lines());
+            self.clamp_pos(Pos::new(target_line, 0))
+        } else {
+            let line = self.clamp_line(cursor.line);
+            let line_len = self.line_len_chars(line);
+            let col = if cursor.col < line_len {
+                cursor.col.saturating_add(1)
+            } else {
+                line_len
+            };
+            Pos::new(line, col)
+        };
+
+        let end_pos = self.insert(insert_pos, text);
+        if linewise { insert_pos } else { end_pos }
+    }
+
     /// Move a contiguous line range up by one line.
     ///
     /// Returns the moved range after the operation, or `None` when movement is
@@ -228,6 +274,33 @@ impl TextBuffer {
         Some((start - 1, end - 1))
     }
 
+    /// Move a contiguous line range up by up to `count` lines.
+    ///
+    /// Returns the moved range after all possible steps, or `None` when the range
+    /// cannot be moved up at all.
+    pub fn move_line_range_up(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+        count: usize,
+    ) -> Option<(usize, usize)> {
+        if count == 0 {
+            return None;
+        }
+
+        let mut current = self.normalized_line_range(start_line, end_line_inclusive);
+        let mut moved = false;
+        for _ in 0..count {
+            let Some(next) = self.move_line_range_up_once(current.0, current.1) else {
+                break;
+            };
+            current = next;
+            moved = true;
+        }
+
+        if moved { Some(current) } else { None }
+    }
+
     /// Move a contiguous line range down by one line.
     ///
     /// Returns the moved range after the operation, or `None` when movement is
@@ -257,6 +330,109 @@ impl TextBuffer {
         self.rope.insert(replace_start, &replacement);
 
         Some((start + 1, end + 1))
+    }
+
+    /// Move a contiguous line range down by up to `count` lines.
+    ///
+    /// Returns the moved range after all possible steps, or `None` when the range
+    /// cannot be moved down at all.
+    pub fn move_line_range_down(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+        count: usize,
+    ) -> Option<(usize, usize)> {
+        if count == 0 {
+            return None;
+        }
+
+        let mut current = self.normalized_line_range(start_line, end_line_inclusive);
+        let mut moved = false;
+        for _ in 0..count {
+            let Some(next) = self.move_line_range_down_once(current.0, current.1) else {
+                break;
+            };
+            current = next;
+            moved = true;
+        }
+
+        if moved { Some(current) } else { None }
+    }
+
+    /// Indent each line in a contiguous span by `count` tab characters.
+    ///
+    /// Returns `(line, chars_added)` for every touched line.
+    pub fn indent_line_span(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+        count: usize,
+    ) -> Vec<(usize, usize)> {
+        if count == 0 {
+            return Vec::new();
+        }
+
+        let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
+        let indent = "\t".repeat(count);
+        let mut added_by_line = Vec::with_capacity(end.saturating_sub(start) + 1);
+        for line in start..=end {
+            let _ = self.insert(Pos::new(line, 0), &indent);
+            added_by_line.push((line, count));
+        }
+        added_by_line
+    }
+
+    /// Outdent each line in a contiguous span by up to `count` levels.
+    ///
+    /// One outdent level removes either one leading tab or up to four leading spaces.
+    /// Returns `(line, chars_removed)` for every touched line.
+    pub fn outdent_line_span(
+        &mut self,
+        start_line: usize,
+        end_line_inclusive: usize,
+        count: usize,
+    ) -> Vec<(usize, usize)> {
+        const TAB_STOP: usize = 4;
+
+        if count == 0 {
+            return Vec::new();
+        }
+
+        let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
+        let mut removed_by_line = Vec::with_capacity(end.saturating_sub(start) + 1);
+
+        for line in start..=end {
+            let text = self.line_string(line);
+            let chars: Vec<char> = text.chars().collect();
+            let mut idx = 0usize;
+            let mut levels_left = count;
+            while levels_left > 0 && idx < chars.len() {
+                if chars[idx] == '\t' {
+                    idx += 1;
+                    levels_left -= 1;
+                    continue;
+                }
+
+                let mut spaces = 0usize;
+                while idx + spaces < chars.len() && chars[idx + spaces] == ' ' && spaces < TAB_STOP
+                {
+                    spaces += 1;
+                }
+                if spaces == 0 {
+                    break;
+                }
+
+                idx += spaces;
+                levels_left -= 1;
+            }
+
+            if idx > 0 {
+                let _ = self.delete_range(Pos::new(line, 0), Pos::new(line, idx));
+            }
+            removed_by_line.push((line, idx));
+        }
+
+        removed_by_line
     }
 
     fn normalized_line_range(

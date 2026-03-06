@@ -357,6 +357,51 @@ fn explorer_write_applies_rename_and_create() {
 }
 
 #[test]
+fn explorer_write_insert_in_middle_preserves_existing_file_contents() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_insert_middle_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_a = dir.join("a.txt");
+    let file_b = dir.join("b.txt");
+    fs::write(&file_a, "alpha").expect("failed to write fixture");
+    fs::write(&file_b, "beta").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_a).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\na.txt\nnew.txt\nb.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert_eq!(
+        fs::read_to_string(&file_a).expect("failed to read a.txt"),
+        "alpha"
+    );
+    assert_eq!(
+        fs::read_to_string(&file_b).expect("failed to read b.txt"),
+        "beta"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("new.txt")).expect("failed to read new.txt"),
+        ""
+    );
+
+    let _ = fs::remove_file(file_a);
+    let _ = fs::remove_file(file_b);
+    let _ = fs::remove_file(dir.join("new.txt"));
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
 fn explorer_write_requires_confirmation_for_deletes() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_confirm_delete_test_{}",
@@ -790,6 +835,121 @@ fn explorer_motion_uses_no_scrolloff_and_clamps_window_scroll() {
     );
 
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explorer_dash_parent_navigation_selects_previous_directory() {
+    let root = std::env::temp_dir().join(format!(
+        "redox_explorer_parent_dash_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    let child = root.join("child");
+    fs::create_dir_all(root.join("aaa")).expect("failed to create fixture dir");
+    fs::create_dir_all(root.join("zzz")).expect("failed to create fixture dir");
+    fs::create_dir_all(&child).expect("failed to create fixture dir");
+    let child_file = child.join("open.txt");
+    fs::write(&child_file, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&child_file).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    state
+        .open_explorer_at_path(child.clone())
+        .expect("failed to open explorer");
+
+    state.apply_input(InputAction::SurfaceGoParent, 80, 24);
+
+    let popup = state
+        .explorer_popup()
+        .expect("explorer popup should stay open");
+    let expected_parent = fs::canonicalize(&root).expect("failed to canonicalize root");
+    assert_eq!(popup.dir_path, expected_parent);
+
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from parent listing");
+    let active = state.session.active_id();
+    let cursor_line = state
+        .views
+        .get(&active)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line;
+    assert_eq!(cursor_line, child_line);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explorer_parent_entry_navigation_selects_previous_directory() {
+    let root = std::env::temp_dir().join(format!(
+        "redox_explorer_parent_entry_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    let child = root.join("child");
+    fs::create_dir_all(root.join("aaa")).expect("failed to create fixture dir");
+    fs::create_dir_all(root.join("zzz")).expect("failed to create fixture dir");
+    fs::create_dir_all(&child).expect("failed to create fixture dir");
+    let child_file = child.join("open.txt");
+    fs::write(&child_file, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&child_file).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    state
+        .open_explorer_at_path(child.clone())
+        .expect("failed to open explorer");
+
+    let parent_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "../")
+        .expect("parent entry missing from listing");
+    let active = state.session.active_id();
+    state
+        .views
+        .get_mut(&active)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line = parent_line;
+
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    let popup = state
+        .explorer_popup()
+        .expect("explorer popup should stay open");
+    let expected_parent = fs::canonicalize(&root).expect("failed to canonicalize root");
+    assert_eq!(popup.dir_path, expected_parent);
+
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from parent listing");
+    let cursor_line = state
+        .views
+        .get(&active)
+        .expect("missing explorer view")
+        .cursor
+        .cursor
+        .line;
+    assert_eq!(cursor_line, child_line);
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
