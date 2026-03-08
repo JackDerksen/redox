@@ -72,6 +72,13 @@ If needed, add that location to your `PATH` (example for zsh):
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
+### NetBSD
+
+On NetBSD a package is available from the official repositories. To install, simply run:
+```bash
+pkgin install redox
+```
+
 ### Run Redox
 
 ```bash
