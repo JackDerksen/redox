@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="250" height="130" alt="Redox Logo 6" src="https://github.com/user-attachments/assets/a0bea6c3-b40e-4f56-b904-9da08b13b2ee" />
+  <img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
 </p>
 
 <h1 align="center">
@@ -11,12 +11,13 @@
 </p>
 
 <p align="center">
-
-
-https://github.com/user-attachments/assets/ae62bb20-f6fd-4a22-99ef-91aec1aa005e
-
-
+  <video width="600" controls>
+    <source src="./assets/redox-demo.mp4" type="video/mp4" />
+    Your browser does not support embedded videos.
+    <a href="./assets/redox-demo.mp4">Download the Redox demo video</a>.
+  </video>
 </p>
+
 
 ## General project structure
 
@@ -94,6 +95,9 @@ Open straight into the explorer for any specified directory (including `.`):
 redox src
 ```
 
+<details>
+<summary>Command and motion quick reference</summary>
+
 ### Command mode quick reference
 
 | Command | Behaviour |
@@ -109,8 +113,7 @@ redox src
 | `:ex` / `:explorer` | Toggle file explorer |
 | `:about` | Toggle the "about" popup |
 
-
-## Currently working Vim motions
+### Currently working Vim motions
 
 | Keys | Behaviour |
 | --- | --- |
@@ -149,6 +152,7 @@ Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
 - Arrow keys are also mapped for basic directional motion.
 - This is an opinionated editor, so the motions are subject to change based on my personal preferences.
+</details>
 
 ## Roadmap (current progress)
 
