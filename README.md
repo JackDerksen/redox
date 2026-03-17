@@ -11,11 +11,7 @@
 </p>
 
 <p align="center">
-  <video width="600" controls>
-    <source src="./assets/redox-demo.mp4" type="video/mp4" />
-    Your browser does not support embedded videos.
-    <a href="./assets/redox-demo.mp4">Download the Redox demo video</a>.
-  </video>
+    <img width="1814" height="1138" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 
