@@ -135,7 +135,7 @@ impl EditorState {
             self.viewport_height_rows
                 .saturating_sub(STATUS_BAR_HEIGHT_ROWS),
         );
-        view.grapheme_cache.clear();
+        view.invalidate_render_caches();
 
         self.explorer = Some(ExplorerState {
             buffer_id: explorer_id,
@@ -291,7 +291,7 @@ impl EditorState {
                 self.viewport_height_rows
                     .saturating_sub(STATUS_BAR_HEIGHT_ROWS),
             );
-            view.grapheme_cache.clear();
+            view.invalidate_render_caches();
         }
 
         self.session.mark_active_clean();
@@ -400,7 +400,7 @@ impl EditorState {
                 self.viewport_height_rows
                     .saturating_sub(STATUS_BAR_HEIGHT_ROWS),
             );
-            view.grapheme_cache.clear();
+            view.invalidate_render_caches();
         }
 
         explorer.original_entries = refreshed_entries;

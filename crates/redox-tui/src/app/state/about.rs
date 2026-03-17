@@ -88,7 +88,7 @@ impl EditorState {
         view.cursor.cursor = Pos::zero();
         view.cursor.follow.top_margin_rows = 0;
         view.cursor.follow.bottom_margin_rows = 0;
-        view.grapheme_cache.clear();
+        view.invalidate_render_caches();
 
         self.about = Some(AboutState {
             buffer_id: about_id,

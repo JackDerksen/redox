@@ -9,7 +9,7 @@ use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
-use crate::ui::GraphemeCache;
+use crate::ui::{GraphemeCache, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
@@ -70,6 +70,7 @@ impl EditorMode {
 pub struct BufferViewState {
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
+    pub syntax_highlighter: SyntaxHighlighter,
     pub visual_anchor: Option<Pos>,
     undo_history: UndoHistory,
     insert_mode_coalesce_base: Option<UndoSnapshot>,
@@ -80,10 +81,18 @@ impl Default for BufferViewState {
         Self {
             cursor: CursorController::new(),
             grapheme_cache: GraphemeCache::new(512),
+            syntax_highlighter: SyntaxHighlighter::default(),
             visual_anchor: None,
             undo_history: UndoHistory::default(),
             insert_mode_coalesce_base: None,
         }
+    }
+}
+
+impl BufferViewState {
+    fn invalidate_render_caches(&mut self) {
+        self.grapheme_cache.clear();
+        self.syntax_highlighter.invalidate();
     }
 }
 
@@ -169,6 +178,7 @@ impl EditorState {
 
     pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {
         let active_id = self.session.active_id();
+        let before_len_chars = self.session.active_buffer().len_chars();
         let scroll_y = self
             .views
             .get(&active_id)
@@ -185,12 +195,21 @@ impl EditorState {
         ) {
             self.set_status(format!("load failed: {e}"));
         }
+        if self.session.active_buffer().len_chars() != before_len_chars {
+            self.invalidate_active_render_caches();
+        }
     }
 
     fn ensure_active_fully_loaded_for_edit_or_save(&mut self) -> bool {
         let active_id = self.session.active_id();
+        let before_len_chars = self.session.active_buffer().len_chars();
         match self.session.ensure_buffer_fully_loaded(active_id) {
-            Ok(()) => true,
+            Ok(()) => {
+                if self.session.active_buffer().len_chars() != before_len_chars {
+                    self.invalidate_active_render_caches();
+                }
+                true
+            }
             Err(e) => {
                 self.set_status(format!("load failed: {e}"));
                 false
@@ -293,6 +312,14 @@ impl EditorState {
         view.insert_mode_coalesce_base = None;
     }
 
+    fn invalidate_active_render_caches(&mut self) {
+        let active_id = self.session.active_id();
+        self.views
+            .entry(active_id)
+            .or_default()
+            .invalidate_render_caches();
+    }
+
     fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
         let active_id = self.session.active_id();
         let after_buffer = self.session.active_buffer();
@@ -378,7 +405,7 @@ impl EditorState {
         view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-        view.grapheme_cache.clear();
+        view.invalidate_render_caches();
         view.visual_anchor = None;
         view.insert_mode_coalesce_base = None;
 

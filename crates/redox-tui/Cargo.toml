@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 redox-core = { version = "0.2.0", path = "../redox-core" }
-minui = { version = "0.6.4", features = ["clipboard"] }
+minui = { version = "0.6.5", features = ["clipboard"] }
 anyhow = { workspace = true }
 unicode-segmentation = "1.11.0"
+tree-sitter = "0.22.6"
+tree-sitter-rust = "0.21.2"
