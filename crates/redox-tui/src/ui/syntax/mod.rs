@@ -281,7 +281,7 @@ fn collect_visible_spans(
             };
 
         let text = if g == "\t" {
-            " ".repeat(clipped_end.saturating_sub(clipped_start).max(1))
+            " ".repeat(clipped_end.saturating_sub(clipped_start))
         } else if clipped_start == start_cell && clipped_end == end_cell {
             g.to_owned()
         } else {
