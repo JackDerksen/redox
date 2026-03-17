@@ -213,11 +213,38 @@ pub fn draw_line_with_syntax(
         return Ok(());
     }
 
+    let owned_spans = collect_visible_spans(
+        source_line,
+        scroll_x,
+        width_cells,
+        base_colour,
+        style,
+        spans,
+    );
+    if owned_spans.is_empty() {
+        return Ok(());
+    }
+
+    let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
+        .iter()
+        .map(|span| ColoredSpan::new(&span.text, span.colours))
+        .collect();
+    window.write_spans_colored(row, col, &spans_ref)
+}
+
+fn collect_visible_spans(
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    base_colour: ColorPair,
+    style: UiStyle,
+    spans: &[LineSyntaxSpan],
+) -> Vec<OwnedColouredSpan> {
     let mut owned_spans: Vec<OwnedColouredSpan> = Vec::new();
-    let mut used_cells = 0usize;
     let mut line_cells = 0usize;
     let mut byte_idx = 0usize;
     let mut syntax_idx = 0usize;
+    let visible_end = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
         let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
@@ -232,11 +259,14 @@ pub fn draw_line_with_syntax(
         if end_cell <= scroll_x {
             continue;
         }
-        if start_cell < scroll_x {
-            continue;
-        }
-        if used_cells.saturating_add(g_width) > width_cells {
+        if start_cell >= visible_end {
             break;
+        }
+
+        let clipped_start = start_cell.max(scroll_x);
+        let clipped_end = end_cell.min(visible_end);
+        if clipped_start >= clipped_end {
+            continue;
         }
 
         while syntax_idx < spans.len() && spans[syntax_idx].end_byte <= start_byte {
@@ -251,23 +281,17 @@ pub fn draw_line_with_syntax(
             };
 
         let text = if g == "\t" {
-            " ".repeat(g_width.max(1))
-        } else {
+            " ".repeat(clipped_end.saturating_sub(clipped_start).max(1))
+        } else if clipped_start == start_cell && clipped_end == end_cell {
             g.to_owned()
+        } else {
+            // Terminal graphemes are atomic; only tab expansion can be partially clipped.
+            continue;
         };
         push_coloured_text(&mut owned_spans, &text, colours);
-        used_cells = used_cells.saturating_add(g_width);
     }
 
-    if owned_spans.is_empty() {
-        return Ok(());
-    }
-
-    let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
-        .iter()
-        .map(|span| ColoredSpan::new(&span.text, span.colours))
-        .collect();
-    window.write_spans_colored(row, col, &spans_ref)
+    owned_spans
 }
 
 fn push_coloured_text(spans: &mut Vec<OwnedColouredSpan>, text: &str, colours: ColorPair) {
@@ -369,7 +393,8 @@ mod tests {
 
     use redox_core::TextBuffer;
 
-    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
+    use super::{SyntaxHighlighter, SyntaxLanguage, collect_visible_spans, language_for_path};
+    use crate::ui::UiStyle;
     use crate::ui::style::SyntaxRole;
 
     #[test]
@@ -410,5 +435,20 @@ mod tests {
         assert!(spans[0].iter().any(|span| {
             span.role == SyntaxRole::String && span.start_byte <= 8 && span.end_byte >= 15
         }));
+    }
+
+    #[test]
+    fn partially_scrolled_tab_keeps_visible_tail() {
+        let owned = collect_visible_spans(
+            "\tX",
+            2,
+            3,
+            UiStyle::default().syntax.operator,
+            UiStyle::default(),
+            &[],
+        );
+
+        let text = owned.into_iter().map(|span| span.text).collect::<String>();
+        assert_eq!(text, "  X");
     }
 }
