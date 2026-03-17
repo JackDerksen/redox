@@ -243,6 +243,20 @@ pub fn draw_line_with_syntax(
     )
 }
 
+pub fn syntax_color_for_range(
+    base_color: ColorPair,
+    style: UiStyle,
+    spans: &[LineSyntaxSpan],
+    start_byte: usize,
+    end_byte: usize,
+) -> ColorPair {
+    if let Some(span) = best_span_for_range(spans, start_byte, end_byte) {
+        style.syntax.color_for(span.role)
+    } else {
+        base_color
+    }
+}
+
 fn collect_visible_spans(
     source_line: &str,
     scroll_x: usize,
@@ -285,12 +299,7 @@ fn collect_visible_spans(
             syntax_idx += 1;
         }
 
-        let colors =
-            if let Some(span) = best_span_for_range(&spans[syntax_idx..], start_byte, end_byte) {
-                style.syntax.color_for(span.role)
-            } else {
-                base_color
-            };
+        let colors = syntax_color_for_range(base_color, style, &spans[syntax_idx..], start_byte, end_byte);
         let colors = apply_color_column(colors, color_column, start_cell, end_cell);
 
         let text = if g == "\t" {

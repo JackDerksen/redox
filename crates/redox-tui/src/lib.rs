@@ -13,7 +13,7 @@ mod ui;
 use app::EditorState;
 use input::{InputAction, map_event_with_state};
 
-use ui::syntax::draw_line_with_syntax;
+use ui::syntax::{draw_line_with_syntax, syntax_color_for_range};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
@@ -256,27 +256,56 @@ fn draw_line_with_selection(
     sel_start_char: usize,
     sel_end_char_exclusive: usize,
     normal_color: ColorPair,
-    selected_color: ColorPair,
+    selection_bg: Color,
     color_column: Option<(usize, Color)>,
+    style: UiStyle,
+    syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
+    highlight_empty_line: bool,
 ) -> minui::Result<()> {
     if width_cells == 0 {
+        return Ok(());
+    }
+
+    if source_line.is_empty() {
+        if highlight_empty_line {
+            window.write_str_colored(
+                row,
+                col,
+                " ",
+                ColorPair::new(normal_color.fg, selection_bg),
+            )?;
+        } else if let Some((visible_col, bg)) = color_column
+            && visible_col < width_cells
+        {
+            window.write_str_colored(
+                row,
+                col.saturating_add(visible_col as u16),
+                " ",
+                ColorPair::new(normal_color.fg, bg),
+            )?;
+        }
         return Ok(());
     }
 
     let mut used_cells = 0usize;
     let mut line_cells = 0usize;
     let mut char_idx = 0usize;
+    let mut byte_idx = 0usize;
 
     for g in source_line.graphemes(true) {
         let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
+        let g_bytes = g.len();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
         let start_char = char_idx;
         let end_char = char_idx.saturating_add(g_chars);
+        let start_byte = byte_idx;
+        let end_byte = byte_idx.saturating_add(g_bytes);
 
         line_cells = end_cell;
         char_idx = end_char;
+        byte_idx = end_byte;
 
         if end_cell <= scroll_x {
             continue;
@@ -290,10 +319,13 @@ fn draw_line_with_selection(
         }
 
         let is_selected = start_char < sel_end_char_exclusive && end_char > sel_start_char;
+        let base_color = syntax_spans
+            .map(|spans| syntax_color_for_range(normal_color, style, spans, start_byte, end_byte))
+            .unwrap_or(normal_color);
         let color = if is_selected {
-            selected_color
+            ColorPair::new(base_color.fg, selection_bg)
         } else {
-            apply_color_column(normal_color, color_column, start_cell, end_cell)
+            apply_color_column(base_color, color_column, start_cell, end_cell)
         };
 
         if g == "\t" {
@@ -440,6 +472,8 @@ fn draw_snapshot_lines(
     for (row, line) in snapshot.lines.iter().enumerate() {
         let line_idx = snapshot.first_line + row;
         if let Some((selection, line_mode)) = visual_selection {
+            let highlight_empty_line =
+                buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, line_idx);
             if let Some(sel_range) =
                 buffer.visual_selection_char_range_on_line(selection, line_mode, line_idx)
             {
@@ -454,8 +488,30 @@ fn draw_snapshot_lines(
                     sel_range.start,
                     sel_range.end,
                     default_colors,
-                    ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
+                    style.theme.selection_bg,
                     color_column,
+                    style,
+                    syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    highlight_empty_line,
+                )?;
+                continue;
+            }
+            if highlight_empty_line {
+                draw_line_with_selection(
+                    window,
+                    row as u16,
+                    content_x,
+                    "",
+                    scroll_x,
+                    text_w,
+                    0,
+                    0,
+                    default_colors,
+                    style.theme.selection_bg,
+                    color_column,
+                    style,
+                    syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    true,
                 )?;
                 continue;
             }
@@ -493,6 +549,11 @@ fn draw_snapshot_lines(
     }
 
     Ok(())
+}
+
+fn selected_empty_line(selection: redox_core::Selection, line_idx: usize) -> bool {
+    let (start, end) = selection.ordered();
+    line_idx >= start.line && line_idx <= end.line
 }
 
 fn draw_plain_line(
