@@ -19,6 +19,7 @@ use ui::{
     build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
     explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached,
 };
+use crate::ui::helpers::apply_color_column;
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
@@ -317,22 +318,6 @@ fn draw_line_with_selection(
     }
 
     Ok(())
-}
-
-fn apply_color_column(
-    colors: ColorPair,
-    color_column: Option<(usize, Color)>,
-    start_cell: usize,
-    end_cell: usize,
-) -> ColorPair {
-    let Some((column, bg)) = color_column else {
-        return colors;
-    };
-    if start_cell <= column && column < end_cell {
-        ColorPair::new(colors.fg, bg)
-    } else {
-        colors
-    }
 }
 
 fn fill_background(

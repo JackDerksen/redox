@@ -14,6 +14,7 @@ use self::languages::{
     LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
 use super::style::{SyntaxRole, UiStyle};
+use crate::ui::helpers::apply_color_column;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
@@ -306,22 +307,6 @@ fn collect_visible_spans(
     owned_spans
 }
 
-fn apply_color_column(
-    colors: ColorPair,
-    color_column: Option<(usize, minui::Color)>,
-    start_cell: usize,
-    end_cell: usize,
-) -> ColorPair {
-    let Some((column, bg)) = color_column else {
-        return colors;
-    };
-    if start_cell <= column && column < end_cell {
-        ColorPair::new(colors.fg, bg)
-    } else {
-        colors
-    }
-}
-
 fn draw_color_column_gap(
     window: &mut dyn Window,
     row: u16,
@@ -365,7 +350,7 @@ fn push_colored_text(spans: &mut Vec<OwnedColoredSpan>, text: &str, colors: Colo
 
     spans.push(OwnedColoredSpan {
         text: text.to_string(),
-        colors: colors,
+        colors,
     });
 }
 
