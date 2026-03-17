@@ -11,9 +11,11 @@
 </p>
 
 <p align="center">
-  
-https://github.com/user-attachments/assets/264b8c6c-3d2d-433a-ab66-4db58bd25b6e
-  
+
+
+https://github.com/user-attachments/assets/ae62bb20-f6fd-4a22-99ef-91aec1aa005e
+
+
 </p>
 
 ## General project structure
