@@ -21,6 +21,7 @@ use ui::{
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
+const COLOR_COLUMN: usize = 79;
 
 enum LaunchTarget {
     File(PathBuf),
@@ -255,6 +256,7 @@ fn draw_line_with_selection(
     sel_end_char_exclusive: usize,
     normal_color: ColorPair,
     selected_color: ColorPair,
+    color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
     if width_cells == 0 {
         return Ok(());
@@ -290,7 +292,7 @@ fn draw_line_with_selection(
         let color = if is_selected {
             selected_color
         } else {
-            normal_color
+            apply_color_column(normal_color, color_column, start_cell, end_cell)
         };
 
         if g == "\t" {
@@ -302,7 +304,35 @@ fn draw_line_with_selection(
         used_cells = used_cells.saturating_add(g_width);
     }
 
+    if let Some((visible_col, bg)) = color_column
+        && visible_col < width_cells
+        && visible_col >= used_cells
+    {
+        window.write_str_colored(
+            row,
+            col.saturating_add(visible_col as u16),
+            " ",
+            ColorPair::new(normal_color.fg, bg),
+        )?;
+    }
+
     Ok(())
+}
+
+fn apply_color_column(
+    colors: ColorPair,
+    color_column: Option<(usize, Color)>,
+    start_cell: usize,
+    end_cell: usize,
+) -> ColorPair {
+    let Some((column, bg)) = color_column else {
+        return colors;
+    };
+    if start_cell <= column && column < end_cell {
+        ColorPair::new(colors.fg, bg)
+    } else {
+        colors
+    }
 }
 
 fn fill_background(
@@ -421,6 +451,7 @@ fn draw_snapshot_lines(
     syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
     visual_selection: Option<(redox_core::Selection, bool)>,
 ) -> minui::Result<()> {
+    let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for (row, line) in snapshot.lines.iter().enumerate() {
         let line_idx = snapshot.first_line + row;
         if let Some((selection, line_mode)) = visual_selection {
@@ -439,6 +470,7 @@ fn draw_snapshot_lines(
                     sel_range.end,
                     default_colors,
                     ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
+                    color_column,
                 )?;
                 continue;
             }
@@ -456,16 +488,97 @@ fn draw_snapshot_lines(
                 scroll_x,
                 text_w,
                 default_colors,
+                color_column,
                 style,
                 spans,
             )?;
             continue;
         }
 
-        window.write_str_colored(row as u16, content_x, line, default_colors)?;
+        draw_plain_line(
+            window,
+            row as u16,
+            content_x,
+            line,
+            scroll_x,
+            text_w,
+            default_colors,
+            color_column,
+        )?;
     }
 
     Ok(())
+}
+
+fn draw_plain_line(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    default_colors: ColorPair,
+    color_column: Option<(usize, Color)>,
+) -> minui::Result<()> {
+    if width_cells == 0 {
+        return Ok(());
+    }
+
+    let mut used_cells = 0usize;
+    let mut line_cells = 0usize;
+
+    for g in source_line.graphemes(true) {
+        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let start_cell = line_cells;
+        let end_cell = line_cells.saturating_add(g_width);
+        line_cells = end_cell;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell < scroll_x {
+            continue;
+        }
+        if used_cells.saturating_add(g_width) > width_cells {
+            break;
+        }
+
+        let colors = apply_color_column(default_colors, color_column, start_cell, end_cell);
+        if g == "\t" {
+            let spaces = " ".repeat(g_width.max(1));
+            window.write_str_colored(
+                row,
+                col.saturating_add(used_cells as u16),
+                &spaces,
+                colors,
+            )?;
+        } else {
+            window.write_str_colored(row, col.saturating_add(used_cells as u16), g, colors)?;
+        }
+        used_cells = used_cells.saturating_add(g_width);
+    }
+
+    if let Some((visible_col, bg)) = color_column
+        && visible_col < width_cells
+        && visible_col >= used_cells
+    {
+        window.write_str_colored(
+            row,
+            col.saturating_add(visible_col as u16),
+            " ",
+            ColorPair::new(default_colors.fg, bg),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(usize, Color)> {
+    if COLOR_COLUMN < scroll_x {
+        return None;
+    }
+    let visible_col = COLOR_COLUMN - scroll_x;
+    (visible_col < text_w).then_some((visible_col, bg))
 }
 
 fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
