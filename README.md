@@ -38,7 +38,7 @@ redox/
             └── ui/             # Rendering and interface widgets such as the statusline
 ```
 
-## Installation and usage
+## Getting Started
 
 ### Requirements
 
@@ -73,26 +73,24 @@ If needed, add that location to your `PATH` (example for zsh):
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-### Run Redox
-
-```bash
-redox <file_path>
-```
-
-Example:
-
-```bash
-redox ./README.md
-```
-
-Open straight into the explorer for any specified directory (including `.`):
-
-```bash
-redox src
-```
 
 ## Usage Guide
 <details>
+
+### Run Redox
+```bash
+redox <file_path>
+```
+    
+Example:
+```bash
+redox ./README.md
+```
+    
+Open straight into the explorer for any specified directory (including `.`):
+```bash
+redox src
+```
 
 ### Command mode quick reference
 | Command | Behaviour |
