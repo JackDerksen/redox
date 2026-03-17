@@ -5,6 +5,39 @@ use minui::{Color, ColorPair};
 pub const STATUS_BAR_HEIGHT_ROWS: usize = 1;
 pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SyntaxRole {
+    VariableBuiltin,
+    VariableParameter,
+    Keyword,
+    KeywordOperator,
+    KeywordImport,
+    Type,
+    TypeBuiltin,
+    TypeDefinition,
+    Function,
+    FunctionMacro,
+    FunctionMethod,
+    String,
+    StringEscape,
+    Character,
+    Number,
+    Boolean,
+    Float,
+    Comment,
+    Constant,
+    ConstantBuiltin,
+    ConstantMacro,
+    Constructor,
+    Attribute,
+    Property,
+    Operator,
+    PunctuationDelimiter,
+    PunctuationBracket,
+    PunctuationSpecial,
+}
+
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct BaseTheme {
@@ -19,6 +52,12 @@ pub struct BaseTheme {
     pub blue: Color,
     pub purple: Color,
     pub orange: Color,
+    pub light_red: Color,
+    pub light_green: Color,
+    pub light_yellow: Color,
+    pub light_blue: Color,
+    pub light_purple: Color,
+    pub light_orange: Color,
     pub dark_gray: Color,
     pub light_gray: Color,
 }
@@ -80,6 +119,36 @@ impl Default for BaseTheme {
                 r: (255),
                 g: (172),
                 b: (114),
+            },
+            light_red: Color::Rgb {
+                r: (255),
+                g: (157),
+                b: (177),
+            },
+            light_green: Color::Rgb {
+                r: (207),
+                g: (238),
+                b: (194),
+            },
+            light_yellow: Color::Rgb {
+                r: (245),
+                g: (232),
+                b: (175),
+            },
+            light_blue: Color::Rgb {
+                r: (187),
+                g: (232),
+                b: (238),
+            },
+            light_purple: Color::Rgb {
+                r: (214),
+                g: (217),
+                b: (252),
+            },
+            light_orange: Color::Rgb {
+                r: (255),
+                g: (199),
+                b: (158),
             },
             dark_gray: Color::Rgb {
                 r: (51),
@@ -216,12 +285,120 @@ impl Default for AboutStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct SyntaxStyle {
+    pub variable_builtin: ColorPair,
+    pub variable_parameter: ColorPair,
+    pub keyword: ColorPair,
+    pub keyword_operator: ColorPair,
+    pub keyword_import: ColorPair,
+    pub type_name: ColorPair,
+    pub type_builtin: ColorPair,
+    pub type_definition: ColorPair,
+    pub function: ColorPair,
+    pub function_macro: ColorPair,
+    pub function_method: ColorPair,
+    pub string: ColorPair,
+    pub string_escape: ColorPair,
+    pub character: ColorPair,
+    pub number: ColorPair,
+    pub boolean: ColorPair,
+    pub float: ColorPair,
+    pub comment: ColorPair,
+    pub constant: ColorPair,
+    pub constant_builtin: ColorPair,
+    pub constant_macro: ColorPair,
+    pub constructor: ColorPair,
+    pub attribute: ColorPair,
+    pub property: ColorPair,
+    pub operator: ColorPair,
+    pub punctuation_delimiter: ColorPair,
+    pub punctuation_bracket: ColorPair,
+    pub punctuation_special: ColorPair,
+}
+
+impl SyntaxStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        let bg = theme.bg;
+        Self {
+            variable_builtin: ColorPair::new(theme.purple, bg),
+            variable_parameter: ColorPair::new(theme.orange, bg),
+            keyword: ColorPair::new(theme.red, bg),
+            keyword_operator: ColorPair::new(theme.white, bg),
+            keyword_import: ColorPair::new(theme.white, bg),
+            type_name: ColorPair::new(theme.light_blue, bg),
+            type_builtin: ColorPair::new(theme.light_orange, bg),
+            type_definition: ColorPair::new(theme.light_orange, bg),
+            function: ColorPair::new(theme.blue, bg),
+            function_macro: ColorPair::new(theme.purple, bg),
+            function_method: ColorPair::new(theme.blue, bg),
+            string: ColorPair::new(theme.green, bg),
+            string_escape: ColorPair::new(theme.orange, bg),
+            character: ColorPair::new(theme.green, bg),
+            number: ColorPair::new(theme.purple, bg),
+            boolean: ColorPair::new(theme.purple, bg),
+            float: ColorPair::new(theme.light_purple, bg),
+            comment: ColorPair::new(theme.light_gray, bg),
+            constant: ColorPair::new(theme.purple, bg),
+            constant_builtin: ColorPair::new(theme.purple, bg),
+            constant_macro: ColorPair::new(theme.yellow, bg),
+            constructor: ColorPair::new(theme.white, bg),
+            attribute: ColorPair::new(theme.orange, bg),
+            property: ColorPair::new(theme.orange, bg),
+            operator: ColorPair::new(theme.white, bg),
+            punctuation_delimiter: ColorPair::new(theme.white, bg),
+            punctuation_bracket: ColorPair::new(theme.white, bg),
+            punctuation_special: ColorPair::new(theme.orange, bg),
+        }
+    }
+
+    pub fn colour_for(self, role: SyntaxRole) -> ColorPair {
+        match role {
+            SyntaxRole::VariableBuiltin => self.variable_builtin,
+            SyntaxRole::VariableParameter => self.variable_parameter,
+            SyntaxRole::Keyword => self.keyword,
+            SyntaxRole::KeywordOperator => self.keyword_operator,
+            SyntaxRole::KeywordImport => self.keyword_import,
+            SyntaxRole::Type => self.type_name,
+            SyntaxRole::TypeBuiltin => self.type_builtin,
+            SyntaxRole::TypeDefinition => self.type_definition,
+            SyntaxRole::Function => self.function,
+            SyntaxRole::FunctionMacro => self.function_macro,
+            SyntaxRole::FunctionMethod => self.function_method,
+            SyntaxRole::String => self.string,
+            SyntaxRole::StringEscape => self.string_escape,
+            SyntaxRole::Character => self.character,
+            SyntaxRole::Number => self.number,
+            SyntaxRole::Boolean => self.boolean,
+            SyntaxRole::Float => self.float,
+            SyntaxRole::Comment => self.comment,
+            SyntaxRole::Constant => self.constant,
+            SyntaxRole::ConstantBuiltin => self.constant_builtin,
+            SyntaxRole::ConstantMacro => self.constant_macro,
+            SyntaxRole::Constructor => self.constructor,
+            SyntaxRole::Attribute => self.attribute,
+            SyntaxRole::Property => self.property,
+            SyntaxRole::Operator => self.operator,
+            SyntaxRole::PunctuationDelimiter => self.punctuation_delimiter,
+            SyntaxRole::PunctuationBracket => self.punctuation_bracket,
+            SyntaxRole::PunctuationSpecial => self.punctuation_special,
+        }
+    }
+}
+
+impl Default for SyntaxStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
     pub palette: Palette,
     pub layout: Layout,
     pub about: AboutStyle,
     pub explorer: ExplorerStyle,
+    pub syntax: SyntaxStyle,
 }
 
 impl Default for UiStyle {
@@ -233,6 +410,7 @@ impl Default for UiStyle {
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
+            syntax: SyntaxStyle::from_theme(theme),
         }
     }
 }

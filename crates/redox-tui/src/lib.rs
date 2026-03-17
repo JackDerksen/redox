@@ -13,10 +13,11 @@ mod ui;
 use app::EditorState;
 use input::{InputAction, map_event_with_state};
 
+use ui::syntax::draw_line_with_syntax;
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
-    explorer_popup_inner_size, snapshot_lines_wrapped_cached,
+    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -94,20 +95,29 @@ fn draw_buffer_view(
     );
 
     let visual_selection = state.active_visual_selection();
-    let (snapshot, spec, scroll_x) = state.with_active_buffer_view_mut(|buffer, view| {
-        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
-        let viewport = TextViewport {
-            scroll_x,
-            scroll_y,
-            width: text_w,
-            height: text_h,
-        };
-        let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-        let spec = view
-            .cursor
-            .cursor_spec(buffer, text_w as usize, text_h as usize);
-        (snapshot, spec, scroll_x)
-    });
+    let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
+    let (snapshot, spec, scroll_x, syntax_spans) =
+        state.with_active_buffer_view_mut(|buffer, view| {
+            let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+            let viewport = TextViewport {
+                scroll_x,
+                scroll_y,
+                width: text_w,
+                height: text_h,
+            };
+            let snapshot =
+                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+            let spec = view
+                .cursor
+                .cursor_spec(buffer, text_w as usize, text_h as usize);
+            let syntax_spans = view.syntax_highlighter.visible_line_spans(
+                buffer,
+                syntax_language,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
+            (snapshot, spec, scroll_x, syntax_spans)
+        });
 
     draw_relative_line_numbers(
         window,
@@ -120,33 +130,18 @@ fn draw_buffer_view(
     )?;
     draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
 
-    for (row, line) in snapshot.lines.iter().enumerate() {
-        let line_idx = snapshot.first_line + row;
-        if let Some((selection, line_mode)) = visual_selection {
-            if let Some(sel_range) = state
-                .session
-                .active_buffer()
-                .visual_selection_char_range_on_line(selection, line_mode, line_idx)
-            {
-                let source_line = state.session.active_buffer().line_string(line_idx);
-                draw_line_with_selection(
-                    window,
-                    row as u16,
-                    content_x,
-                    &source_line,
-                    scroll_x,
-                    text_w as usize,
-                    sel_range.start,
-                    sel_range.end,
-                    editor_text,
-                    ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
-                )?;
-                continue;
-            }
-        }
-
-        window.write_str_colored(row as u16, content_x, line, editor_text)?;
-    }
+    draw_snapshot_lines(
+        window,
+        state.session.active_buffer(),
+        &snapshot,
+        content_x,
+        scroll_x,
+        text_w as usize,
+        editor_text,
+        style,
+        syntax_spans.as_deref(),
+        visual_selection,
+    )?;
 
     // --- Status bar (bottom row) ---
     let status = build_editor_status_bar(state, style);
@@ -344,8 +339,12 @@ fn draw_buffer_snapshot_for_id(
     colors: ColorPair,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
-    let Some((snapshot, cursor_line, total_lines)) =
-        state.with_buffer_view_mut(buffer_id, |buffer, view| {
+    let syntax_language = state
+        .session
+        .meta(buffer_id)
+        .and_then(|meta| language_for_path(meta.path.as_deref()));
+    let Some((snapshot, cursor_line, total_lines, scroll_x, syntax_spans)) = state
+        .with_buffer_view_mut(buffer_id, |buffer, view| {
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
             let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
@@ -359,7 +358,19 @@ fn draw_buffer_snapshot_for_id(
             };
             let snapshot =
                 snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-            (snapshot, view.cursor.cursor.line, total_lines)
+            let syntax_spans = view.syntax_highlighter.visible_line_spans(
+                buffer,
+                syntax_language,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
+            (
+                snapshot,
+                view.cursor.cursor.line,
+                total_lines,
+                scroll_x,
+                syntax_spans,
+            )
         })
     else {
         return Ok(());
@@ -378,8 +389,80 @@ fn draw_buffer_snapshot_for_id(
     )?;
     draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
 
+    let buffer = state
+        .session
+        .buffer(buffer_id)
+        .expect("snapshot buffer must exist in session map");
+    draw_snapshot_lines(
+        window,
+        buffer,
+        &snapshot,
+        content_x,
+        scroll_x,
+        width.saturating_sub(content_x) as usize,
+        colors,
+        style,
+        syntax_spans.as_deref(),
+        None,
+    )?;
+
+    Ok(())
+}
+
+fn draw_snapshot_lines(
+    window: &mut dyn Window,
+    buffer: &redox_core::TextBuffer,
+    snapshot: &ui::render::RenderSnapshot,
+    content_x: u16,
+    scroll_x: usize,
+    text_w: usize,
+    default_colors: ColorPair,
+    style: UiStyle,
+    syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
+    visual_selection: Option<(redox_core::Selection, bool)>,
+) -> minui::Result<()> {
     for (row, line) in snapshot.lines.iter().enumerate() {
-        window.write_str_colored(row as u16, content_x, line, colors)?;
+        let line_idx = snapshot.first_line + row;
+        if let Some((selection, line_mode)) = visual_selection {
+            if let Some(sel_range) =
+                buffer.visual_selection_char_range_on_line(selection, line_mode, line_idx)
+            {
+                let source_line = buffer.line_string(line_idx);
+                draw_line_with_selection(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    sel_range.start,
+                    sel_range.end,
+                    default_colors,
+                    ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
+                )?;
+                continue;
+            }
+        }
+
+        if let Some(spans) = syntax_spans.and_then(|rows| rows.get(row))
+            && !spans.is_empty()
+        {
+            let source_line = buffer.line_string(line_idx);
+            draw_line_with_syntax(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                style,
+                spans,
+            )?;
+            continue;
+        }
+
+        window.write_str_colored(row as u16, content_x, line, default_colors)?;
     }
 
     Ok(())

@@ -9,7 +9,7 @@ use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
-use crate::ui::GraphemeCache;
+use crate::ui::{GraphemeCache, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
@@ -70,6 +70,7 @@ impl EditorMode {
 pub struct BufferViewState {
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
+    pub syntax_highlighter: SyntaxHighlighter,
     pub visual_anchor: Option<Pos>,
     undo_history: UndoHistory,
     insert_mode_coalesce_base: Option<UndoSnapshot>,
@@ -80,6 +81,7 @@ impl Default for BufferViewState {
         Self {
             cursor: CursorController::new(),
             grapheme_cache: GraphemeCache::new(512),
+            syntax_highlighter: SyntaxHighlighter::default(),
             visual_anchor: None,
             undo_history: UndoHistory::default(),
             insert_mode_coalesce_base: None,
