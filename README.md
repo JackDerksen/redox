@@ -91,11 +91,10 @@ Open straight into the explorer for any specified directory (including `.`):
 redox src
 ```
 
+## Usage Guide
 <details>
-<summary>Command and motion quick reference</summary>
 
 ### Command mode quick reference
-
 | Command | Behaviour |
 | ------- | --------- |
 | `:w` | Write current buffer |
@@ -148,9 +147,11 @@ Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
 - Arrow keys are also mapped for basic directional motion.
 - This is an opinionated editor, so the motions are subject to change based on my personal preferences.
+
 </details>
 
 ## Roadmap (current progress)
+<details>
 
 - [x] Rope-backed text buffer core (`redox-core`)
 - [x] TUI rendering with statusline + cursor projection
@@ -170,11 +171,14 @@ Notes:
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
 - [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [x] Basic session-bound undo/redo 
+- [x] Subtle colour column at col=80
 - [ ] More Vim motions
 - [ ] Undo tree with stored history
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] Local search (`/`, `f`, `F`)
 - [ ] A dashboard screen with similar functionality to nvim dashboards
+
+</details>
 
 ## License
 
