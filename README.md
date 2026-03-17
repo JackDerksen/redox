@@ -30,7 +30,8 @@ redox/
     │       ├── buffer/         # Rope-backed text buffer, editing, positions
     │       ├── motion.rs       # Vim-style motion logic
     │       ├── io.rs           # File read/write helpers
-    │       └── session/        # Multi-buffer session management
+    │       ├── session/        # Multi-buffer session management
+    │       └── text/           # Shared text types and helper functions
     └── redox-tui/              # MinUI front-end application
         └── src/
             ├── app/            # Editor app state + command handling
@@ -169,6 +170,12 @@ Notes:
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
 - [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
 - [x] Basic session-bound undo/redo 
+- [x] Syntax highlighting for...
+    - [x] Rust
+    - [ ] Markdown
+    - [ ] C/C++
+    - [ ] Go
+    - [ ] Python
 - [x] Subtle colour column at col=80
 - [ ] More Vim motions
 - [ ] Undo tree with stored history
