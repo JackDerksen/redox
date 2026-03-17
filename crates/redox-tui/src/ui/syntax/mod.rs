@@ -2,8 +2,6 @@
 
 mod languages;
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use minui::prelude::TabPolicy;
@@ -56,7 +54,6 @@ impl std::fmt::Debug for SyntaxHighlighter {
 #[derive(Debug)]
 struct HighlightCache {
     language: SyntaxLanguage,
-    fingerprint: u64,
     line_spans: Vec<Vec<LineSyntaxSpan>>,
 }
 
@@ -157,7 +154,6 @@ impl SyntaxHighlighter {
         line_count: usize,
     ) -> Option<Vec<Vec<LineSyntaxSpan>>> {
         let language = language?;
-        let fingerprint = buffer_fingerprint(buffer);
 
         let needs_engine = self
             .engine
@@ -172,7 +168,7 @@ impl SyntaxHighlighter {
         let needs_rebuild = self
             .cache
             .as_ref()
-            .map(|cache| cache.language != language || cache.fingerprint != fingerprint)
+            .map(|cache| cache.language != language)
             .unwrap_or(true);
 
         if needs_rebuild {
@@ -181,7 +177,6 @@ impl SyntaxHighlighter {
             let spans = engine.parse_line_spans(&source);
             self.cache = Some(HighlightCache {
                 language,
-                fingerprint,
                 line_spans: spans,
             });
         }
@@ -192,6 +187,10 @@ impl SyntaxHighlighter {
             out.push(cache.line_spans.get(line).cloned().unwrap_or_default());
         }
         Some(out)
+    }
+
+    pub fn invalidate(&mut self) {
+        self.cache = None;
     }
 }
 
@@ -287,16 +286,6 @@ fn push_coloured_text(spans: &mut Vec<OwnedColouredSpan>, text: &str, colours: C
         text: text.to_string(),
         colours,
     });
-}
-
-fn buffer_fingerprint(buffer: &TextBuffer) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    buffer.len_chars().hash(&mut hasher);
-    buffer.len_lines().hash(&mut hasher);
-    for chunk in buffer.rope().chunks() {
-        chunk.hash(&mut hasher);
-    }
-    hasher.finish()
 }
 
 fn compute_line_start_bytes(source: &str) -> Vec<usize> {

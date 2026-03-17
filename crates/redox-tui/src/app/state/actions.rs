@@ -256,6 +256,7 @@ impl EditorState {
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
 
+                    self.invalidate_active_render_caches();
                     let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
@@ -279,6 +280,7 @@ impl EditorState {
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
 
+                    self.invalidate_active_render_caches();
                     let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
@@ -421,6 +423,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
