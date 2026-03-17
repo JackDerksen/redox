@@ -14,6 +14,7 @@ use self::languages::{
     LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
 use super::style::{SyntaxRole, UiStyle};
+use crate::ui::helpers::apply_color_column;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
@@ -72,9 +73,9 @@ pub(crate) struct SyntaxCapture {
 }
 
 #[derive(Debug)]
-struct OwnedColouredSpan {
+struct OwnedColoredSpan {
     text: String,
-    colours: ColorPair,
+    colors: ColorPair,
 }
 
 /// Language-agnostic syntax highlighting engine with Treesitter.
@@ -205,7 +206,8 @@ pub fn draw_line_with_syntax(
     source_line: &str,
     scroll_x: usize,
     width_cells: usize,
-    base_colour: ColorPair,
+    base_color: ColorPair,
+    color_column: Option<(usize, minui::Color)>,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
 ) -> minui::Result<()> {
@@ -217,30 +219,40 @@ pub fn draw_line_with_syntax(
         source_line,
         scroll_x,
         width_cells,
-        base_colour,
+        base_color,
+        color_column,
         style,
         spans,
     );
-    if owned_spans.is_empty() {
-        return Ok(());
+    if !owned_spans.is_empty() {
+        let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
+            .iter()
+            .map(|span| ColoredSpan::new(&span.text, span.colors))
+            .collect();
+        window.write_spans_colored(row, col, &spans_ref)?;
     }
 
-    let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
-        .iter()
-        .map(|span| ColoredSpan::new(&span.text, span.colours))
-        .collect();
-    window.write_spans_colored(row, col, &spans_ref)
+    draw_color_column_gap(
+        window,
+        row,
+        col,
+        source_line,
+        scroll_x,
+        width_cells,
+        color_column,
+    )
 }
 
 fn collect_visible_spans(
     source_line: &str,
     scroll_x: usize,
     width_cells: usize,
-    base_colour: ColorPair,
+    base_color: ColorPair,
+    color_column: Option<(usize, minui::Color)>,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
-) -> Vec<OwnedColouredSpan> {
-    let mut owned_spans: Vec<OwnedColouredSpan> = Vec::new();
+) -> Vec<OwnedColoredSpan> {
+    let mut owned_spans: Vec<OwnedColoredSpan> = Vec::new();
     let mut line_cells = 0usize;
     let mut byte_idx = 0usize;
     let mut syntax_idx = 0usize;
@@ -273,12 +285,13 @@ fn collect_visible_spans(
             syntax_idx += 1;
         }
 
-        let colours =
+        let colors =
             if let Some(span) = best_span_for_range(&spans[syntax_idx..], start_byte, end_byte) {
-                style.syntax.colour_for(span.role)
+                style.syntax.color_for(span.role)
             } else {
-                base_colour
+                base_color
             };
+        let colors = apply_color_column(colors, color_column, start_cell, end_cell);
 
         let text = if g == "\t" {
             " ".repeat(clipped_end.saturating_sub(clipped_start))
@@ -288,27 +301,56 @@ fn collect_visible_spans(
             // Terminal graphemes are atomic; only tab expansion can be partially clipped.
             continue;
         };
-        push_coloured_text(&mut owned_spans, &text, colours);
+        push_colored_text(&mut owned_spans, &text, colors);
     }
 
     owned_spans
 }
 
-fn push_coloured_text(spans: &mut Vec<OwnedColouredSpan>, text: &str, colours: ColorPair) {
+fn draw_color_column_gap(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    color_column: Option<(usize, minui::Color)>,
+) -> minui::Result<()> {
+    let Some((visible_col, bg)) = color_column else {
+        return Ok(());
+    };
+    if visible_col >= width_cells {
+        return Ok(());
+    }
+
+    let line_width = cell_width(source_line, TabPolicy::Fixed(4)) as usize;
+    if line_width > scroll_x.saturating_add(visible_col) {
+        return Ok(());
+    }
+
+    window.write_str_colored(
+        row,
+        col.saturating_add(visible_col as u16),
+        " ",
+        ColorPair::new(minui::Color::Transparent, bg),
+    )
+}
+
+fn push_colored_text(spans: &mut Vec<OwnedColoredSpan>, text: &str, colors: ColorPair) {
     if text.is_empty() {
         return;
     }
 
     if let Some(last) = spans.last_mut()
-        && last.colours == colours
+        && last.colors == colors
     {
         last.text.push_str(text);
         return;
     }
 
-    spans.push(OwnedColouredSpan {
+    spans.push(OwnedColoredSpan {
         text: text.to_string(),
-        colours,
+        colors,
     });
 }
 
@@ -444,6 +486,7 @@ mod tests {
             2,
             3,
             UiStyle::default().syntax.operator,
+            None,
             UiStyle::default(),
             &[],
         );

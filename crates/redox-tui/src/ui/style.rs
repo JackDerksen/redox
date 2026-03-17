@@ -42,6 +42,7 @@ pub enum SyntaxRole {
 #[allow(dead_code)]
 pub struct BaseTheme {
     pub bg: Color,
+    pub color_column: Color,
     pub selection_bg: Color,
     pub selection_fg: Color,
     pub white: Color,
@@ -69,6 +70,11 @@ impl Default for BaseTheme {
                 r: (26),
                 g: (25),
                 b: (28),
+            },
+            color_column: Color::Rgb {
+                r: (24),
+                g: (23),
+                b: (26),
             },
             selection_bg: Color::Rgb {
                 r: (45),
@@ -351,7 +357,7 @@ impl SyntaxStyle {
         }
     }
 
-    pub fn colour_for(self, role: SyntaxRole) -> ColorPair {
+    pub fn color_for(self, role: SyntaxRole) -> ColorPair {
         match role {
             SyntaxRole::VariableBuiltin => self.variable_builtin,
             SyntaxRole::VariableParameter => self.variable_parameter,

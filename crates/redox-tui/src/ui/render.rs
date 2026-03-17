@@ -189,7 +189,7 @@ pub fn snapshot_lines_wrapped_cached(
     let max_rows = viewport.height as usize;
 
     if max_cells == 0 || max_rows == 0 {
-        return RenderSnapshot::new(0, Vec::new());
+        return RenderSnapshot::new(0, Vec::new())
     }
 
     let first_line = viewport.scroll_y.min(buffer.len_lines().saturating_sub(1));

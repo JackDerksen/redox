@@ -9,6 +9,7 @@
 //!
 //! Keep this module as the stable public surface for UI utilities.
 
+pub mod helpers;
 pub mod render;
 pub mod style;
 pub mod syntax;
