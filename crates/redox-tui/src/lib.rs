@@ -25,6 +25,7 @@ const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
 
 enum LaunchTarget {
+    Empty,
     File(PathBuf),
     Explorer(PathBuf),
 }
@@ -629,9 +630,9 @@ fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(us
 
 fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     let mut args = env::args().skip(1);
-    let raw = args
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("expected a file path argument"))?;
+    let Some(raw) = args.next() else {
+        return Ok(LaunchTarget::Empty);
+    };
     let path = PathBuf::from(&raw);
     if path.is_dir() {
         return Ok(LaunchTarget::Explorer(path));
@@ -641,12 +642,16 @@ fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
 
 pub fn run() -> minui::Result<()> {
     let launch =
-        parse_path_arg().expect("file path required (e.g. redox ./file.txt, redox ., redox src)");
+        parse_path_arg().expect("failed to parse launch target");
+    let launch_empty = matches!(&launch, LaunchTarget::Empty);
     let launch_explorer_dir = match &launch {
         LaunchTarget::Explorer(dir) => Some(dir.clone()),
-        LaunchTarget::File(_) => None,
+        LaunchTarget::Empty | LaunchTarget::File(_) => None,
     };
     let session = match launch {
+        LaunchTarget::Empty => {
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session")
+        }
         LaunchTarget::File(path) => {
             EditorSession::open_initial_file(path).expect("failed to open initial file")
         }
@@ -660,6 +665,9 @@ pub fn run() -> minui::Result<()> {
         state
             .open_explorer_at_path(dir_path)
             .expect("failed to open explorer directory");
+    }
+    if launch_empty {
+        state.command_open_about();
     }
 
     let mut app = App::new(state)?;

@@ -8,6 +8,14 @@ impl EditorState {
     }
 
     pub(super) fn close_active_surface_buffer(&mut self) -> bool {
+        self.close_active_surface_buffer_inner(false)
+    }
+
+    pub(super) fn close_active_surface_buffer_without_quit(&mut self) -> bool {
+        self.close_active_surface_buffer_inner(true)
+    }
+
+    fn close_active_surface_buffer_inner(&mut self, suppress_quit_after_close: bool) -> bool {
         let active_id = self.session.active_id();
         let is_explorer = self
             .explorer
@@ -29,8 +37,9 @@ impl EditorState {
                     (about.buffer_id == active_id).then_some(about.return_to_buffer_id)
                 })
             });
-        let should_quit_after_close =
-            is_explorer && return_to.is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
+        let should_quit_after_close = (is_explorer || is_about)
+            && !suppress_quit_after_close
+            && return_to.is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
 
         if !self.session.close_active_buffer() {
             return false;

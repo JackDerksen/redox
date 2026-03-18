@@ -53,7 +53,7 @@ impl EditorState {
             .is_some_and(|about| about.buffer_id == self.session.active_id())
     }
 
-    pub(super) fn command_open_about(&mut self) {
+    pub(crate) fn command_open_about(&mut self) {
         if self.about_is_active() {
             let _ = self.close_active_surface_buffer();
             self.mode = EditorMode::Normal;

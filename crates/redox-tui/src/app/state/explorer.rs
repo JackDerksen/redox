@@ -32,7 +32,7 @@ pub(super) struct ExplorerState {
 impl EditorState {
     pub fn open_explorer_at_path(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
         if self.active_buffer_is_surface() {
-            let _ = self.close_active_surface_buffer();
+            let _ = self.close_active_surface_buffer_without_quit();
         }
         self.open_explorer_buffer_with_dir(dir_path)
     }
@@ -78,7 +78,7 @@ impl EditorState {
         }
 
         if self.active_buffer_is_surface() {
-            let _ = self.close_active_surface_buffer();
+            let _ = self.close_active_surface_buffer_without_quit();
         }
 
         match self.open_explorer_buffer() {

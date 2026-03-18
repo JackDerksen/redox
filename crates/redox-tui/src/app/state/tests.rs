@@ -680,6 +680,35 @@ fn about_q_closes_surface_buffer_only() {
 }
 
 #[test]
+fn about_q_quits_from_empty_startup_buffer() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, "about");
+    assert!(state.about_popup().is_some());
+
+    run_command(&mut state, "q");
+
+    assert!(state.should_quit);
+    assert!(state.about_popup().is_none());
+}
+
+#[test]
+fn explorer_opens_from_startup_about_without_quitting() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let mut state = EditorState::new(session);
+    state.command_open_about();
+    assert!(state.about_popup().is_some());
+
+    run_command(&mut state, "explorer");
+
+    assert!(!state.should_quit);
+    assert!(state.about_popup().is_none());
+    assert!(state.explorer_popup().is_some());
+    assert!(state.explorer_background_is_placeholder_blank());
+}
+
+#[test]
 fn explorer_enter_opens_file_and_closes_explorer() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_enter_test_{}",
