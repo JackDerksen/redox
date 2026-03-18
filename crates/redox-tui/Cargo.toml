@@ -18,5 +18,5 @@ redox-core = { version = "0.2.0", path = "../redox-core" }
 minui = { version = "0.6.5", features = ["clipboard"] }
 anyhow = { workspace = true }
 unicode-segmentation = "1.11.0"
-tree-sitter = "0.22.6"
-tree-sitter-rust = "0.21.2"
+tree-sitter = "0.26.7"
+tree-sitter-rust = "0.24.0"
