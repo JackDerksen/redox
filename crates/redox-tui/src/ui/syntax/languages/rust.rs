@@ -15,7 +15,7 @@ pub(super) const RUST_LANGUAGE: LanguageConfig = LanguageConfig {
 };
 
 fn rust_language() -> Language {
-    tree_sitter_rust::language()
+    tree_sitter_rust::LANGUAGE.into()
 }
 
 fn rust_capture_mapping(capture: &str) -> Option<SyntaxCapture> {

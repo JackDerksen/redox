@@ -7,7 +7,7 @@ use std::path::Path;
 use minui::prelude::TabPolicy;
 use minui::{ColorPair, ColoredSpan, Window, cell_width};
 use redox_core::TextBuffer;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
@@ -112,10 +112,15 @@ impl QuerySyntaxEngine {
 
         let mut query_cursor = QueryCursor::new();
         let mut tokens = Vec::new();
-        for (query_match, capture_index) in
-            query_cursor.captures(&self.query, tree.root_node(), source.as_bytes())
-        {
-            let capture = query_match.captures[capture_index];
+        let mut captures = query_cursor.captures(&self.query, tree.root_node(), source.as_bytes());
+        while {
+            captures.advance();
+            captures.get().is_some()
+        } {
+            let (query_match, capture_index) = captures
+                .get()
+                .expect("query capture should exist after advance");
+            let capture = query_match.captures[*capture_index];
             let Some(syntax_capture) = self
                 .capture_roles
                 .get(capture.index as usize)
