@@ -394,6 +394,8 @@ impl EditorState {
 
             InputAction::None => {}
         }
+
+        self.clamp_active_cursor_for_normal_mode();
     }
 
     fn insert_text_at_cursor(
@@ -476,5 +478,18 @@ impl EditorState {
         let center_row = text_vh / 2;
         let max_top = total_lines.saturating_sub(1);
         view.cursor.scroll_y_lines = cursor_line.saturating_sub(center_row).min(max_top);
+    }
+
+    fn clamp_active_cursor_for_normal_mode(&mut self) {
+        if self.mode != EditorMode::Normal {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let Some(buffer) = self.session.buffer(active_id) else {
+            return;
+        };
+        let view = self.views.entry(active_id).or_default();
+        view.cursor.clamp_for_normal_mode(buffer);
     }
 }

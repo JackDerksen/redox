@@ -108,6 +108,46 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
 }
 
 #[test]
+fn normal_mode_cursor_stops_on_last_character_of_non_empty_line() {
+    let path = temp_file_path("normal_mode_last_char");
+    let mut state = state_with_text(path.clone(), "abc\n");
+
+    for _ in 0..5 {
+        state.apply_input(
+            InputAction::Motion {
+                motion: Motion::Right,
+                count: 1,
+            },
+            80,
+            24,
+        );
+    }
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_cursor_can_stay_at_zero_on_empty_line() {
+    let path = temp_file_path("normal_mode_empty_line");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn switching_buffers_preserves_cursor_and_scroll_state() {
     let path_a = temp_file_path("switch_preserve_a");
     let path_b = temp_file_path("switch_preserve_b");

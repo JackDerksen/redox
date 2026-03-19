@@ -118,6 +118,15 @@ impl CursorController {
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
     }
 
+    pub fn clamp_for_normal_mode(&mut self, buffer: &TextBuffer) {
+        self.cursor = buffer.clamp_pos(self.cursor);
+        let line_len = buffer.line_len_chars(self.cursor.line);
+        if line_len > 0 && self.cursor.col >= line_len {
+            self.cursor.col = line_len - 1;
+        }
+        self.invalidate_visual_cache();
+    }
+
     /// Apply a core (UI-agnostic) motion with a Vim-style count, then adjust scrolling
     /// to keep the cursor visible.
     ///
