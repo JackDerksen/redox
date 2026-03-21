@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-    <img width="1814" height="1138" alt="Redox Demo" src="assets/redox-demo.png" />
+    <img width="3072" height="1152" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 
