@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use redox_core::{BufferId, EditorSession};
 
@@ -101,6 +102,26 @@ fn draw_buffer_view(
         text_w as usize,
         text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
     );
+    state.ensure_rain_animation(text_w, text_h, editor_text, style);
+
+    if let Some(animation) = state.active_rain_animation() {
+        draw_relative_line_numbers(
+            window,
+            style,
+            gutter_w,
+            text_h,
+            animation.first_line(),
+            active_cursor_line,
+            total_lines,
+        )?;
+        draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
+        animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
+
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
 
     let visual_selection = state.active_visual_selection();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
@@ -818,12 +839,56 @@ pub fn run() -> minui::Result<()> {
         state.command_open_about();
     }
 
-    let mut app = App::new(state)?;
+    let mut app = App::new(state)?.with_frame_rate(Duration::from_millis(16));
     let mut clipboard = minui::input::Clipboard::new().ok();
     let style = UiStyle::default();
 
     app.run(
         |state, event| {
+            if state.rain_is_active() {
+                match event {
+                    Event::Frame => {
+                        state.advance_rain_animation();
+                        return !state.should_quit;
+                    }
+                    Event::Character('q') => {
+                        state.stop_rain_animation();
+                        return !state.should_quit;
+                    }
+                    Event::KeyWithModifiers(key)
+                        if !key.mods.ctrl
+                            && !key.mods.alt
+                            && !key.mods.super_key
+                            && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q')) =>
+                    {
+                        state.stop_rain_animation();
+                        return !state.should_quit;
+                    }
+                    _ => {
+                        return !state.should_quit;
+                    }
+                }
+            }
+
+            if matches!(event, Event::Frame) {
+                return !state.should_quit;
+            }
+
+            if matches!(event, Event::Character('q'))
+                || matches!(
+                    event,
+                    Event::KeyWithModifiers(key)
+                        if !key.mods.ctrl
+                            && !key.mods.alt
+                            && !key.mods.super_key
+                            && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q'))
+                )
+            {
+                if state.handle_normal_mode_q_on_surface() {
+                    return !state.should_quit;
+                }
+            }
+
             let action = match &event {
                 Event::Paste(text) => InputAction::Paste(text.clone()),
                 _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),

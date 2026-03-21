@@ -4,16 +4,18 @@
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
-use crate::ui::{GraphemeCache, SyntaxHighlighter};
+use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
 mod explorer;
+mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 mod actions;
@@ -109,6 +111,9 @@ pub struct EditorState {
     pub status_msg: Option<String>,
     status_msg_ephemeral: bool,
     pub should_quit: bool,
+    rain_animation: Option<RainAnimation>,
+    rain_pending_start: bool,
+    rain_last_step_at: Option<Instant>,
     viewport_width_cells: usize,
     viewport_height_rows: usize,
     private_register: String,
@@ -139,6 +144,9 @@ impl EditorState {
             status_msg: None,
             status_msg_ephemeral: false,
             should_quit: false,
+            rain_animation: None,
+            rain_pending_start: false,
+            rain_last_step_at: None,
             viewport_width_cells: 80,
             viewport_height_rows: 24,
             private_register: String::new(),

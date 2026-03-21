@@ -329,12 +329,16 @@ impl Widget for EditorStatusBar {
 
 /// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
-    let (mode_label, mode_colors) = match state.mode {
-        EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
-        EditorMode::Insert => ("INSERT", style.palette.mode_insert),
-        EditorMode::Command => ("COMMAND", style.palette.mode_command),
-        EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
-        EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
+    let (mode_label, mode_colors) = if state.rain_is_active() {
+        ("RAIN", style.palette.mode_command)
+    } else {
+        match state.mode {
+            EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
+            EditorMode::Insert => ("INSERT", style.palette.mode_insert),
+            EditorMode::Command => ("COMMAND", style.palette.mode_command),
+            EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
+            EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
+        }
     };
 
     let mut left_text = format!("▌{}▐", mode_label);

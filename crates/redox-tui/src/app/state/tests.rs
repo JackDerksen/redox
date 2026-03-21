@@ -267,6 +267,40 @@ fn command_ls_populates_compact_status_summary() {
 }
 
 #[test]
+fn command_rain_captures_and_q_resets_animation_state() {
+    let path = temp_file_path("rain_mode");
+    let mut state = state_with_text(path.clone(), "let rain = true;\n");
+
+    run_command(&mut state, "rain");
+
+    assert!(state.rain_is_active());
+    assert!(state.rain_pending_start);
+    assert!(state.rain_animation.is_none());
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("making it rain: press q to reset")
+    );
+
+    state.ensure_rain_animation(
+        20,
+        6,
+        minui::ColorPair::new(minui::Color::White, minui::Color::Black),
+        crate::ui::UiStyle::default(),
+    );
+
+    assert!(state.rain_animation.is_some());
+    assert!(!state.rain_pending_start);
+
+    state.stop_rain_animation();
+
+    assert!(!state.rain_is_active());
+    assert!(state.rain_animation.is_none());
+    assert!(state.status_msg.is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn command_ls_status_is_cleared_on_next_input() {
     let path = temp_file_path("ls_ephemeral");
     let mut state = state_with_text(path.clone(), "alpha");
@@ -728,6 +762,38 @@ fn about_q_quits_from_empty_startup_buffer() {
     assert!(state.about_popup().is_some());
 
     run_command(&mut state, "q");
+
+    assert!(state.should_quit);
+    assert!(state.about_popup().is_none());
+}
+
+#[test]
+fn about_normal_mode_q_key_closes_surface_buffer_only() {
+    let path = temp_file_path("about_q_key_close");
+    let mut state = state_with_text(path.clone(), "alpha");
+    let return_to = state.session.active_id();
+
+    run_command(&mut state, "about");
+    assert!(state.about_popup().is_some());
+
+    assert!(state.handle_normal_mode_q_on_surface());
+
+    assert!(!state.should_quit);
+    assert!(state.about_popup().is_none());
+    assert_eq!(state.session.active_id(), return_to);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn about_normal_mode_q_key_quits_from_empty_startup_buffer() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, "about");
+    assert!(state.about_popup().is_some());
+
+    assert!(state.handle_normal_mode_q_on_surface());
 
     assert!(state.should_quit);
     assert!(state.about_popup().is_none());

@@ -73,6 +73,9 @@ impl EditorState {
             "about" => {
                 self.command_open_about();
             }
+            "rain" => {
+                self.command_rain();
+            }
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
             }
