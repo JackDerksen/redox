@@ -6,8 +6,8 @@ use std::path::Path;
 
 use minui::prelude::TabPolicy;
 use minui::{ColorPair, ColoredSpan, Window, cell_width};
-use redox_core::TextBuffer;
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use redox_core::{Pos, TextBuffer};
+use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
@@ -35,6 +35,12 @@ pub struct SyntaxHighlighter {
     cache: Option<HighlightCache>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxScopePair {
+    pub start: Pos,
+    pub end: Pos,
+}
+
 struct QuerySyntaxEngine {
     language: SyntaxLanguage,
     parser: Parser,
@@ -56,6 +62,7 @@ impl std::fmt::Debug for SyntaxHighlighter {
 struct HighlightCache {
     language: SyntaxLanguage,
     line_spans: Vec<Vec<LineSyntaxSpan>>,
+    tree: Tree,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,12 +109,12 @@ impl QuerySyntaxEngine {
         })
     }
 
-    fn parse_line_spans(&mut self, source: &str) -> Vec<Vec<LineSyntaxSpan>> {
+    fn parse_line_spans(&mut self, source: &str) -> Option<(Vec<Vec<LineSyntaxSpan>>, Tree)> {
         let line_starts = compute_line_start_bytes(source);
         let mut line_spans: Vec<Vec<LineSyntaxSpan>> = vec![Vec::new(); line_starts.len().max(1)];
 
         let Some(tree) = self.parser.parse(source, None) else {
-            return line_spans;
+            return None;
         };
 
         let mut query_cursor = QueryCursor::new();
@@ -147,20 +154,16 @@ impl QuerySyntaxEngine {
             spans.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
         }
 
-        line_spans
+        Some((line_spans, tree))
     }
 }
 
 impl SyntaxHighlighter {
-    pub fn visible_line_spans(
+    fn ensure_cache(
         &mut self,
         buffer: &TextBuffer,
-        language: Option<SyntaxLanguage>,
-        first_line: usize,
-        line_count: usize,
-    ) -> Option<Vec<Vec<LineSyntaxSpan>>> {
-        let language = language?;
-
+        language: SyntaxLanguage,
+    ) -> Option<&HighlightCache> {
         let needs_engine = self
             .engine
             .as_ref()
@@ -180,14 +183,26 @@ impl SyntaxHighlighter {
         if needs_rebuild {
             let engine = self.engine.as_mut()?;
             let source = buffer.to_string();
-            let spans = engine.parse_line_spans(&source);
+            let (spans, tree) = engine.parse_line_spans(&source)?;
             self.cache = Some(HighlightCache {
                 language,
                 line_spans: spans,
+                tree,
             });
         }
 
-        let cache = self.cache.as_ref()?;
+        self.cache.as_ref()
+    }
+
+    pub fn visible_line_spans(
+        &mut self,
+        buffer: &TextBuffer,
+        language: Option<SyntaxLanguage>,
+        first_line: usize,
+        line_count: usize,
+    ) -> Option<Vec<Vec<LineSyntaxSpan>>> {
+        let language = language?;
+        let cache = self.ensure_cache(buffer, language)?;
         let mut out = Vec::with_capacity(line_count);
         for line in first_line..first_line.saturating_add(line_count) {
             out.push(cache.line_spans.get(line).cloned().unwrap_or_default());
@@ -195,9 +210,66 @@ impl SyntaxHighlighter {
         Some(out)
     }
 
+    pub fn active_scope_pair(
+        &mut self,
+        buffer: &TextBuffer,
+        language: Option<SyntaxLanguage>,
+        cursor: Pos,
+    ) -> Option<SyntaxScopePair> {
+        let language = language?;
+        let cache = self.ensure_cache(buffer, language)?;
+        let cursor_byte = buffer.rope().char_to_byte(buffer.pos_to_char(cursor));
+        let root = cache.tree.root_node();
+        let node = root
+            .named_descendant_for_byte_range(cursor_byte, cursor_byte)
+            .or_else(|| {
+                cursor_byte
+                    .checked_sub(1)
+                    .and_then(|byte| root.named_descendant_for_byte_range(byte, byte))
+            })?;
+
+        active_scope_pair_for_node(buffer, node)
+    }
+
     pub fn invalidate(&mut self) {
         self.cache = None;
     }
+}
+
+fn active_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        if let Some(pair) = structural_scope_pair_for_node(buffer, candidate) {
+            return Some(pair);
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+fn structural_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
+    if node.start_position().row >= node.end_position().row {
+        return None;
+    }
+
+    let start_pos = byte_to_pos(buffer, node.start_byte())?;
+    let end_pos = byte_to_pos(buffer, node.end_byte().checked_sub(1)?)?;
+    let start_char = buffer.char_at(start_pos)?;
+    let end_char = buffer.char_at(end_pos)?;
+    matches!((start_char, end_char), ('{', '}') | ('[', ']') | ('(', ')')).then_some(
+        SyntaxScopePair {
+            start: start_pos,
+            end: end_pos,
+        },
+    )
+}
+
+fn byte_to_pos(buffer: &TextBuffer, byte_idx: usize) -> Option<Pos> {
+    if byte_idx > buffer.rope().len_bytes() {
+        return None;
+    }
+    let char_idx = buffer.rope().byte_to_char(byte_idx);
+    Some(buffer.char_to_pos(char_idx))
 }
 
 pub fn language_for_path(path: Option<&Path>) -> Option<SyntaxLanguage> {
@@ -304,7 +376,13 @@ fn collect_visible_spans(
             syntax_idx += 1;
         }
 
-        let colors = syntax_color_for_range(base_color, style, &spans[syntax_idx..], start_byte, end_byte);
+        let colors = syntax_color_for_range(
+            base_color,
+            style,
+            &spans[syntax_idx..],
+            start_byte,
+            end_byte,
+        );
         let colors = apply_color_column(colors, color_column, start_cell, end_cell);
 
         let text = if g == "\t" {
@@ -447,7 +525,7 @@ fn best_span_for_range(
 mod tests {
     use std::path::Path;
 
-    use redox_core::TextBuffer;
+    use redox_core::{Pos, TextBuffer};
 
     use super::{SyntaxHighlighter, SyntaxLanguage, collect_visible_spans, language_for_path};
     use crate::ui::UiStyle;
@@ -507,5 +585,17 @@ mod tests {
 
         let text = owned.into_iter().map(|span| span.text).collect::<String>();
         assert_eq!(text, "  X");
+    }
+
+    #[test]
+    fn active_scope_pair_uses_multiline_structural_node() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+        let scope = highlighter
+            .active_scope_pair(&buffer, Some(SyntaxLanguage::Rust), Pos::new(1, 15))
+            .expect("scope");
+
+        assert_eq!(scope.start, Pos::new(0, 10));
+        assert_eq!(scope.end, Pos::new(2, 0));
     }
 }

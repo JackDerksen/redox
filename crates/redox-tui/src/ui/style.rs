@@ -43,6 +43,7 @@ pub enum SyntaxRole {
 pub struct BaseTheme {
     pub bg: Color,
     pub color_column: Color,
+    pub scope: Color,
     pub selection_bg: Color,
     pub selection_fg: Color,
     pub white: Color,
@@ -75,6 +76,11 @@ impl Default for BaseTheme {
                 r: (24),
                 g: (23),
                 b: (26),
+            },
+            scope: Color::Rgb {
+                r: (45),
+                g: (44),
+                b: (47),
             },
             selection_bg: Color::Rgb {
                 r: (45),

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
 
@@ -13,13 +14,17 @@ mod ui;
 use app::EditorState;
 use input::{InputAction, map_event_with_state};
 
+use crate::ui::helpers::apply_color_column;
+use ui::overlays::{
+    active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
+    draw_indent_guides,
+};
 use ui::syntax::{draw_line_with_syntax, syntax_color_for_range};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
     explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached,
 };
-use crate::ui::helpers::apply_color_column;
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
@@ -99,8 +104,8 @@ fn draw_buffer_view(
 
     let visual_selection = state.active_visual_selection();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
-    let (snapshot, spec, scroll_x, syntax_spans) =
-        state.with_active_buffer_view_mut(|buffer, view| {
+    let (snapshot, spec, scroll_x, syntax_spans, delimiter_highlights, active_scope_guides) = state
+        .with_active_buffer_view_mut(|buffer, view| {
             let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
             let viewport = TextViewport {
                 scroll_x,
@@ -119,7 +124,34 @@ fn draw_buffer_view(
                 snapshot.first_line,
                 snapshot.lines.len(),
             );
-            (snapshot, spec, scroll_x, syntax_spans)
+            let tree_sitter_scope = view.syntax_highlighter.active_scope_pair(
+                buffer,
+                syntax_language,
+                view.cursor.cursor,
+            );
+            let delimiter_highlights = active_delimiter_highlights(
+                buffer,
+                view.cursor.cursor,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
+            let active_scope_guides = active_scope_indent_guides(
+                tree_sitter_scope,
+                buffer,
+                view.cursor.cursor,
+                snapshot.first_line,
+                snapshot.lines.len(),
+                scroll_x,
+                text_w as usize,
+            );
+            (
+                snapshot,
+                spec,
+                scroll_x,
+                syntax_spans,
+                delimiter_highlights,
+                active_scope_guides,
+            )
         });
 
     draw_relative_line_numbers(
@@ -143,6 +175,8 @@ fn draw_buffer_view(
         editor_text,
         style,
         syntax_spans.as_deref(),
+        &delimiter_highlights,
+        &active_scope_guides,
         visual_selection,
     )?;
 
@@ -275,6 +309,17 @@ fn draw_line_with_selection(
                 " ",
                 ColorPair::new(normal_color.fg, selection_bg),
             )?;
+            if let Some((visible_col, bg)) = color_column
+                && visible_col < width_cells
+                && visible_col != 0
+            {
+                window.write_str_colored(
+                    row,
+                    col.saturating_add(visible_col as u16),
+                    " ",
+                    ColorPair::new(normal_color.fg, bg),
+                )?;
+            }
         } else if let Some((visible_col, bg)) = color_column
             && visible_col < width_cells
         {
@@ -391,35 +436,61 @@ fn draw_buffer_snapshot_for_id(
         .session
         .meta(buffer_id)
         .and_then(|meta| language_for_path(meta.path.as_deref()));
-    let Some((snapshot, cursor_line, total_lines, scroll_x, syntax_spans)) = state
-        .with_buffer_view_mut(buffer_id, |buffer, view| {
-            let total_lines = buffer.len_lines().max(1);
-            let gutter_w = line_number_gutter_width(total_lines);
-            let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
-            let text_w = width.saturating_sub(content_x);
-            let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
-            let viewport = TextViewport {
-                scroll_x,
-                scroll_y,
-                width: text_w,
-                height,
-            };
-            let snapshot =
-                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-            let syntax_spans = view.syntax_highlighter.visible_line_spans(
-                buffer,
-                syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
-            );
-            (
-                snapshot,
-                view.cursor.cursor.line,
-                total_lines,
-                scroll_x,
-                syntax_spans,
-            )
-        })
+    let Some((
+        snapshot,
+        cursor_line,
+        total_lines,
+        scroll_x,
+        syntax_spans,
+        delimiter_highlights,
+        active_scope_guides,
+    )) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
+        let total_lines = buffer.len_lines().max(1);
+        let gutter_w = line_number_gutter_width(total_lines);
+        let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+        let text_w = width.saturating_sub(content_x);
+        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+        let viewport = TextViewport {
+            scroll_x,
+            scroll_y,
+            width: text_w,
+            height,
+        };
+        let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+        let syntax_spans = view.syntax_highlighter.visible_line_spans(
+            buffer,
+            syntax_language,
+            snapshot.first_line,
+            snapshot.lines.len(),
+        );
+        let tree_sitter_scope =
+            view.syntax_highlighter
+                .active_scope_pair(buffer, syntax_language, view.cursor.cursor);
+        let delimiter_highlights = active_delimiter_highlights(
+            buffer,
+            view.cursor.cursor,
+            snapshot.first_line,
+            snapshot.lines.len(),
+        );
+        let active_scope_guides = active_scope_indent_guides(
+            tree_sitter_scope,
+            buffer,
+            view.cursor.cursor,
+            snapshot.first_line,
+            snapshot.lines.len(),
+            scroll_x,
+            width.saturating_sub(content_x) as usize,
+        );
+        (
+            snapshot,
+            view.cursor.cursor.line,
+            total_lines,
+            scroll_x,
+            syntax_spans,
+            delimiter_highlights,
+            active_scope_guides,
+        )
+    })
     else {
         return Ok(());
     };
@@ -451,6 +522,8 @@ fn draw_buffer_snapshot_for_id(
         colors,
         style,
         syntax_spans.as_deref(),
+        &delimiter_highlights,
+        &active_scope_guides,
         None,
     )?;
 
@@ -467,11 +540,30 @@ fn draw_snapshot_lines(
     default_colors: ColorPair,
     style: UiStyle,
     syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
+    delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
+    active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     visual_selection: Option<(redox_core::Selection, bool)>,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for (row, line) in snapshot.lines.iter().enumerate() {
         let line_idx = snapshot.first_line + row;
+        let highlighted_chars = delimiter_highlights
+            .get(&line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let visible_indent_guides = active_scope_guides
+            .get(&line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let selected_line_bg = visual_selection
+            .filter(|(selection, line_mode)| {
+                buffer
+                    .visual_selection_char_range_on_line(*selection, *line_mode, line_idx)
+                    .is_some()
+                    || (buffer.line_len_chars(line_idx) == 0
+                        && selected_empty_line(*selection, line_idx))
+            })
+            .map(|_| style.theme.selection_bg);
         if let Some((selection, line_mode)) = visual_selection {
             let highlight_empty_line =
                 buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, line_idx);
@@ -494,6 +586,25 @@ fn draw_snapshot_lines(
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
                     highlight_empty_line,
+                )?;
+                let source_line = buffer.line_string(line_idx);
+                draw_indent_guides(
+                    window,
+                    row as u16,
+                    content_x,
+                    visible_indent_guides,
+                    style,
+                    selected_line_bg,
+                )?;
+                draw_delimiter_highlights(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    highlighted_chars,
+                    style,
                 )?;
                 continue;
             }
@@ -534,6 +645,25 @@ fn draw_snapshot_lines(
                 style,
                 spans,
             )?;
+            let source_line = buffer.line_string(line_idx);
+            draw_indent_guides(
+                window,
+                row as u16,
+                content_x,
+                visible_indent_guides,
+                style,
+                selected_line_bg,
+            )?;
+            draw_delimiter_highlights(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                highlighted_chars,
+                style,
+            )?;
             continue;
         }
 
@@ -546,6 +676,25 @@ fn draw_snapshot_lines(
             text_w,
             default_colors,
             color_column,
+        )?;
+        let source_line = buffer.line_string(line_idx);
+        draw_indent_guides(
+            window,
+            row as u16,
+            content_x,
+            visible_indent_guides,
+            style,
+            selected_line_bg,
+        )?;
+        draw_delimiter_highlights(
+            window,
+            row as u16,
+            content_x,
+            &source_line,
+            scroll_x,
+            text_w,
+            highlighted_chars,
+            style,
         )?;
     }
 
@@ -641,8 +790,7 @@ fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
 }
 
 pub fn run() -> minui::Result<()> {
-    let launch =
-        parse_path_arg().expect("failed to parse launch target");
+    let launch = parse_path_arg().expect("failed to parse launch target");
     let launch_empty = matches!(&launch, LaunchTarget::Empty);
     let launch_explorer_dir = match &launch {
         LaunchTarget::Explorer(dir) => Some(dir.clone()),
