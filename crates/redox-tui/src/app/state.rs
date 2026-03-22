@@ -4,7 +4,6 @@
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
 
@@ -113,7 +112,6 @@ pub struct EditorState {
     pub should_quit: bool,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
-    rain_last_step_at: Option<Instant>,
     viewport_width_cells: usize,
     viewport_height_rows: usize,
     private_register: String,
@@ -146,7 +144,6 @@ impl EditorState {
             should_quit: false,
             rain_animation: None,
             rain_pending_start: false,
-            rain_last_step_at: None,
             viewport_width_cells: 80,
             viewport_height_rows: 24,
             private_register: String::new(),
