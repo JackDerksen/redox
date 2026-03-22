@@ -1,13 +1,9 @@
-use std::time::{Duration, Instant};
-
 use minui::ColorPair;
 
 use super::EditorState;
 use crate::ui::{TextViewport, UiStyle, language_for_path, snapshot_lines_wrapped_cached};
 
 impl EditorState {
-    const RAIN_STEP_INTERVAL: Duration = Duration::from_millis(24);
-
     pub(super) fn command_rain(&mut self) {
         if self.active_buffer_is_surface() {
             self.set_status("rain is only available in text buffers");
@@ -16,7 +12,6 @@ impl EditorState {
 
         self.rain_animation = None;
         self.rain_pending_start = true;
-        self.rain_last_step_at = None;
         self.set_status("making it rain: press q to reset");
     }
 
@@ -35,7 +30,11 @@ impl EditorState {
         default_colors: ColorPair,
         style: UiStyle,
     ) {
-        if !self.rain_pending_start || self.rain_animation.is_some() {
+        if !self.rain_pending_start
+            || self.rain_animation.is_some()
+            || text_width == 0
+            || text_height == 0
+        {
             return;
         }
 
@@ -59,6 +58,7 @@ impl EditorState {
 
             crate::ui::RainAnimation::capture(
                 buffer,
+                &mut view.grapheme_cache,
                 snapshot.first_line,
                 scroll_x,
                 text_width as usize,
@@ -75,15 +75,6 @@ impl EditorState {
     }
 
     pub fn advance_rain_animation(&mut self) {
-        let now = Instant::now();
-        if self
-            .rain_last_step_at
-            .is_some_and(|last_step| now.duration_since(last_step) < Self::RAIN_STEP_INTERVAL)
-        {
-            return;
-        }
-        self.rain_last_step_at = Some(now);
-
         if let Some(animation) = self.rain_animation.as_mut() {
             let _ = animation.update();
         }
@@ -92,7 +83,6 @@ impl EditorState {
     pub fn stop_rain_animation(&mut self) {
         self.rain_animation = None;
         self.rain_pending_start = false;
-        self.rain_last_step_at = None;
         self.clear_status();
     }
 }
