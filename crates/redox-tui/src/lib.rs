@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession};
 
-use minui::{ColorPair, Window, prelude::*};
+use minui::input::Clipboard;
+use minui::{ColorPair, Event, KeyKind, TerminalWindow, Window, prelude::*};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
@@ -101,6 +105,26 @@ fn draw_buffer_view(
         text_w as usize,
         text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
     );
+    state.ensure_rain_animation(text_w, text_h, editor_text, style);
+
+    if let Some(animation) = state.active_rain_animation() {
+        draw_relative_line_numbers(
+            window,
+            style,
+            gutter_w,
+            text_h,
+            animation.first_line(),
+            active_cursor_line,
+            total_lines,
+        )?;
+        draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
+        animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
+
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
 
     let visual_selection = state.active_visual_selection();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
@@ -789,6 +813,59 @@ fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     Ok(LaunchTarget::File(path))
 }
 
+fn is_plain_q_event(event: &Event) -> bool {
+    matches!(event, Event::Character('q'))
+        || matches!(
+            event,
+            Event::KeyWithModifiers(key)
+                if !key.mods.ctrl
+                    && !key.mods.alt
+                    && !key.mods.super_key
+                    && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q'))
+        )
+}
+
+fn handle_editor_event(
+    state: &mut EditorState,
+    clipboard: &mut Option<Clipboard>,
+    event: Event,
+) -> bool {
+    if state.rain_is_active() {
+        if is_plain_q_event(&event) {
+            state.stop_rain_animation();
+        }
+        return !state.should_quit;
+    }
+
+    if is_plain_q_event(&event) && state.handle_normal_mode_q_on_surface() {
+        return !state.should_quit;
+    }
+
+    let action = match &event {
+        Event::Paste(text) => InputAction::Paste(text.clone()),
+        _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
+    };
+
+    let (w, h) = state.viewport_size();
+    state.apply_input(action, w, h);
+    if let Some(text) = state.take_pending_system_clipboard() {
+        match clipboard.as_mut() {
+            Some(system_clipboard) => {
+                if let Err(e) = system_clipboard.copy(&text) {
+                    state.set_status(format!("clipboard copy failed: {e}"));
+                } else {
+                    state.set_status("yanked to system clipboard");
+                }
+            }
+            None => {
+                state.set_status("system clipboard unavailable");
+            }
+        }
+    }
+
+    !state.should_quit
+}
+
 pub fn run() -> minui::Result<()> {
     let launch = parse_path_arg().expect("failed to parse launch target");
     let launch_empty = matches!(&launch, LaunchTarget::Empty);
@@ -818,46 +895,52 @@ pub fn run() -> minui::Result<()> {
         state.command_open_about();
     }
 
-    let mut app = App::new(state)?;
-    let mut clipboard = minui::input::Clipboard::new().ok();
+    let mut window = TerminalWindow::new()?;
+    window.set_auto_flush(false);
+    let mut clipboard = Clipboard::new().ok();
     let style = UiStyle::default();
 
-    app.run(
-        |state, event| {
-            let action = match &event {
-                Event::Paste(text) => InputAction::Paste(text.clone()),
-                _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
-            };
+    const MAX_EVENTS_PER_FRAME: usize = 256;
+    const ACTIVE_FRAME_BUDGET: Duration = Duration::from_millis(16);
+    const IDLE_FRAME_BUDGET: Duration = Duration::from_millis(20);
 
-            let (w, h) = state.viewport_size();
-            state.apply_input(action, w, h);
-            if let Some(text) = state.take_pending_system_clipboard() {
-                match clipboard.as_mut() {
-                    Some(system_clipboard) => {
-                        if let Err(e) = system_clipboard.copy(&text) {
-                            state.set_status(format!("clipboard copy failed: {e}"));
-                        } else {
-                            state.set_status("yanked to system clipboard");
-                        }
-                    }
-                    None => {
-                        state.set_status("system clipboard unavailable");
+    loop {
+        let frame_start = Instant::now();
+
+        for _ in 0..MAX_EVENTS_PER_FRAME {
+            match window.poll_input()? {
+                Some(event) => {
+                    if !handle_editor_event(&mut state, &mut clipboard, event) {
+                        return Ok(());
                     }
                 }
+                None => break,
             }
-            !state.should_quit
-        },
-        |state, window| {
-            window.clear_cursor_request();
-            let (w, h) = window.get_size();
-            state.set_viewport_size(w as usize, h as usize);
+        }
 
-            draw_buffer_view(state, style, window)?;
+        if state.rain_is_active() {
+            state.advance_rain_animation();
+        }
 
-            window.end_frame()?;
-            Ok(())
-        },
-    )?;
+        window.clear_cursor_request();
+        let (w, h) = window.get_size();
+        state.set_viewport_size(w as usize, h as usize);
+        window.clear_screen()?;
+        draw_buffer_view(&mut state, style, &mut window)?;
+        window.end_frame()?;
 
-    Ok(())
+        if state.should_quit {
+            return Ok(());
+        }
+
+        let frame_budget = if state.rain_is_active() {
+            ACTIVE_FRAME_BUDGET
+        } else {
+            IDLE_FRAME_BUDGET
+        };
+        let remaining = frame_budget.saturating_sub(frame_start.elapsed());
+        if !remaining.is_zero() {
+            thread::sleep(remaining);
+        }
+    }
 }

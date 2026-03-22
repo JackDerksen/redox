@@ -11,12 +11,14 @@
 
 pub mod helpers;
 pub mod overlays;
+pub mod rain_animation;
 pub mod render;
 pub mod style;
 pub mod syntax;
 pub mod widgets;
 
 // Re-export the render helpers/types so call sites can keep using `ui::...`.
+pub use rain_animation::RainAnimation;
 pub use render::{GraphemeCache, TextViewport, snapshot_lines_wrapped_cached};
 pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
 pub use syntax::{SyntaxHighlighter, language_for_path};

@@ -81,7 +81,7 @@ impl EditorState {
         );
         let about_id = self
             .session
-            .open_ui_buffer("[about] Redox (:q to close)", &about_text);
+            .open_ui_buffer("[about] Redox (q to close)", &about_text);
         self.session.mark_active_clean();
 
         let view = self.views.entry(about_id).or_default();

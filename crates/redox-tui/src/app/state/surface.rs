@@ -1,10 +1,27 @@
 use redox_core::BufferKind;
 
-use super::EditorState;
+use super::{EditorMode, EditorState};
 
 impl EditorState {
     pub(super) fn active_buffer_is_surface(&self) -> bool {
         self.session.active_meta().kind == BufferKind::Ui
+    }
+
+    pub(crate) fn handle_normal_mode_q_on_surface(&mut self) -> bool {
+        if self.mode != EditorMode::Normal
+            || !self.active_buffer_is_surface()
+            || self.explorer_is_active()
+        {
+            return false;
+        }
+
+        if self.close_active_surface_buffer() {
+            self.mode = EditorMode::Normal;
+            self.clear_status();
+            return true;
+        }
+
+        false
     }
 
     pub(super) fn close_active_surface_buffer(&mut self) -> bool {
