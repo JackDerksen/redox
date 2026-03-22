@@ -1,9 +1,9 @@
 use minui::prelude::TabPolicy;
 use minui::{ColorPair, Window, cell_width};
 use redox_core::TextBuffer;
-use unicode_segmentation::UnicodeSegmentation;
 
 use super::helpers::apply_color_column;
+use super::render::GraphemeCache;
 use super::style::UiStyle;
 use super::syntax::{LineSyntaxSpan, syntax_color_for_range};
 
@@ -23,6 +23,14 @@ struct RainParticle {
     colors: ColorPair,
     disperse_direction: i8,
     processed: bool,
+    width: usize,
+}
+
+#[derive(Debug, Clone)]
+enum RainCell {
+    Empty,
+    Head(RainParticle),
+    Tail,
 }
 
 #[derive(Debug, Clone)]
@@ -32,12 +40,13 @@ pub struct RainAnimation {
     height: usize,
     frame: u64,
     rng_state: u64,
-    grid: Vec<Vec<Option<RainParticle>>>,
+    grid: Vec<Vec<RainCell>>,
 }
 
 impl RainAnimation {
     pub fn capture(
         buffer: &TextBuffer,
+        cache: &mut GraphemeCache,
         first_line: usize,
         scroll_x: usize,
         width: usize,
@@ -57,7 +66,7 @@ impl RainAnimation {
                 ^ ((scroll_x as u64) << 17)
                 ^ ((width as u64) << 33)
                 ^ ((height as u64) << 49),
-            grid: vec![vec![None; width]; height],
+            grid: vec![vec![RainCell::Empty; width]; height],
         };
 
         for row in 0..height {
@@ -66,33 +75,26 @@ impl RainAnimation {
                 break;
             }
 
-            let source_line = buffer.line_string(line_idx);
+            let graphemes = cache.graphemes_for_line(buffer, line_idx);
+            let start_g = skip_graphemes_by_cells(graphemes, scroll_x);
             let spans = syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice));
-            let mut line_cells = 0usize;
             let mut used_cells = 0usize;
-            let mut byte_idx = 0usize;
+            let mut byte_idx: usize = graphemes[..start_g].iter().map(|g| g.len()).sum();
 
-            for grapheme in source_line.graphemes(true) {
+            for grapheme in &graphemes[start_g..] {
                 let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-                let start_cell = line_cells;
-                let end_cell = line_cells.saturating_add(grapheme_width);
                 let start_byte = byte_idx;
                 let end_byte = byte_idx.saturating_add(grapheme.len());
 
-                line_cells = end_cell;
-                byte_idx = end_byte;
-
-                if end_cell <= scroll_x {
-                    continue;
-                }
-                if start_cell < scroll_x {
+                if grapheme_width == 0 {
+                    byte_idx = end_byte;
                     continue;
                 }
                 if used_cells.saturating_add(grapheme_width) > width {
                     break;
                 }
 
-                if grapheme_width == 1 && grapheme != "\t" && grapheme != " " {
+                if grapheme.as_ref() != "\t" && grapheme.as_ref() != " " {
                     let base_colors = spans
                         .map(|line_spans| {
                             syntax_color_for_range(
@@ -104,16 +106,27 @@ impl RainAnimation {
                             )
                         })
                         .unwrap_or(default_colors);
-                    let colors =
-                        apply_color_column(base_colors, color_column, start_cell, end_cell);
-                    animation.grid[row][used_cells] = Some(RainParticle {
-                        glyph: grapheme.to_owned().into_boxed_str(),
-                        colors,
-                        disperse_direction: animation.random_direction(),
-                        processed: false,
-                    });
+                    let colors = apply_color_column(
+                        base_colors,
+                        color_column,
+                        used_cells,
+                        used_cells.saturating_add(grapheme_width),
+                    );
+                    let disperse_direction = animation.random_direction();
+                    animation.place_particle(
+                        row,
+                        used_cells,
+                        RainParticle {
+                            glyph: grapheme.to_owned(),
+                            colors,
+                            disperse_direction,
+                            processed: false,
+                            width: grapheme_width,
+                        },
+                    );
                 }
 
+                byte_idx = end_byte;
                 used_cells = used_cells.saturating_add(grapheme_width);
             }
         }
@@ -132,8 +145,10 @@ impl RainAnimation {
 
         self.frame = self.frame.wrapping_add(1);
         for row in &mut self.grid {
-            for particle in row.iter_mut().flatten() {
-                particle.processed = false;
+            for cell in row {
+                if let RainCell::Head(particle) = cell {
+                    particle.processed = false;
+                }
             }
         }
 
@@ -146,31 +161,31 @@ impl RainAnimation {
                     self.width.saturating_sub(1).saturating_sub(step)
                 };
 
-                let Some(particle) = self.grid[row][col].as_ref() else {
+                let Some((particle_width, processed)) = self.head_state(row, col) else {
                     continue;
                 };
-                if particle.processed {
+                if processed {
                     continue;
                 }
 
-                if let Some(particle) = self.grid[row][col].as_mut() {
+                if let RainCell::Head(particle) = &mut self.grid[row][col] {
                     particle.processed = true;
                 }
 
-                let (col, shifted) = self.apply_side_noise(row, col);
+                let (col, shifted) = self.apply_side_noise(row, col, particle_width);
                 updated |= shifted;
 
-                if self.grid[row][col].is_none() {
+                if !matches!(self.grid[row][col], RainCell::Head(_)) {
                     continue;
                 }
 
-                if self.cell_empty(row as isize + 1, col as isize) {
-                    self.swap_cells(row, col, row + 1, col);
+                if self.range_empty(row as isize + 1, col as isize, particle_width) {
+                    self.move_particle(row, col, row + 1, col);
                     updated = true;
                     continue;
                 }
 
-                updated |= self.disperse(row, col);
+                updated |= self.disperse(row, col, particle_width);
             }
         }
 
@@ -190,7 +205,7 @@ impl RainAnimation {
 
         for row in 0..draw_height {
             for col in 0..draw_width {
-                let Some(particle) = self.grid[row][col].as_ref() else {
+                let RainCell::Head(particle) = &self.grid[row][col] else {
                     continue;
                 };
                 window.write_str_colored(
@@ -205,30 +220,27 @@ impl RainAnimation {
         Ok(())
     }
 
-    fn disperse(&mut self, row: usize, col: usize) -> bool {
-        let Some(mut direction) = self.grid[row][col]
-            .as_ref()
-            .map(|particle| particle.disperse_direction)
-        else {
+    fn disperse(&mut self, row: usize, col: usize, particle_width: usize) -> bool {
+        let Some(mut direction) = self.head_direction(row, col) else {
             return false;
         };
         if direction != -1 && direction != 1 {
             direction = self.random_direction();
-            if let Some(particle) = self.grid[row][col].as_mut() {
+            if let RainCell::Head(particle) = &mut self.grid[row][col] {
                 particle.disperse_direction = direction;
             }
         }
 
         for distance in 1..=DISPERSE_RATE {
             let target_col = col as isize + (direction as isize * distance as isize);
-            if !self.cell_empty(row as isize, target_col) {
+            if !self.range_empty(row as isize, target_col, particle_width) {
                 self.flip_disperse_direction(row, col);
                 break;
             }
 
             let target_col = target_col as usize;
-            if self.cell_empty(row as isize + 1, target_col as isize) {
-                self.swap_cells(row, col, row + 1, target_col);
+            if self.range_empty(row as isize + 1, target_col as isize, particle_width) {
+                self.move_particle(row, col, row + 1, target_col);
                 return true;
             }
         }
@@ -236,8 +248,8 @@ impl RainAnimation {
         false
     }
 
-    fn apply_side_noise(&mut self, row: usize, col: usize) -> (usize, bool) {
-        if self.cell_empty(row as isize + 1, col as isize) {
+    fn apply_side_noise(&mut self, row: usize, col: usize, particle_width: usize) -> (usize, bool) {
+        if self.range_empty(row as isize + 1, col as isize, particle_width) {
             return (col, false);
         }
 
@@ -253,45 +265,75 @@ impl RainAnimation {
         let Some(target_col) = target_col else {
             return (col, false);
         };
-        if !self.cell_empty(row as isize, target_col as isize) {
+        if !self.range_empty(row as isize, target_col as isize, particle_width) {
             return (col, false);
         }
-        if !self.cell_empty(row as isize + 1, target_col as isize) {
+        if !self.range_empty(row as isize + 1, target_col as isize, particle_width) {
             return (col, false);
         }
 
-        self.swap_cells(row, col, row, target_col);
+        self.move_particle(row, col, row, target_col);
         (target_col, true)
     }
 
-    fn cell_empty(&self, row: isize, col: isize) -> bool {
-        if row < 0 || col < 0 {
+    fn range_empty(&self, row: isize, col: isize, width: usize) -> bool {
+        if row < 0 || col < 0 || width == 0 {
             return false;
         }
 
         let row = row as usize;
         let col = col as usize;
-        row < self.height && col < self.width && self.grid[row][col].is_none()
-    }
-
-    fn swap_cells(&mut self, row_a: usize, col_a: usize, row_b: usize, col_b: usize) {
-        if row_a == row_b {
-            self.grid[row_a].swap(col_a, col_b);
-            return;
+        if row >= self.height || col >= self.width || col.saturating_add(width) > self.width {
+            return false;
         }
 
-        let (top, bottom) = if row_a < row_b {
-            let (top, bottom) = self.grid.split_at_mut(row_b);
-            (&mut top[row_a], &mut bottom[0])
-        } else {
-            let (top, bottom) = self.grid.split_at_mut(row_a);
-            (&mut bottom[0], &mut top[row_b])
+        self.grid[row][col..col + width]
+            .iter()
+            .all(|cell| matches!(cell, RainCell::Empty))
+    }
+
+    fn head_state(&self, row: usize, col: usize) -> Option<(usize, bool)> {
+        match &self.grid[row][col] {
+            RainCell::Head(particle) => Some((particle.width, particle.processed)),
+            RainCell::Empty | RainCell::Tail => None,
+        }
+    }
+
+    fn head_direction(&self, row: usize, col: usize) -> Option<i8> {
+        match &self.grid[row][col] {
+            RainCell::Head(particle) => Some(particle.disperse_direction),
+            RainCell::Empty | RainCell::Tail => None,
+        }
+    }
+
+    fn move_particle(&mut self, from_row: usize, from_col: usize, to_row: usize, to_col: usize) {
+        let particle = self.take_particle(from_row, from_col);
+        self.place_particle(to_row, to_col, particle);
+    }
+
+    fn take_particle(&mut self, row: usize, col: usize) -> RainParticle {
+        let RainCell::Head(particle) = std::mem::replace(&mut self.grid[row][col], RainCell::Empty)
+        else {
+            panic!("attempted to move a non-head rain particle");
         };
-        std::mem::swap(&mut top[col_a], &mut bottom[col_b]);
+
+        for offset in 1..particle.width {
+            self.grid[row][col + offset] = RainCell::Empty;
+        }
+
+        particle
+    }
+
+    fn place_particle(&mut self, row: usize, col: usize, particle: RainParticle) {
+        let width = particle.width;
+        self.grid[row][col] = RainCell::Head(particle);
+        for offset in 1..width {
+            self.grid[row][col + offset] = RainCell::Tail;
+        }
     }
 
     fn flip_disperse_direction(&mut self, row: usize, col: usize) {
-        if let Some(particle) = self.grid[row][col].as_mut() {
+        if let RainCell::Head(particle) = &mut self.grid[row][col] {
             particle.disperse_direction *= -1;
         }
     }
@@ -313,6 +355,22 @@ impl RainAnimation {
     }
 }
 
+fn skip_graphemes_by_cells(graphemes: &[Box<str>], skip_cells: usize) -> usize {
+    if skip_cells == 0 || graphemes.is_empty() {
+        return 0;
+    }
+
+    let mut skipped = 0usize;
+    for (idx, grapheme) in graphemes.iter().enumerate() {
+        if skipped >= skip_cells {
+            return idx;
+        }
+        skipped = skipped.saturating_add(cell_width(grapheme, TabPolicy::Fixed(4)) as usize);
+    }
+
+    graphemes.len()
+}
+
 #[cfg(test)]
 mod tests {
     use minui::{Color, ColorPair};
@@ -324,6 +382,7 @@ mod tests {
         let buffer = TextBuffer::from_str("a");
         let mut animation = RainAnimation::capture(
             &buffer,
+            &mut GraphemeCache::new(8),
             0,
             0,
             4,
@@ -338,8 +397,16 @@ mod tests {
             let _ = animation.update();
         }
 
-        assert!(animation.grid[3].iter().any(Option::is_some));
-        assert!(animation.grid[0].iter().all(Option::is_none));
+        assert!(
+            animation.grid[3]
+                .iter()
+                .any(|cell| matches!(cell, RainCell::Head(_)))
+        );
+        assert!(
+            animation.grid[0]
+                .iter()
+                .all(|cell| matches!(cell, RainCell::Empty))
+        );
     }
 
     #[test]
@@ -347,6 +414,7 @@ mod tests {
         let buffer = TextBuffer::from_str("a b");
         let animation = RainAnimation::capture(
             &buffer,
+            &mut GraphemeCache::new(8),
             0,
             0,
             3,
@@ -357,8 +425,29 @@ mod tests {
             None,
         );
 
-        assert!(animation.grid[0][0].is_some());
-        assert!(animation.grid[0][1].is_none());
-        assert!(animation.grid[0][2].is_some());
+        assert!(matches!(animation.grid[0][0], RainCell::Head(_)));
+        assert!(matches!(animation.grid[0][1], RainCell::Empty));
+        assert!(matches!(animation.grid[0][2], RainCell::Head(_)));
+    }
+
+    #[test]
+    fn wide_glyphs_occupy_their_full_cell_width() {
+        let buffer = TextBuffer::from_str("界a");
+        let animation = RainAnimation::capture(
+            &buffer,
+            &mut GraphemeCache::new(8),
+            0,
+            0,
+            4,
+            1,
+            ColorPair::new(Color::White, Color::Black),
+            UiStyle::default(),
+            None,
+            None,
+        );
+
+        assert!(matches!(animation.grid[0][0], RainCell::Head(_)));
+        assert!(matches!(animation.grid[0][1], RainCell::Tail));
+        assert!(matches!(animation.grid[0][2], RainCell::Head(_)));
     }
 }
