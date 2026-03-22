@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession};
 
-use minui::{ColorPair, Window, prelude::*};
+use minui::input::Clipboard;
+use minui::{ColorPair, Event, KeyKind, TerminalWindow, Window, prelude::*};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
@@ -810,6 +813,59 @@ fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     Ok(LaunchTarget::File(path))
 }
 
+fn is_plain_q_event(event: &Event) -> bool {
+    matches!(event, Event::Character('q'))
+        || matches!(
+            event,
+            Event::KeyWithModifiers(key)
+                if !key.mods.ctrl
+                    && !key.mods.alt
+                    && !key.mods.super_key
+                    && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q'))
+        )
+}
+
+fn handle_editor_event(
+    state: &mut EditorState,
+    clipboard: &mut Option<Clipboard>,
+    event: Event,
+) -> bool {
+    if state.rain_is_active() {
+        if is_plain_q_event(&event) {
+            state.stop_rain_animation();
+        }
+        return !state.should_quit;
+    }
+
+    if is_plain_q_event(&event) && state.handle_normal_mode_q_on_surface() {
+        return !state.should_quit;
+    }
+
+    let action = match &event {
+        Event::Paste(text) => InputAction::Paste(text.clone()),
+        _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
+    };
+
+    let (w, h) = state.viewport_size();
+    state.apply_input(action, w, h);
+    if let Some(text) = state.take_pending_system_clipboard() {
+        match clipboard.as_mut() {
+            Some(system_clipboard) => {
+                if let Err(e) = system_clipboard.copy(&text) {
+                    state.set_status(format!("clipboard copy failed: {e}"));
+                } else {
+                    state.set_status("yanked to system clipboard");
+                }
+            }
+            None => {
+                state.set_status("system clipboard unavailable");
+            }
+        }
+    }
+
+    !state.should_quit
+}
+
 pub fn run() -> minui::Result<()> {
     let launch = parse_path_arg().expect("failed to parse launch target");
     let launch_empty = matches!(&launch, LaunchTarget::Empty);
@@ -839,90 +895,52 @@ pub fn run() -> minui::Result<()> {
         state.command_open_about();
     }
 
-    let mut app = App::new(state)?.with_frame_rate(Duration::from_millis(16));
-    let mut clipboard = minui::input::Clipboard::new().ok();
+    let mut window = TerminalWindow::new()?;
+    window.set_auto_flush(false);
+    let mut clipboard = Clipboard::new().ok();
     let style = UiStyle::default();
 
-    app.run(
-        |state, event| {
-            if state.rain_is_active() {
-                match event {
-                    Event::Frame => {
-                        state.advance_rain_animation();
-                        return !state.should_quit;
-                    }
-                    Event::Character('q') => {
-                        state.stop_rain_animation();
-                        return !state.should_quit;
-                    }
-                    Event::KeyWithModifiers(key)
-                        if !key.mods.ctrl
-                            && !key.mods.alt
-                            && !key.mods.super_key
-                            && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q')) =>
-                    {
-                        state.stop_rain_animation();
-                        return !state.should_quit;
-                    }
-                    _ => {
-                        return !state.should_quit;
+    const MAX_EVENTS_PER_FRAME: usize = 256;
+    const ACTIVE_FRAME_BUDGET: Duration = Duration::from_millis(16);
+    const IDLE_FRAME_BUDGET: Duration = Duration::from_millis(20);
+
+    loop {
+        let frame_start = Instant::now();
+
+        for _ in 0..MAX_EVENTS_PER_FRAME {
+            match window.poll_input()? {
+                Some(event) => {
+                    if !handle_editor_event(&mut state, &mut clipboard, event) {
+                        return Ok(());
                     }
                 }
+                None => break,
             }
+        }
 
-            if matches!(event, Event::Frame) {
-                return !state.should_quit;
-            }
+        if state.rain_is_active() {
+            state.advance_rain_animation();
+        }
 
-            if matches!(event, Event::Character('q'))
-                || matches!(
-                    event,
-                    Event::KeyWithModifiers(key)
-                        if !key.mods.ctrl
-                            && !key.mods.alt
-                            && !key.mods.super_key
-                            && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q'))
-                )
-            {
-                if state.handle_normal_mode_q_on_surface() {
-                    return !state.should_quit;
-                }
-            }
+        window.clear_cursor_request();
+        let (w, h) = window.get_size();
+        state.set_viewport_size(w as usize, h as usize);
+        window.clear_screen()?;
+        draw_buffer_view(&mut state, style, &mut window)?;
+        window.end_frame()?;
 
-            let action = match &event {
-                Event::Paste(text) => InputAction::Paste(text.clone()),
-                _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
-            };
+        if state.should_quit {
+            return Ok(());
+        }
 
-            let (w, h) = state.viewport_size();
-            state.apply_input(action, w, h);
-            if let Some(text) = state.take_pending_system_clipboard() {
-                match clipboard.as_mut() {
-                    Some(system_clipboard) => {
-                        if let Err(e) = system_clipboard.copy(&text) {
-                            state.set_status(format!("clipboard copy failed: {e}"));
-                        } else {
-                            state.set_status("yanked to system clipboard");
-                        }
-                    }
-                    None => {
-                        state.set_status("system clipboard unavailable");
-                    }
-                }
-            }
-            !state.should_quit
-        },
-        |state, window| {
-            window.clear_cursor_request();
-            let (w, h) = window.get_size();
-            state.set_viewport_size(w as usize, h as usize);
-
-            draw_buffer_view(state, style, window)?;
-
-            window.end_frame()?;
-            Ok(())
-        },
-    )?;
-
-    Ok(())
+        let frame_budget = if state.rain_is_active() {
+            ACTIVE_FRAME_BUDGET
+        } else {
+            IDLE_FRAME_BUDGET
+        };
+        let remaining = frame_budget.saturating_sub(frame_start.elapsed());
+        if !remaining.is_zero() {
+            thread::sleep(remaining);
+        }
+    }
 }
