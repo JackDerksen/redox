@@ -267,7 +267,7 @@ fn command_ls_populates_compact_status_summary() {
 }
 
 #[test]
-fn command_rain_captures_and_q_resets_animation_state() {
+fn command_rain_captures_and_stop_clears_animation_state() {
     let path = temp_file_path("rain_mode");
     let mut state = state_with_text(path.clone(), "let rain = true;\n");
 
