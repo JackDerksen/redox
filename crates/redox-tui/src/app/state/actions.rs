@@ -12,7 +12,7 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
-        if self.status_msg_ephemeral {
+        if self.status_msg_clear_on_input {
             self.clear_status();
         }
 
