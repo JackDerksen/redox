@@ -257,6 +257,7 @@ pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
     pub status_module_gap_width: u16,
+    pub popup_dim_amount: u8,
 }
 
 impl Default for Layout {
@@ -265,6 +266,7 @@ impl Default for Layout {
             status_left_min_width: 12,
             status_right_min_width: 18,
             status_module_gap_width: 0,
+            popup_dim_amount: 5,
         }
     }
 }
@@ -286,12 +288,12 @@ pub struct ExplorerStyle {
 impl ExplorerStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            width_percent: 64,
+            width_percent: 65,
             height_percent: 60,
             min_width: 20,
             min_height: 6,
             border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.blue, theme.bg),
+            title: ColorPair::new(theme.light_gray, theme.bg),
             file: ColorPair::new(theme.white, theme.bg),
             directory: ColorPair::new(theme.blue, theme.bg),
             executable: ColorPair::new(theme.red, theme.bg),
@@ -323,12 +325,12 @@ pub struct AboutStyle {
 impl AboutStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            width_percent: 58,
+            width_percent: 65,
             height_percent: 52,
             min_width: 56,
             min_height: 12,
             border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.blue, theme.bg),
+            title: ColorPair::new(theme.light_gray, theme.bg),
             text: ColorPair::new(theme.white, theme.bg),
             logo_red: ColorPair::new(theme.red, theme.bg),
             logo_white: ColorPair::new(theme.white, theme.bg),
@@ -338,6 +340,39 @@ impl AboutStyle {
 }
 
 impl Default for AboutStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommandLineStyle {
+    pub width_percent: u16,
+    pub min_width: u16,
+    pub top_margin_rows: u16,
+    pub inner_height_rows: u16,
+    pub border: ColorPair,
+    pub title: ColorPair,
+    pub text: ColorPair,
+    pub prompt: ColorPair,
+}
+
+impl CommandLineStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 65,
+            min_width: 24,
+            top_margin_rows: 2,
+            inner_height_rows: 1,
+            border: ColorPair::new(theme.light_gray, theme.bg),
+            title: ColorPair::new(theme.red, theme.bg),
+            text: ColorPair::new(theme.white, theme.bg),
+            prompt: ColorPair::new(theme.light_gray, theme.bg),
+        }
+    }
+}
+
+impl Default for CommandLineStyle {
     fn default() -> Self {
         Self::from_theme(BaseTheme::default())
     }
@@ -456,6 +491,7 @@ pub struct UiStyle {
     pub palette: Palette,
     pub layout: Layout,
     pub about: AboutStyle,
+    pub command_line: CommandLineStyle,
     pub explorer: ExplorerStyle,
     pub syntax: SyntaxStyle,
 }
@@ -468,8 +504,85 @@ impl Default for UiStyle {
             palette: Palette::from_theme(theme),
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
+            command_line: CommandLineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
+    }
+}
+
+fn dim_color(color: Color, amount: u8) -> Color {
+    match color {
+        Color::Rgb { r, g, b } => Color::Rgb {
+            r: r.saturating_sub(amount),
+            g: g.saturating_sub(amount),
+            b: b.saturating_sub(amount),
+        },
+        Color::Transparent => Color::Transparent,
+        other => other,
+    }
+}
+
+impl BaseTheme {
+    pub fn dimmed(self, amount: u8) -> Self {
+        Self {
+            bg: dim_color(self.bg, amount),
+            color_column: dim_color(self.color_column, amount),
+            scope: dim_color(self.scope, amount),
+            selection_bg: dim_color(self.selection_bg, amount),
+            selection_fg: dim_color(self.selection_fg, amount),
+            white: dim_color(self.white, amount),
+            black: dim_color(self.black, amount),
+            red: dim_color(self.red, amount),
+            green: dim_color(self.green, amount),
+            yellow: dim_color(self.yellow, amount),
+            blue: dim_color(self.blue, amount),
+            purple: dim_color(self.purple, amount),
+            orange: dim_color(self.orange, amount),
+            light_red: dim_color(self.light_red, amount),
+            light_green: dim_color(self.light_green, amount),
+            light_yellow: dim_color(self.light_yellow, amount),
+            light_blue: dim_color(self.light_blue, amount),
+            light_purple: dim_color(self.light_purple, amount),
+            light_orange: dim_color(self.light_orange, amount),
+            dark_gray: dim_color(self.dark_gray, amount),
+            light_gray: dim_color(self.light_gray, amount),
+        }
+    }
+}
+
+impl UiStyle {
+    pub fn dimmed(self) -> Self {
+        let theme = self.theme.dimmed(self.layout.popup_dim_amount);
+        Self {
+            theme,
+            palette: Palette::from_theme(theme),
+            layout: self.layout,
+            about: AboutStyle::from_theme(theme),
+            command_line: CommandLineStyle::from_theme(theme),
+            explorer: ExplorerStyle::from_theme(theme),
+            syntax: SyntaxStyle::from_theme(theme),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimmed_style_reduces_rgb_channels_by_popup_amount() {
+        let style = UiStyle::default();
+        let dimmed = style.dimmed();
+
+        assert_eq!(
+            dimmed.theme.bg,
+            Color::Rgb {
+                r: 21,
+                g: 20,
+                b: 23,
+            }
+        );
+        assert_eq!(dimmed.layout.popup_dim_amount, 5);
     }
 }

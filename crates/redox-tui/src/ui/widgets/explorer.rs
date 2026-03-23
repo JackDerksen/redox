@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, Window};
+use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
+
+const GUTTER_CONTENT_PADDING: u16 = 1;
 
 pub fn draw_explorer_popup_view(
     state: &mut EditorState,
@@ -14,7 +17,6 @@ pub fn draw_explorer_popup_view(
     window: &mut dyn Window,
     popup: ExplorerPopup,
 ) -> minui::Result<()> {
-    const GUTTER_CONTENT_PADDING: u16 = 1;
     let (vw, vh) = window.get_size();
     let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
     let popup_w = inner_w.saturating_add(2);
@@ -73,6 +75,7 @@ pub fn draw_explorer_popup_view(
     let visual_selection = state.active_visual_selection();
     let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x) = state
         .with_active_buffer_view_mut(|buffer, explorer_view| {
+            reconcile_explorer_cursor_for_popup(&mut explorer_view.cursor, buffer, inner_w, inner_h);
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
             let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
@@ -159,6 +162,21 @@ pub fn draw_explorer_popup_view(
     Ok(())
 }
 
+fn reconcile_explorer_cursor_for_popup(
+    cursor: &mut crate::input::cursor::CursorController,
+    buffer: &TextBuffer,
+    inner_w: u16,
+    inner_h: u16,
+) {
+    let gutter_w = line_number_gutter_width(buffer.len_lines().max(1));
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let text_w = inner_w.saturating_sub(content_x) as usize;
+
+    cursor.follow.top_margin_rows = 0;
+    cursor.follow.bottom_margin_rows = 0;
+    cursor.reconcile_after_edit(buffer, text_w, inner_h as usize);
+}
+
 pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
     let popup_w = compute_popup_dim(
         term_w,
@@ -223,6 +241,31 @@ fn is_executable(path: PathBuf) -> bool {
     {
         let _ = metadata;
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use minui::window::CursorSpec;
+    use redox_core::Pos;
+
+    use super::*;
+    use crate::input::cursor::CursorController;
+
+    #[test]
+    fn popup_reconcile_keeps_selected_entry_visible() {
+        let buffer = TextBuffer::from_str(
+            "../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt",
+        );
+        let mut cursor = CursorController::default();
+        cursor.cursor = Pos::new(11, 0);
+
+        reconcile_explorer_cursor_for_popup(&mut cursor, &buffer, 20, 5);
+
+        assert_eq!(cursor.scroll_y_lines, 7);
+        let spec: CursorSpec = cursor.cursor_spec(&buffer, 17, 5);
+        assert!(spec.visible);
+        assert_eq!(spec.y, 4);
     }
 }
 
