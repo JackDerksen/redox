@@ -21,10 +21,13 @@ use minui::{Color, ColorPair, Result, Window};
 use redox_core::BufferLoadPhase;
 
 use crate::app::{EditorMode, EditorState};
+use crate::ui::style::{StatusModuleColors, StatusModuleKind};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
-const SCROLL_MINIMAP_WIDTH: u16 = 1;
+const STATUS_MODULE_EDGE_LEFT: &str = "▌";
+const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
+const STATUS_MODULE_EDGE_WIDTH: u16 = 1;
 
 fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {
     if total_lines <= 1 {
@@ -114,6 +117,68 @@ impl Segment {
         self.min_width = Some(width);
         self
     }
+
+    pub fn spacer(width: u16) -> Self {
+        Self::new("").with_min_width(width)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StatusModule {
+    colors: StatusModuleColors,
+    content: String,
+    content_align: Align,
+}
+
+impl StatusModule {
+    fn new(content: impl Into<String>, colors: StatusModuleColors) -> Self {
+        Self {
+            colors,
+            content: content.into(),
+            content_align: Align::Left,
+        }
+    }
+
+    fn with_content_colors(mut self, content_colors: ColorPair) -> Self {
+        self.colors.content = content_colors;
+        self
+    }
+
+    fn with_content_align(mut self, align: Align) -> Self {
+        self.content_align = align;
+        self
+    }
+
+    fn wrapped_text(&self) -> String {
+        format!(
+            "{STATUS_MODULE_EDGE_LEFT}{}{STATUS_MODULE_EDGE_RIGHT}",
+            self.content
+        )
+    }
+
+    fn content_width(&self) -> u16 {
+        self.content.chars().count() as u16
+    }
+
+    fn width(&self) -> u16 {
+        self.content_width() + (STATUS_MODULE_EDGE_WIDTH * 2)
+    }
+
+    fn into_segments(self) -> [Segment; 3] {
+        let content_width = self.content_width();
+        [
+            Segment::new(STATUS_MODULE_EDGE_LEFT)
+                .with_color(self.colors.wrapper)
+                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
+            Segment::new(self.content)
+                .with_color(self.colors.content)
+                .with_align(self.content_align)
+                .with_min_width(content_width),
+            Segment::new(STATUS_MODULE_EDGE_RIGHT)
+                .with_color(self.colors.wrapper)
+                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
+        ]
+    }
 }
 
 /// Segment-based status bar widget.
@@ -156,6 +221,11 @@ impl EditorStatusBar {
 
     pub fn add_segment(mut self, segment: Segment) -> Self {
         self.segments.push(segment);
+        self
+    }
+
+    fn add_module(mut self, module: StatusModule) -> Self {
+        self.segments.extend(module.into_segments());
         self
     }
 
@@ -329,6 +399,7 @@ impl Widget for EditorStatusBar {
 
 /// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
+    let module_theme = style.palette.status_modules;
     let (mode_label, mode_colors) = if state.rain_is_active() {
         ("RAIN", style.palette.mode_command)
     } else {
@@ -341,7 +412,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         }
     };
 
-    let mut left_text = format!("▌{}▐", mode_label);
+    let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
+    let mut left_text = mode_module.wrapped_text();
     if state.active_dirty() {
         left_text.push_str("[+]");
     }
@@ -370,14 +442,27 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
 
     let cursor = state.active_cursor_pos();
     let total_lines = state.session.active_buffer().len_lines();
+    let minimap_module_colors = module_theme.colors(StatusModuleKind::Minimap);
     let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
         cursor.line,
         total_lines,
         style.palette.minimap,
         style.palette.minimap_alt,
-        style.palette.status_bar_bg.bg,
+        minimap_module_colors.wrapper.bg,
     );
-    let right_text = format!(" {}:{} ", cursor.line + 1, cursor.col + 1);
+    let coords_module = StatusModule::new(
+        format!("{}:{}", cursor.line + 1, cursor.col + 1),
+        module_theme.colors(StatusModuleKind::Coords),
+    )
+    .with_content_align(Align::Right);
+    let minimap_module =
+        StatusModule::new(scroll_glyph, minimap_module_colors).with_content_colors(scroll_colors);
+    let right_module_width =
+        coords_module.width() + style.layout.status_module_gap_width + minimap_module.width();
+    let right_padding_width = style
+        .layout
+        .status_right_min_width
+        .saturating_sub(right_module_width);
 
     EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)
@@ -393,18 +478,10 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_color(style.palette.status_bar_bg)
                 .with_align(Align::Center),
         )
-        .add_segment(
-            Segment::new(right_text)
-                .with_color(style.palette.status_bar_bg)
-                .with_align(Align::Right)
-                .with_min_width(style.layout.status_right_min_width),
-        )
-        .add_segment(
-            Segment::new(scroll_glyph)
-                .with_color(scroll_colors)
-                .with_align(Align::Right)
-                .with_min_width(SCROLL_MINIMAP_WIDTH),
-        )
+        .add_segment(Segment::spacer(right_padding_width))
+        .add_module(coords_module)
+        .add_segment(Segment::spacer(style.layout.status_module_gap_width))
+        .add_module(minimap_module)
 }
 
 #[cfg(test)]
@@ -444,33 +521,72 @@ mod tests {
     fn scroll_minimap_moves_from_top_to_bottom() {
         let style = UiStyle::default();
         let palette = style.palette;
-        let (top_glyph, top_colors) = scroll_minimap_cell(
-            0,
-            100,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
-        let (mid_glyph, _) = scroll_minimap_cell(
-            50,
-            100,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
-        let (bottom_glyph, bottom_colors) = scroll_minimap_cell(
-            99,
-            100,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
+        let minimap_bg = style.palette.status_modules.colors(StatusModuleKind::Minimap).wrapper.bg;
+        let (top_glyph, top_colors) =
+            scroll_minimap_cell(0, 100, palette.minimap, palette.minimap_alt, minimap_bg);
+        let (mid_glyph, _) =
+            scroll_minimap_cell(50, 100, palette.minimap, palette.minimap_alt, minimap_bg);
+        let (bottom_glyph, bottom_colors) =
+            scroll_minimap_cell(99, 100, palette.minimap, palette.minimap_alt, minimap_bg);
         assert_eq!(top_glyph, "▇");
         assert_eq!(bottom_glyph, "▁");
         assert_ne!(mid_glyph, top_glyph);
         assert_eq!(top_colors.bg, style.theme.white);
         assert_eq!(bottom_colors.fg, style.theme.white);
-        assert_eq!(top_colors.fg, palette.status_bar_bg.bg);
-        assert_eq!(bottom_colors.bg, palette.status_bar_bg.bg);
+        assert_eq!(top_colors.fg, minimap_bg);
+        assert_eq!(bottom_colors.bg, minimap_bg);
+    }
+
+    #[test]
+    fn right_coords_module_uses_light_gray_highlight() {
+        let style = UiStyle::default();
+        let colors = style.palette.status_modules.colors(StatusModuleKind::Coords);
+
+        assert_eq!(colors.wrapper.fg, style.palette.status_bar_bg.bg);
+        assert_eq!(colors.wrapper.bg, style.theme.light_gray);
+        assert_eq!(colors.content, colors.wrapper);
+    }
+
+    #[test]
+    fn right_minimap_module_uses_distinct_highlight() {
+        let style = UiStyle::default();
+        let colors = style.palette.status_modules.colors(StatusModuleKind::Minimap);
+
+        assert_eq!(colors.wrapper.fg, style.palette.status_bar_bg.bg);
+        assert_eq!(colors.wrapper.bg, style.theme.dark_gray);
+        assert_eq!(colors.content, colors.wrapper);
+    }
+
+    #[test]
+    fn status_module_emits_wrapped_segments() {
+        let style = UiStyle::default();
+        let wrapper_colors = style.palette.status_modules.colors(StatusModuleKind::Coords);
+        let content_colors = style.palette.status_modules.colors(StatusModuleKind::Minimap);
+        let module = StatusModule::new("42:7", wrapper_colors)
+            .with_content_colors(content_colors.wrapper)
+            .with_content_align(Align::Right);
+        let width = module.width();
+        let segments = module.into_segments();
+
+        assert_eq!(width, 6);
+        assert_eq!(segments[0].text, STATUS_MODULE_EDGE_LEFT);
+        assert_eq!(segments[0].colors, Some(wrapper_colors.wrapper));
+        assert_eq!(segments[1].text, "42:7");
+        assert_eq!(segments[1].colors, Some(content_colors.wrapper));
+        assert_eq!(segments[1].align, Align::Right);
+        assert_eq!(segments[2].text, STATUS_MODULE_EDGE_RIGHT);
+        assert_eq!(segments[2].colors, Some(wrapper_colors.wrapper));
+    }
+
+    #[test]
+    fn right_modules_respect_configured_gap_width() {
+        let style = UiStyle::default();
+        let coords = StatusModule::new("3:1", style.palette.status_modules.colors(StatusModuleKind::Coords));
+        let minimap = StatusModule::new("▇", style.palette.status_modules.colors(StatusModuleKind::Minimap));
+
+        assert_eq!(
+            coords.width() + style.layout.status_module_gap_width + minimap.width(),
+            8
+        );
     }
 }

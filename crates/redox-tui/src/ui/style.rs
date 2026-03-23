@@ -177,6 +177,49 @@ impl Default for BaseTheme {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct StatusModuleColors {
+    pub wrapper: ColorPair,
+    pub content: ColorPair,
+}
+
+impl StatusModuleColors {
+    pub fn solid(colors: ColorPair) -> Self {
+        Self {
+            wrapper: colors,
+            content: colors,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusModuleKind {
+    Coords,
+    Minimap,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StatusModuleTheme {
+    pub coords: StatusModuleColors,
+    pub minimap: StatusModuleColors,
+}
+
+impl StatusModuleTheme {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+            minimap: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
+        }
+    }
+
+    pub fn colors(self, kind: StatusModuleKind) -> StatusModuleColors {
+        match kind {
+            StatusModuleKind::Coords => self.coords,
+            StatusModuleKind::Minimap => self.minimap,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub status_bar_bg: ColorPair,
     pub mode_normal: ColorPair,
@@ -185,6 +228,7 @@ pub struct Palette {
     pub mode_visual: ColorPair,
     pub minimap: ColorPair,
     pub minimap_alt: ColorPair,
+    pub status_modules: StatusModuleTheme,
 }
 
 impl Palette {
@@ -197,6 +241,7 @@ impl Palette {
             mode_visual: ColorPair::new(theme.black, theme.orange),
             minimap: ColorPair::new(theme.white, Color::Transparent),
             minimap_alt: ColorPair::new(Color::Transparent, theme.white),
+            status_modules: StatusModuleTheme::from_theme(theme),
         }
     }
 }
@@ -211,6 +256,7 @@ impl Default for Palette {
 pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
+    pub status_module_gap_width: u16,
 }
 
 impl Default for Layout {
@@ -218,6 +264,7 @@ impl Default for Layout {
         Self {
             status_left_min_width: 12,
             status_right_min_width: 18,
+            status_module_gap_width: 0,
         }
     }
 }
