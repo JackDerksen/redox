@@ -150,7 +150,7 @@ impl EditorState {
             ));
         }
 
-        self.set_status_ephemeral(msg);
+        self.set_status(msg);
     }
 
     pub(super) fn write_current_file(&mut self) -> bool {

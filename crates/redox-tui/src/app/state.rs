@@ -158,10 +158,6 @@ impl EditorState {
         self.status_msg_clear_on_input = true;
     }
 
-    fn set_status_ephemeral(&mut self, msg: impl Into<String>) {
-        self.set_status(msg);
-    }
-
     pub fn clear_status(&mut self) {
         self.status_msg = None;
         self.status_msg_clear_on_input = false;
@@ -354,7 +350,7 @@ impl EditorState {
         };
 
         let Some(prev) = prev else {
-            self.set_status_ephemeral("nothing to undo");
+            self.set_status("nothing to undo");
             return;
         };
 
@@ -379,7 +375,7 @@ impl EditorState {
         };
 
         let Some(next) = next else {
-            self.set_status_ephemeral("nothing to redo");
+            self.set_status("nothing to redo");
             return;
         };
 
