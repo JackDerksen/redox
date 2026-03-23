@@ -27,7 +27,7 @@ impl EditorState {
             "w" => {
                 self.write_current_file();
             }
-            "q" => {
+            "q" | "quit" => {
                 if self.active_buffer_is_surface() {
                     if self.close_active_surface_buffer() {
                         self.clear_status();
@@ -150,7 +150,7 @@ impl EditorState {
             ));
         }
 
-        self.set_status_ephemeral(msg);
+        self.set_status(msg);
     }
 
     pub(super) fn write_current_file(&mut self) -> bool {

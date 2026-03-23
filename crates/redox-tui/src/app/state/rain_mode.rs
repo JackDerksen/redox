@@ -12,7 +12,7 @@ impl EditorState {
 
         self.rain_animation = None;
         self.rain_pending_start = true;
-        self.set_status("making it rain: press q to reset");
+        self.set_status("making it rain");
     }
 
     pub fn rain_is_active(&self) -> bool {

@@ -108,7 +108,7 @@ pub struct EditorState {
     pub input: InputState,
     pub command_line: String,
     pub status_msg: Option<String>,
-    status_msg_ephemeral: bool,
+    status_msg_clear_on_input: bool,
     pub should_quit: bool,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
@@ -140,7 +140,7 @@ impl EditorState {
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
-            status_msg_ephemeral: false,
+            status_msg_clear_on_input: false,
             should_quit: false,
             rain_animation: None,
             rain_pending_start: false,
@@ -155,17 +155,12 @@ impl EditorState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
-        self.status_msg_ephemeral = false;
-    }
-
-    fn set_status_ephemeral(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some(msg.into());
-        self.status_msg_ephemeral = true;
+        self.status_msg_clear_on_input = true;
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
-        self.status_msg_ephemeral = false;
+        self.status_msg_clear_on_input = false;
     }
 
     pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {
@@ -355,7 +350,7 @@ impl EditorState {
         };
 
         let Some(prev) = prev else {
-            self.set_status_ephemeral("nothing to undo");
+            self.set_status("nothing to undo");
             return;
         };
 
@@ -380,7 +375,7 @@ impl EditorState {
         };
 
         let Some(next) = next else {
-            self.set_status_ephemeral("nothing to redo");
+            self.set_status("nothing to redo");
             return;
         };
 

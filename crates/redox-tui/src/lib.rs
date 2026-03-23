@@ -26,7 +26,8 @@ use ui::overlays::{
 use ui::syntax::{draw_line_with_syntax, syntax_color_for_range};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_explorer_popup_view,
+    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
+    draw_explorer_popup_view,
     explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached,
 };
 
@@ -45,7 +46,15 @@ fn draw_buffer_view(
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let editor_text = ColorPair::new(style.theme.white, style.theme.bg);
+    let popup_overlay_active = state.mode == app::EditorMode::Command
+        || state.explorer_popup().is_some()
+        || state.about_popup().is_some();
+    let background_style = if popup_overlay_active {
+        style.dimmed()
+    } else {
+        style
+    };
+    let editor_text = ColorPair::new(background_style.theme.white, background_style.theme.bg);
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
@@ -57,7 +66,7 @@ fn draw_buffer_view(
         {
             draw_buffer_snapshot_for_id(
                 state,
-                style,
+                background_style,
                 background_id,
                 vw,
                 text_h,
@@ -78,7 +87,7 @@ fn draw_buffer_view(
         if let Some(background_id) = state.about_background_buffer_id() {
             draw_buffer_snapshot_for_id(
                 state,
-                style,
+                background_style,
                 background_id,
                 vw,
                 text_h,
@@ -105,23 +114,33 @@ fn draw_buffer_view(
         text_w as usize,
         text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
     );
-    state.ensure_rain_animation(text_w, text_h, editor_text, style);
+    state.ensure_rain_animation(text_w, text_h, editor_text, background_style);
 
     if let Some(animation) = state.active_rain_animation() {
         draw_relative_line_numbers(
             window,
-            style,
+            background_style,
             gutter_w,
             text_h,
             animation.first_line(),
             active_cursor_line,
             total_lines,
         )?;
-        draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
+        draw_gutter_padding(
+            window,
+            background_style,
+            gutter_w,
+            text_h,
+            GUTTER_CONTENT_PADDING,
+        )?;
         animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
 
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
+        if state.mode == app::EditorMode::Command {
+            draw_command_line_popup(state, style, window)?;
+            return Ok(());
+        }
         hide_cursor(window);
         return Ok(());
     }
@@ -180,14 +199,20 @@ fn draw_buffer_view(
 
     draw_relative_line_numbers(
         window,
-        style,
+        background_style,
         gutter_w,
         text_h,
         snapshot.first_line,
         active_cursor_line,
         total_lines,
     )?;
-    draw_gutter_padding(window, style, gutter_w, text_h, GUTTER_CONTENT_PADDING)?;
+    draw_gutter_padding(
+        window,
+        background_style,
+        gutter_w,
+        text_h,
+        GUTTER_CONTENT_PADDING,
+    )?;
 
     draw_snapshot_lines(
         window,
@@ -197,7 +222,7 @@ fn draw_buffer_view(
         scroll_x,
         text_w as usize,
         editor_text,
-        style,
+        background_style,
         syntax_spans.as_deref(),
         &delimiter_highlights,
         &active_scope_guides,
@@ -209,7 +234,9 @@ fn draw_buffer_view(
 
     status.draw(window)?;
 
-    if spec.visible {
+    if state.mode == app::EditorMode::Command {
+        draw_command_line_popup(state, style, window)?;
+    } else if spec.visible {
         window.request_cursor(minui::window::CursorSpec {
             x: spec.x.saturating_add(content_x),
             y: spec.y,
@@ -813,15 +840,23 @@ fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     Ok(LaunchTarget::File(path))
 }
 
-fn is_plain_q_event(event: &Event) -> bool {
-    matches!(event, Event::Character('q'))
+fn is_cancel_event(event: &Event) -> bool {
+    matches!(event, Event::Escape)
         || matches!(
             event,
             Event::KeyWithModifiers(key)
-                if !key.mods.ctrl
+                if matches!(key.key, KeyKind::Escape)
+                    && !key.mods.ctrl
                     && !key.mods.alt
                     && !key.mods.super_key
-                    && matches!(key.key, KeyKind::Char('q') | KeyKind::Char('Q'))
+        )
+        || matches!(
+            event,
+            Event::KeyWithModifiers(key)
+                if key.mods.ctrl
+                    && !key.mods.alt
+                    && !key.mods.super_key
+                    && matches!(key.key, KeyKind::Char('c') | KeyKind::Char('C'))
         )
 }
 
@@ -831,13 +866,13 @@ fn handle_editor_event(
     event: Event,
 ) -> bool {
     if state.rain_is_active() {
-        if is_plain_q_event(&event) {
+        if is_cancel_event(&event) {
             state.stop_rain_animation();
         }
         return !state.should_quit;
     }
 
-    if is_plain_q_event(&event) && state.handle_normal_mode_q_on_surface() {
+    if is_cancel_event(&event) && state.handle_normal_mode_escape_on_surface() {
         return !state.should_quit;
     }
 

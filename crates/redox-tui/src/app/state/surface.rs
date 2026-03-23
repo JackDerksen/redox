@@ -7,11 +7,8 @@ impl EditorState {
         self.session.active_meta().kind == BufferKind::Ui
     }
 
-    pub(crate) fn handle_normal_mode_q_on_surface(&mut self) -> bool {
-        if self.mode != EditorMode::Normal
-            || !self.active_buffer_is_surface()
-            || self.explorer_is_active()
-        {
+    pub(crate) fn handle_normal_mode_escape_on_surface(&mut self) -> bool {
+        if self.mode != EditorMode::Normal || !self.active_buffer_is_surface() {
             return false;
         }
 

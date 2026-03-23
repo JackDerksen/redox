@@ -422,6 +422,11 @@ fn map_key_with_state(
 
     match mode {
         InputMode::Insert => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::SetMode(InputMode::Normal);
+            }
+
             return match key {
                 KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
                 KeyKind::Backspace => InputAction::Backspace,
@@ -452,6 +457,11 @@ fn map_key_with_state(
         }
 
         InputMode::Command => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::CommandCancel;
+            }
+
             return match key {
                 KeyKind::Escape => InputAction::CommandCancel,
                 KeyKind::Backspace => InputAction::CommandBackspace,
@@ -486,6 +496,14 @@ fn map_key_with_state(
     {
         state.reset_prefixes();
         return InputAction::ViewportUpCenter;
+    }
+
+    if matches!(mode, InputMode::Visual | InputMode::VisualLine)
+        && mods.ctrl
+        && matches!(key, KeyKind::Char('c') | KeyKind::Char('C'))
+    {
+        state.reset_prefixes();
+        return InputAction::SetMode(InputMode::Normal);
     }
 
     // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
@@ -679,6 +697,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_mode_ctrl_c_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
     fn normal_mode_leader_e_opens_explorer() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
@@ -771,6 +803,20 @@ mod tests {
     }
 
     #[test]
+    fn command_mode_ctrl_c_cancels() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::CommandCancel);
+    }
+
+    #[test]
     fn visual_escape_key_with_modifiers_returns_to_normal() {
         let mut state = InputState::new();
         let action = map_event_with_state(
@@ -779,6 +825,34 @@ mod tests {
             &Event::KeyWithModifiers(KeyWithModifiers {
                 key: KeyKind::Escape,
                 mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_ctrl_c_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_line_ctrl_c_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::VisualLine,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
             }),
         );
         assert_eq!(action, InputAction::SetMode(InputMode::Normal));

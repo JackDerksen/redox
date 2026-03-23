@@ -45,7 +45,20 @@ pub fn draw_popup_frame(
     let popup_h = inner_h.saturating_add(2);
     let x = (term_w.saturating_sub(popup_w)) / 2;
     let y = (term_h.saturating_sub(popup_h)) / 2;
+    draw_popup_frame_at(window, x, y, inner_w, inner_h, title, chrome)
+}
 
+pub fn draw_popup_frame_at(
+    window: &mut dyn Window,
+    x: u16,
+    y: u16,
+    inner_w: u16,
+    inner_h: u16,
+    title: &str,
+    chrome: PopupChrome,
+) -> minui::Result<PopupLayout> {
+    let popup_w = inner_w.saturating_add(2);
+    let popup_h = inner_h.saturating_add(2);
     let horizontal = "─".repeat(popup_w.saturating_sub(2) as usize);
     window.write_str_colored(y, x, &format!("╭{}╮", horizontal), chrome.border)?;
     if popup_h > 1 {

@@ -276,10 +276,7 @@ fn command_rain_captures_and_stop_clears_animation_state() {
     assert!(state.rain_is_active());
     assert!(state.rain_pending_start);
     assert!(state.rain_animation.is_none());
-    assert_eq!(
-        state.status_msg.as_deref(),
-        Some("making it rain: press q to reset")
-    );
+    assert_eq!(state.status_msg.as_deref(), Some("making it rain"));
 
     state.ensure_rain_animation(
         20,
@@ -307,6 +304,28 @@ fn command_ls_status_is_cleared_on_next_input() {
 
     run_command(&mut state, "ls");
     assert!(state.status_msg.is_some());
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+
+    assert!(state.status_msg.is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_status_is_cleared_on_next_input() {
+    let path = temp_file_path("write_status_clears");
+    let mut state = state_with_text(path.clone(), "alpha");
+
+    run_command(&mut state, "w");
+    assert_eq!(state.status_msg.as_deref(), Some("written"));
 
     state.apply_input(
         InputAction::Motion {
@@ -713,8 +732,8 @@ fn about_command_opens_ui_buffer() {
 
     run_command(&mut state, "about");
 
-    assert!(state.about_popup().is_some());
-    assert!(state.active_display_name().contains("[about]"));
+    let popup = state.about_popup().expect("about popup should be open");
+    assert_eq!(popup.title, "about");
 
     let _ = fs::remove_file(path);
 }
@@ -768,15 +787,15 @@ fn about_q_quits_from_empty_startup_buffer() {
 }
 
 #[test]
-fn about_normal_mode_q_key_closes_surface_buffer_only() {
-    let path = temp_file_path("about_q_key_close");
+fn about_escape_key_closes_surface_buffer_only() {
+    let path = temp_file_path("about_escape_key_close");
     let mut state = state_with_text(path.clone(), "alpha");
     let return_to = state.session.active_id();
 
     run_command(&mut state, "about");
     assert!(state.about_popup().is_some());
 
-    assert!(state.handle_normal_mode_q_on_surface());
+    assert!(state.handle_normal_mode_escape_on_surface());
 
     assert!(!state.should_quit);
     assert!(state.about_popup().is_none());
@@ -786,17 +805,35 @@ fn about_normal_mode_q_key_closes_surface_buffer_only() {
 }
 
 #[test]
-fn about_normal_mode_q_key_quits_from_empty_startup_buffer() {
+fn about_escape_key_quits_from_empty_startup_buffer() {
     let session = EditorSession::open_initial_unnamed().expect("failed to open session");
     let mut state = EditorState::new(session);
 
     run_command(&mut state, "about");
     assert!(state.about_popup().is_some());
 
-    assert!(state.handle_normal_mode_q_on_surface());
+    assert!(state.handle_normal_mode_escape_on_surface());
 
     assert!(state.should_quit);
     assert!(state.about_popup().is_none());
+}
+
+#[test]
+fn explorer_escape_key_closes_surface_buffer_only() {
+    let path = temp_file_path("explorer_escape_key_close");
+    let mut state = state_with_text(path.clone(), "alpha");
+    let return_to = state.session.active_id();
+
+    run_command(&mut state, "explorer");
+    assert!(state.explorer_popup().is_some());
+
+    assert!(state.handle_normal_mode_escape_on_surface());
+
+    assert!(!state.should_quit);
+    assert!(state.explorer_popup().is_none());
+    assert_eq!(state.session.active_id(), return_to);
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]
