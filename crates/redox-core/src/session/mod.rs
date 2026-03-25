@@ -109,6 +109,12 @@ pub struct EditorSession {
     launch_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePathSyncResult {
+    pub remapped_ids: Vec<BufferId>,
+    pub closed_ids: Vec<BufferId>,
+}
+
 impl Default for EditorSession {
     fn default() -> Self {
         Self {
@@ -145,29 +151,7 @@ impl EditorSession {
             launch_dir,
             ..Self::default()
         };
-        let id = session.alloc_id();
-        let buffer = TextBuffer::new();
-        let meta = BufferMeta {
-            id,
-            kind: BufferKind::File,
-            display_name: "[No Name]".to_string(),
-            path: None,
-            dirty: false,
-            is_new_file: true,
-        };
-
-        session.buffers.insert(
-            id,
-            BufferRecord {
-                meta,
-                buffer,
-                clean_fingerprint: hash_text(""),
-                clean_len_chars: 0,
-                loader: None,
-                load_status: BufferLoadStatus::not_loading(),
-            },
-        );
-        let _ = session.activate(id);
+        session.open_unnamed_buffer();
         Ok(session)
     }
 
@@ -284,6 +268,33 @@ impl EditorSession {
         );
         let _ = self.activate(id);
 
+        id
+    }
+
+    /// Open a new unnamed file buffer and activate it.
+    pub fn open_unnamed_buffer(&mut self) -> BufferId {
+        let id = self.alloc_id();
+        let meta = BufferMeta {
+            id,
+            kind: BufferKind::File,
+            display_name: "[No Name]".to_string(),
+            path: None,
+            dirty: false,
+            is_new_file: true,
+        };
+
+        self.buffers.insert(
+            id,
+            BufferRecord {
+                meta,
+                buffer: TextBuffer::new(),
+                clean_fingerprint: hash_text(""),
+                clean_len_chars: 0,
+                loader: None,
+                load_status: BufferLoadStatus::not_loading(),
+            },
+        );
+        let _ = self.activate(id);
         id
     }
 
@@ -553,6 +564,65 @@ impl EditorSession {
             .collect()
     }
 
+    /// Reconcile open file buffers after external filesystem renames or deletions.
+    pub fn sync_file_buffers_with_paths(
+        &mut self,
+        renames: &[(PathBuf, PathBuf)],
+        deletions: &[PathBuf],
+    ) -> FilePathSyncResult {
+        let renames: Vec<(PathBuf, PathBuf)> = renames
+            .iter()
+            .map(|(old_path, new_path)| {
+                (normalize_sync_path(old_path), normalize_sync_path(new_path))
+            })
+            .collect();
+        let deletions: Vec<PathBuf> = deletions
+            .iter()
+            .map(|path| normalize_sync_path(path))
+            .collect();
+
+        let mut remaps: Vec<(BufferId, PathBuf, PathBuf)> = Vec::new();
+        let mut closed_ids = Vec::new();
+
+        for (id, rec) in &self.buffers {
+            let Some(path) = rec.meta.path.as_ref() else {
+                continue;
+            };
+
+            let Some(next_path) = remap_synced_path(path, &renames, &deletions) else {
+                closed_ids.push(*id);
+                continue;
+            };
+
+            if next_path != *path {
+                remaps.push((*id, path.clone(), next_path));
+            }
+        }
+
+        let mut remapped_ids = Vec::with_capacity(remaps.len());
+        for (id, old_path, new_path) in remaps {
+            let display_name = self.display_path(&new_path);
+            self.path_index.remove(&old_path);
+            self.path_index.insert(new_path.clone(), id);
+
+            if let Some(rec) = self.buffers.get_mut(&id) {
+                rec.meta.path = Some(new_path.clone());
+                rec.meta.display_name = display_name;
+            }
+
+            remapped_ids.push(id);
+        }
+
+        for id in &closed_ids {
+            let _ = self.close_buffer(*id);
+        }
+
+        FilePathSyncResult {
+            remapped_ids,
+            closed_ids,
+        }
+    }
+
     /// Close a buffer by id, activating the next MRU buffer if needed.
     ///
     /// Returns `false` if the id does not exist or this is the last remaining buffer.
@@ -729,6 +799,80 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
     };
 
     Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn normalize_sync_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    let Some(parent) = absolute.parent() else {
+        return absolute;
+    };
+    let Some(name) = absolute.file_name() else {
+        return absolute;
+    };
+
+    let normalized_parent = normalize_sync_path(parent);
+    normalized_parent.join(name)
+}
+
+fn remap_synced_path(
+    path: &Path,
+    renames: &[(PathBuf, PathBuf)],
+    deletions: &[PathBuf],
+) -> Option<PathBuf> {
+    let mut best_rename: Option<(&PathBuf, &PathBuf)> = None;
+    for (old_path, new_path) in renames {
+        if !path_matches_or_is_descendant(path, old_path) {
+            continue;
+        }
+
+        let replace = match best_rename {
+            Some((best_old, _)) => old_path.components().count() > best_old.components().count(),
+            None => true,
+        };
+        if replace {
+            best_rename = Some((old_path, new_path));
+        }
+    }
+
+    let mut mapped = if let Some((old_path, new_path)) = best_rename {
+        replace_path_prefix(path, old_path, new_path)
+            .expect("matched rename path must support prefix replacement")
+    } else {
+        path.to_path_buf()
+    };
+
+    for deleted_path in deletions {
+        if path_matches_or_is_descendant(&mapped, deleted_path) {
+            return None;
+        }
+    }
+
+    mapped = std::fs::canonicalize(&mapped).unwrap_or(mapped);
+    Some(mapped)
+}
+
+fn path_matches_or_is_descendant(path: &Path, target: &Path) -> bool {
+    path == target || path.strip_prefix(target).is_ok()
+}
+
+fn replace_path_prefix(path: &Path, old_prefix: &Path, new_prefix: &Path) -> Option<PathBuf> {
+    let suffix = path.strip_prefix(old_prefix).ok()?;
+    let mut out = new_prefix.to_path_buf();
+    if !suffix.as_os_str().is_empty() {
+        out.push(suffix);
+    }
+    Some(out)
 }
 
 fn relative_path(path: &Path, base: &Path) -> Option<PathBuf> {
@@ -1135,5 +1279,66 @@ mod tests {
         assert_eq!(on_disk, text);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sync_file_buffers_with_paths_remaps_open_descendants_after_directory_rename() {
+        let root = std::env::temp_dir().join(format!(
+            "redox_session_sync_dir_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        let old_dir = root.join("old");
+        let new_dir = root.join("new");
+        fs::create_dir_all(&old_dir).expect("failed to create old directory");
+
+        let file_path = old_dir.join("nested.txt");
+        fs::write(&file_path, "hello").expect("failed to write nested fixture");
+
+        let mut session =
+            EditorSession::open_initial_file(&file_path).expect("open initial failed");
+        let file_id = session.active_id();
+
+        fs::rename(&old_dir, &new_dir).expect("failed to rename directory");
+        let result =
+            session.sync_file_buffers_with_paths(&[(old_dir.clone(), new_dir.clone())], &[]);
+
+        assert_eq!(result.remapped_ids, vec![file_id]);
+        assert!(result.closed_ids.is_empty());
+        let renamed_file = std::fs::canonicalize(new_dir.join("nested.txt"))
+            .expect("renamed nested file should exist");
+        assert_eq!(session.active_meta().path.as_ref(), Some(&renamed_file));
+        assert_eq!(
+            session
+                .open_file(&renamed_file)
+                .expect("reopen should reuse remapped buffer"),
+            file_id
+        );
+
+        let _ = fs::remove_file(new_dir.join("nested.txt"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_file_buffers_with_paths_closes_deleted_buffers() {
+        let path_a = temp_path("sync_delete_a");
+        let path_b = temp_path("sync_delete_b");
+        fs::write(&path_a, "a").expect("failed to write temp file");
+        fs::write(&path_b, "b").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path_a).expect("open initial failed");
+        let doomed_id = session.open_file(&path_b).expect("open second failed");
+
+        fs::remove_file(&path_b).expect("failed to remove doomed file");
+        let result = session.sync_file_buffers_with_paths(&[], std::slice::from_ref(&path_b));
+
+        assert!(result.remapped_ids.is_empty());
+        assert_eq!(result.closed_ids, vec![doomed_id]);
+        assert_eq!(session.summaries().len(), 1);
+        assert!(session.meta(doomed_id).is_none());
+
+        let _ = fs::remove_file(path_a);
     }
 }

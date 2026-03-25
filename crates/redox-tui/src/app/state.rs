@@ -158,6 +158,11 @@ impl EditorState {
         self.status_msg_clear_on_input = true;
     }
 
+    pub fn set_status_sticky(&mut self, msg: impl Into<String>) {
+        self.status_msg = Some(msg.into());
+        self.status_msg_clear_on_input = false;
+    }
+
     pub fn clear_status(&mut self) {
         self.status_msg = None;
         self.status_msg_clear_on_input = false;
