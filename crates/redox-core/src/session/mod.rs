@@ -755,8 +755,10 @@ impl EditorSession {
             None => {
                 rec.load_status.phase = BufferLoadPhase::Complete;
                 rec.load_status.error = None;
-                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-                rec.clean_len_chars = rec.buffer.len_chars();
+                if rec.meta.path.is_some() {
+                    rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+                    rec.clean_len_chars = rec.buffer.len_chars();
+                }
                 return Ok(0);
             }
         };
@@ -772,8 +774,10 @@ impl EditorSession {
         if chunk.eof || is_eof {
             rec.load_status.phase = BufferLoadPhase::Complete;
             rec.load_status.error = None;
-            rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-            rec.clean_len_chars = rec.buffer.len_chars();
+            if rec.meta.path.is_some() {
+                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
+                rec.clean_len_chars = rec.buffer.len_chars();
+            }
             rec.loader = None;
         } else {
             rec.load_status.phase = BufferLoadPhase::Loading;
@@ -825,6 +829,10 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
     if let Some(rec) = session.buffers.get_mut(&id) {
         rec.meta.path = None;
         rec.meta.display_name = orphaned_display_name(&rec.meta.display_name);
+        rec.meta.is_new_file = true;
+        rec.meta.dirty = true;
+        rec.clean_fingerprint = hash_text("");
+        rec.clean_len_chars = 0;
     }
 }
 
@@ -1426,7 +1434,40 @@ mod tests {
         assert_eq!(session.summaries().len(), 1);
         let meta = session.meta(doomed_id).expect("last buffer should remain");
         assert!(meta.path.is_none());
+        assert!(meta.dirty);
+        assert!(meta.is_new_file);
         assert!(meta.display_name.ends_with(" [orphaned]"));
         assert_eq!(session.active_buffer().to_string(), "hello");
+    }
+
+    #[test]
+    fn orphaned_loading_buffer_stays_unsaved_after_load_completes() {
+        let path = temp_path("sync_orphan_loading");
+        let text = large_text(9000);
+        fs::write(&path, &text).expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let doomed_id = session.active_id();
+        assert_eq!(
+            session.active_buffer_load_status().phase,
+            BufferLoadPhase::Loading
+        );
+
+        fs::remove_file(&path).expect("failed to remove doomed file");
+        let result = session.sync_file_buffers_with_paths(&[], std::slice::from_ref(&path));
+        assert!(result.closed_ids.is_empty());
+
+        session
+            .ensure_buffer_fully_loaded(doomed_id)
+            .expect("orphaned buffer should still finish loading");
+
+        let meta = session
+            .meta(doomed_id)
+            .expect("orphaned buffer should remain");
+        assert!(meta.path.is_none());
+        assert!(meta.dirty);
+        assert!(meta.is_new_file);
+        assert!(session.recompute_active_dirty());
+        assert_eq!(session.active_buffer().to_string(), text);
     }
 }
