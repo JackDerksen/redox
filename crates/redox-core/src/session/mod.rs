@@ -582,7 +582,7 @@ impl EditorSession {
             .collect();
 
         let mut remaps: Vec<(BufferId, PathBuf, PathBuf)> = Vec::new();
-        let mut closed_ids = Vec::new();
+        let mut deletion_candidates = Vec::new();
 
         for (id, rec) in &self.buffers {
             let Some(path) = rec.meta.path.as_ref() else {
@@ -590,7 +590,7 @@ impl EditorSession {
             };
 
             let Some(next_path) = remap_synced_path(path, &renames, &deletions) else {
-                closed_ids.push(*id);
+                deletion_candidates.push(*id);
                 continue;
             };
 
@@ -600,6 +600,7 @@ impl EditorSession {
         }
 
         let mut remapped_ids = Vec::with_capacity(remaps.len());
+        let mut closed_ids = Vec::new();
         for (id, old_path, new_path) in remaps {
             let display_name = self.display_path(&new_path);
             self.path_index.remove(&old_path);
@@ -613,8 +614,25 @@ impl EditorSession {
             remapped_ids.push(id);
         }
 
-        for id in &closed_ids {
-            let _ = self.close_buffer(*id);
+        for id in deletion_candidates {
+            let Some((old_path, was_dirty)) = self
+                .buffers
+                .get(&id)
+                .and_then(|rec| rec.meta.path.clone().map(|path| (path, rec.meta.dirty)))
+            else {
+                continue;
+            };
+
+            if was_dirty || self.buffers.len() <= 1 {
+                orphan_file_buffer(self, id, old_path);
+                continue;
+            }
+
+            if self.close_buffer(id) {
+                closed_ids.push(id);
+            } else {
+                orphan_file_buffer(self, id, old_path);
+            }
         }
 
         FilePathSyncResult {
@@ -799,6 +817,24 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
     };
 
     Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathBuf) {
+    session.path_index.remove(&old_path);
+
+    if let Some(rec) = session.buffers.get_mut(&id) {
+        rec.meta.path = None;
+        rec.meta.display_name = orphaned_display_name(&rec.meta.display_name);
+    }
+}
+
+fn orphaned_display_name(current_display_name: &str) -> String {
+    const ORPHANED_SUFFIX: &str = " [orphaned]";
+    if current_display_name.ends_with(ORPHANED_SUFFIX) {
+        current_display_name.to_string()
+    } else {
+        format!("{current_display_name}{ORPHANED_SUFFIX}")
+    }
 }
 
 fn normalize_sync_path(path: &Path) -> PathBuf {
@@ -1340,5 +1376,57 @@ mod tests {
         assert!(session.meta(doomed_id).is_none());
 
         let _ = fs::remove_file(path_a);
+    }
+
+    #[test]
+    fn sync_file_buffers_with_paths_orphans_dirty_deleted_buffer() {
+        let path_a = temp_path("sync_orphan_dirty_a");
+        let path_b = temp_path("sync_orphan_dirty_b");
+        fs::write(&path_a, "a").expect("failed to write temp file");
+        fs::write(&path_b, "b").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path_a).expect("open initial failed");
+        let dirty_id = session.open_file(&path_b).expect("open second failed");
+        let cursor = session.active_buffer().clamp_pos(crate::Pos::new(0, 1));
+        let _ = session.active_buffer_mut().insert(cursor, "!");
+        assert!(session.recompute_active_dirty());
+
+        fs::remove_file(&path_b).expect("failed to remove doomed file");
+        let result = session.sync_file_buffers_with_paths(&[], std::slice::from_ref(&path_b));
+
+        assert!(result.remapped_ids.is_empty());
+        assert!(result.closed_ids.is_empty());
+        let meta = session.meta(dirty_id).expect("dirty buffer should remain");
+        assert!(meta.dirty);
+        assert!(meta.path.is_none());
+        assert!(meta.display_name.ends_with(" [orphaned]"));
+        assert_eq!(session.active_buffer().to_string(), "b!");
+
+        let reopened_id = session
+            .open_file(&path_b)
+            .expect("reopen should create new buffer");
+        assert_ne!(reopened_id, dirty_id);
+
+        let _ = fs::remove_file(path_a);
+    }
+
+    #[test]
+    fn sync_file_buffers_with_paths_orphans_last_remaining_deleted_buffer() {
+        let path = temp_path("sync_orphan_last");
+        fs::write(&path, "hello").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let doomed_id = session.active_id();
+
+        fs::remove_file(&path).expect("failed to remove doomed file");
+        let result = session.sync_file_buffers_with_paths(&[], std::slice::from_ref(&path));
+
+        assert!(result.remapped_ids.is_empty());
+        assert!(result.closed_ids.is_empty());
+        assert_eq!(session.summaries().len(), 1);
+        let meta = session.meta(doomed_id).expect("last buffer should remain");
+        assert!(meta.path.is_none());
+        assert!(meta.display_name.ends_with(" [orphaned]"));
+        assert_eq!(session.active_buffer().to_string(), "hello");
     }
 }
