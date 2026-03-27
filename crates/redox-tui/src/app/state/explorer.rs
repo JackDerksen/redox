@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use redox_core::{BufferId, Pos, TextBuffer};
+use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 
 use super::{EditorMode, EditorState};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
@@ -27,6 +26,12 @@ pub(super) struct ExplorerState {
     pub(super) dir_path: PathBuf,
     pub(super) original_entries: Vec<ExplorerEntry>,
     pub(super) return_to_buffer_id: BufferId,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AppliedExplorerChanges {
+    renamed_paths: Vec<(PathBuf, PathBuf)>,
+    deleted_paths: Vec<PathBuf>,
 }
 
 impl EditorState {
@@ -341,7 +346,7 @@ impl EditorState {
                 } else {
                     "entries"
                 };
-                self.set_status(format!(
+                self.set_status_sticky(format!(
                     "confirm deletion of {delete_count} {noun}: press y"
                 ));
                 return false;
@@ -357,15 +362,19 @@ impl EditorState {
             }
         }
 
-        if let Err(e) = apply_explorer_changes(
+        let applied_changes = match apply_explorer_changes(
             &explorer.dir_path,
             &explorer.original_entries,
             &desired_entries,
         ) {
-            self.explorer_delete_confirmation_token = None;
-            self.set_status(format!("explorer write failed: {e}"));
-            return false;
-        }
+            Ok(changes) => changes,
+            Err(e) => {
+                self.explorer_delete_confirmation_token = None;
+                self.set_status(format!("explorer write failed: {e}"));
+                return false;
+            }
+        };
+        self.sync_session_after_explorer_write(&applied_changes);
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,
@@ -404,11 +413,55 @@ impl EditorState {
         }
 
         explorer.original_entries = refreshed_entries;
+        if let Some(updated_explorer) = self.explorer.as_ref() {
+            explorer.return_to_buffer_id = updated_explorer.return_to_buffer_id;
+        }
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
         self.set_status("written");
         true
+    }
+
+    fn sync_session_after_explorer_write(&mut self, changes: &AppliedExplorerChanges) {
+        let Some(explorer_id) = self.explorer.as_ref().map(|explorer| explorer.buffer_id) else {
+            return;
+        };
+
+        let result = self
+            .session
+            .sync_file_buffers_with_paths(&changes.renamed_paths, &changes.deleted_paths);
+        for id in result.closed_ids {
+            self.views.remove(&id);
+        }
+
+        let Some(return_to_buffer_id) = self
+            .explorer
+            .as_ref()
+            .map(|explorer| explorer.return_to_buffer_id)
+        else {
+            return;
+        };
+        if self.session.buffer(return_to_buffer_id).is_some() {
+            return;
+        }
+
+        let replacement_id = self
+            .session
+            .summaries()
+            .into_iter()
+            .find(|summary| summary.kind == BufferKind::File && summary.id != explorer_id)
+            .map(|summary| summary.id)
+            .unwrap_or_else(|| {
+                let id = self.session.open_unnamed_buffer();
+                let _ = self.views.entry(id).or_default();
+                id
+            });
+
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.return_to_buffer_id = replacement_id;
+        }
+        let _ = self.session.activate(explorer_id);
     }
 }
 
@@ -518,7 +571,7 @@ fn apply_explorer_changes(
     dir_path: &Path,
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AppliedExplorerChanges> {
     if let Some(old_first) = old_entries.first()
         && old_first.is_parent
     {
@@ -664,15 +717,7 @@ fn apply_explorer_changes(
     for old in &deletions {
         let path = dir_path.join(&old.name);
         if old.is_dir {
-            if let Err(e) = fs::remove_dir(&path) {
-                if e.kind() == ErrorKind::DirectoryNotEmpty {
-                    anyhow::bail!(
-                        "cannot remove directory '{}': directory is not empty",
-                        old.name
-                    );
-                }
-                return Err(e.into());
-            }
+            fs::remove_dir_all(&path)?;
         } else {
             fs::remove_file(&path)?;
         }
@@ -687,7 +732,16 @@ fn apply_explorer_changes(
         }
     }
 
-    Ok(())
+    Ok(AppliedExplorerChanges {
+        renamed_paths: renames
+            .iter()
+            .map(|rename| (rename.old_path.clone(), rename.new_path.clone()))
+            .collect(),
+        deleted_paths: deletions
+            .iter()
+            .map(|entry| dir_path.join(&entry.name))
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -712,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_non_empty_directory_returns_clear_error() {
+    fn deleting_non_empty_directory_recursively_removes_children() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock went backwards")
@@ -730,11 +784,10 @@ mod tests {
         }];
         let new_entries = Vec::new();
 
-        let err = apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect_err("expected non-empty directory delete to fail");
-        let msg = err.to_string();
-        assert!(msg.contains("directory is not empty"));
-        assert!(msg.contains("doomed"));
+        let changes = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected non-empty directory delete to succeed");
+        assert_eq!(changes.deleted_paths, vec![root.join("doomed")]);
+        assert!(!doomed.exists());
 
         let _ = fs::remove_dir_all(root);
     }

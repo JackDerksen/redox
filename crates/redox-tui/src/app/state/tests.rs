@@ -525,9 +525,66 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .as_deref()
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(!state.status_msg_clear_on_input);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|msg| msg.contains("confirm deletion of 1 entry"))
+    );
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
+    assert_eq!(state.status_msg.as_deref(), Some("written"));
+
+    let _ = fs::remove_file(file_keep);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_confirm_delete_dir_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_keep = dir.join("a_keep.txt");
+    let doomed_dir = dir.join("nested");
+    fs::write(&file_keep, "keep").expect("failed to write fixture");
+    fs::create_dir(&doomed_dir).expect("failed to create nested fixture");
+    fs::write(doomed_dir.join("child.txt"), "child").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_keep).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\na_keep.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    assert!(doomed_dir.exists());
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 1 entry"));
+
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+    assert!(!doomed_dir.exists());
     assert_eq!(state.status_msg.as_deref(), Some("written"));
 
     let _ = fs::remove_file(file_keep);
@@ -634,6 +691,137 @@ fn explorer_write_clamps_cursor_to_bottom_when_lines_are_removed() {
 
     let _ = fs::remove_file(dir.join("a.txt"));
     let _ = fs::remove_file(file_open);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_rename_updates_hidden_buffer_path_for_bprev() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_hidden_rename_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let current = dir.join("current.txt");
+    let victim = dir.join("victim.txt");
+    let renamed = dir.join("renamed.txt");
+    fs::write(&current, "current").expect("failed to write current fixture");
+    fs::write(&victim, "victim").expect("failed to write victim fixture");
+
+    let session = EditorSession::open_initial_file(&current).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    let current_id = state.session.active_id();
+
+    run_command(&mut state, &format!("e {}", victim.display()));
+    let victim_id = state.session.active_id();
+    run_command(&mut state, "bp");
+    assert_eq!(state.session.active_id(), current_id);
+
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\ncurrent.txt\nrenamed.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    run_command(&mut state, "q");
+
+    run_command(&mut state, "bp");
+    assert_eq!(state.session.active_id(), victim_id);
+    let renamed = std::fs::canonicalize(&renamed).expect("renamed file should exist");
+    assert_eq!(state.session.active_meta().path.as_ref(), Some(&renamed));
+    assert_eq!(state.session.summaries().len(), 2);
+
+    run_command(&mut state, &format!("e {}", renamed.display()));
+    assert_eq!(state.session.active_id(), victim_id);
+    assert_eq!(state.session.summaries().len(), 2);
+
+    let _ = fs::remove_file(current);
+    let _ = fs::remove_file(renamed);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_delete_removes_hidden_buffer_from_mru() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_hidden_delete_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let current = dir.join("current.txt");
+    let doomed = dir.join("doomed.txt");
+    fs::write(&current, "current").expect("failed to write current fixture");
+    fs::write(&doomed, "doomed").expect("failed to write doomed fixture");
+
+    let session = EditorSession::open_initial_file(&current).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    let current_id = state.session.active_id();
+
+    run_command(&mut state, &format!("e {}", doomed.display()));
+    let doomed_id = state.session.active_id();
+    run_command(&mut state, "bp");
+    assert_eq!(state.session.active_id(), current_id);
+
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\ncurrent.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+    run_command(&mut state, "q");
+
+    assert_eq!(state.session.summaries().len(), 1);
+    assert!(state.session.meta(doomed_id).is_none());
+
+    run_command(&mut state, "bp");
+    assert_eq!(state.session.active_id(), current_id);
+    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+
+    let _ = fs::remove_file(current);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_delete_of_return_target_creates_placeholder_buffer() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_delete_return_target_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let doomed = dir.join("doomed.txt");
+    fs::write(&doomed, "doomed").expect("failed to write doomed fixture");
+
+    let session = EditorSession::open_initial_file(&doomed).expect("failed to open session");
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    assert!(state.explorer_popup().is_some());
+    assert!(state.explorer_background_is_placeholder_blank());
+
+    run_command(&mut state, "q");
+    assert!(state.should_quit);
+
     let _ = fs::remove_dir(dir);
 }
 

@@ -27,8 +27,8 @@ use ui::syntax::{draw_line_with_syntax, syntax_color_for_range};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view,
-    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached,
+    draw_explorer_popup_view, explorer_popup_inner_size, language_for_path,
+    snapshot_lines_wrapped_cached,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;

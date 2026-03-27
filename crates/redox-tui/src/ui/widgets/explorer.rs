@@ -75,7 +75,12 @@ pub fn draw_explorer_popup_view(
     let visual_selection = state.active_visual_selection();
     let (snapshot, spec, line_styles, cursor_line, total_lines, scroll_x) = state
         .with_active_buffer_view_mut(|buffer, explorer_view| {
-            reconcile_explorer_cursor_for_popup(&mut explorer_view.cursor, buffer, inner_w, inner_h);
+            reconcile_explorer_cursor_for_popup(
+                &mut explorer_view.cursor,
+                buffer,
+                inner_w,
+                inner_h,
+            );
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines);
             let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
@@ -254,9 +259,8 @@ mod tests {
 
     #[test]
     fn popup_reconcile_keeps_selected_entry_visible() {
-        let buffer = TextBuffer::from_str(
-            "../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt",
-        );
+        let buffer =
+            TextBuffer::from_str("../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt");
         let mut cursor = CursorController::default();
         cursor.cursor = Pos::new(11, 0);
 
