@@ -1470,4 +1470,55 @@ mod tests {
         assert!(session.recompute_active_dirty());
         assert_eq!(session.active_buffer().to_string(), text);
     }
+
+    #[test]
+    fn sync_file_buffers_with_paths_deletes_directory_descendants() {
+        let root = std::env::temp_dir().join(format!(
+            "redox_session_sync_delete_dir_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        let doomed_dir = root.join("doomed");
+        fs::create_dir_all(&doomed_dir).expect("failed to create doomed directory");
+
+        let clean_path = doomed_dir.join("clean.txt");
+        let dirty_path = doomed_dir.join("dirty.txt");
+        fs::write(&clean_path, "clean").expect("failed to write clean fixture");
+        fs::write(&dirty_path, "dirty").expect("failed to write dirty fixture");
+
+        let mut session =
+            EditorSession::open_initial_file(&clean_path).expect("open initial failed");
+        let clean_id = session.active_id();
+        let dirty_id = session
+            .open_file(&dirty_path)
+            .expect("open dirty file failed");
+
+        let cursor = session.active_buffer().clamp_pos(crate::Pos::new(0, 5));
+        let _ = session.active_buffer_mut().insert(cursor, "!");
+        assert!(session.recompute_active_dirty());
+
+        fs::remove_dir_all(&doomed_dir).expect("failed to remove doomed directory");
+        let result = session.sync_file_buffers_with_paths(&[], std::slice::from_ref(&doomed_dir));
+
+        assert!(result.remapped_ids.is_empty());
+        assert_eq!(result.closed_ids, vec![clean_id]);
+        assert!(session.meta(clean_id).is_none());
+
+        let dirty_meta = session
+            .meta(dirty_id)
+            .expect("dirty descendant should remain");
+        assert!(dirty_meta.path.is_none());
+        assert!(dirty_meta.display_name.ends_with(" [orphaned]"));
+        assert!(dirty_meta.dirty);
+        assert!(dirty_meta.is_new_file);
+        assert_eq!(session.active_buffer().to_string(), "dirty!");
+
+        let summaries = session.summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, dirty_id);
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
