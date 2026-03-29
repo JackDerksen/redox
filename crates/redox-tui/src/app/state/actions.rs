@@ -370,6 +370,8 @@ impl EditorState {
                 }
             }
 
+            InputAction::PasteSystemClipboard => {}
+
             InputAction::DeleteCharNoYank => {
                 if self.mode == EditorMode::Normal {
                     self.delete_char_under_cursor_without_yank(viewport_width_cells, text_vh);

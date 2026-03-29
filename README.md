@@ -128,10 +128,11 @@ redox src
 | `ctrl+v` | Visual block mode |
 | `x` | Delete character under cursor |
 | (visual mode) `x` | Delete selection without copying to register |
-| `y` | Yank selection to private register |
-| `<space>y` | Yank selection to system clipboard |
+| (visual mode) `y` | Yank selection to private register |
+| (visual mode) `<space>y` | Yank selection to system clipboard |
 | `p` | Paste from private register |
-| `P` | Paste above cursor |
+| `P` | Paste before cursor / above line |
+| `<space>p` | Paste from system clipboard |
 | (visual mode) `J` | Move selection up |
 | (visual mode) `K` | Move selection down |
 | (visual mode) `tab` | Indent selection |

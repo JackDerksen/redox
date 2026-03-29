@@ -889,7 +889,16 @@ fn handle_editor_event(
     };
 
     let (w, h) = state.viewport_size();
-    state.apply_input(action, w, h);
+    match action {
+        InputAction::PasteSystemClipboard => match clipboard.as_mut() {
+            Some(system_clipboard) => match system_clipboard.paste() {
+                Ok(text) => state.apply_input(InputAction::Paste(text), w, h),
+                Err(e) => state.set_status(format!("clipboard paste failed: {e}")),
+            },
+            None => state.set_status("system clipboard unavailable"),
+        },
+        action => state.apply_input(action, w, h),
+    }
     if let Some(text) = state.take_pending_system_clipboard() {
         match clipboard.as_mut() {
             Some(system_clipboard) => {

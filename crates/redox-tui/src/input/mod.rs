@@ -95,6 +95,8 @@ pub enum InputAction {
     },
     /// Yank active visual selection into system clipboard.
     YankSelectionSystem,
+    /// Paste from system clipboard.
+    PasteSystemClipboard,
     /// Paste from Redox's private register.
     PastePrivateRegister,
     /// Paste from Redox's private register before cursor / above line.
@@ -223,6 +225,7 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
                 InputAction::YankSelectionSystem
             }
+            'p' if mode == InputMode::Normal => InputAction::PasteSystemClipboard,
             _ => InputAction::None,
         };
     }
@@ -1002,6 +1005,14 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
         assert_eq!(action, InputAction::YankSelectionSystem);
+    }
+
+    #[test]
+    fn normal_mode_leader_p_pastes_from_system_clipboard() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
+        assert_eq!(action, InputAction::PasteSystemClipboard);
     }
 
     #[test]
