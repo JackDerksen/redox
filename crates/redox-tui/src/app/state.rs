@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer};
+use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
@@ -52,6 +52,7 @@ pub enum EditorMode {
     Command,
     Visual,
     VisualLine,
+    VisualBlock,
 }
 
 impl EditorMode {
@@ -62,6 +63,7 @@ impl EditorMode {
             EditorMode::Command => InputMode::Command,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
+            EditorMode::VisualBlock => InputMode::VisualBlock,
         }
     }
 }
@@ -238,8 +240,11 @@ impl EditorState {
             .unwrap_or(Pos::zero())
     }
 
-    pub fn active_visual_selection(&self) -> Option<(Selection, bool)> {
-        let is_visual = matches!(self.mode, EditorMode::Visual | EditorMode::VisualLine);
+    pub fn active_visual_selection(&self) -> Option<(Selection, VisualModeKind)> {
+        let is_visual = matches!(
+            self.mode,
+            EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+        );
         if !is_visual {
             return None;
         }
@@ -247,8 +252,13 @@ impl EditorState {
         let id = self.session.active_id();
         let view = self.views.get(&id)?;
         let anchor = view.visual_anchor?;
-        let line_mode = self.mode == EditorMode::VisualLine;
-        Some((Selection::new(anchor, view.cursor.cursor), line_mode))
+        let mode = match self.mode {
+            EditorMode::Visual => VisualModeKind::Char,
+            EditorMode::VisualLine => VisualModeKind::Line,
+            EditorMode::VisualBlock => VisualModeKind::Block,
+            EditorMode::Normal | EditorMode::Insert | EditorMode::Command => return None,
+        };
+        Some((Selection::new(anchor, view.cursor.cursor), mode))
     }
 
     pub fn with_active_buffer_view_mut<R>(

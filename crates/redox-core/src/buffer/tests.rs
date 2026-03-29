@@ -273,16 +273,22 @@ fn visual_selection_helpers_dispatch_by_visual_mode() {
     let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 0));
 
     assert_eq!(
-        b.visual_selection_pos_range(sel, false),
-        (Pos::new(0, 1), Pos::new(1, 1))
+        b.visual_selection_pos_ranges(sel, VisualModeKind::Char),
+        vec![(Pos::new(0, 1), Pos::new(1, 1))]
     );
-    assert_eq!(b.visual_selection_text(sel, false), "bcd\ne");
+    assert_eq!(b.visual_selection_text(sel, VisualModeKind::Char), "bcd\ne");
 
     assert_eq!(
-        b.visual_selection_pos_range(sel, true),
-        (Pos::new(0, 0), Pos::new(2, 0))
+        b.visual_selection_pos_ranges(sel, VisualModeKind::Line),
+        vec![(Pos::new(0, 0), Pos::new(2, 0))]
     );
-    assert_eq!(b.visual_selection_text(sel, true), "abcd\nef\n");
+    assert_eq!(b.visual_selection_text(sel, VisualModeKind::Line), "abcd\nef\n");
+
+    assert_eq!(
+        b.visual_selection_pos_ranges(sel, VisualModeKind::Block),
+        vec![(Pos::new(0, 0), Pos::new(0, 2)), (Pos::new(1, 0), Pos::new(2, 0))]
+    );
+    assert_eq!(b.visual_selection_text(sel, VisualModeKind::Block), "ab\nef");
 }
 
 #[test]
@@ -290,17 +296,23 @@ fn visual_selection_edit_plan_bundles_delete_bounds_and_text() {
     let b = TextBuffer::from_str("abcd\nef\n");
     let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 0));
 
-    let charwise = b.visual_selection_edit_plan(sel, false);
-    assert_eq!(charwise.delete_start, Pos::new(0, 1));
-    assert_eq!(charwise.delete_end, Pos::new(1, 1));
+    let charwise = b.visual_selection_edit_plan(sel, VisualModeKind::Char);
+    assert_eq!(charwise.delete_ranges, vec![(Pos::new(0, 1), Pos::new(1, 1))]);
     assert_eq!(charwise.text, "bcd\ne");
-    assert!(!charwise.line_mode);
+    assert_eq!(charwise.mode, VisualModeKind::Char);
 
-    let linewise = b.visual_selection_edit_plan(sel, true);
-    assert_eq!(linewise.delete_start, Pos::new(0, 0));
-    assert_eq!(linewise.delete_end, Pos::new(2, 0));
+    let linewise = b.visual_selection_edit_plan(sel, VisualModeKind::Line);
+    assert_eq!(linewise.delete_ranges, vec![(Pos::new(0, 0), Pos::new(2, 0))]);
     assert_eq!(linewise.text, "abcd\nef\n");
-    assert!(linewise.line_mode);
+    assert_eq!(linewise.mode, VisualModeKind::Line);
+
+    let blockwise = b.visual_selection_edit_plan(sel, VisualModeKind::Block);
+    assert_eq!(
+        blockwise.delete_ranges,
+        vec![(Pos::new(0, 0), Pos::new(0, 2)), (Pos::new(1, 0), Pos::new(2, 0))]
+    );
+    assert_eq!(blockwise.text, "ab\nef");
+    assert_eq!(blockwise.mode, VisualModeKind::Block);
 }
 
 #[test]
@@ -309,22 +321,34 @@ fn visual_selection_char_range_on_line_matches_visual_semantics() {
     let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 2));
 
     assert_eq!(
-        b.visual_selection_char_range_on_line(sel, false, 0),
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Char, 0),
         Some(1..4)
     );
     assert_eq!(
-        b.visual_selection_char_range_on_line(sel, false, 1),
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Char, 1),
         Some(0..3)
     );
-    assert_eq!(b.visual_selection_char_range_on_line(sel, false, 2), None);
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Char, 2),
+        None
+    );
 
     assert_eq!(
-        b.visual_selection_char_range_on_line(sel, true, 0),
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Line, 0),
         Some(0..4)
     );
     assert_eq!(
-        b.visual_selection_char_range_on_line(sel, true, 1),
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Line, 1),
         Some(0..4)
+    );
+
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Block, 0),
+        Some(1..3)
+    );
+    assert_eq!(
+        b.visual_selection_char_range_on_line(sel, VisualModeKind::Block, 1),
+        Some(1..3)
     );
 }
 

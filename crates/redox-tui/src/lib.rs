@@ -593,7 +593,7 @@ fn draw_snapshot_lines(
     syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
-    visual_selection: Option<(redox_core::Selection, bool)>,
+    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for (row, line) in snapshot.lines.iter().enumerate() {
@@ -607,19 +607,19 @@ fn draw_snapshot_lines(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let selected_line_bg = visual_selection
-            .filter(|(selection, line_mode)| {
+            .filter(|(selection, mode)| {
                 buffer
-                    .visual_selection_char_range_on_line(*selection, *line_mode, line_idx)
+                    .visual_selection_char_range_on_line(*selection, *mode, line_idx)
                     .is_some()
                     || (buffer.line_len_chars(line_idx) == 0
-                        && selected_empty_line(*selection, line_idx))
+                        && selected_empty_line(*selection, *mode, line_idx))
             })
             .map(|_| style.theme.selection_bg);
-        if let Some((selection, line_mode)) = visual_selection {
+        if let Some((selection, mode)) = visual_selection {
             let highlight_empty_line =
-                buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, line_idx);
+                buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, mode, line_idx);
             if let Some(sel_range) =
-                buffer.visual_selection_char_range_on_line(selection, line_mode, line_idx)
+                buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
                 let source_line = buffer.line_string(line_idx);
                 draw_line_with_selection(
@@ -752,9 +752,16 @@ fn draw_snapshot_lines(
     Ok(())
 }
 
-fn selected_empty_line(selection: redox_core::Selection, line_idx: usize) -> bool {
-    let (start, end) = selection.ordered();
-    line_idx >= start.line && line_idx <= end.line
+fn selected_empty_line(
+    selection: redox_core::Selection,
+    mode: redox_core::VisualModeKind,
+    line_idx: usize,
+) -> bool {
+    matches!(mode, redox_core::VisualModeKind::Line)
+        && {
+            let (start, end) = selection.ordered();
+            line_idx >= start.line && line_idx <= end.line
+        }
 }
 
 fn draw_plain_line(

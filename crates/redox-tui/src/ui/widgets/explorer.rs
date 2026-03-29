@@ -129,11 +129,11 @@ pub fn draw_explorer_popup_view(
     for (row, line) in snapshot.lines.iter().enumerate() {
         let color = line_styles.get(row).copied().unwrap_or(style.explorer.file);
         let line_idx = snapshot.first_line + row;
-        if let Some((selection, line_mode)) = visual_selection {
+        if let Some((selection, mode)) = visual_selection {
             if let Some(sel_range) = state
                 .session
                 .active_buffer()
-                .visual_selection_char_range_on_line(selection, line_mode, line_idx)
+                .visual_selection_char_range_on_line(selection, mode, line_idx)
             {
                 let source_line = state.session.active_buffer().line_string(line_idx);
                 draw_line_with_selection(

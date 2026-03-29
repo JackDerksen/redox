@@ -4,16 +4,22 @@
 
 use crate::buffer::{Pos, Selection, TextBuffer};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualModeKind {
+    Char,
+    Line,
+    Block,
+}
+
 /// A precomputed plan for visual selection operations.
 ///
 /// This bundles mode-aware text capture and deletion bounds so callers can
 /// perform yank/delete flows without duplicating selection maths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisualSelectionEditPlan {
-    pub delete_start: Pos,
-    pub delete_end: Pos,
+    pub delete_ranges: Vec<(Pos, Pos)>,
     pub text: String,
-    pub line_mode: bool,
+    pub mode: VisualModeKind,
 }
 
 impl TextBuffer {
@@ -93,21 +99,83 @@ impl TextBuffer {
         self.line_span_text_linewise_register(start.line, end.line)
     }
 
+    /// Return visual block selection text/deletion slices without line collapsing.
+    pub fn visual_blockwise_pos_ranges(&self, selection: Selection) -> Vec<(Pos, Pos)> {
+        let (start, end) = selection.ordered();
+        let left = start.col.min(end.col);
+        let right_exclusive = start.col.max(end.col).saturating_add(1);
+        let mut ranges = Vec::new();
+
+        for line_idx in start.line..=end.line {
+            let line_len = self.line_len_chars(line_idx);
+            let range_start = left.min(line_len);
+            let range_end = right_exclusive.min(line_len);
+            if range_start < range_end {
+                ranges.push((Pos::new(line_idx, range_start), Pos::new(line_idx, range_end)));
+            }
+        }
+
+        ranges
+    }
+
+    /// Return deletion ranges for visual block mode.
+    ///
+    /// When the block fully covers a line's content, delete the whole logical
+    /// line so trailing text is pulled upward instead of leaving empty rows.
+    pub fn visual_blockwise_delete_ranges(&self, selection: Selection) -> Vec<(Pos, Pos)> {
+        let (start, end) = selection.ordered();
+        let left = start.col.min(end.col);
+        let right_exclusive = start.col.max(end.col).saturating_add(1);
+        let mut ranges = Vec::new();
+
+        for line_idx in start.line..=end.line {
+            let line_len = self.line_len_chars(line_idx);
+            if left == 0 && right_exclusive >= line_len {
+                let full_line = self.line_span_pos_range(line_idx, line_idx);
+                if full_line.0 != full_line.1 {
+                    ranges.push(full_line);
+                }
+                continue;
+            }
+
+            let range_start = left.min(line_len);
+            let range_end = right_exclusive.min(line_len);
+            if range_start < range_end {
+                ranges.push((Pos::new(line_idx, range_start), Pos::new(line_idx, range_end)));
+            }
+        }
+
+        ranges
+    }
+
+    /// Return visual selection text for the current visual mode.
+    pub fn visual_blockwise_text(&self, selection: Selection) -> String {
+        self.visual_blockwise_pos_ranges(selection)
+            .into_iter()
+            .map(|(start, end)| self.slice_pos_range(start, end))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Return visual selection deletion bounds for the current visual mode.
-    pub fn visual_selection_pos_range(&self, selection: Selection, line_mode: bool) -> (Pos, Pos) {
-        if line_mode {
-            self.visual_linewise_pos_range(selection)
-        } else {
-            self.visual_charwise_pos_range(selection)
+    pub fn visual_selection_pos_ranges(
+        &self,
+        selection: Selection,
+        mode: VisualModeKind,
+    ) -> Vec<(Pos, Pos)> {
+        match mode {
+            VisualModeKind::Char => vec![self.visual_charwise_pos_range(selection)],
+            VisualModeKind::Line => vec![self.visual_linewise_pos_range(selection)],
+            VisualModeKind::Block => self.visual_blockwise_delete_ranges(selection),
         }
     }
 
     /// Return visual selection text for the current visual mode.
-    pub fn visual_selection_text(&self, selection: Selection, line_mode: bool) -> String {
-        if line_mode {
-            self.visual_linewise_text(selection)
-        } else {
-            self.visual_charwise_text(selection)
+    pub fn visual_selection_text(&self, selection: Selection, mode: VisualModeKind) -> String {
+        match mode {
+            VisualModeKind::Char => self.visual_charwise_text(selection),
+            VisualModeKind::Line => self.visual_linewise_text(selection),
+            VisualModeKind::Block => self.visual_blockwise_text(selection),
         }
     }
 
@@ -115,15 +183,14 @@ impl TextBuffer {
     pub fn visual_selection_edit_plan(
         &self,
         selection: Selection,
-        line_mode: bool,
+        mode: VisualModeKind,
     ) -> VisualSelectionEditPlan {
-        let (delete_start, delete_end) = self.visual_selection_pos_range(selection, line_mode);
-        let text = self.visual_selection_text(selection, line_mode);
+        let delete_ranges = self.visual_selection_pos_ranges(selection, mode);
+        let text = self.visual_selection_text(selection, mode);
         VisualSelectionEditPlan {
-            delete_start,
-            delete_end,
+            delete_ranges,
             text,
-            line_mode,
+            mode,
         }
     }
 
@@ -134,41 +201,57 @@ impl TextBuffer {
     pub fn visual_selection_char_range_on_line(
         &self,
         selection: Selection,
-        line_mode: bool,
+        mode: VisualModeKind,
         line_idx: usize,
     ) -> Option<std::ops::Range<usize>> {
         let line_len = self.line_len_chars(line_idx);
-        if line_mode {
-            let (start_line, end_line) = selection.line_range();
-            if line_idx < start_line || line_idx > end_line {
-                return None;
+        match mode {
+            VisualModeKind::Line => {
+                let (start_line, end_line) = selection.line_range();
+                if line_idx < start_line || line_idx > end_line {
+                    return None;
+                }
+                Some(0..line_len)
             }
-            return Some(0..line_len);
-        }
+            VisualModeKind::Block => {
+                let (start, end) = selection.ordered();
+                if line_idx < start.line || line_idx > end.line {
+                    return None;
+                }
+                let left = start.col.min(end.col).min(line_len);
+                let right = start.col.max(end.col).saturating_add(1).min(line_len);
+                if left < right {
+                    Some(left..right)
+                } else {
+                    None
+                }
+            }
+            VisualModeKind::Char => {
+                let (start, end) = selection.ordered();
+                if line_idx < start.line || line_idx > end.line {
+                    return None;
+                }
+                if line_len == 0 {
+                    return None;
+                }
 
-        let (start, end) = selection.ordered();
-        if line_idx < start.line || line_idx > end.line {
-            return None;
-        }
-        if line_len == 0 {
-            return None;
-        }
+                let max_char = line_len.saturating_sub(1);
+                let sel_start = if line_idx == start.line {
+                    start.col.min(max_char)
+                } else {
+                    0
+                };
+                let sel_end_inclusive = if line_idx == end.line {
+                    end.col.min(max_char)
+                } else {
+                    max_char
+                };
+                if sel_start > sel_end_inclusive {
+                    return None;
+                }
 
-        let max_char = line_len.saturating_sub(1);
-        let sel_start = if line_idx == start.line {
-            start.col.min(max_char)
-        } else {
-            0
-        };
-        let sel_end_inclusive = if line_idx == end.line {
-            end.col.min(max_char)
-        } else {
-            max_char
-        };
-        if sel_start > sel_end_inclusive {
-            return None;
+                Some(sel_start..sel_end_inclusive.saturating_add(1))
+            }
         }
-
-        Some(sel_start..sel_end_inclusive.saturating_add(1))
     }
 }

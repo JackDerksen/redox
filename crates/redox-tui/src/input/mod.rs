@@ -16,6 +16,7 @@ pub enum InputMode {
     Command,
     Visual,
     VisualLine,
+    VisualBlock,
 }
 
 /// How to enter insert mode.
@@ -176,21 +177,27 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Escape => match mode {
             InputMode::Insert => InputAction::SetMode(InputMode::Normal),
             InputMode::Command => InputAction::CommandCancel,
-            InputMode::Visual | InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                InputAction::SetMode(InputMode::Normal)
+            }
             InputMode::Normal => InputAction::None,
         },
 
         Event::Backspace => match mode {
             InputMode::Insert => InputAction::Backspace,
             InputMode::Command => InputAction::CommandBackspace,
-            InputMode::Visual | InputMode::VisualLine => InputAction::None,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                InputAction::None
+            }
             InputMode::Normal => InputAction::None,
         },
 
         Event::Enter => match mode {
             InputMode::Insert => InputAction::Enter,
             InputMode::Command => InputAction::CommandEnter,
-            InputMode::Visual | InputMode::VisualLine => InputAction::None,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                InputAction::None
+            }
             InputMode::Normal => InputAction::SurfaceOpenSelected,
         },
 
@@ -199,7 +206,7 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
-            InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                 modal_char_action(state, mode, *c)
             }
         },
@@ -213,7 +220,7 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         state.pending_leader = false;
         return match c {
             'e' => InputAction::OpenExplorer,
-            'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+            'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
                 InputAction::YankSelectionSystem
             }
             _ => InputAction::None,
@@ -270,6 +277,7 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
                 InputMode::Normal => InputAction::SetMode(InputMode::Visual),
                 InputMode::Visual => InputAction::SetMode(InputMode::Normal),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
+                InputMode::VisualBlock => InputAction::SetMode(InputMode::Visual),
                 InputMode::Insert | InputMode::Command => InputAction::None,
             }
         }
@@ -278,19 +286,20 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             match mode {
                 InputMode::Normal => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
+                InputMode::VisualBlock => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
                 InputMode::Insert | InputMode::Command => InputAction::None,
             }
         }
-        'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             state.reset_prefixes();
             InputAction::YankSelectionPrivate
         }
-        'd' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        'd' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             state.reset_prefixes();
             InputAction::DeleteSelectionPrivate
         }
-        'x' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        'x' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             state.reset_prefixes();
             InputAction::DeleteSelectionNoYank
         }
@@ -310,17 +319,17 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::PastePrivateRegisterBefore
         }
-        'J' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        'J' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             InputAction::MoveVisualSelectionDown {
                 count: state.take_count_or_1(),
             }
         }
-        'K' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        'K' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             InputAction::MoveVisualSelectionUp {
                 count: state.take_count_or_1(),
             }
         }
-        '\t' if matches!(mode, InputMode::Visual | InputMode::VisualLine) => {
+        '\t' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             InputAction::IndentVisualSelection {
                 count: state.take_count_or_1(),
             }
@@ -471,7 +480,7 @@ fn map_key_with_state(
             };
         }
 
-        InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {}
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {}
     }
 
     if mode == InputMode::Normal
@@ -498,12 +507,23 @@ fn map_key_with_state(
         return InputAction::ViewportUpCenter;
     }
 
-    if matches!(mode, InputMode::Visual | InputMode::VisualLine)
+    if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock)
         && mods.ctrl
         && matches!(key, KeyKind::Char('c') | KeyKind::Char('C'))
     {
         state.reset_prefixes();
         return InputAction::SetMode(InputMode::Normal);
+    }
+
+    if mods.ctrl && matches!(key, KeyKind::Char('v') | KeyKind::Char('V')) {
+        state.reset_prefixes();
+        return match mode {
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {
+                InputAction::SetMode(InputMode::VisualBlock)
+            }
+            InputMode::VisualBlock => InputAction::SetMode(InputMode::Normal),
+            InputMode::Insert | InputMode::Command => InputAction::None,
+        };
     }
 
     // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
@@ -537,7 +557,7 @@ fn map_key_with_state(
     match key {
         KeyKind::Escape => {
             state.reset_prefixes();
-            if matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+            if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) {
                 InputAction::SetMode(InputMode::Normal)
             } else {
                 InputAction::None
@@ -552,7 +572,7 @@ fn map_key_with_state(
             InputAction::SurfaceOpenSelected
         }
         KeyKind::Tab => {
-            if !matches!(mode, InputMode::Visual | InputMode::VisualLine) {
+            if !matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) {
                 state.reset_prefixes();
                 return InputAction::None;
             }
@@ -796,6 +816,20 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_ctrl_v_enters_visual_block_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('v'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::VisualBlock));
+    }
+
+    #[test]
     fn visual_escape_returns_to_normal() {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Escape);
@@ -856,6 +890,34 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_block_ctrl_c_returns_to_normal() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::VisualBlock,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+    }
+
+    #[test]
+    fn visual_mode_ctrl_v_switches_to_visual_block_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('v'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::VisualBlock));
     }
 
     #[test]

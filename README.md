@@ -125,6 +125,7 @@ redox src
 | `O` | Insert above cursor |
 | `v` | Visual mode |
 | `V` | Visual line mode |
+| `ctrl+v` | Visual block mode |
 | `x` | Delete character under cursor |
 | (visual mode) `x` | Delete selection without copying to register |
 | `y` | Yank selection to private register |

@@ -21,4 +21,4 @@ mod slicing;
 mod words;
 
 pub use core::TextBuffer;
-pub use selection::VisualSelectionEditPlan;
+pub use selection::{VisualModeKind, VisualSelectionEditPlan};

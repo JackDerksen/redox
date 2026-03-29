@@ -420,6 +420,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
             EditorMode::Command => ("COMMAND", style.palette.mode_command),
             EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
             EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
+            EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
         }
     };
 

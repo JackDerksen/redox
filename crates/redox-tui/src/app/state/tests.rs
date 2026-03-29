@@ -1,5 +1,5 @@
 use super::*;
-use redox_core::{BufferLoadPhase, motion::Motion};
+use redox_core::{BufferLoadPhase, VisualModeKind, motion::Motion};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -1583,10 +1583,10 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
         .cursor = Pos::new(0, 1);
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
-    let (sel, line_mode) = state
+    let (sel, mode) = state
         .active_visual_selection()
         .expect("visual selection should exist");
-    assert!(!line_mode);
+    assert_eq!(mode, VisualModeKind::Char);
     assert_eq!(sel.anchor, Pos::new(0, 1));
     assert_eq!(sel.cursor, Pos::new(0, 1));
 
@@ -1632,10 +1632,10 @@ fn visual_line_mode_marks_line_selection_mode() {
         24,
     );
 
-    let (sel, line_mode) = state
+    let (sel, mode) = state
         .active_visual_selection()
         .expect("visual selection should exist");
-    assert!(line_mode);
+    assert_eq!(mode, VisualModeKind::Line);
     assert_eq!(sel.anchor.line, 1);
     assert_eq!(sel.cursor.line, 2);
 
@@ -1722,6 +1722,83 @@ fn visual_yank_private_without_motion_includes_cursor_char() {
     state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
 
     assert_eq!(state.private_register, "p");
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_mode_marks_block_selection_mode() {
+    let path = temp_file_path("visual_block");
+    let mut state = state_with_text(path.clone(), "abcd\nefgh\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+
+    let (sel, mode) = state
+        .active_visual_selection()
+        .expect("visual selection should exist");
+    assert_eq!(mode, VisualModeKind::Block);
+    assert_eq!(sel.anchor, Pos::new(0, 1));
+    assert_eq!(sel.cursor, Pos::new(1, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_yank_private_copies_rectangular_selection() {
+    let path = temp_file_path("visual_block_yank_private");
+    let mut state = state_with_text(path.clone(), "abcd\nefgh\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
+
+    assert_eq!(state.private_register, "bc\nfg");
     assert_eq!(state.mode, EditorMode::Normal);
 
     let _ = fs::remove_file(path);
@@ -1816,6 +1893,73 @@ fn visual_line_delete_private_cuts_all_selected_lines() {
     assert_eq!(state.session.active_buffer().to_string(), "four\n");
     assert_eq!(state.mode, EditorMode::Normal);
     assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_delete_private_cuts_rectangular_selection() {
+    let path = temp_file_path("visual_block_delete_private");
+    let mut state = state_with_text(path.clone(), "abcd\nefgh\nijkl\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
+
+    assert_eq!(state.private_register, "bc\nfg\njk");
+    assert_eq!(state.session.active_buffer().to_string(), "ad\neh\nil\n");
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_delete_private_removes_fully_covered_lines() {
+    let path = temp_file_path("visual_block_delete_full_lines");
+    let mut state = state_with_text(path.clone(), "{\nalpha\nbeta\n}\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(2, 8);
+    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
+
+    assert_eq!(state.private_register, "alpha\nbeta");
+    assert_eq!(state.session.active_buffer().to_string(), "{\n}\n");
+    assert_eq!(state.mode, EditorMode::Normal);
 
     let _ = fs::remove_file(path);
 }

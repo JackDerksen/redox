@@ -1,20 +1,19 @@
-use redox_core::{Selection, VisualSelectionEditPlan};
+use redox_core::{Selection, VisualModeKind, VisualSelectionEditPlan};
 
 use super::{EditorMode, EditorState, RegisterKind};
 
 impl EditorState {
-    pub(super) fn register_kind_from_line_mode(line_mode: bool) -> RegisterKind {
-        if line_mode {
-            RegisterKind::LineWise
-        } else {
-            RegisterKind::CharWise
+    pub(super) fn register_kind_from_visual_mode(mode: VisualModeKind) -> RegisterKind {
+        match mode {
+            VisualModeKind::Line => RegisterKind::LineWise,
+            VisualModeKind::Char | VisualModeKind::Block => RegisterKind::CharWise,
         }
     }
 
     pub(super) fn active_visual_selection_edit_plan(&self) -> Option<VisualSelectionEditPlan> {
-        let (selection, line_mode) = self.active_visual_selection()?;
+        let (selection, mode) = self.active_visual_selection()?;
         let buffer = self.session.active_buffer();
-        Some(buffer.visual_selection_edit_plan(selection, line_mode))
+        Some(buffer.visual_selection_edit_plan(selection, mode))
     }
 
     pub(super) fn delete_active_visual_selection_to_private_register(
@@ -32,13 +31,16 @@ impl EditorState {
         let before = self.capture_active_undo_snapshot();
 
         self.private_register = plan.text.clone();
-        self.private_register_kind = Self::register_kind_from_line_mode(plan.line_mode);
+        self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
         {
             let buffer = self.session.active_buffer_mut();
-            let new_pos = buffer.delete_range(plan.delete_start, plan.delete_end);
+            let mut new_pos = view.cursor.cursor;
+            for (start, end) in plan.delete_ranges.iter().rev().copied() {
+                new_pos = buffer.delete_range(start, end);
+            }
             view.cursor.cursor = new_pos;
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
@@ -70,7 +72,10 @@ impl EditorState {
         let view = self.views.entry(active_id).or_default();
         {
             let buffer = self.session.active_buffer_mut();
-            let new_pos = buffer.delete_range(plan.delete_start, plan.delete_end);
+            let mut new_pos = view.cursor.cursor;
+            for (start, end) in plan.delete_ranges.iter().rev().copied() {
+                new_pos = buffer.delete_range(start, end);
+            }
             view.cursor.cursor = new_pos;
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);

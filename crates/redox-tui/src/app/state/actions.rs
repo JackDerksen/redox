@@ -57,8 +57,14 @@ impl EditorState {
                 let prev_mode = self.mode;
                 let leaving_insert_to_normal =
                     prev_mode == EditorMode::Insert && mode == InputMode::Normal;
-                let entering_visual = mode == InputMode::Visual || mode == InputMode::VisualLine;
-                let was_visual = matches!(prev_mode, EditorMode::Visual | EditorMode::VisualLine);
+                let entering_visual = matches!(
+                    mode,
+                    InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+                );
+                let was_visual = matches!(
+                    prev_mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                );
 
                 self.mode = match mode {
                     InputMode::Normal => EditorMode::Normal,
@@ -66,6 +72,7 @@ impl EditorState {
                     InputMode::Command => EditorMode::Command,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
+                    InputMode::VisualBlock => EditorMode::VisualBlock,
                 };
 
                 if leaving_insert_to_normal {
@@ -294,13 +301,16 @@ impl EditorState {
                     let coalesce = self.mode == EditorMode::Insert;
                     self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
                 }
-                EditorMode::Command | EditorMode::Visual | EditorMode::VisualLine => {}
+                EditorMode::Command
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock => {}
             },
 
             InputAction::YankSelectionPrivate => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     self.private_register = plan.text;
-                    self.private_register_kind = Self::register_kind_from_line_mode(plan.line_mode);
+                    self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
                     self.set_status("yanked");
@@ -308,7 +318,10 @@ impl EditorState {
             }
 
             InputAction::DeleteSelectionPrivate => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
                     self.delete_active_visual_selection_to_private_register(
                         viewport_width_cells,
                         text_vh,
@@ -317,7 +330,10 @@ impl EditorState {
             }
 
             InputAction::DeleteSelectionNoYank => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
                     self.delete_active_visual_selection_without_yank(viewport_width_cells, text_vh);
                 }
             }
@@ -335,7 +351,7 @@ impl EditorState {
             InputAction::YankSelectionSystem => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     self.private_register = plan.text.clone();
-                    self.private_register_kind = Self::register_kind_from_line_mode(plan.line_mode);
+                    self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.pending_system_clipboard = Some(plan.text);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
@@ -361,7 +377,10 @@ impl EditorState {
             }
 
             InputAction::MoveVisualSelectionUp { count } => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
                     self.move_visual_selection_lines_up(
                         count.max(1),
                         viewport_width_cells,
@@ -371,7 +390,10 @@ impl EditorState {
             }
 
             InputAction::MoveVisualSelectionDown { count } => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
                     self.move_visual_selection_lines_down(
                         count.max(1),
                         viewport_width_cells,
@@ -381,7 +403,10 @@ impl EditorState {
             }
 
             InputAction::IndentVisualSelection { count } => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
                     self.indent_visual_selection(count.max(1), viewport_width_cells, text_vh);
                 }
             }
