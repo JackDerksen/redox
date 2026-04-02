@@ -615,6 +615,7 @@ fn resolve_pending_sequence(state: &mut InputState, mode: InputMode, c: char) ->
         .unwrap_or(PrefixFallback::Consume);
     state.clear_sequence();
     if fallback == PrefixFallback::Consume {
+        state.pending_count = None;
         Some(InputAction::None)
     } else {
         None
@@ -1319,6 +1320,24 @@ mod tests {
                     kind: TextObjectKind::BigWord,
                     count: 1,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn consumed_prefix_clears_pending_count() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+
+        assert_eq!(action, InputAction::None);
+        let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
+        assert_eq!(
+            next,
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1,
             }
         );
     }

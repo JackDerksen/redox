@@ -294,6 +294,24 @@ fn text_object_inner_big_word_selects_contiguous_non_whitespace() {
 }
 
 #[test]
+fn counted_text_object_word_clamps_at_last_run_instead_of_failing() {
+    let b = TextBuffer::from_str("alpha beta");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 1),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 3,
+            },
+        )
+        .expect("counted word text object");
+
+    assert_eq!(plan.text, "alpha beta");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 0), Pos::new(0, 10))]);
+}
+
+#[test]
 fn text_object_selection_uses_word_bounds_for_visual_mode() {
     let b = TextBuffer::from_str("alpha beta");
     let (selection, mode) = b

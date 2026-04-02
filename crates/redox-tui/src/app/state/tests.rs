@@ -2249,6 +2249,38 @@ fn visual_text_object_around_brackets_uses_same_span_as_operator() {
 }
 
 #[test]
+fn visual_text_object_selection_forces_full_load_before_resolving() {
+    let path = temp_file_path("visual_text_object_force_full_load");
+    let text = large_text(8500);
+    let mut state = state_with_text(path.clone(), &text);
+    assert_eq!(
+        state.session.active_buffer_load_status().phase,
+        BufferLoadPhase::Loading
+    );
+
+    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(
+        InputAction::OperateTextObject {
+            operator: TextObjectOperator::Select,
+            spec: TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Paragraph,
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(
+        state.session.active_buffer_load_status().phase,
+        BufferLoadPhase::Complete
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_line_delete_private_cuts_all_selected_lines() {
     let path = temp_file_path("visual_line_delete_three_lines");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\n");

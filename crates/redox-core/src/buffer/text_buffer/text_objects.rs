@@ -163,8 +163,11 @@ impl TextBuffer {
         start = self.run_start(start, predicate);
 
         for _ in 1..count {
-            let next_start = self.find_next_run_start(end, predicate)?;
-            end = self.run_end(next_start, predicate);
+            if let Some(next_start) = self.find_next_run_start(end, predicate) {
+                end = self.run_end(next_start, predicate);
+            } else {
+                break;
+            }
         }
 
         if scope == TextObjectScope::Around {

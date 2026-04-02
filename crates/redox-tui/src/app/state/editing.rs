@@ -26,6 +26,10 @@ impl EditorState {
     }
 
     pub(super) fn select_text_object_in_visual_mode(&mut self, spec: TextObjectSpec) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
         let buffer = self.session.active_buffer();
         let cursor = self.active_cursor_pos();
         let Some((selection, mode)) = buffer.text_object_selection(cursor, spec) else {
