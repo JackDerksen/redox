@@ -129,6 +129,7 @@ redox src
 | `x` | Delete character under cursor |
 | (visual mode) `x` | Delete selection without copying to register |
 | (visual mode) `y` | Yank selection to private register |
+| (visual mode) `c` | Change selection and enter insert mode |
 | (visual mode) `<space>y` | Yank selection to system clipboard |
 | `p` | Paste from private register |
 | `P` | Paste before cursor / above line |
@@ -179,6 +180,9 @@ Notes:
     - [ ] Go
     - [ ] Python
 - [x] Subtle colour column at col=80
+- [x] Scope indicator lines and delimiter pair highlighting
+- [x] Visual block mode
+- [x] Compound motions (like `daw` or `ci"`)
 - [ ] More Vim motions
 - [ ] Undo tree with stored history
 - [ ] More extendable leader key system with "whichkey" functionality
