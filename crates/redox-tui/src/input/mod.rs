@@ -1,10 +1,10 @@
 //! Input mapping for `redox-tui`.
 //!
 //! This module translates raw MinUI events into mode-aware editor actions.
-//! It also tracks normal-mode key prefixes used by `gg` and count motions.
+//! It also tracks count prefixes and a small command tree for multi-key motions.
 
 use minui::prelude::*;
-use redox_core::motion::Motion;
+use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec, motion::Motion};
 
 pub mod cursor;
 
@@ -87,14 +87,23 @@ pub enum InputAction {
     YankSelectionPrivate,
     /// Delete (cut) active visual selection into Redox's private register.
     DeleteSelectionPrivate,
+    /// Change active visual selection and enter insert mode.
+    ChangeSelectionPrivate,
     /// Delete active visual selection without yanking.
     DeleteSelectionNoYank,
+    /// Apply a text-object operator at the current cursor.
+    OperateTextObject {
+        operator: TextObjectOperator,
+        spec: TextObjectSpec,
+    },
     /// Delete (cut) current line(s) into Redox's private register.
     DeleteCurrentLinePrivate {
         count: usize,
     },
     /// Yank active visual selection into system clipboard.
     YankSelectionSystem,
+    /// Paste from system clipboard.
+    PasteSystemClipboard,
     /// Paste from Redox's private register.
     PastePrivateRegister,
     /// Paste from Redox's private register before cursor / above line.
@@ -133,14 +142,95 @@ pub enum InputAction {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextObjectOperator {
+    Delete,
+    Change,
+    Select,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixFallback {
+    Consume,
+    RetryCurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequenceAction {
+    OpenExplorer,
+    YankSelectionSystem,
+    PasteSystemClipboard,
+    FileStart,
+    CenterCursorLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SequenceBinding {
+    sequence: &'static str,
+    fallback: PrefixFallback,
+    action: Option<SequenceAction>,
+}
+
+const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
+    SequenceBinding {
+        sequence: " ",
+        fallback: PrefixFallback::Consume,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: " e",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::OpenExplorer),
+    },
+    SequenceBinding {
+        sequence: "g",
+        fallback: PrefixFallback::RetryCurrent,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: "gg",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::FileStart),
+    },
+];
+
+const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
+    SequenceBinding {
+        sequence: " p",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::PasteSystemClipboard),
+    },
+    SequenceBinding {
+        sequence: "z",
+        fallback: PrefixFallback::RetryCurrent,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: "zz",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::CenterCursorLine),
+    },
+];
+
+const VISUAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[SequenceBinding {
+    sequence: " y",
+    fallback: PrefixFallback::Consume,
+    action: Some(SequenceAction::YankSelectionSystem),
+}];
+
 /// Small state machine for multi-key sequences (eg. `gg`) and counts.
 #[derive(Debug, Default, Clone)]
 pub struct InputState {
-    pending_g: bool,
-    pending_z: bool,
-    pending_d: bool,
+    pending_sequence: String,
     pending_count: Option<usize>,
-    pending_leader: bool,
+    pending_operator: Option<PendingOperator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingOperator {
+    operator: TextObjectOperator,
+    count: usize,
+    scope: Option<TextObjectScope>,
 }
 
 impl InputState {
@@ -149,11 +239,9 @@ impl InputState {
     }
 
     pub fn reset_prefixes(&mut self) {
-        self.pending_g = false;
-        self.pending_z = false;
-        self.pending_d = false;
+        self.pending_sequence.clear();
         self.pending_count = None;
-        self.pending_leader = false;
+        self.pending_operator = None;
     }
 
     fn push_count_digit(&mut self, d: u8) {
@@ -168,6 +256,14 @@ impl InputState {
             Some(0) | None => 1,
             Some(n) => n,
         }
+    }
+
+    fn push_sequence_char(&mut self, c: char) {
+        self.pending_sequence.push(c);
+    }
+
+    fn clear_sequence(&mut self) {
+        self.pending_sequence.clear();
     }
 }
 
@@ -216,15 +312,16 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
 }
 
 fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputAction {
-    if state.pending_leader {
-        state.pending_leader = false;
-        return match c {
-            'e' => InputAction::OpenExplorer,
-            'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
-                InputAction::YankSelectionSystem
-            }
-            _ => InputAction::None,
-        };
+    if let Some(operator) = state.pending_operator {
+        if let Some(action) = resolve_pending_operator(state, c, operator) {
+            return action;
+        }
+    }
+
+    if !state.pending_sequence.is_empty() {
+        if let Some(action) = resolve_pending_sequence(state, mode, c) {
+            return action;
+        }
     }
 
     // Count prefix: leading zero has Vim-specific semantics for moving to the 0th col.
@@ -234,43 +331,7 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         return InputAction::None;
     }
 
-    // Handle `gg` sequence.
-    // NOTE: I will not be adding the `{count}gg` motion in Redox. I do not like it.
-    if state.pending_g {
-        state.pending_g = false;
-        if c == 'g' {
-            // Consume any pending count so it does not leak to the next action.
-            let _ = state.take_count_or_1();
-            return InputAction::Motion {
-                motion: Motion::FileStart,
-                count: 1,
-            };
-        }
-    }
-
-    if state.pending_z && mode == InputMode::Normal {
-        state.pending_z = false;
-        if c == 'z' {
-            state.reset_prefixes();
-            return InputAction::CenterCursorLine;
-        }
-        return InputAction::None;
-    }
-
-    if state.pending_d && mode == InputMode::Normal {
-        state.pending_d = false;
-        if c == 'd' {
-            return InputAction::DeleteCurrentLinePrivate {
-                count: state.take_count_or_1(),
-            };
-        }
-    }
-
     match c {
-        ' ' => {
-            state.pending_leader = true;
-            InputAction::None
-        }
         'v' => {
             state.reset_prefixes();
             match mode {
@@ -299,13 +360,45 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::DeleteSelectionPrivate
         }
+        'd' if mode == InputMode::Normal => {
+            state.pending_operator = Some(PendingOperator {
+                operator: TextObjectOperator::Delete,
+                count: state.take_count_or_1(),
+                scope: None,
+            });
+            InputAction::None
+        }
+        'i' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+            state.pending_operator = Some(PendingOperator {
+                operator: TextObjectOperator::Select,
+                count: state.take_count_or_1(),
+                scope: Some(TextObjectScope::Inner),
+            });
+            InputAction::None
+        }
+        'a' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+            state.pending_operator = Some(PendingOperator {
+                operator: TextObjectOperator::Select,
+                count: state.take_count_or_1(),
+                scope: Some(TextObjectScope::Around),
+            });
+            InputAction::None
+        }
+        'c' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+            state.reset_prefixes();
+            InputAction::ChangeSelectionPrivate
+        }
+        'c' if mode == InputMode::Normal => {
+            state.pending_operator = Some(PendingOperator {
+                operator: TextObjectOperator::Change,
+                count: state.take_count_or_1(),
+                scope: None,
+            });
+            InputAction::None
+        }
         'x' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
             state.reset_prefixes();
             InputAction::DeleteSelectionNoYank
-        }
-        'd' if mode == InputMode::Normal => {
-            state.pending_d = true;
-            InputAction::None
         }
         'x' if mode == InputMode::Normal => {
             state.reset_prefixes();
@@ -366,12 +459,8 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::SurfaceGoParent
         }
-        'g' => {
-            state.pending_g = true;
-            InputAction::None
-        }
-        'z' if mode == InputMode::Normal => {
-            state.pending_z = true;
+        prefix if starts_sequence(mode, prefix) => {
+            state.push_sequence_char(prefix);
             InputAction::None
         }
         'h' => InputAction::Motion {
@@ -418,6 +507,147 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::None
         }
+    }
+}
+
+fn resolve_pending_operator(
+    state: &mut InputState,
+    c: char,
+    pending: PendingOperator,
+) -> Option<InputAction> {
+    let action = match (pending.operator, pending.scope, c) {
+        (TextObjectOperator::Delete, None, 'd') => Some(InputAction::DeleteCurrentLinePrivate {
+            count: pending.count,
+        }),
+        (_, None, 'i') => {
+            state.pending_operator = Some(PendingOperator {
+                scope: Some(TextObjectScope::Inner),
+                ..pending
+            });
+            Some(InputAction::None)
+        }
+        (_, None, 'a') => {
+            state.pending_operator = Some(PendingOperator {
+                scope: Some(TextObjectScope::Around),
+                ..pending
+            });
+            Some(InputAction::None)
+        }
+        (_, Some(scope), object) => text_object_kind_from_char(object).map(|kind| {
+            InputAction::OperateTextObject {
+                operator: pending.operator,
+                spec: TextObjectSpec {
+                    scope,
+                    kind,
+                    count: pending.count,
+                },
+            }
+        }),
+        _ => Some(InputAction::None),
+    };
+
+    if !matches!(action, Some(InputAction::None)) {
+        state.pending_operator = None;
+    } else if !matches!((pending.operator, pending.scope, c), (_, None, 'i' | 'a')) {
+        state.pending_operator = None;
+    }
+
+    action
+}
+
+fn text_object_kind_from_char(c: char) -> Option<TextObjectKind> {
+    match c {
+        'w' => Some(TextObjectKind::Word),
+        'W' => Some(TextObjectKind::BigWord),
+        'p' => Some(TextObjectKind::Paragraph),
+        '(' | ')' | 'b' => Some(TextObjectKind::Delimiter(DelimiterKind::Parentheses)),
+        '[' | ']' => Some(TextObjectKind::Delimiter(DelimiterKind::Brackets)),
+        '{' | '}' | 'B' => Some(TextObjectKind::Delimiter(DelimiterKind::Braces)),
+        '\'' => Some(TextObjectKind::Delimiter(DelimiterKind::SingleQuotes)),
+        '"' => Some(TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes)),
+        '`' => Some(TextObjectKind::Delimiter(DelimiterKind::Backticks)),
+        _ => None,
+    }
+}
+
+fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static SequenceBinding> {
+    COMMON_SEQUENCE_BINDINGS.iter().chain(match mode {
+        InputMode::Normal => NORMAL_SEQUENCE_BINDINGS.iter(),
+        InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+            VISUAL_SEQUENCE_BINDINGS.iter()
+        }
+        InputMode::Insert | InputMode::Command => [].iter(),
+    })
+}
+
+fn starts_sequence(mode: InputMode, c: char) -> bool {
+    sequence_bindings_for_mode(mode).any(|binding| {
+        binding.sequence.len() > 1 && binding.sequence.starts_with(c)
+    })
+}
+
+fn resolve_pending_sequence(state: &mut InputState, mode: InputMode, c: char) -> Option<InputAction> {
+    let mut candidate = state.pending_sequence.clone();
+    candidate.push(c);
+
+    let exact = sequence_bindings_for_mode(mode)
+        .find(|binding| binding.sequence == candidate);
+    let has_children = sequence_bindings_for_mode(mode)
+        .any(|binding| binding.sequence.starts_with(&candidate) && binding.sequence.len() > candidate.len());
+
+    if let Some(binding) = exact {
+        state.clear_sequence();
+        if has_children && binding.action.is_none() {
+            state.pending_sequence = candidate;
+            return Some(InputAction::None);
+        }
+        return Some(sequence_binding_action(state, binding));
+    }
+
+    if has_children {
+        state.pending_sequence = candidate;
+        return Some(InputAction::None);
+    }
+
+    let fallback = sequence_bindings_for_mode(mode)
+        .find(|binding| binding.sequence == state.pending_sequence)
+        .map(|binding| binding.fallback)
+        .unwrap_or(PrefixFallback::Consume);
+    state.clear_sequence();
+    if fallback == PrefixFallback::Consume {
+        state.pending_count = None;
+        Some(InputAction::None)
+    } else {
+        None
+    }
+}
+
+fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) -> InputAction {
+    match binding.action {
+        Some(SequenceAction::OpenExplorer) => {
+            state.reset_prefixes();
+            InputAction::OpenExplorer
+        }
+        Some(SequenceAction::YankSelectionSystem) => {
+            state.reset_prefixes();
+            InputAction::YankSelectionSystem
+        }
+        Some(SequenceAction::PasteSystemClipboard) => {
+            state.reset_prefixes();
+            InputAction::PasteSystemClipboard
+        }
+        Some(SequenceAction::FileStart) => {
+            let _ = state.take_count_or_1();
+            InputAction::Motion {
+                motion: Motion::FileStart,
+                count: 1,
+            }
+        }
+        Some(SequenceAction::CenterCursorLine) => {
+            state.reset_prefixes();
+            InputAction::CenterCursorLine
+        }
+        None => InputAction::None,
     }
 }
 
@@ -935,6 +1165,13 @@ mod tests {
     }
 
     #[test]
+    fn visual_mode_c_changes_selection_and_enters_insert() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('c'));
+        assert_eq!(action, InputAction::ChangeSelectionPrivate);
+    }
+
+    #[test]
     fn normal_mode_x_deletes_char_without_yank() {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
@@ -954,6 +1191,155 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
         assert_eq!(action, InputAction::DeleteCurrentLinePrivate { count: 1 });
+    }
+
+    #[test]
+    fn normal_mode_diw_resolves_to_inner_word_delete() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('w'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Delete,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Inner,
+                    kind: TextObjectKind::Word,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_cap_resolves_to_around_paragraph_change() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('a'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Change,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Around,
+                    kind: TextObjectKind::Paragraph,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_counted_ci_bracket_uses_count() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(']'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Change,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Inner,
+                    kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                    count: 2,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_ci_quote_resolves_to_inner_double_quote_change() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('"'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Change,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Inner,
+                    kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn visual_mode_iw_resolves_to_inner_word_select() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('i'));
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('w'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Select,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Inner,
+                    kind: TextObjectKind::Word,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn visual_mode_a_bracket_resolves_to_around_bracket_select() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('a'));
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('['));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Select,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Around,
+                    kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn visual_mode_i_big_word_resolves_to_inner_big_word_select() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('i'));
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('W'));
+        assert_eq!(
+            action,
+            InputAction::OperateTextObject {
+                operator: TextObjectOperator::Select,
+                spec: TextObjectSpec {
+                    scope: TextObjectScope::Inner,
+                    kind: TextObjectKind::BigWord,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn consumed_prefix_clears_pending_count() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+
+        assert_eq!(action, InputAction::None);
+        let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
+        assert_eq!(
+            next,
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1,
+            }
+        );
     }
 
     #[test]
@@ -1002,6 +1388,14 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
         assert_eq!(action, InputAction::YankSelectionSystem);
+    }
+
+    #[test]
+    fn normal_mode_leader_p_pastes_from_system_clipboard() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
+        assert_eq!(action, InputAction::PasteSystemClipboard);
     }
 
     #[test]

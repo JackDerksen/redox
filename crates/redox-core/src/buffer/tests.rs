@@ -221,6 +221,262 @@ fn apply_edits_returns_summary_and_final_cursor() {
 }
 
 #[test]
+fn text_object_inner_word_selects_current_word() {
+    let b = TextBuffer::from_str("alpha beta");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 7),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 1,
+            },
+        )
+        .expect("word text object");
+
+    assert_eq!(plan.text, "beta");
+    assert_eq!(plan.mode, VisualModeKind::Char);
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 6), Pos::new(0, 10))]);
+}
+
+#[test]
+fn text_object_around_word_includes_spacing() {
+    let b = TextBuffer::from_str("alpha beta gamma");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 7),
+            TextObjectSpec {
+                scope: TextObjectScope::Around,
+                kind: TextObjectKind::Word,
+                count: 1,
+            },
+        )
+        .expect("word text object");
+
+    assert_eq!(plan.text, "beta ");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 6), Pos::new(0, 11))]);
+}
+
+#[test]
+fn text_object_inner_word_on_whitespace_prefers_next_word() {
+    let b = TextBuffer::from_str("alpha  beta");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 5),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 1,
+            },
+        )
+        .expect("word text object");
+
+    assert_eq!(plan.text, "beta");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 7), Pos::new(0, 11))]);
+}
+
+#[test]
+fn text_object_inner_big_word_selects_contiguous_non_whitespace() {
+    let b = TextBuffer::from_str("byte_idx.saturating_add(grapheme.len()); next");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 22),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::BigWord,
+                count: 1,
+            },
+        )
+        .expect("big word text object");
+
+    assert_eq!(plan.text, "byte_idx.saturating_add(grapheme.len());");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 0), Pos::new(0, 40))]);
+}
+
+#[test]
+fn counted_text_object_word_clamps_at_last_run_instead_of_failing() {
+    let b = TextBuffer::from_str("alpha beta");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 1),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 3,
+            },
+        )
+        .expect("counted word text object");
+
+    assert_eq!(plan.text, "alpha beta");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 0), Pos::new(0, 10))]);
+}
+
+#[test]
+fn text_object_selection_uses_word_bounds_for_visual_mode() {
+    let b = TextBuffer::from_str("alpha beta");
+    let (selection, mode) = b
+        .text_object_selection(
+            Pos::new(0, 6),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 1,
+            },
+        )
+        .expect("word selection");
+
+    assert_eq!(mode, VisualModeKind::Char);
+    assert_eq!(selection.anchor, Pos::new(0, 6));
+    assert_eq!(selection.cursor, Pos::new(0, 9));
+}
+
+#[test]
+fn text_object_inner_paragraph_is_linewise() {
+    let b = TextBuffer::from_str("one\ntwo\n\nthree\n");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 1),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Paragraph,
+                count: 1,
+            },
+        )
+        .expect("paragraph text object");
+
+    assert_eq!(plan.text, "one\ntwo\n");
+    assert_eq!(plan.mode, VisualModeKind::Line);
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 0), Pos::new(2, 0))]);
+}
+
+#[test]
+fn text_object_around_brackets_selects_pair() {
+    let b = TextBuffer::from_str("foo[bar[baz]]");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 9),
+            TextObjectSpec {
+                scope: TextObjectScope::Around,
+                kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                count: 1,
+            },
+        )
+        .expect("delimiter text object");
+
+    assert_eq!(plan.text, "[baz]");
+    assert_eq!(plan.mode, VisualModeKind::Char);
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 7), Pos::new(0, 12))]);
+}
+
+#[test]
+fn text_object_inner_parentheses_can_select_outer_pair_with_count() {
+    let b = TextBuffer::from_str("((abc))");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 3),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Delimiter(DelimiterKind::Parentheses),
+                count: 2,
+            },
+        )
+        .expect("outer delimiter text object");
+
+    assert_eq!(plan.text, "(abc)");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 1), Pos::new(0, 6))]);
+}
+
+#[test]
+fn text_object_inner_parentheses_falls_back_to_same_line_pair_after_cursor() {
+    let b = TextBuffer::from_str("call foo(bar) now");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 0),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Delimiter(DelimiterKind::Parentheses),
+                count: 1,
+            },
+        )
+        .expect("same-line delimiter text object");
+
+    assert_eq!(plan.text, "bar");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 9), Pos::new(0, 12))]);
+}
+
+#[test]
+fn text_object_around_brackets_falls_back_to_same_line_pair_before_cursor() {
+    let b = TextBuffer::from_str("left [mid] right");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 15),
+            TextObjectSpec {
+                scope: TextObjectScope::Around,
+                kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                count: 1,
+            },
+        )
+        .expect("same-line delimiter text object");
+
+    assert_eq!(plan.text, "[mid]");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 5), Pos::new(0, 10))]);
+}
+
+#[test]
+fn text_object_inner_double_quotes_falls_back_to_same_line_pair() {
+    let b = TextBuffer::from_str("say \"hello\" now");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 0),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
+                count: 1,
+            },
+        )
+        .expect("same-line quote text object");
+
+    assert_eq!(plan.text, "hello");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 5), Pos::new(0, 10))]);
+}
+
+#[test]
+fn text_object_around_single_quotes_skips_escaped_quotes() {
+    let b = TextBuffer::from_str("'one' '\\''");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 9),
+            TextObjectSpec {
+                scope: TextObjectScope::Around,
+                kind: TextObjectKind::Delimiter(DelimiterKind::SingleQuotes),
+                count: 1,
+            },
+        )
+        .expect("quote text object");
+
+    assert_eq!(plan.text, "'\\''");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 6), Pos::new(0, 10))]);
+}
+
+#[test]
+fn text_object_inner_backticks_selects_current_quoted_span() {
+    let b = TextBuffer::from_str("run `cargo test` now");
+    let plan = b
+        .text_object_edit_plan(
+            Pos::new(0, 10),
+            TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Delimiter(DelimiterKind::Backticks),
+                count: 1,
+            },
+        )
+        .expect("backtick text object");
+
+    assert_eq!(plan.text, "cargo test");
+    assert_eq!(plan.delete_ranges, vec![(Pos::new(0, 5), Pos::new(0, 15))]);
+}
+
+#[test]
 fn apply_edits_empty_is_noop_summary() {
     let mut b = TextBuffer::from_str("abc");
     let summary = b.apply_edits(&[]);

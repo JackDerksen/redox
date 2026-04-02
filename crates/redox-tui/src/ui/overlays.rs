@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use minui::{Color, ColorPair, Window};
+use minui::{ColorPair, Window};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -34,10 +34,19 @@ pub(crate) fn draw_indent_guides(
     col: u16,
     visible_xs: &[usize],
     style: UiStyle,
-    selected_bg: Option<Color>,
+    selected_cells: Option<&[bool]>,
 ) -> minui::Result<()> {
     for &visible_x in visible_xs {
-        let color = ColorPair::new(style.theme.scope, selected_bg.unwrap_or(style.theme.bg));
+        let is_selected = selected_cells
+            .and_then(|cells| cells.get(visible_x))
+            .copied()
+            .unwrap_or(false);
+        let bg = if is_selected {
+            style.theme.selection_bg
+        } else {
+            style.theme.bg
+        };
+        let color = ColorPair::new(style.theme.scope, bg);
         window.write_str_colored(row, col.saturating_add(visible_x as u16), "│", color)?;
     }
 
