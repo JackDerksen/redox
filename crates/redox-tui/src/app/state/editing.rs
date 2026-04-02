@@ -1,6 +1,9 @@
-use redox_core::{Selection, VisualModeKind, VisualSelectionEditPlan};
+use redox_core::{
+    Selection, TextObjectEditPlan, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+};
 
 use super::{EditorMode, EditorState, RegisterKind};
+use crate::input::TextObjectOperator;
 
 impl EditorState {
     pub(super) fn register_kind_from_visual_mode(mode: VisualModeKind) -> RegisterKind {
@@ -14,6 +17,31 @@ impl EditorState {
         let (selection, mode) = self.active_visual_selection()?;
         let buffer = self.session.active_buffer();
         Some(buffer.visual_selection_edit_plan(selection, mode))
+    }
+
+    pub(super) fn active_text_object_edit_plan(&self, spec: TextObjectSpec) -> Option<TextObjectEditPlan> {
+        let buffer = self.session.active_buffer();
+        let cursor = self.active_cursor_pos();
+        buffer.text_object_edit_plan(cursor, spec)
+    }
+
+    pub(super) fn select_text_object_in_visual_mode(&mut self, spec: TextObjectSpec) {
+        let buffer = self.session.active_buffer();
+        let cursor = self.active_cursor_pos();
+        let Some((selection, mode)) = buffer.text_object_selection(cursor, spec) else {
+            return;
+        };
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        view.visual_anchor = Some(selection.anchor);
+        view.cursor.cursor = selection.cursor;
+        self.mode = match mode {
+            VisualModeKind::Char => EditorMode::Visual,
+            VisualModeKind::Line => EditorMode::VisualLine,
+            VisualModeKind::Block => EditorMode::VisualBlock,
+        };
+        self.clear_status();
     }
 
     pub(super) fn delete_active_visual_selection_to_private_register(
@@ -46,12 +74,11 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.mode = EditorMode::Normal;
-        self.clear_active_visual_anchor();
-        self.set_status("deleted");
-        self.invalidate_active_render_caches();
-        let _ = self.record_active_undo_if_changed(before);
-        let _ = self.session.recompute_active_dirty();
+        self.finish_active_visual_selection_edit(
+            before,
+            EditorMode::Normal,
+            Some("deleted"),
+        );
     }
 
     pub(super) fn delete_active_visual_selection_without_yank(
@@ -81,12 +108,95 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.mode = EditorMode::Normal;
-        self.clear_active_visual_anchor();
-        self.set_status("deleted");
-        self.invalidate_active_render_caches();
-        let _ = self.record_active_undo_if_changed(before);
-        let _ = self.session.recompute_active_dirty();
+        self.finish_active_visual_selection_edit(
+            before,
+            EditorMode::Normal,
+            Some("deleted"),
+        );
+    }
+
+    pub(super) fn change_active_visual_selection_to_private_register(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let Some(plan) = self.active_visual_selection_edit_plan() else {
+            return;
+        };
+        let before = self.capture_active_undo_snapshot();
+
+        self.private_register = plan.text.clone();
+        self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            let mut new_pos = view.cursor.cursor;
+            for (start, end) in plan.delete_ranges.iter().rev().copied() {
+                new_pos = buffer.delete_range(start, end);
+            }
+            if plan.mode == VisualModeKind::Line {
+                let _ = buffer.insert(new_pos, "\n");
+            }
+            view.cursor.cursor = new_pos;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
+    }
+
+    pub(super) fn apply_text_object_operator(
+        &mut self,
+        operator: TextObjectOperator,
+        spec: TextObjectSpec,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let Some(plan) = self.active_text_object_edit_plan(spec) else {
+            return;
+        };
+
+        match operator {
+            TextObjectOperator::Delete => {
+                let before = self.capture_active_undo_snapshot();
+                self.private_register = plan.text.clone();
+                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
+                self.apply_edit_plan_ranges(
+                    &plan,
+                    viewport_width_cells,
+                    text_vh,
+                    false,
+                );
+                self.finish_active_visual_selection_edit(
+                    before,
+                    EditorMode::Normal,
+                    Some("deleted"),
+                );
+            }
+            TextObjectOperator::Change => {
+                let before = self.capture_active_undo_snapshot();
+                self.private_register = plan.text.clone();
+                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
+                self.apply_edit_plan_ranges(
+                    &plan,
+                    viewport_width_cells,
+                    text_vh,
+                    plan.mode == VisualModeKind::Line,
+                );
+                self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
+            }
+            TextObjectOperator::Select => {}
+        }
     }
 
     pub(super) fn active_visual_line_range(&self) -> Option<(usize, usize)> {
@@ -189,6 +299,46 @@ impl EditorState {
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
+    }
+
+    fn finish_active_visual_selection_edit(
+        &mut self,
+        before: super::UndoSnapshot,
+        mode: EditorMode,
+        status: Option<&str>,
+    ) {
+        self.mode = mode;
+        self.clear_active_visual_anchor();
+        match status {
+            Some(message) => self.set_status(message),
+            None => self.clear_status(),
+        }
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
+    fn apply_edit_plan_ranges(
+        &mut self,
+        plan: &TextObjectEditPlan,
+        viewport_width_cells: usize,
+        text_vh: usize,
+        preserve_blank_line: bool,
+    ) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer_mut();
+
+        let mut new_pos = view.cursor.cursor;
+        for (start, end) in plan.delete_ranges.iter().rev().copied() {
+            new_pos = buffer.delete_range(start, end);
+        }
+        if preserve_blank_line {
+            let _ = buffer.insert(new_pos, "\n");
+        }
+        view.cursor.cursor = new_pos;
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
     }
 
     pub(super) fn move_visual_selection_lines_up(

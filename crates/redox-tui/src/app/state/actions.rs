@@ -329,6 +329,18 @@ impl EditorState {
                 }
             }
 
+            InputAction::ChangeSelectionPrivate => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
+                    self.change_active_visual_selection_to_private_register(
+                        viewport_width_cells,
+                        text_vh,
+                    );
+                }
+            }
+
             InputAction::DeleteSelectionNoYank => {
                 if matches!(
                     self.mode,
@@ -345,6 +357,19 @@ impl EditorState {
                         viewport_width_cells,
                         text_vh,
                     );
+                }
+            }
+
+            InputAction::OperateTextObject { operator, spec } => {
+                if operator == crate::input::TextObjectOperator::Select {
+                    if matches!(
+                        self.mode,
+                        EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                    ) {
+                        self.select_text_object_in_visual_mode(spec);
+                    }
+                } else if self.mode == EditorMode::Normal {
+                    self.apply_text_object_operator(operator, spec, viewport_width_cells, text_vh);
                 }
             }
 

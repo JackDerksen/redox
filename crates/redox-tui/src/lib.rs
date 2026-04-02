@@ -606,15 +606,6 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let selected_line_bg = visual_selection
-            .filter(|(selection, mode)| {
-                buffer
-                    .visual_selection_char_range_on_line(*selection, *mode, line_idx)
-                    .is_some()
-                    || (buffer.line_len_chars(line_idx) == 0
-                        && selected_empty_line(*selection, *mode, line_idx))
-            })
-            .map(|_| style.theme.selection_bg);
         if let Some((selection, mode)) = visual_selection {
             let highlight_empty_line =
                 buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, mode, line_idx);
@@ -622,6 +613,13 @@ fn draw_snapshot_lines(
                 buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
                 let source_line = buffer.line_string(line_idx);
+                let selected_cells = selected_visible_cells(
+                    &source_line,
+                    scroll_x,
+                    text_w as usize,
+                    sel_range.start,
+                    sel_range.end,
+                );
                 draw_line_with_selection(
                     window,
                     row as u16,
@@ -645,7 +643,7 @@ fn draw_snapshot_lines(
                     content_x,
                     visible_indent_guides,
                     style,
-                    selected_line_bg,
+                    Some(&selected_cells),
                 )?;
                 draw_delimiter_highlights(
                     window,
@@ -701,12 +699,12 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                visible_indent_guides,
-                style,
-                selected_line_bg,
-            )?;
-            draw_delimiter_highlights(
-                window,
+                    visible_indent_guides,
+                    style,
+                    None,
+                )?;
+                draw_delimiter_highlights(
+                    window,
                 row as u16,
                 content_x,
                 &source_line,
@@ -735,7 +733,7 @@ fn draw_snapshot_lines(
             content_x,
             visible_indent_guides,
             style,
-            selected_line_bg,
+            None,
         )?;
         draw_delimiter_highlights(
             window,
@@ -750,6 +748,53 @@ fn draw_snapshot_lines(
     }
 
     Ok(())
+}
+
+fn selected_visible_cells(
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    sel_start_char: usize,
+    sel_end_char_exclusive: usize,
+) -> Vec<bool> {
+    let mut selected = vec![false; width_cells];
+    if width_cells == 0 || source_line.is_empty() || sel_start_char >= sel_end_char_exclusive {
+        return selected;
+    }
+
+    let mut line_cells = 0usize;
+    let mut char_idx = 0usize;
+    let max_visible_cell = scroll_x.saturating_add(width_cells);
+
+    for g in source_line.graphemes(true) {
+        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_chars = g.chars().count();
+        let start_cell = line_cells;
+        let end_cell = line_cells.saturating_add(g_width);
+        let start_char = char_idx;
+        let end_char = char_idx.saturating_add(g_chars);
+
+        line_cells = end_cell;
+        char_idx = end_char;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell >= max_visible_cell {
+            break;
+        }
+        if !(start_char < sel_end_char_exclusive && end_char > sel_start_char) {
+            continue;
+        }
+
+        let visible_start = start_cell.max(scroll_x).saturating_sub(scroll_x);
+        let visible_end = end_cell.min(max_visible_cell).saturating_sub(scroll_x);
+        for cell in visible_start..visible_end {
+            selected[cell] = true;
+        }
+    }
+
+    selected
 }
 
 fn selected_empty_line(
