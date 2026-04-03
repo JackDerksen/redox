@@ -307,6 +307,12 @@ impl EditorState {
                 | EditorMode::VisualBlock => {}
             },
 
+            InputAction::PasteSystemClipboardText(text) => {
+                if self.mode == EditorMode::Normal {
+                    self.paste_system_clipboard_text(&text, viewport_width_cells, text_vh);
+                }
+            }
+
             InputAction::YankSelectionPrivate => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     if let Some((selection, mode)) = self.active_visual_selection() {

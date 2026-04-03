@@ -614,4 +614,43 @@ impl EditorState {
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
+
+    pub(super) fn paste_system_clipboard_text(
+        &mut self,
+        text: &str,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        let text = normalize_clipboard_text(text);
+        if text.is_empty() {
+            return;
+        }
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let before = self.capture_active_undo_snapshot();
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let linewise = text.ends_with('\n');
+
+        {
+            let buffer = self.session.active_buffer_mut();
+            view.cursor.cursor = buffer.paste_after(view.cursor.cursor, &text, linewise);
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+}
+
+fn normalize_clipboard_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+        .collect()
 }

@@ -5,7 +5,7 @@ mod languages;
 use std::path::Path;
 
 use minui::prelude::TabPolicy;
-use minui::{ColorPair, ColoredSpan, Window, cell_width};
+use minui::{ColorPair, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
@@ -302,11 +302,17 @@ pub fn draw_line_with_syntax(
         spans,
     );
     if !owned_spans.is_empty() {
-        let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
-            .iter()
-            .map(|span| ColoredSpan::new(&span.text, span.colors))
-            .collect();
-        window.write_spans_colored(row, col, &spans_ref)?;
+        let mut used_cells = 0usize;
+        for span in &owned_spans {
+            window.write_str_colored(
+                row,
+                col.saturating_add(used_cells as u16),
+                &span.text,
+                span.colors,
+            )?;
+            used_cells = used_cells
+                .saturating_add(cell_width(span.text.as_str(), TabPolicy::Fixed(4)) as usize);
+        }
     }
 
     draw_color_column_gap(

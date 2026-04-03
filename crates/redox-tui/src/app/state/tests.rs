@@ -53,6 +53,102 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
+fn normal_mode_system_clipboard_paste_matches_p_semantics() {
+    let path = temp_file_path("paste_system_clipboard_normal");
+    let mut state = state_with_text(path.clone(), "abcd");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(
+        InputAction::PasteSystemClipboardText("XY".to_string()),
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "abXYcd");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_system_clipboard_paste_normalizes_crlf() {
+    let path = temp_file_path("paste_system_clipboard_crlf");
+    let mut state = state_with_text(path.clone(), "one\ntwo\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(
+        InputAction::PasteSystemClipboardText("X\r\nY".to_string()),
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "onX\nYe\ntwo\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_system_clipboard_paste_strips_control_characters() {
+    let path = temp_file_path("paste_system_clipboard_controls");
+    let mut state = state_with_text(path.clone(), "abcd");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(
+        InputAction::PasteSystemClipboardText("X\u{1b}Y\u{0008}Z".to_string()),
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "abXYZcd");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sync() {
+    let path = temp_file_path("insert_mode_repeated_paste_scroll");
+    let mut state = state_with_text(path.clone(), "");
+    let chunk = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
+
+    state.apply_input(InputAction::SetMode(InputMode::Insert), 80, 24);
+    state.apply_input(InputAction::Paste(chunk.to_string()), 80, 24);
+    state.apply_input(InputAction::Paste(chunk.to_string()), 80, 24);
+
+    let id = state.session.active_id();
+    let view = state.views.get(&id).expect("missing active view");
+    let buffer = state.session.active_buffer();
+    let spec = view.cursor.clone().cursor_spec(buffer, 80, 23);
+
+    assert_eq!(state.session.active_buffer().to_string(), format!("{chunk}{chunk}"));
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, chunk.len() * 2));
+    assert_eq!(view.cursor.scroll_x_cells, chunk.len() * 2 - 79);
+    assert!(spec.visible);
+    assert_eq!(spec.x, 79);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
     let path = temp_file_path("undo_redo_basic");
     let mut state = state_with_text(path.clone(), "hello");

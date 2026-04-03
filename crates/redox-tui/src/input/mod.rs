@@ -112,6 +112,8 @@ pub enum InputAction {
     YankSelectionSystem,
     /// Paste from system clipboard.
     PasteSystemClipboard,
+    /// Paste concrete text fetched from the system clipboard.
+    PasteSystemClipboardText(String),
     /// Paste from Redox's private register.
     PastePrivateRegister,
     /// Paste from Redox's private register before cursor / above line.
