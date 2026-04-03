@@ -1,5 +1,5 @@
 use redox_core::{
-    Selection, TextObjectEditPlan, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    Pos, Selection, TextObjectEditPlan, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
@@ -166,6 +166,13 @@ impl EditorState {
             return;
         }
 
+        let yank_selection = if operator == TextObjectOperator::Yank {
+            let buffer = self.session.active_buffer();
+            buffer.text_object_selection(self.active_cursor_pos(), spec)
+        } else {
+            None
+        };
+
         let Some(plan) = self.active_text_object_edit_plan(spec) else {
             return;
         };
@@ -198,6 +205,14 @@ impl EditorState {
                     plan.mode == VisualModeKind::Line,
                 );
                 self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
+            }
+            TextObjectOperator::Yank => {
+                self.private_register = plan.text.clone();
+                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
+                if let Some((selection, mode)) = yank_selection {
+                    self.set_one_shot_highlight(selection, mode);
+                }
+                self.set_status("yanked");
             }
             TextObjectOperator::Select => {}
         }
@@ -243,6 +258,76 @@ impl EditorState {
         }
 
         self.set_status("deleted");
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
+    pub(super) fn yank_current_line_to_private_register(&mut self, count: usize) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let (start_line, end_line, text) = {
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            let start_line = buffer.clamp_line(view.cursor.cursor.line);
+            let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines() - 1);
+            let text = buffer.line_span_text_linewise_register(start_line, end_line);
+            (start_line, end_line, text)
+        };
+
+        self.private_register = text;
+        self.private_register_kind = RegisterKind::LineWise;
+        self.set_one_shot_highlight(
+            Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
+            VisualModeKind::Line,
+        );
+        self.set_status(if start_line == end_line {
+            "yanked line"
+        } else {
+            "yanked lines"
+        });
+    }
+
+    pub(super) fn change_current_line_to_private_register(
+        &mut self,
+        count: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let before = self.capture_active_undo_snapshot();
+
+        let active_id = self.session.active_id();
+        let (start_pos, end_pos, mut cut_text) = {
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            let start_line = buffer.clamp_line(view.cursor.cursor.line);
+            let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines() - 1);
+            let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
+            let text = buffer.line_span_text_linewise_register(start_line, end_line);
+            (start_pos, end_pos, text)
+        };
+
+        self.private_register = std::mem::take(&mut cut_text);
+        self.private_register_kind = RegisterKind::LineWise;
+
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            let new_pos = buffer.delete_range(start_pos, end_pos);
+            let _ = buffer.insert(new_pos, "\n");
+            view.cursor.cursor = new_pos;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.mode = EditorMode::Insert;
+        self.clear_status();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();

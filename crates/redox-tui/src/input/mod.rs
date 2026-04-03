@@ -100,6 +100,14 @@ pub enum InputAction {
     DeleteCurrentLinePrivate {
         count: usize,
     },
+    /// Yank current line(s) into Redox's private register.
+    YankCurrentLinePrivate {
+        count: usize,
+    },
+    /// Change current line(s) into Redox's private register and enter insert mode.
+    ChangeCurrentLinePrivate {
+        count: usize,
+    },
     /// Yank active visual selection into system clipboard.
     YankSelectionSystem,
     /// Paste from system clipboard.
@@ -147,6 +155,7 @@ pub enum TextObjectOperator {
     Delete,
     Change,
     Select,
+    Yank,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +277,17 @@ impl InputState {
 }
 
 /// Map a MinUI `Event` to an `InputAction`, updating key-prefix state.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Event) -> InputAction {
+    map_event_with_context(state, mode, false, event)
+}
+
+pub fn map_event_with_context(
+    state: &mut InputState,
+    mode: InputMode,
+    confirm_explorer_delete: bool,
+    event: &Event,
+) -> InputAction {
     match event {
         Event::Escape => match mode {
             InputMode::Insert => InputAction::SetMode(InputMode::Normal),
@@ -297,13 +316,13 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
             InputMode::Normal => InputAction::SurfaceOpenSelected,
         },
 
-        Event::KeyWithModifiers(k) => map_key_with_state(state, mode, *k),
+        Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
 
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
-                modal_char_action(state, mode, *c)
+                modal_char_action(state, mode, confirm_explorer_delete, *c)
             }
         },
 
@@ -311,7 +330,12 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
     }
 }
 
-fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputAction {
+fn modal_char_action(
+    state: &mut InputState,
+    mode: InputMode,
+    confirm_explorer_delete: bool,
+    c: char,
+) -> InputAction {
     if let Some(operator) = state.pending_operator {
         if let Some(action) = resolve_pending_operator(state, c, operator) {
             return action;
@@ -363,6 +387,18 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
         'd' if mode == InputMode::Normal => {
             state.pending_operator = Some(PendingOperator {
                 operator: TextObjectOperator::Delete,
+                count: state.take_count_or_1(),
+                scope: None,
+            });
+            InputAction::None
+        }
+        'y' if mode == InputMode::Normal && confirm_explorer_delete => {
+            state.reset_prefixes();
+            InputAction::ConfirmExplorerDelete
+        }
+        'y' if mode == InputMode::Normal => {
+            state.pending_operator = Some(PendingOperator {
+                operator: TextObjectOperator::Yank,
                 count: state.take_count_or_1(),
                 scope: None,
             });
@@ -499,10 +535,6 @@ fn modal_char_action(state: &mut InputState, mode: InputMode, c: char) -> InputA
             state.reset_prefixes();
             InputAction::Undo
         }
-        'y' if mode == InputMode::Normal => {
-            state.reset_prefixes();
-            InputAction::ConfirmExplorerDelete
-        }
         _ => {
             state.reset_prefixes();
             InputAction::None
@@ -517,6 +549,12 @@ fn resolve_pending_operator(
 ) -> Option<InputAction> {
     let action = match (pending.operator, pending.scope, c) {
         (TextObjectOperator::Delete, None, 'd') => Some(InputAction::DeleteCurrentLinePrivate {
+            count: pending.count,
+        }),
+        (TextObjectOperator::Yank, None, 'y') => Some(InputAction::YankCurrentLinePrivate {
+            count: pending.count,
+        }),
+        (TextObjectOperator::Change, None, 'c') => Some(InputAction::ChangeCurrentLinePrivate {
             count: pending.count,
         }),
         (_, None, 'i') => {
@@ -654,6 +692,7 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
 fn map_key_with_state(
     state: &mut InputState,
     mode: InputMode,
+    confirm_explorer_delete: bool,
     key: KeyWithModifiers,
 ) -> InputAction {
     let mods = key.mods;
@@ -832,7 +871,7 @@ fn map_key_with_state(
             motion: Motion::Right,
             count: state.take_count_or_1(),
         },
-        KeyKind::Char(c) => modal_char_action(state, mode, c),
+        KeyKind::Char(c) => modal_char_action(state, mode, confirm_explorer_delete, c),
         _ => {
             state.reset_prefixes();
             InputAction::None
@@ -1271,6 +1310,22 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_yy_yanks_current_line_to_private_register() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
+        assert_eq!(action, InputAction::YankCurrentLinePrivate { count: 1 });
+    }
+
+    #[test]
+    fn normal_mode_cc_changes_current_line_to_private_register() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        assert_eq!(action, InputAction::ChangeCurrentLinePrivate { count: 1 });
+    }
+
+    #[test]
     fn visual_mode_iw_resolves_to_inner_word_select() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('i'));
@@ -1415,7 +1470,8 @@ mod tests {
     #[test]
     fn normal_mode_y_confirms_explorer_delete() {
         let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
+        let action =
+            map_event_with_context(&mut state, InputMode::Normal, true, &Event::Character('y'));
         assert_eq!(action, InputAction::ConfirmExplorerDelete);
     }
 

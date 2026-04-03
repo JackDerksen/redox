@@ -144,6 +144,9 @@ redox src
 | `ctrl+d` | Scroll down by one viewport |
 | `ctrl+u` | Scroll up by one viewport |
 | `zz` | Center cursor line in the viewport |
+| `dd` | Delete current line |
+| `cc` | Change current line |
+| `yy` | Yank current line |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).

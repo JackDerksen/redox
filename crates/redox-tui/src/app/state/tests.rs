@@ -1671,6 +1671,10 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
     assert_eq!(state.private_register, "alph");
     assert_eq!(state.mode, EditorMode::Normal);
     assert_eq!(state.status_msg.as_deref(), Some("yanked"));
+    assert_eq!(
+        state.one_shot_highlight(),
+        Some((Selection::new(Pos::new(0, 0), Pos::new(0, 3)), VisualModeKind::Char))
+    );
     assert!(state.take_pending_system_clipboard().is_none());
 
     let _ = fs::remove_file(path);
@@ -1994,6 +1998,40 @@ fn text_object_change_around_paragraph_leaves_single_blank_line() {
     assert_eq!(state.session.active_buffer().to_string(), "\nthree\n");
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn text_object_yank_sets_flash_highlight() {
+    let path = temp_file_path("text_object_yank_inner_word");
+    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 7);
+
+    state.apply_input(
+        InputAction::OperateTextObject {
+            operator: TextObjectOperator::Yank,
+            spec: TextObjectSpec {
+                scope: TextObjectScope::Inner,
+                kind: TextObjectKind::Word,
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.private_register, "beta");
+    assert_eq!(
+        state.one_shot_highlight(),
+        Some((Selection::new(Pos::new(0, 6), Pos::new(0, 9)), VisualModeKind::Char))
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -2508,6 +2546,69 @@ fn normal_mode_dd_cuts_current_line() {
     assert_eq!(state.private_register, "two\n");
     assert_eq!(state.session.active_buffer().to_string(), "one\nthree\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_yy_yanks_current_line_and_sets_flash() {
+    let path = temp_file_path("yy_yank_line");
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 1);
+
+    state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
+
+    assert_eq!(state.private_register, "two\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
+    assert_eq!(
+        state.one_shot_highlight(),
+        Some((Selection::new(Pos::new(1, 0), Pos::new(1, 0)), VisualModeKind::Line))
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn yank_flash_persists_for_two_frames() {
+    let path = temp_file_path("yy_yank_flash_duration");
+    let mut state = state_with_text(path.clone(), "one\ntwo\n");
+
+    state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
+    assert!(state.one_shot_highlight().is_some());
+
+    state.advance_one_shot_highlight();
+    assert!(state.one_shot_highlight().is_some());
+
+    state.advance_one_shot_highlight();
+    assert!(state.one_shot_highlight().is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_cc_changes_current_line_and_enters_insert() {
+    let path = temp_file_path("cc_change_line");
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 2);
+
+    state.apply_input(InputAction::ChangeCurrentLinePrivate { count: 1 }, 80, 24);
+
+    assert_eq!(state.private_register, "two\n");
+    assert_eq!(state.session.active_buffer().to_string(), "one\n\nthree\n");
+    assert_eq!(state.mode, EditorMode::Insert);
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert!(state.status_msg.is_none());
     let _ = fs::remove_file(path);
 }
 

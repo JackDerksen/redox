@@ -309,6 +309,9 @@ impl EditorState {
 
             InputAction::YankSelectionPrivate => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
+                    if let Some((selection, mode)) = self.active_visual_selection() {
+                        self.set_one_shot_highlight(selection, mode);
+                    }
                     self.private_register = plan.text;
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.mode = EditorMode::Normal;
@@ -360,6 +363,22 @@ impl EditorState {
                 }
             }
 
+            InputAction::YankCurrentLinePrivate { count } => {
+                if self.mode == EditorMode::Normal {
+                    self.yank_current_line_to_private_register(count.max(1));
+                }
+            }
+
+            InputAction::ChangeCurrentLinePrivate { count } => {
+                if self.mode == EditorMode::Normal {
+                    self.change_current_line_to_private_register(
+                        count.max(1),
+                        viewport_width_cells,
+                        text_vh,
+                    );
+                }
+            }
+
             InputAction::OperateTextObject { operator, spec } => {
                 if operator == crate::input::TextObjectOperator::Select {
                     if matches!(
@@ -375,6 +394,9 @@ impl EditorState {
 
             InputAction::YankSelectionSystem => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
+                    if let Some((selection, mode)) = self.active_visual_selection() {
+                        self.set_one_shot_highlight(selection, mode);
+                    }
                     self.private_register = plan.text.clone();
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.pending_system_clipboard = Some(plan.text);

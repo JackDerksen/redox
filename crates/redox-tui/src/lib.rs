@@ -16,7 +16,7 @@ mod input;
 mod ui;
 
 use app::EditorState;
-use input::{InputAction, map_event_with_state};
+use input::{InputAction, map_event_with_context};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
@@ -146,6 +146,7 @@ fn draw_buffer_view(
     }
 
     let visual_selection = state.active_visual_selection();
+    let one_shot_highlight = state.one_shot_highlight();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
     let (snapshot, spec, scroll_x, syntax_spans, delimiter_highlights, active_scope_guides) = state
         .with_active_buffer_view_mut(|buffer, view| {
@@ -227,7 +228,9 @@ fn draw_buffer_view(
         &delimiter_highlights,
         &active_scope_guides,
         visual_selection,
+        one_shot_highlight,
     )?;
+    state.advance_one_shot_highlight();
 
     // --- Status bar (bottom row) ---
     let status = build_editor_status_bar(state, style);
@@ -576,6 +579,7 @@ fn draw_buffer_snapshot_for_id(
         &delimiter_highlights,
         &active_scope_guides,
         None,
+        None,
     )?;
 
     Ok(())
@@ -594,6 +598,7 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for (row, line) in snapshot.lines.iter().enumerate() {
@@ -606,7 +611,13 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        if let Some((selection, mode)) = visual_selection {
+        let transient_selection = visual_selection
+            .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
+            .or_else(|| {
+                one_shot_highlight
+                    .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
+            });
+        if let Some((selection, mode, selection_bg)) = transient_selection {
             let highlight_empty_line =
                 buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, mode, line_idx);
             if let Some(sel_range) =
@@ -630,7 +641,7 @@ fn draw_snapshot_lines(
                     sel_range.start,
                     sel_range.end,
                     default_colors,
-                    style.theme.selection_bg,
+                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
@@ -643,7 +654,7 @@ fn draw_snapshot_lines(
                     content_x,
                     visible_indent_guides,
                     style,
-                    Some(&selected_cells),
+                    Some((&selected_cells, selection_bg)),
                 )?;
                 draw_delimiter_highlights(
                     window,
@@ -668,7 +679,7 @@ fn draw_snapshot_lines(
                     0,
                     0,
                     default_colors,
-                    style.theme.selection_bg,
+                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
@@ -928,9 +939,15 @@ fn handle_editor_event(
         return !state.should_quit;
     }
 
+    let confirm_explorer_delete = state.has_pending_explorer_delete_confirmation();
     let action = match &event {
         Event::Paste(text) => InputAction::Paste(text.clone()),
-        _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
+        _ => map_event_with_context(
+            &mut state.input,
+            state.mode.as_input_mode(),
+            confirm_explorer_delete,
+            &event,
+        ),
     };
 
     let (w, h) = state.viewport_size();
