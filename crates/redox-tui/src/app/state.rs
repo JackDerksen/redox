@@ -46,6 +46,7 @@ struct UndoHistory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OneShotHighlight {
+    buffer_id: BufferId,
     selection: Selection,
     mode: VisualModeKind,
     remaining_frames: u8,
@@ -197,14 +198,22 @@ impl EditorState {
     }
 
     pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind)> {
-        self.one_shot_highlight
-            .map(|highlight| (highlight.selection, highlight.mode))
+        let highlight = self.one_shot_highlight?;
+        (highlight.buffer_id == self.session.active_id())
+            .then_some((highlight.selection, highlight.mode))
     }
 
     pub fn advance_one_shot_highlight(&mut self) {
         let Some(mut highlight) = self.one_shot_highlight.take() else {
             return;
         };
+        if self.session.buffer(highlight.buffer_id).is_none() {
+            return;
+        }
+        if highlight.buffer_id != self.session.active_id() {
+            self.one_shot_highlight = Some(highlight);
+            return;
+        }
 
         if highlight.remaining_frames > 1 {
             highlight.remaining_frames -= 1;
@@ -214,6 +223,7 @@ impl EditorState {
 
     fn set_one_shot_highlight(&mut self, selection: Selection, mode: VisualModeKind) {
         self.one_shot_highlight = Some(OneShotHighlight {
+            buffer_id: self.session.active_id(),
             selection,
             mode,
             remaining_frames: 2,

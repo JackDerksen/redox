@@ -2992,6 +2992,41 @@ fn yank_flash_persists_for_two_frames() {
 }
 
 #[test]
+fn one_shot_highlight_is_scoped_to_its_buffer() {
+    let path_a = temp_file_path("one_shot_highlight_buffer_a");
+    let path_b = temp_file_path("one_shot_highlight_buffer_b");
+    let mut state = state_with_text(path_a.clone(), "one\ntwo\n");
+    fs::write(&path_b, "alpha\nbeta\n").expect("failed to write test file");
+
+    let id_a = state.session.active_id();
+    state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
+    let expected = Some((
+        Selection::new(Pos::new(0, 0), Pos::new(0, 0)),
+        VisualModeKind::Line,
+    ));
+    assert_eq!(state.one_shot_highlight(), expected);
+
+    run_command(&mut state, &format!("e {}", path_b.display()));
+    let id_b = state.session.active_id();
+    assert_ne!(id_a, id_b);
+    assert_eq!(state.one_shot_highlight(), None);
+
+    state.advance_one_shot_highlight();
+    run_command(&mut state, "bp");
+    assert_eq!(state.session.active_id(), id_a);
+    assert_eq!(state.one_shot_highlight(), expected);
+
+    state.advance_one_shot_highlight();
+    assert!(state.one_shot_highlight().is_some());
+
+    state.advance_one_shot_highlight();
+    assert!(state.one_shot_highlight().is_none());
+
+    let _ = fs::remove_file(path_a);
+    let _ = fs::remove_file(path_b);
+}
+
+#[test]
 fn normal_mode_cc_changes_current_line_and_enters_insert() {
     let path = temp_file_path("cc_change_line");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
