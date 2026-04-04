@@ -304,7 +304,9 @@ impl EditorState {
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
             let start_line = buffer.clamp_line(view.cursor.cursor.line);
-            let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines() - 1);
+            let end_line = start_line
+                .saturating_add(count.saturating_sub(1))
+                .min(buffer.len_lines() - 1);
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
             (start_pos, end_pos, text)
@@ -338,7 +340,9 @@ impl EditorState {
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
             let start_line = buffer.clamp_line(view.cursor.cursor.line);
-            let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines() - 1);
+            let end_line = start_line
+                .saturating_add(count.saturating_sub(1))
+                .min(buffer.len_lines() - 1);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
             (start_line, end_line, text)
         };
@@ -372,7 +376,9 @@ impl EditorState {
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
             let start_line = buffer.clamp_line(view.cursor.cursor.line);
-            let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines() - 1);
+            let end_line = start_line
+                .saturating_add(count.saturating_sub(1))
+                .min(buffer.len_lines() - 1);
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
             (start_pos, end_pos, text)
