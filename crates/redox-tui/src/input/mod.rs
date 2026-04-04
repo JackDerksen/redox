@@ -704,16 +704,65 @@ fn resolve_pending_operator(
                 }),
             })
         }
-        _ => Some(InputAction::None),
+        (_, None, motion_char) => operator_motion_from_input(state, motion_char).map(|motion| {
+            InputAction::OperateTarget {
+                operator: pending.operator,
+                target: OperatorTarget::Motion {
+                    motion,
+                    count: pending.count,
+                },
+            }
+        }),
     };
 
-    if !matches!(action, Some(InputAction::None)) {
-        state.pending_operator = None;
-    } else if !matches!((pending.operator, pending.scope, c), (_, None, 'i' | 'a')) {
+    if action
+        .as_ref()
+        .is_some_and(|action| !matches!(action, InputAction::None))
+    {
         state.pending_operator = None;
     }
 
     action
+}
+
+// TODO: This is kind of a gross temporary fix. In the future, I'll need to
+// refactor basically the entire motion handling system into something like
+// a shared "key/char to motion-or-sequence" translation layer and then let
+// both plain motions and operator-pending motions consume that same result.
+fn operator_motion_from_input(state: &mut InputState, c: char) -> Option<Motion> {
+    if !state.pending_sequence.is_empty() {
+        let mut candidate = state.pending_sequence.clone();
+        candidate.push(c);
+        if let Some(motion) = motion_from_sequence(&candidate) {
+            state.clear_sequence();
+            return Some(motion);
+        }
+    }
+
+    motion_from_char(c)
+}
+
+fn motion_from_char(c: char) -> Option<Motion> {
+    match c {
+        'h' => Some(Motion::Left),
+        'j' => Some(Motion::Down),
+        'k' => Some(Motion::Up),
+        'l' => Some(Motion::Right),
+        'w' => Some(Motion::WordStartAfter),
+        'b' => Some(Motion::WordStartBefore),
+        'e' => Some(Motion::WordEndAfter),
+        '_' => Some(Motion::LineFirstNonWhitespace),
+        '$' => Some(Motion::LineEnd),
+        'G' => Some(Motion::FileEnd),
+        _ => None,
+    }
+}
+
+fn motion_from_sequence(sequence: &str) -> Option<Motion> {
+    match sequence {
+        "gg" => Some(Motion::FileStart),
+        _ => None,
+    }
 }
 
 fn text_object_kind_from_char(c: char) -> Option<TextObjectKind> {
@@ -1001,6 +1050,21 @@ fn map_key_with_state(
                 },
             };
         }
+        if matches!(key, KeyKind::Char('V') | KeyKind::Char('v')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'V');
+        }
+        if matches!(key, KeyKind::Char('P') | KeyKind::Char('p')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'P');
+        }
+        if matches!(key, KeyKind::Char('J') | KeyKind::Char('j')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'J');
+        }
+        if matches!(key, KeyKind::Char('K') | KeyKind::Char('k')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'K');
+        }
+        if matches!(key, KeyKind::Char('G') | KeyKind::Char('g')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'G');
+        }
     }
 
     match key {
@@ -1162,6 +1226,42 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_w_after_delete_operator_maps_to_motion_operator() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('w'));
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::WordStartAfter,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_gg_after_delete_operator_maps_to_motion_operator() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
+        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
+        assert_eq!(first, InputAction::None);
+        assert_eq!(
+            second,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::FileStart,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
     fn normal_mode_zero_after_delete_operator_maps_to_motion_operator() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
@@ -1306,8 +1406,11 @@ mod tests {
         assert_eq!(after_escape, InputAction::None);
 
         let mut backspace_state = InputState::new();
-        let _ =
-            map_event_with_state(&mut backspace_state, InputMode::Normal, &Event::Character('r'));
+        let _ = map_event_with_state(
+            &mut backspace_state,
+            InputMode::Normal,
+            &Event::Character('r'),
+        );
         let backspace =
             map_event_with_state(&mut backspace_state, InputMode::Normal, &Event::Backspace);
         let after_backspace = map_event_with_state(
@@ -1491,6 +1594,20 @@ mod tests {
             InputMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
                 key: KeyKind::Char('V'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
+    }
+
+    #[test]
+    fn normal_mode_shift_lowercase_v_key_event_enters_visual_line_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('v'),
                 mods: KeyModifiers::shift(),
             }),
         );
@@ -1818,11 +1935,48 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_shift_lowercase_p_key_event_pastes_private_register_before() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('p'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::PastePrivateRegisterBefore);
+    }
+
+    #[test]
     fn visual_mode_shift_j_and_shift_k_move_selection() {
         let mut state = InputState::new();
         let down = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('J'));
         assert_eq!(down, InputAction::MoveVisualSelectionDown { count: 1 });
         let up = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('K'));
+        assert_eq!(up, InputAction::MoveVisualSelectionUp { count: 1 });
+    }
+
+    #[test]
+    fn visual_mode_shift_lowercase_j_and_k_key_events_move_selection() {
+        let mut state = InputState::new();
+        let down = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('j'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(down, InputAction::MoveVisualSelectionDown { count: 1 });
+        let up = map_event_with_state(
+            &mut state,
+            InputMode::Visual,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('k'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
         assert_eq!(up, InputAction::MoveVisualSelectionUp { count: 1 });
     }
 
@@ -1878,6 +2032,34 @@ mod tests {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
         assert_eq!(action, InputAction::Undo);
+    }
+
+    #[test]
+    fn normal_mode_shift_lowercase_g_key_event_maps_to_file_end() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('2'),
+                mods: KeyModifiers::none(),
+            }),
+        );
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('g'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::FileEnd,
+                count: 2,
+            }
+        );
     }
 
     #[test]
