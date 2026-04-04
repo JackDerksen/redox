@@ -308,28 +308,41 @@ pub fn map_event_with_context(
     event: &Event,
 ) -> InputAction {
     match event {
-        Event::Escape => match mode {
-            InputMode::Insert => InputAction::SetMode(InputMode::Normal),
-            InputMode::Command => InputAction::CommandCancel,
-            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
-                InputAction::SetMode(InputMode::Normal)
+        Event::Escape => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Insert => InputAction::SetMode(InputMode::Normal),
+                InputMode::Command => InputAction::CommandCancel,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                    InputAction::SetMode(InputMode::Normal)
+                }
+                InputMode::Normal => InputAction::None,
             }
-            InputMode::Normal => InputAction::None,
-        },
+        }
 
-        Event::Backspace => match mode {
-            InputMode::Insert => InputAction::Backspace,
-            InputMode::Command => InputAction::CommandBackspace,
-            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => InputAction::None,
-            InputMode::Normal => InputAction::None,
-        },
+        Event::Backspace => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Insert => InputAction::Backspace,
+                InputMode::Command => InputAction::CommandBackspace,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                    InputAction::None
+                }
+                InputMode::Normal => InputAction::None,
+            }
+        }
 
-        Event::Enter => match mode {
-            InputMode::Insert => InputAction::Enter,
-            InputMode::Command => InputAction::CommandEnter,
-            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => InputAction::None,
-            InputMode::Normal => InputAction::SurfaceOpenSelected,
-        },
+        Event::Enter => {
+            state.reset_prefixes();
+            match mode {
+                InputMode::Insert => InputAction::Enter,
+                InputMode::Command => InputAction::CommandEnter,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
+                    InputAction::None
+                }
+                InputMode::Normal => InputAction::SurfaceOpenSelected,
+            }
+        }
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
 
@@ -1248,6 +1261,38 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::ReplaceChar('\t'));
+    }
+
+    #[test]
+    fn normal_mode_raw_non_character_events_clear_pending_replace() {
+        let mut escape_state = InputState::new();
+        let _ = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('r'));
+        let escape = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Escape);
+        let after_escape =
+            map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('q'));
+        assert_eq!(escape, InputAction::None);
+        assert_eq!(after_escape, InputAction::None);
+
+        let mut backspace_state = InputState::new();
+        let _ =
+            map_event_with_state(&mut backspace_state, InputMode::Normal, &Event::Character('r'));
+        let backspace =
+            map_event_with_state(&mut backspace_state, InputMode::Normal, &Event::Backspace);
+        let after_backspace = map_event_with_state(
+            &mut backspace_state,
+            InputMode::Normal,
+            &Event::Character('q'),
+        );
+        assert_eq!(backspace, InputAction::None);
+        assert_eq!(after_backspace, InputAction::None);
+
+        let mut enter_state = InputState::new();
+        let _ = map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Character('r'));
+        let enter = map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Enter);
+        let after_enter =
+            map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Character('q'));
+        assert_eq!(enter, InputAction::SurfaceOpenSelected);
+        assert_eq!(after_enter, InputAction::None);
     }
 
     #[test]
