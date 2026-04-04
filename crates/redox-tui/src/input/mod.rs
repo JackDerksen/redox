@@ -991,12 +991,13 @@ fn map_key_with_state(
                 state.reset_prefixes();
                 return InputAction::None;
             }
+            let count = state.take_count_or_1();
             state.reset_prefixes();
             return InputAction::OperateTarget {
                 operator: TextObjectOperator::Delete,
                 target: OperatorTarget::Motion {
                     motion: Motion::LineEnd,
-                    count: state.take_count_or_1(),
+                    count,
                 },
             };
         }
@@ -1211,6 +1212,37 @@ mod tests {
                 target: OperatorTarget::Motion {
                     motion: Motion::LineEnd,
                     count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_shift_key_d_preserves_count_prefix() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('2'),
+                mods: KeyModifiers::none(),
+            }),
+        );
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('d'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count: 2,
                 },
             }
         );
