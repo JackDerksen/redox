@@ -304,14 +304,15 @@ pub fn draw_line_with_syntax(
     if !owned_spans.is_empty() {
         let mut used_cells = 0usize;
         for span in &owned_spans {
+            let draw_col = col.saturating_add(used_cells.min(u16::MAX as usize) as u16);
             window.write_str_colored(
                 row,
-                col.saturating_add(used_cells as u16),
+                draw_col,
                 &span.text,
                 span.colors,
             )?;
-            used_cells = used_cells
-                .saturating_add(cell_width(span.text.as_str(), TabPolicy::Fixed(4)) as usize);
+            used_cells =
+                used_cells.saturating_add(cell_width(span.text.as_str(), TabPolicy::Fixed(4)) as usize);
         }
     }
 
