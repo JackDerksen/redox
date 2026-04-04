@@ -237,6 +237,68 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
 }
 
 #[test]
+fn normal_mode_operate_motion_line_end_count_spans_multiple_lines() {
+    let path = temp_file_path("operate_motion_delete_line_end_count");
+    let mut state = state_with_text(path.clone(), "alpha\nbeta\ngamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineEnd,
+                count: 2,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "al\ngamma\n");
+    assert_eq!(state.private_register, "pha\nbeta");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_operate_motion_first_non_whitespace_count_spans_multiple_lines() {
+    let path = temp_file_path("operate_motion_delete_first_non_ws_count");
+    let mut state = state_with_text(path.clone(), "alpha\n  beta\n\tgamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineFirstNonWhitespace,
+                count: 3,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "algamma\n");
+    assert_eq!(state.private_register, "pha\n  beta\n\t");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn normal_mode_shift_i_enters_insert_at_first_non_whitespace() {
     let path = temp_file_path("shift_i_first_non_whitespace");
     let mut state = state_with_text(path.clone(), "\t  alpha\n");

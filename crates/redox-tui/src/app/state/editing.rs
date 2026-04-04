@@ -1,5 +1,6 @@
 use redox_core::{
-    Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan, motion::apply_motion_n,
+    Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    motion::{Motion, apply_motion_n},
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
@@ -155,7 +156,24 @@ impl EditorState {
 
         match target {
             OperatorTarget::Motion { motion, count } => {
-                let end = apply_motion_n(buffer, cursor, *motion, (*count).max(1));
+                let count = (*count).max(1);
+                let end = match (*motion, count) {
+                    (Motion::LineEnd, n) if n > 1 => {
+                        let target_line = buffer
+                            .clamp_line(cursor.line)
+                            .saturating_add(n - 1)
+                            .min(buffer.len_lines().saturating_sub(1));
+                        Pos::new(target_line, buffer.line_len_chars(target_line))
+                    }
+                    (Motion::LineFirstNonWhitespace, n) if n > 1 => {
+                        let target_line = buffer
+                            .clamp_line(cursor.line)
+                            .saturating_add(n - 1)
+                            .min(buffer.len_lines().saturating_sub(1));
+                        Pos::new(target_line, buffer.line_first_non_whitespace_col(target_line))
+                    }
+                    _ => apply_motion_n(buffer, cursor, *motion, count),
+                };
                 let selection = Selection::new(cursor, end);
                 (!selection.is_empty()).then(|| OperatorTargetPlan {
                     delete_ranges: vec![(cursor, end)],
