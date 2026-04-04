@@ -80,7 +80,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.finish_active_visual_selection_edit(before, EditorMode::Normal, Some("deleted"));
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
     }
 
     pub(super) fn delete_active_visual_selection_without_yank(
@@ -110,7 +110,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.finish_active_visual_selection_edit(before, EditorMode::Normal, Some("deleted"));
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
     }
 
     pub(super) fn change_active_visual_selection_to_private_register(
@@ -239,11 +239,7 @@ impl EditorState {
                 self.private_register = plan.text;
                 self.private_register_kind = plan.register_kind;
                 self.apply_delete_ranges(&plan.delete_ranges, viewport_width_cells, text_vh, false);
-                self.finish_active_visual_selection_edit(
-                    before,
-                    EditorMode::Normal,
-                    Some("deleted"),
-                );
+                self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
             }
             TextObjectOperator::Change => {
                 let before = self.capture_active_undo_snapshot();
@@ -308,7 +304,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.set_status("deleted");
+        self.clear_status();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
@@ -405,7 +401,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.set_status("deleted");
+        self.clear_status();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();

@@ -2214,7 +2214,7 @@ fn visual_delete_private_cuts_charwise_selection() {
     assert_eq!(state.private_register, "alp");
     assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -2277,7 +2277,7 @@ fn visual_line_delete_private_cuts_full_lines() {
     assert_eq!(state.private_register, "one\ntwo\n");
     assert_eq!(state.session.active_buffer().to_string(), "three\n");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -2742,7 +2742,7 @@ fn visual_line_delete_private_cuts_all_selected_lines() {
     assert_eq!(state.private_register, "one\ntwo\nthree\n");
     assert_eq!(state.session.active_buffer().to_string(), "four\n");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -2781,7 +2781,7 @@ fn visual_block_delete_private_cuts_rectangular_selection() {
     assert_eq!(state.private_register, "bc\nfg\njk");
     assert_eq!(state.session.active_buffer().to_string(), "ad\neh\nil\n");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -2872,7 +2872,7 @@ fn normal_x_deletes_char_without_modifying_private_register() {
 
     assert_eq!(state.session.active_buffer().to_string(), "apha\n");
     assert_eq!(state.private_register, "keep");
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
     let _ = fs::remove_file(path);
 }
 
@@ -2903,7 +2903,7 @@ fn visual_x_deletes_selection_without_modifying_private_register() {
     assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
     assert_eq!(state.private_register, "keep");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("deleted"));
+    assert!(state.status_msg.is_none());
     let _ = fs::remove_file(path);
 }
 
