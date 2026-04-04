@@ -43,6 +43,9 @@ pub enum Motion {
     /// Go to start of line (`0`-ish).
     LineStart,
 
+    /// Go to the first non-whitespace character on the line (`_`-ish).
+    LineFirstNonWhitespace,
+
     /// Go to end of line (`$`-ish), i.e. `line_len_chars(line)`.
     LineEnd,
 
@@ -81,6 +84,11 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
         }
 
         Motion::LineStart => Pos::new(cursor.line, 0),
+
+        Motion::LineFirstNonWhitespace => {
+            let line = buffer.clamp_line(cursor.line);
+            Pos::new(line, buffer.line_first_non_whitespace_col(line))
+        }
 
         Motion::LineEnd => {
             let line = buffer.clamp_line(cursor.line);
@@ -180,7 +188,7 @@ mod tests {
 
     #[test]
     fn line_start_and_line_end_work() {
-        let b = TextBuffer::from_str("hello\nworld!\n");
+        let b = TextBuffer::from_str("  hello\nworld!\n");
         let p = Pos::new(1, 2);
 
         let start = apply_motion(&b, p, Motion::LineStart);
@@ -188,6 +196,23 @@ mod tests {
 
         let end = apply_motion(&b, p, Motion::LineEnd);
         assert_eq!(end, Pos::new(1, 6));
+
+        let first_non_whitespace = apply_motion(&b, Pos::new(0, 5), Motion::LineFirstNonWhitespace);
+        assert_eq!(first_non_whitespace, Pos::new(0, 2));
+    }
+
+    #[test]
+    fn first_non_whitespace_clamps_to_line_end_for_blank_lines() {
+        let b = TextBuffer::from_str("   \n\t\t\n");
+
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 0), Motion::LineFirstNonWhitespace),
+            Pos::new(0, 3)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(1, 0), Motion::LineFirstNonWhitespace),
+            Pos::new(1, 2)
+        );
     }
 
     #[test]

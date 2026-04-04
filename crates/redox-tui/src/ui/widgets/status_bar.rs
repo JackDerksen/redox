@@ -425,11 +425,10 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     };
 
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
-    let mut left_text = mode_module.wrapped_text();
-    if state.active_dirty() {
-        left_text.push_str("[+]");
-    }
-    let left_text_width = left_text.chars().count() as u16;
+    let mode_text = mode_module.wrapped_text();
+    let mode_width = mode_text.chars().count() as u16;
+    let dirty_width = if state.active_dirty() { 1 } else { 0 };
+    let left_text_width = mode_width.saturating_add(dirty_width);
 
     let center_text = if let Some(msg) = &state.status_msg {
         format!(" {} ", msg)
@@ -482,15 +481,25 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .max(side_reserve_width)
         .saturating_sub(right_module_width);
 
-    EditorStatusBar::new()
+    let left_padding_width = side_reserve_width.saturating_sub(left_text_width);
+
+    let status_bar = EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)
         .with_bg(style.palette.status_bar_bg)
         .add_segment(
-            Segment::new(left_text)
+            Segment::new(mode_text)
                 .with_color(mode_colors)
                 .with_align(Align::Left)
-                .with_min_width(side_reserve_width),
+                .with_min_width(mode_width),
         )
+        .add_segment(if state.active_dirty() {
+            Segment::new("+")
+                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+                .with_min_width(1)
+        } else {
+            Segment::spacer(0)
+        })
+        .add_segment(Segment::spacer(left_padding_width))
         .add_segment(
             Segment::new(center_text)
                 .with_color(style.palette.status_bar_bg)
@@ -499,7 +508,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .add_segment(Segment::spacer(right_padding_width))
         .add_module(coords_module)
         .add_segment(Segment::spacer(style.layout.status_module_gap_width))
-        .add_module(minimap_module)
+        .add_module(minimap_module);
+
+    status_bar
 }
 
 #[cfg(test)]

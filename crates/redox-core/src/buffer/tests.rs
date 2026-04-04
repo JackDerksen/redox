@@ -538,13 +538,22 @@ fn visual_selection_helpers_dispatch_by_visual_mode() {
         b.visual_selection_pos_ranges(sel, VisualModeKind::Line),
         vec![(Pos::new(0, 0), Pos::new(2, 0))]
     );
-    assert_eq!(b.visual_selection_text(sel, VisualModeKind::Line), "abcd\nef\n");
+    assert_eq!(
+        b.visual_selection_text(sel, VisualModeKind::Line),
+        "abcd\nef\n"
+    );
 
     assert_eq!(
         b.visual_selection_pos_ranges(sel, VisualModeKind::Block),
-        vec![(Pos::new(0, 0), Pos::new(0, 2)), (Pos::new(1, 0), Pos::new(2, 0))]
+        vec![
+            (Pos::new(0, 0), Pos::new(0, 2)),
+            (Pos::new(1, 0), Pos::new(2, 0))
+        ]
     );
-    assert_eq!(b.visual_selection_text(sel, VisualModeKind::Block), "ab\nef");
+    assert_eq!(
+        b.visual_selection_text(sel, VisualModeKind::Block),
+        "ab\nef"
+    );
 }
 
 #[test]
@@ -553,19 +562,28 @@ fn visual_selection_edit_plan_bundles_delete_bounds_and_text() {
     let sel = Selection::new(Pos::new(0, 1), Pos::new(1, 0));
 
     let charwise = b.visual_selection_edit_plan(sel, VisualModeKind::Char);
-    assert_eq!(charwise.delete_ranges, vec![(Pos::new(0, 1), Pos::new(1, 1))]);
+    assert_eq!(
+        charwise.delete_ranges,
+        vec![(Pos::new(0, 1), Pos::new(1, 1))]
+    );
     assert_eq!(charwise.text, "bcd\ne");
     assert_eq!(charwise.mode, VisualModeKind::Char);
 
     let linewise = b.visual_selection_edit_plan(sel, VisualModeKind::Line);
-    assert_eq!(linewise.delete_ranges, vec![(Pos::new(0, 0), Pos::new(2, 0))]);
+    assert_eq!(
+        linewise.delete_ranges,
+        vec![(Pos::new(0, 0), Pos::new(2, 0))]
+    );
     assert_eq!(linewise.text, "abcd\nef\n");
     assert_eq!(linewise.mode, VisualModeKind::Line);
 
     let blockwise = b.visual_selection_edit_plan(sel, VisualModeKind::Block);
     assert_eq!(
         blockwise.delete_ranges,
-        vec![(Pos::new(0, 0), Pos::new(0, 2)), (Pos::new(1, 0), Pos::new(2, 0))]
+        vec![
+            (Pos::new(0, 0), Pos::new(0, 2)),
+            (Pos::new(1, 0), Pos::new(2, 0))
+        ]
     );
     assert_eq!(blockwise.text, "ab\nef");
     assert_eq!(blockwise.mode, VisualModeKind::Block);

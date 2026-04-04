@@ -16,7 +16,7 @@ mod input;
 mod ui;
 
 use app::EditorState;
-use input::{InputAction, map_event_with_state};
+use input::{InputAction, map_event_with_context};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
@@ -146,6 +146,7 @@ fn draw_buffer_view(
     }
 
     let visual_selection = state.active_visual_selection();
+    let one_shot_highlight = state.one_shot_highlight();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
     let (snapshot, spec, scroll_x, syntax_spans, delimiter_highlights, active_scope_guides) = state
         .with_active_buffer_view_mut(|buffer, view| {
@@ -227,7 +228,9 @@ fn draw_buffer_view(
         &delimiter_highlights,
         &active_scope_guides,
         visual_selection,
+        one_shot_highlight,
     )?;
+    state.advance_one_shot_highlight();
 
     // --- Status bar (bottom row) ---
     let status = build_editor_status_bar(state, style);
@@ -576,6 +579,7 @@ fn draw_buffer_snapshot_for_id(
         &delimiter_highlights,
         &active_scope_guides,
         None,
+        None,
     )?;
 
     Ok(())
@@ -594,10 +598,12 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
-    for (row, line) in snapshot.lines.iter().enumerate() {
+    for row in 0..snapshot.lines.len() {
         let line_idx = snapshot.first_line + row;
+        let source_line = buffer.line_string(line_idx);
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
             .map(Vec::as_slice)
@@ -606,13 +612,18 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        if let Some((selection, mode)) = visual_selection {
-            let highlight_empty_line =
-                buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, mode, line_idx);
+        let transient_selection = visual_selection
+            .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
+            .or_else(|| {
+                one_shot_highlight
+                    .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
+            });
+        if let Some((selection, mode, selection_bg)) = transient_selection {
+            let highlight_empty_line = buffer.line_len_chars(line_idx) == 0
+                && selected_empty_line(selection, mode, line_idx);
             if let Some(sel_range) =
                 buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
-                let source_line = buffer.line_string(line_idx);
                 let selected_cells = selected_visible_cells(
                     &source_line,
                     scroll_x,
@@ -630,20 +641,19 @@ fn draw_snapshot_lines(
                     sel_range.start,
                     sel_range.end,
                     default_colors,
-                    style.theme.selection_bg,
+                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
                     highlight_empty_line,
                 )?;
-                let source_line = buffer.line_string(line_idx);
                 draw_indent_guides(
                     window,
                     row as u16,
                     content_x,
                     visible_indent_guides,
                     style,
-                    Some(&selected_cells),
+                    Some((&selected_cells, selection_bg)),
                 )?;
                 draw_delimiter_highlights(
                     window,
@@ -668,7 +678,7 @@ fn draw_snapshot_lines(
                     0,
                     0,
                     default_colors,
-                    style.theme.selection_bg,
+                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
@@ -681,7 +691,6 @@ fn draw_snapshot_lines(
         if let Some(spans) = syntax_spans.and_then(|rows| rows.get(row))
             && !spans.is_empty()
         {
-            let source_line = buffer.line_string(line_idx);
             draw_line_with_syntax(
                 window,
                 row as u16,
@@ -694,17 +703,16 @@ fn draw_snapshot_lines(
                 style,
                 spans,
             )?;
-            let source_line = buffer.line_string(line_idx);
             draw_indent_guides(
                 window,
                 row as u16,
                 content_x,
-                    visible_indent_guides,
-                    style,
-                    None,
-                )?;
-                draw_delimiter_highlights(
-                    window,
+                visible_indent_guides,
+                style,
+                None,
+            )?;
+            draw_delimiter_highlights(
+                window,
                 row as u16,
                 content_x,
                 &source_line,
@@ -720,13 +728,12 @@ fn draw_snapshot_lines(
             window,
             row as u16,
             content_x,
-            line,
+            &source_line,
             scroll_x,
             text_w,
             default_colors,
             color_column,
         )?;
-        let source_line = buffer.line_string(line_idx);
         draw_indent_guides(
             window,
             row as u16,
@@ -802,11 +809,10 @@ fn selected_empty_line(
     mode: redox_core::VisualModeKind,
     line_idx: usize,
 ) -> bool {
-    matches!(mode, redox_core::VisualModeKind::Line)
-        && {
-            let (start, end) = selection.ordered();
-            line_idx >= start.line && line_idx <= end.line
-        }
+    matches!(mode, redox_core::VisualModeKind::Line) && {
+        let (start, end) = selection.ordered();
+        line_idx >= start.line && line_idx <= end.line
+    }
 }
 
 fn draw_plain_line(
@@ -880,6 +886,138 @@ fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(us
     (visible_col < text_w).then_some((visible_col, bg))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minui::{ColorPair, Window};
+
+    struct TestWindow {
+        width: u16,
+        height: u16,
+        cells: Vec<Vec<char>>,
+    }
+
+    impl TestWindow {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                width,
+                height,
+                cells: vec![vec![' '; width as usize]; height as usize],
+            }
+        }
+
+        fn row_text(&self, row: u16) -> String {
+            self.cells[row as usize].iter().collect()
+        }
+
+        fn write_text(&mut self, y: u16, x: u16, s: &str) {
+            if y >= self.height {
+                return;
+            }
+
+            let row = &mut self.cells[y as usize];
+            for (idx, ch) in s.chars().enumerate() {
+                let cell_x = x as usize + idx;
+                if cell_x >= row.len() {
+                    break;
+                }
+                row[cell_x] = ch;
+            }
+        }
+    }
+
+    impl Window for TestWindow {
+        fn write_str(&mut self, y: u16, x: u16, s: &str) -> minui::Result<()> {
+            self.write_text(y, x, s);
+            Ok(())
+        }
+
+        fn write_str_colored(
+            &mut self,
+            y: u16,
+            x: u16,
+            s: &str,
+            _colors: ColorPair,
+        ) -> minui::Result<()> {
+            self.write_text(y, x, s);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> minui::Result<()> {
+            Ok(())
+        }
+
+        fn set_cursor_position(&mut self, _x: u16, _y: u16) -> minui::Result<()> {
+            Ok(())
+        }
+
+        fn show_cursor(&mut self, _show: bool) -> minui::Result<()> {
+            Ok(())
+        }
+
+        fn get_size(&self) -> (u16, u16) {
+            (self.width, self.height)
+        }
+
+        fn clear_screen(&mut self) -> minui::Result<()> {
+            for row in &mut self.cells {
+                row.fill(' ');
+            }
+            Ok(())
+        }
+
+        fn clear_line(&mut self, y: u16) -> minui::Result<()> {
+            if let Some(row) = self.cells.get_mut(y as usize) {
+                row.fill(' ');
+            }
+            Ok(())
+        }
+
+        fn clear_area(&mut self, y1: u16, x1: u16, y2: u16, x2: u16) -> minui::Result<()> {
+            let row_start = usize::from(y1.min(y2));
+            let row_end = usize::from(y1.max(y2)).min(self.cells.len().saturating_sub(1));
+            let col_start = usize::from(x1.min(x2));
+            let col_end = usize::from(x1.max(x2)).min(self.width.saturating_sub(1) as usize);
+
+            for row in row_start..=row_end {
+                for col in col_start..=col_end {
+                    self.cells[row][col] = ' ';
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn draw_snapshot_lines_renders_scrolled_plain_text_without_double_scroll() {
+        let buffer = redox_core::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
+        let snapshot = ui::render::RenderSnapshot::new(0, vec!["ijklmnop".to_string()]);
+        let mut window = TestWindow::new(8, 1);
+        let style = UiStyle::default();
+        let default_colors = ColorPair::new(style.theme.white, style.theme.bg);
+
+        draw_snapshot_lines(
+            &mut window,
+            &buffer,
+            &snapshot,
+            0,
+            8,
+            8,
+            default_colors,
+            style,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            None,
+        )
+        .expect("plain snapshot draw should succeed");
+
+        assert_eq!(window.row_text(0), "ijklmnop");
+    }
+}
+
 fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
     let mut args = env::args().skip(1);
     let Some(raw) = args.next() else {
@@ -928,16 +1066,22 @@ fn handle_editor_event(
         return !state.should_quit;
     }
 
+    let confirm_explorer_delete = state.has_pending_explorer_delete_confirmation();
     let action = match &event {
         Event::Paste(text) => InputAction::Paste(text.clone()),
-        _ => map_event_with_state(&mut state.input, state.mode.as_input_mode(), &event),
+        _ => map_event_with_context(
+            &mut state.input,
+            state.mode.as_input_mode(),
+            confirm_explorer_delete,
+            &event,
+        ),
     };
 
     let (w, h) = state.viewport_size();
     match action {
         InputAction::PasteSystemClipboard => match clipboard.as_mut() {
             Some(system_clipboard) => match system_clipboard.paste() {
-                Ok(text) => state.apply_input(InputAction::Paste(text), w, h),
+                Ok(text) => state.apply_input(InputAction::PasteSystemClipboardText(text), w, h),
                 Err(e) => state.set_status(format!("clipboard paste failed: {e}")),
             },
             None => state.set_status("system clipboard unavailable"),

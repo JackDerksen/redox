@@ -44,6 +44,14 @@ struct UndoHistory {
     redo_stack: Vec<UndoSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OneShotHighlight {
+    buffer_id: BufferId,
+    selection: Selection,
+    mode: VisualModeKind,
+    remaining_frames: u8,
+}
+
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
@@ -118,6 +126,7 @@ pub struct EditorState {
     viewport_height_rows: usize,
     private_register: String,
     private_register_kind: RegisterKind,
+    one_shot_highlight: Option<OneShotHighlight>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
 }
@@ -150,6 +159,7 @@ impl EditorState {
             viewport_height_rows: 24,
             private_register: String::new(),
             private_register_kind: RegisterKind::CharWise,
+            one_shot_highlight: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
         }
@@ -181,6 +191,43 @@ impl EditorState {
 
     pub fn take_pending_system_clipboard(&mut self) -> Option<String> {
         self.pending_system_clipboard.take()
+    }
+
+    pub fn has_pending_explorer_delete_confirmation(&self) -> bool {
+        self.explorer_delete_confirmation_token.is_some()
+    }
+
+    pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind)> {
+        let highlight = self.one_shot_highlight?;
+        (highlight.buffer_id == self.session.active_id())
+            .then_some((highlight.selection, highlight.mode))
+    }
+
+    pub fn advance_one_shot_highlight(&mut self) {
+        let Some(mut highlight) = self.one_shot_highlight.take() else {
+            return;
+        };
+        if self.session.buffer(highlight.buffer_id).is_none() {
+            return;
+        }
+        if highlight.buffer_id != self.session.active_id() {
+            self.one_shot_highlight = Some(highlight);
+            return;
+        }
+
+        if highlight.remaining_frames > 1 {
+            highlight.remaining_frames -= 1;
+            self.one_shot_highlight = Some(highlight);
+        }
+    }
+
+    fn set_one_shot_highlight(&mut self, selection: Selection, mode: VisualModeKind) {
+        self.one_shot_highlight = Some(OneShotHighlight {
+            buffer_id: self.session.active_id(),
+            selection,
+            mode,
+            remaining_frames: 2,
+        });
     }
 
     pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {
