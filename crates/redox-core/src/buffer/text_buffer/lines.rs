@@ -70,6 +70,22 @@ impl TextBuffer {
         len
     }
 
+    /// Returns the first non-whitespace column on `line`.
+    ///
+    /// If the line is all whitespace or empty, this returns `line_len_chars(line)`.
+    pub fn line_first_non_whitespace_col(&self, line: usize) -> usize {
+        let line = self.clamp_line(line);
+        let slice = self.line_slice(line);
+
+        for (idx, ch) in slice.chars().enumerate() {
+            if !ch.is_whitespace() {
+                return idx;
+            }
+        }
+
+        self.line_len_chars(line)
+    }
+
     /// Returns the line content as a `String`, excluding a trailing `'\n'` if present.
     pub fn line_string(&self, line: usize) -> String {
         self.line_slice(line).to_string()

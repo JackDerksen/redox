@@ -197,7 +197,8 @@ impl EditorState {
     }
 
     pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind)> {
-        self.one_shot_highlight.map(|highlight| (highlight.selection, highlight.mode))
+        self.one_shot_highlight
+            .map(|highlight| (highlight.selection, highlight.mode))
     }
 
     pub fn advance_one_shot_highlight(&mut self) {

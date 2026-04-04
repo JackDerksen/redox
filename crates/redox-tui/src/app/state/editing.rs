@@ -1,9 +1,17 @@
 use redox_core::{
-    Pos, Selection, TextObjectEditPlan, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan, motion::apply_motion_n,
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
-use crate::input::TextObjectOperator;
+use crate::input::{OperatorTarget, TextObjectOperator};
+
+struct OperatorTargetPlan {
+    delete_ranges: Vec<(Pos, Pos)>,
+    text: String,
+    register_kind: RegisterKind,
+    preserve_blank_line_on_change: bool,
+    yank_highlight: Option<(Selection, VisualModeKind)>,
+}
 
 impl EditorState {
     pub(super) fn register_kind_from_visual_mode(mode: VisualModeKind) -> RegisterKind {
@@ -17,12 +25,6 @@ impl EditorState {
         let (selection, mode) = self.active_visual_selection()?;
         let buffer = self.session.active_buffer();
         Some(buffer.visual_selection_edit_plan(selection, mode))
-    }
-
-    pub(super) fn active_text_object_edit_plan(&self, spec: TextObjectSpec) -> Option<TextObjectEditPlan> {
-        let buffer = self.session.active_buffer();
-        let cursor = self.active_cursor_pos();
-        buffer.text_object_edit_plan(cursor, spec)
     }
 
     pub(super) fn select_text_object_in_visual_mode(&mut self, spec: TextObjectSpec) {
@@ -78,11 +80,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.finish_active_visual_selection_edit(
-            before,
-            EditorMode::Normal,
-            Some("deleted"),
-        );
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, Some("deleted"));
     }
 
     pub(super) fn delete_active_visual_selection_without_yank(
@@ -112,11 +110,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
-        self.finish_active_visual_selection_edit(
-            before,
-            EditorMode::Normal,
-            Some("deleted"),
-        );
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, Some("deleted"));
     }
 
     pub(super) fn change_active_visual_selection_to_private_register(
@@ -155,10 +149,63 @@ impl EditorState {
         self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
     }
 
-    pub(super) fn apply_text_object_operator(
+    fn operator_target_plan(&self, target: &OperatorTarget) -> Option<OperatorTargetPlan> {
+        let buffer = self.session.active_buffer();
+        let cursor = self.active_cursor_pos();
+
+        match target {
+            OperatorTarget::Motion { motion, count } => {
+                let end = apply_motion_n(buffer, cursor, *motion, (*count).max(1));
+                let selection = Selection::new(cursor, end);
+                (!selection.is_empty()).then(|| OperatorTargetPlan {
+                    delete_ranges: vec![(cursor, end)],
+                    text: buffer.slice_pos_range(cursor, end),
+                    register_kind: RegisterKind::CharWise,
+                    preserve_blank_line_on_change: false,
+                    yank_highlight: None,
+                })
+            }
+            OperatorTarget::TextObject(spec) => {
+                let plan = buffer.text_object_edit_plan(cursor, *spec)?;
+                let yank_highlight = buffer.text_object_selection(cursor, *spec);
+                Some(OperatorTargetPlan {
+                    delete_ranges: plan.delete_ranges,
+                    text: plan.text,
+                    register_kind: Self::register_kind_from_visual_mode(plan.mode),
+                    preserve_blank_line_on_change: plan.mode == VisualModeKind::Line,
+                    yank_highlight,
+                })
+            }
+        }
+    }
+
+    fn apply_delete_ranges(
+        &mut self,
+        delete_ranges: &[(Pos, Pos)],
+        viewport_width_cells: usize,
+        text_vh: usize,
+        preserve_blank_line: bool,
+    ) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer_mut();
+
+        let mut new_pos = view.cursor.cursor;
+        for (start, end) in delete_ranges.iter().rev().copied() {
+            new_pos = buffer.delete_range(start, end);
+        }
+        if preserve_blank_line {
+            let _ = buffer.insert(new_pos, "\n");
+        }
+        view.cursor.cursor = new_pos;
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+    }
+
+    pub(super) fn apply_operator_target(
         &mut self,
         operator: TextObjectOperator,
-        spec: TextObjectSpec,
+        target: &OperatorTarget,
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
@@ -166,28 +213,32 @@ impl EditorState {
             return;
         }
 
-        let yank_selection = if operator == TextObjectOperator::Yank {
-            let buffer = self.session.active_buffer();
-            buffer.text_object_selection(self.active_cursor_pos(), spec)
-        } else {
-            None
-        };
+        if operator == TextObjectOperator::Select {
+            if let OperatorTarget::TextObject(spec) = target
+                && matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                )
+            {
+                self.select_text_object_in_visual_mode(*spec);
+            }
+            return;
+        }
 
-        let Some(plan) = self.active_text_object_edit_plan(spec) else {
+        if self.mode != EditorMode::Normal {
+            return;
+        }
+
+        let Some(plan) = self.operator_target_plan(target) else {
             return;
         };
 
         match operator {
             TextObjectOperator::Delete => {
                 let before = self.capture_active_undo_snapshot();
-                self.private_register = plan.text.clone();
-                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
-                self.apply_edit_plan_ranges(
-                    &plan,
-                    viewport_width_cells,
-                    text_vh,
-                    false,
-                );
+                self.private_register = plan.text;
+                self.private_register_kind = plan.register_kind;
+                self.apply_delete_ranges(&plan.delete_ranges, viewport_width_cells, text_vh, false);
                 self.finish_active_visual_selection_edit(
                     before,
                     EditorMode::Normal,
@@ -196,20 +247,20 @@ impl EditorState {
             }
             TextObjectOperator::Change => {
                 let before = self.capture_active_undo_snapshot();
-                self.private_register = plan.text.clone();
-                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
-                self.apply_edit_plan_ranges(
-                    &plan,
+                self.private_register = plan.text;
+                self.private_register_kind = plan.register_kind;
+                self.apply_delete_ranges(
+                    &plan.delete_ranges,
                     viewport_width_cells,
                     text_vh,
-                    plan.mode == VisualModeKind::Line,
+                    plan.preserve_blank_line_on_change,
                 );
                 self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
             }
             TextObjectOperator::Yank => {
-                self.private_register = plan.text.clone();
-                self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
-                if let Some((selection, mode)) = yank_selection {
+                self.private_register = plan.text;
+                self.private_register_kind = plan.register_kind;
+                if let Some((selection, mode)) = plan.yank_highlight {
                     self.set_one_shot_highlight(selection, mode);
                 }
                 self.set_status("yanked");
@@ -360,6 +411,107 @@ impl EditorState {
         let _ = self.session.recompute_active_dirty();
     }
 
+    pub(super) fn replace_under_cursor_or_selection(
+        &mut self,
+        replacement: char,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        match self.mode {
+            EditorMode::Normal => {
+                self.replace_char_under_cursor(replacement, viewport_width_cells, text_vh);
+            }
+            EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
+                self.replace_active_visual_selection(replacement, viewport_width_cells, text_vh);
+            }
+            EditorMode::Insert | EditorMode::Command => {}
+        }
+    }
+
+    fn replace_char_under_cursor(
+        &mut self,
+        replacement: char,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        if self.session.active_buffer().char_at(cursor).is_none() {
+            return;
+        }
+
+        let before = self.capture_active_undo_snapshot();
+        let replacement_text = replacement.to_string();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            let end = buffer.move_right(cursor);
+            let _ = buffer.replace_selection(Selection::new(cursor, end), &replacement_text);
+            view.cursor.cursor = cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.clear_status();
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
+    fn replace_active_visual_selection(
+        &mut self,
+        replacement: char,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let Some(plan) = self.active_visual_selection_edit_plan() else {
+            return;
+        };
+        if plan.delete_ranges.is_empty() {
+            return;
+        }
+
+        let before = self.capture_active_undo_snapshot();
+        let replacements = {
+            let buffer = self.session.active_buffer();
+            plan.delete_ranges
+                .iter()
+                .copied()
+                .map(|(start, end)| {
+                    let source = buffer.slice_pos_range(start, end);
+                    let text = replacement_text_for_range(&source, replacement);
+                    (start, end, text)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let new_cursor = replacements
+            .first()
+            .map(|(start, _, _)| *start)
+            .unwrap_or_else(Pos::zero);
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            for (start, end, text) in replacements.iter().rev() {
+                let _ = buffer.replace_selection(Selection::new(*start, *end), text);
+            }
+            view.cursor.cursor = new_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
     pub(super) fn paste_private_register_before(
         &mut self,
         viewport_width_cells: usize,
@@ -405,29 +557,6 @@ impl EditorState {
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
-    }
-
-    fn apply_edit_plan_ranges(
-        &mut self,
-        plan: &TextObjectEditPlan,
-        viewport_width_cells: usize,
-        text_vh: usize,
-        preserve_blank_line: bool,
-    ) {
-        let active_id = self.session.active_id();
-        let view = self.views.entry(active_id).or_default();
-        let buffer = self.session.active_buffer_mut();
-
-        let mut new_pos = view.cursor.cursor;
-        for (start, end) in plan.delete_ranges.iter().rev().copied() {
-            new_pos = buffer.delete_range(start, end);
-        }
-        if preserve_blank_line {
-            let _ = buffer.insert(new_pos, "\n");
-        }
-        view.cursor.cursor = new_pos;
-        view.cursor
-            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
     }
 
     pub(super) fn move_visual_selection_lines_up(
@@ -652,5 +781,12 @@ fn normalize_clipboard_text(text: &str) -> String {
         .replace('\r', "\n")
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+        .collect()
+}
+
+fn replacement_text_for_range(source: &str, replacement: char) -> String {
+    source
+        .chars()
+        .map(|ch| if ch == '\n' { '\n' } else { replacement })
         .collect()
 }

@@ -14,6 +14,7 @@
     <img width="1541" height="1027" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
+**NOTE**: This editor is in no way associated with [Redox OS](https://www.redox-os.org/).
 
 ## General project structure
 
@@ -147,9 +148,16 @@ redox src
 | `dd` | Delete current line |
 | `cc` | Change current line |
 | `yy` | Yank current line |
+| `0` | Go to 0th character in the line |
+| `_` | Go to first non-whitespace character in the line |
+| `$` | Go to end of the line |
+| `D` | Delete from cursor position to end of the line |
+| (normal mode) `r` | Replace under cursor (eg. `r-` replaces the cursor cell with a `-`) |
+| (visual mode) `r` | Replace entire selection |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
+- Compound motions are functional, such as `dap` to delete a full paragraph, `ci"` to change a string, and `d$` (or just `D`) to delete to the end of the line.
 - Arrow keys are also mapped for basic directional motion.
 - This is an opinionated editor, so the motions are subject to change based on my personal preferences.
 

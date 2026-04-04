@@ -3,10 +3,10 @@
 //! These helpers resolve reusable targets like `iw`, `ap`, and `i]` into
 //! mode-aware edit plans so delete/change/yank can share the same core logic.
 
-use super::selection::VisualModeKind;
 use super::TextBuffer;
-use crate::buffer::{Pos, Selection};
+use super::selection::VisualModeKind;
 use crate::buffer::util::is_word_char;
+use crate::buffer::{Pos, Selection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObjectScope {
@@ -92,15 +92,16 @@ impl TextBuffer {
         }
     }
 
-    pub fn text_object_edit_plan(&self, cursor: Pos, spec: TextObjectSpec) -> Option<TextObjectEditPlan> {
+    pub fn text_object_edit_plan(
+        &self,
+        cursor: Pos,
+        spec: TextObjectSpec,
+    ) -> Option<TextObjectEditPlan> {
         let range = self.text_object_range(cursor, spec)?;
 
         Some(match range.mode {
             RangeMode::Char => TextObjectEditPlan {
-                delete_ranges: vec![(
-                    self.char_to_pos(range.start),
-                    self.char_to_pos(range.end),
-                )],
+                delete_ranges: vec![(self.char_to_pos(range.start), self.char_to_pos(range.end))],
                 text: self.slice_chars(range.start, range.end),
                 mode: VisualModeKind::Char,
             },
@@ -478,7 +479,12 @@ fn delimiter_chars(kind: DelimiterKind) -> (char, char) {
     }
 }
 
-fn pair_contains_cursor(start: usize, end_inclusive: usize, cursor_char: usize, before: usize) -> bool {
+fn pair_contains_cursor(
+    start: usize,
+    end_inclusive: usize,
+    cursor_char: usize,
+    before: usize,
+) -> bool {
     (start <= cursor_char && cursor_char <= end_inclusive)
         || (cursor_char > 0 && start <= before && before <= end_inclusive)
 }

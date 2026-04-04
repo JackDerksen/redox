@@ -28,7 +28,7 @@ pub enum InsertKind {
     /// `a`: append after cursor
     Append,
 
-    /// `I`: insert at beginning of line
+    /// `I`: insert at the first non-whitespace character on the line
     InsertLineStart,
 
     /// `A`: append at end of line
@@ -91,10 +91,10 @@ pub enum InputAction {
     ChangeSelectionPrivate,
     /// Delete active visual selection without yanking.
     DeleteSelectionNoYank,
-    /// Apply a text-object operator at the current cursor.
-    OperateTextObject {
+    /// Apply an operator to a resolved target at the current cursor.
+    OperateTarget {
         operator: TextObjectOperator,
-        spec: TextObjectSpec,
+        target: OperatorTarget,
     },
     /// Delete (cut) current line(s) into Redox's private register.
     DeleteCurrentLinePrivate {
@@ -120,6 +120,8 @@ pub enum InputAction {
     PastePrivateRegisterBefore,
     /// Delete character under cursor without yanking.
     DeleteCharNoYank,
+    /// Replace the character under cursor, or the active visual selection, with a character.
+    ReplaceChar(char),
     /// Move visual selection up by line(s).
     MoveVisualSelectionUp {
         count: usize,
@@ -150,6 +152,12 @@ pub enum InputAction {
 
     /// No action.
     None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorTarget {
+    Motion { motion: Motion, count: usize },
+    TextObject(TextObjectSpec),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +243,7 @@ pub struct InputState {
     pending_sequence: String,
     pending_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
+    pending_replace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +262,7 @@ impl InputState {
         self.pending_sequence.clear();
         self.pending_count = None;
         self.pending_operator = None;
+        self.pending_replace = false;
     }
 
     fn push_count_digit(&mut self, d: u8) {
@@ -275,6 +285,13 @@ impl InputState {
 
     fn clear_sequence(&mut self) {
         self.pending_sequence.clear();
+    }
+
+    fn begin_replace(&mut self) {
+        self.pending_sequence.clear();
+        self.pending_count = None;
+        self.pending_operator = None;
+        self.pending_replace = true;
     }
 }
 
@@ -303,18 +320,14 @@ pub fn map_event_with_context(
         Event::Backspace => match mode {
             InputMode::Insert => InputAction::Backspace,
             InputMode::Command => InputAction::CommandBackspace,
-            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
-                InputAction::None
-            }
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => InputAction::None,
             InputMode::Normal => InputAction::None,
         },
 
         Event::Enter => match mode {
             InputMode::Insert => InputAction::Enter,
             InputMode::Command => InputAction::CommandEnter,
-            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
-                InputAction::None
-            }
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => InputAction::None,
             InputMode::Normal => InputAction::SurfaceOpenSelected,
         },
 
@@ -323,9 +336,10 @@ pub fn map_event_with_context(
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
-            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
-                modal_char_action(state, mode, confirm_explorer_delete, *c)
-            }
+            InputMode::Normal
+            | InputMode::Visual
+            | InputMode::VisualLine
+            | InputMode::VisualBlock => modal_char_action(state, mode, confirm_explorer_delete, *c),
         },
 
         _ => InputAction::None,
@@ -338,6 +352,11 @@ fn modal_char_action(
     confirm_explorer_delete: bool,
     c: char,
 ) -> InputAction {
+    if state.pending_replace {
+        state.reset_prefixes();
+        return InputAction::ReplaceChar(c);
+    }
+
     if let Some(operator) = state.pending_operator {
         if let Some(action) = resolve_pending_operator(state, c, operator) {
             return action;
@@ -350,9 +369,14 @@ fn modal_char_action(
         }
     }
 
-    // Count prefix: leading zero has Vim-specific semantics for moving to the 0th col.
-    // Keep this simple for now, will update later.
     if let Some(d) = c.to_digit(10) {
+        if d == 0 && state.pending_count.is_none() {
+            state.reset_prefixes();
+            return InputAction::Motion {
+                motion: Motion::LineStart,
+                count: 1,
+            };
+        }
         state.push_count_digit(d as u8);
         return InputAction::None;
     }
@@ -378,11 +402,19 @@ fn modal_char_action(
                 InputMode::Insert | InputMode::Command => InputAction::None,
             }
         }
-        'y' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'y' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.reset_prefixes();
             InputAction::YankSelectionPrivate
         }
-        'd' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'd' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.reset_prefixes();
             InputAction::DeleteSelectionPrivate
         }
@@ -406,7 +438,11 @@ fn modal_char_action(
             });
             InputAction::None
         }
-        'i' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'i' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.pending_operator = Some(PendingOperator {
                 operator: TextObjectOperator::Select,
                 count: state.take_count_or_1(),
@@ -414,7 +450,11 @@ fn modal_char_action(
             });
             InputAction::None
         }
-        'a' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'a' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.pending_operator = Some(PendingOperator {
                 operator: TextObjectOperator::Select,
                 count: state.take_count_or_1(),
@@ -422,7 +462,11 @@ fn modal_char_action(
             });
             InputAction::None
         }
-        'c' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'c' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.reset_prefixes();
             InputAction::ChangeSelectionPrivate
         }
@@ -434,13 +478,25 @@ fn modal_char_action(
             });
             InputAction::None
         }
-        'x' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'x' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             state.reset_prefixes();
             InputAction::DeleteSelectionNoYank
         }
         'x' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::DeleteCharNoYank
+        }
+        'r' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            state.begin_replace();
+            InputAction::None
         }
         'p' if mode == InputMode::Normal => {
             state.reset_prefixes();
@@ -450,17 +506,29 @@ fn modal_char_action(
             state.reset_prefixes();
             InputAction::PastePrivateRegisterBefore
         }
-        'J' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'J' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             InputAction::MoveVisualSelectionDown {
                 count: state.take_count_or_1(),
             }
         }
-        'K' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        'K' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             InputAction::MoveVisualSelectionUp {
                 count: state.take_count_or_1(),
             }
         }
-        '\t' if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) => {
+        '\t' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
             InputAction::IndentVisualSelection {
                 count: state.take_count_or_1(),
             }
@@ -484,6 +552,17 @@ fn modal_char_action(
         'A' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::EnterInsert(InsertKind::AppendLineEnd)
+        }
+        'D' if mode == InputMode::Normal => {
+            let count = state.take_count_or_1();
+            operate_target_action(
+                state,
+                TextObjectOperator::Delete,
+                OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count,
+                },
+            )
         }
         'o' if mode == InputMode::Normal => {
             state.reset_prefixes();
@@ -529,6 +608,14 @@ fn modal_char_action(
             motion: Motion::WordEndAfter,
             count: state.take_count_or_1(),
         },
+        '_' => InputAction::Motion {
+            motion: Motion::LineFirstNonWhitespace,
+            count: state.take_count_or_1(),
+        },
+        '$' => InputAction::Motion {
+            motion: Motion::LineEnd,
+            count: state.take_count_or_1(),
+        },
         'G' => InputAction::Motion {
             motion: Motion::FileEnd,
             count: state.take_count_or_1(),
@@ -559,6 +646,27 @@ fn resolve_pending_operator(
         (TextObjectOperator::Change, None, 'c') => Some(InputAction::ChangeCurrentLinePrivate {
             count: pending.count,
         }),
+        (operator, None, '0') => Some(InputAction::OperateTarget {
+            operator,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineStart,
+                count: pending.count,
+            },
+        }),
+        (operator, None, '_') => Some(InputAction::OperateTarget {
+            operator,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineFirstNonWhitespace,
+                count: pending.count,
+            },
+        }),
+        (operator, None, '$') => Some(InputAction::OperateTarget {
+            operator,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineEnd,
+                count: pending.count,
+            },
+        }),
         (_, None, 'i') => {
             state.pending_operator = Some(PendingOperator {
                 scope: Some(TextObjectScope::Inner),
@@ -573,16 +681,16 @@ fn resolve_pending_operator(
             });
             Some(InputAction::None)
         }
-        (_, Some(scope), object) => text_object_kind_from_char(object).map(|kind| {
-            InputAction::OperateTextObject {
+        (_, Some(scope), object) => {
+            text_object_kind_from_char(object).map(|kind| InputAction::OperateTarget {
                 operator: pending.operator,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope,
                     kind,
                     count: pending.count,
-                },
-            }
-        }),
+                }),
+            })
+        }
         _ => Some(InputAction::None),
     };
 
@@ -610,6 +718,15 @@ fn text_object_kind_from_char(c: char) -> Option<TextObjectKind> {
     }
 }
 
+fn operate_target_action(
+    state: &mut InputState,
+    operator: TextObjectOperator,
+    target: OperatorTarget,
+) -> InputAction {
+    state.reset_prefixes();
+    InputAction::OperateTarget { operator, target }
+}
+
 fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static SequenceBinding> {
     COMMON_SEQUENCE_BINDINGS.iter().chain(match mode {
         InputMode::Normal => NORMAL_SEQUENCE_BINDINGS.iter(),
@@ -621,19 +738,22 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
 }
 
 fn starts_sequence(mode: InputMode, c: char) -> bool {
-    sequence_bindings_for_mode(mode).any(|binding| {
-        binding.sequence.len() > 1 && binding.sequence.starts_with(c)
-    })
+    sequence_bindings_for_mode(mode)
+        .any(|binding| binding.sequence.len() > 1 && binding.sequence.starts_with(c))
 }
 
-fn resolve_pending_sequence(state: &mut InputState, mode: InputMode, c: char) -> Option<InputAction> {
+fn resolve_pending_sequence(
+    state: &mut InputState,
+    mode: InputMode,
+    c: char,
+) -> Option<InputAction> {
     let mut candidate = state.pending_sequence.clone();
     candidate.push(c);
 
-    let exact = sequence_bindings_for_mode(mode)
-        .find(|binding| binding.sequence == candidate);
-    let has_children = sequence_bindings_for_mode(mode)
-        .any(|binding| binding.sequence.starts_with(&candidate) && binding.sequence.len() > candidate.len());
+    let exact = sequence_bindings_for_mode(mode).find(|binding| binding.sequence == candidate);
+    let has_children = sequence_bindings_for_mode(mode).any(|binding| {
+        binding.sequence.starts_with(&candidate) && binding.sequence.len() > candidate.len()
+    });
 
     if let Some(binding) = exact {
         state.clear_sequence();
@@ -754,6 +874,34 @@ fn map_key_with_state(
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {}
     }
 
+    if state.pending_replace {
+        match key {
+            KeyKind::Escape => {
+                state.reset_prefixes();
+                return if matches!(
+                    mode,
+                    InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+                ) {
+                    InputAction::SetMode(InputMode::Normal)
+                } else {
+                    InputAction::None
+                };
+            }
+            KeyKind::Tab => {
+                state.reset_prefixes();
+                return InputAction::ReplaceChar('\t');
+            }
+            KeyKind::Char(c) => {
+                state.reset_prefixes();
+                return InputAction::ReplaceChar(replacement_char_from_key(c, mods));
+            }
+            _ => {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+        }
+    }
+
     if mode == InputMode::Normal
         && mods.ctrl
         && matches!(key, KeyKind::Char('r') | KeyKind::Char('R'))
@@ -778,8 +926,10 @@ fn map_key_with_state(
         return InputAction::ViewportUpCenter;
     }
 
-    if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock)
-        && mods.ctrl
+    if matches!(
+        mode,
+        InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+    ) && mods.ctrl
         && matches!(key, KeyKind::Char('c') | KeyKind::Char('C'))
     {
         state.reset_prefixes();
@@ -797,7 +947,7 @@ fn map_key_with_state(
         };
     }
 
-    // Detect `I`/`A` via key modifiers so terminal character event shape does not matter.
+    // Detect `I`, `A`, etc. via key modifiers so terminal character event shape does not matter.
     if mods.shift {
         if matches!(key, KeyKind::Char('I') | KeyKind::Char('i')) {
             if mode != InputMode::Normal {
@@ -823,12 +973,29 @@ fn map_key_with_state(
             state.reset_prefixes();
             return InputAction::OpenLineAbove;
         }
+        if matches!(key, KeyKind::Char('D') | KeyKind::Char('d')) {
+            if mode != InputMode::Normal {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            state.reset_prefixes();
+            return InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count: state.take_count_or_1(),
+                },
+            };
+        }
     }
 
     match key {
         KeyKind::Escape => {
             state.reset_prefixes();
-            if matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) {
+            if matches!(
+                mode,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+            ) {
                 InputAction::SetMode(InputMode::Normal)
             } else {
                 InputAction::None
@@ -843,7 +1010,10 @@ fn map_key_with_state(
             InputAction::SurfaceOpenSelected
         }
         KeyKind::Tab => {
-            if !matches!(mode, InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock) {
+            if !matches!(
+                mode,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+            ) {
                 state.reset_prefixes();
                 return InputAction::None;
             }
@@ -881,6 +1051,14 @@ fn map_key_with_state(
     }
 }
 
+fn replacement_char_from_key(c: char, mods: KeyModifiers) -> char {
+    if mods.shift && c.is_ascii_lowercase() {
+        c.to_ascii_uppercase()
+    } else {
+        c
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,6 +1092,162 @@ mod tests {
             action,
             InputAction::EnterInsert(InsertKind::InsertLineStart)
         );
+    }
+
+    #[test]
+    fn normal_mode_zero_moves_to_real_line_start() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('0'));
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::LineStart,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_underscore_and_dollar_map_to_line_motions() {
+        let mut state = InputState::new();
+        let underscore =
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('_'));
+        assert_eq!(
+            underscore,
+            InputAction::Motion {
+                motion: Motion::LineFirstNonWhitespace,
+                count: 1,
+            }
+        );
+
+        let dollar = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
+        assert_eq!(
+            dollar,
+            InputAction::Motion {
+                motion: Motion::LineEnd,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_dollar_after_delete_operator_maps_to_motion_operator() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_zero_after_delete_operator_maps_to_motion_operator() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('0'));
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineStart,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_shift_d_aliases_delete_to_line_end() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('D'));
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_shift_key_d_aliases_delete_to_line_end() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('d'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::LineEnd,
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_r_consumes_next_character_as_replacement() {
+        let mut state = InputState::new();
+        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(first, InputAction::None);
+        assert_eq!(second, InputAction::ReplaceChar('x'));
+    }
+
+    #[test]
+    fn normal_mode_pending_replace_accepts_shifted_letters() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('d'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::ReplaceChar('D'));
+    }
+
+    #[test]
+    fn normal_mode_pending_replace_accepts_shifted_symbols() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
+        assert_eq!(action, InputAction::ReplaceChar('$'));
+    }
+
+    #[test]
+    fn normal_mode_pending_replace_accepts_tab() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Tab,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(action, InputAction::ReplaceChar('\t'));
     }
 
     #[test]
@@ -1242,13 +1576,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('w'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Delete,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Inner,
                     kind: TextObjectKind::Word,
                     count: 1,
-                },
+                }),
             }
         );
     }
@@ -1261,13 +1595,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Change,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Around,
                     kind: TextObjectKind::Paragraph,
                     count: 1,
-                },
+                }),
             }
         );
     }
@@ -1281,13 +1615,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(']'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Change,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Inner,
                     kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
                     count: 2,
-                },
+                }),
             }
         );
     }
@@ -1300,13 +1634,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('"'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Change,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Inner,
                     kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
                     count: 1,
-                },
+                }),
             }
         );
     }
@@ -1334,13 +1668,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('w'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Select,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Inner,
                     kind: TextObjectKind::Word,
                     count: 1,
-                },
+                }),
             }
         );
     }
@@ -1352,13 +1686,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('['));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Select,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Around,
                     kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
                     count: 1,
-                },
+                }),
             }
         );
     }
@@ -1370,13 +1704,13 @@ mod tests {
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('W'));
         assert_eq!(
             action,
-            InputAction::OperateTextObject {
+            InputAction::OperateTarget {
                 operator: TextObjectOperator::Select,
-                spec: TextObjectSpec {
+                target: OperatorTarget::TextObject(TextObjectSpec {
                     scope: TextObjectScope::Inner,
                     kind: TextObjectKind::BigWord,
                     count: 1,
-                },
+                }),
             }
         );
     }

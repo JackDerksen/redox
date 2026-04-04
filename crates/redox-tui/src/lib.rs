@@ -619,8 +619,8 @@ fn draw_snapshot_lines(
                     .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
             });
         if let Some((selection, mode, selection_bg)) = transient_selection {
-            let highlight_empty_line =
-                buffer.line_len_chars(line_idx) == 0 && selected_empty_line(selection, mode, line_idx);
+            let highlight_empty_line = buffer.line_len_chars(line_idx) == 0
+                && selected_empty_line(selection, mode, line_idx);
             if let Some(sel_range) =
                 buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
@@ -707,12 +707,12 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                    visible_indent_guides,
-                    style,
-                    None,
-                )?;
-                draw_delimiter_highlights(
-                    window,
+                visible_indent_guides,
+                style,
+                None,
+            )?;
+            draw_delimiter_highlights(
+                window,
                 row as u16,
                 content_x,
                 &source_line,
@@ -809,11 +809,10 @@ fn selected_empty_line(
     mode: redox_core::VisualModeKind,
     line_idx: usize,
 ) -> bool {
-    matches!(mode, redox_core::VisualModeKind::Line)
-        && {
-            let (start, end) = selection.ordered();
-            line_idx >= start.line && line_idx <= end.line
-        }
+    matches!(mode, redox_core::VisualModeKind::Line) && {
+        let (start, end) = selection.ordered();
+        line_idx >= start.line && line_idx <= end.line
+    }
 }
 
 fn draw_plain_line(

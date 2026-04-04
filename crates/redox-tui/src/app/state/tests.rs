@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::input::{InputAction, InputMode, InsertKind, TextObjectOperator};
+use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 fn temp_file_path(tag: &str) -> PathBuf {
@@ -125,6 +125,142 @@ fn normal_mode_system_clipboard_paste_strips_control_characters() {
 }
 
 #[test]
+fn normal_mode_line_start_motions_distinguish_zero_underscore_and_dollar() {
+    let path = temp_file_path("line_start_motions");
+    let mut state = state_with_text(path.clone(), "\t  alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 5);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::LineStart,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 5);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::LineFirstNonWhitespace,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::LineEnd,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
+    let path = temp_file_path("operate_motion_delete_line");
+    let mut state = state_with_text(path.clone(), "  alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 4);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineEnd,
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "  al\n");
+    assert_eq!(state.private_register, "pha");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+
+    let mut state = state_with_text(path.clone(), "  alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 5);
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::LineStart,
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "ha\n");
+    assert_eq!(state.private_register, "  alp");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_shift_i_enters_insert_at_first_non_whitespace() {
+    let path = temp_file_path("shift_i_first_non_whitespace");
+    let mut state = state_with_text(path.clone(), "\t  alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 6);
+
+    state.apply_input(
+        InputAction::EnterInsert(InsertKind::InsertLineStart),
+        80,
+        24,
+    );
+
+    assert_eq!(state.mode, EditorMode::Insert);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sync() {
     let path = temp_file_path("insert_mode_repeated_paste_scroll");
     let mut state = state_with_text(path.clone(), "");
@@ -139,11 +275,153 @@ fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sy
     let buffer = state.session.active_buffer();
     let spec = view.cursor.clone().cursor_spec(buffer, 80, 23);
 
-    assert_eq!(state.session.active_buffer().to_string(), format!("{chunk}{chunk}"));
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        format!("{chunk}{chunk}")
+    );
     assert_eq!(state.active_cursor_pos(), Pos::new(0, chunk.len() * 2));
     assert_eq!(view.cursor.scroll_x_cells, chunk.len() * 2 - 79);
     assert!(spec.visible);
     assert_eq!(spec.x, 79);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn exiting_insert_mode_after_tab_keeps_cursor_after_tab() {
+    let path = temp_file_path("insert_exit_after_tab");
+    let mut state = state_with_text(path.clone(), "\talpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::SetMode(InputMode::Insert), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_replace_char_replaces_tab_as_single_logical_character() {
+    let path = temp_file_path("replace_tab_normal");
+    let mut state = state_with_text(path.clone(), "\tab\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::ReplaceChar('x'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "xab\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_char_replace_replaces_entire_selection_and_normalizes_mode() {
+    let path = temp_file_path("replace_visual_char");
+    let mut state = state_with_text(path.clone(), "\tab\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::ReplaceChar('x'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "xxb\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_replace_preserves_block_shape_when_replacing_tabs() {
+    let path = temp_file_path("replace_visual_block_tab");
+    let mut state = state_with_text(path.clone(), "\tab\n\tcd\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::ReplaceChar('x'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "xxb\nxxd\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_line_replace_preserves_line_structure() {
+    let path = temp_file_path("replace_visual_line");
+    let mut state = state_with_text(path.clone(), "ab\ncde\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::ReplaceChar('x'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "xx\nxxx\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
 
     let _ = fs::remove_file(path);
 }
@@ -1769,7 +2047,10 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
     assert_eq!(state.status_msg.as_deref(), Some("yanked"));
     assert_eq!(
         state.one_shot_highlight(),
-        Some((Selection::new(Pos::new(0, 0), Pos::new(0, 3)), VisualModeKind::Char))
+        Some((
+            Selection::new(Pos::new(0, 0), Pos::new(0, 3)),
+            VisualModeKind::Char
+        ))
     );
     assert!(state.take_pending_system_clipboard().is_none());
 
@@ -2046,13 +2327,13 @@ fn text_object_delete_inner_word_cuts_current_word() {
         .cursor = Pos::new(0, 7);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Delete,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Word,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2078,13 +2359,13 @@ fn text_object_change_around_paragraph_leaves_single_blank_line() {
         .cursor = Pos::new(0, 1);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Change,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Around,
                 kind: TextObjectKind::Paragraph,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2111,13 +2392,13 @@ fn text_object_yank_sets_flash_highlight() {
         .cursor = Pos::new(0, 7);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Yank,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Word,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2126,7 +2407,10 @@ fn text_object_yank_sets_flash_highlight() {
     assert_eq!(state.private_register, "beta");
     assert_eq!(
         state.one_shot_highlight(),
-        Some((Selection::new(Pos::new(0, 6), Pos::new(0, 9)), VisualModeKind::Char))
+        Some((
+            Selection::new(Pos::new(0, 6), Pos::new(0, 9)),
+            VisualModeKind::Char
+        ))
     );
 
     let _ = fs::remove_file(path);
@@ -2145,13 +2429,13 @@ fn text_object_change_inner_brackets_preserves_delimiters() {
         .cursor = Pos::new(0, 9);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Change,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2178,20 +2462,23 @@ fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
         .cursor = Pos::new(0, 4);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Change,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Delimiter(DelimiterKind::Parentheses),
                 count: 1,
-            },
+            }),
         },
         80,
         24,
     );
 
     assert_eq!(state.private_register, "bar");
-    assert_eq!(state.session.active_buffer().to_string(), "let value = foo();\n");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "let value = foo();\n"
+    );
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 16));
 
@@ -2211,20 +2498,23 @@ fn text_object_change_inner_double_quotes_can_jump_to_same_line_pair() {
         .cursor = Pos::new(0, 0);
 
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Change,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
                 count: 1,
-            },
+            }),
         },
         80,
         24,
     );
 
     assert_eq!(state.private_register, "bar");
-    assert_eq!(state.session.active_buffer().to_string(), "let value = \"\";\n");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "let value = \"\";\n"
+    );
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 13));
 
@@ -2245,13 +2535,13 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Word,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2262,7 +2552,10 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
     assert_eq!(selection.anchor, Pos::new(0, 7));
     assert_eq!(selection.cursor, Pos::new(0, 10));
     assert_eq!(
-        state.session.active_buffer().visual_selection_text(selection, mode),
+        state
+            .session
+            .active_buffer()
+            .visual_selection_text(selection, mode),
         "beta"
     );
 
@@ -2286,13 +2579,13 @@ fn visual_text_object_inner_big_word_selects_non_whitespace_run() {
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::BigWord,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2301,7 +2594,10 @@ fn visual_text_object_inner_big_word_selects_non_whitespace_run() {
     let (selection, mode) = state.active_visual_selection().expect("visual selection");
     assert_eq!(mode, VisualModeKind::Char);
     assert_eq!(
-        state.session.active_buffer().visual_selection_text(selection, mode),
+        state
+            .session
+            .active_buffer()
+            .visual_selection_text(selection, mode),
         "byte_idx.saturating_add(grapheme.len());"
     );
 
@@ -2322,13 +2618,13 @@ fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Paragraph,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2339,7 +2635,10 @@ fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
     assert_eq!(selection.anchor, Pos::new(2, 0));
     assert_eq!(selection.cursor, Pos::new(3, 0));
     assert_eq!(
-        state.session.active_buffer().visual_selection_text(selection, mode),
+        state
+            .session
+            .active_buffer()
+            .visual_selection_text(selection, mode),
         "one\ntwo\n"
     );
 
@@ -2360,13 +2659,13 @@ fn visual_text_object_around_brackets_uses_same_span_as_operator() {
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Around,
                 kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2375,7 +2674,10 @@ fn visual_text_object_around_brackets_uses_same_span_as_operator() {
     let (selection, mode) = state.active_visual_selection().expect("visual selection");
     assert_eq!(mode, VisualModeKind::Char);
     assert_eq!(
-        state.session.active_buffer().visual_selection_text(selection, mode),
+        state
+            .session
+            .active_buffer()
+            .visual_selection_text(selection, mode),
         "[ab]"
     );
 
@@ -2394,13 +2696,13 @@ fn visual_text_object_selection_forces_full_load_before_resolving() {
 
     state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
     state.apply_input(
-        InputAction::OperateTextObject {
+        InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
-            spec: TextObjectSpec {
+            target: OperatorTarget::TextObject(TextObjectSpec {
                 scope: TextObjectScope::Inner,
                 kind: TextObjectKind::Paragraph,
                 count: 1,
-            },
+            }),
         },
         80,
         24,
@@ -2664,7 +2966,10 @@ fn normal_mode_yy_yanks_current_line_and_sets_flash() {
     assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
     assert_eq!(
         state.one_shot_highlight(),
-        Some((Selection::new(Pos::new(1, 0), Pos::new(1, 0)), VisualModeKind::Line))
+        Some((
+            Selection::new(Pos::new(1, 0), Pos::new(1, 0)),
+            VisualModeKind::Line
+        ))
     );
     let _ = fs::remove_file(path);
 }

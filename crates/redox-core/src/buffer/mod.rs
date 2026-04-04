@@ -18,8 +18,8 @@ pub mod prelude;
 pub use edit::{Edit, EditBatchSummary};
 pub use pos::{Pos, Selection};
 pub use text_buffer::{
-    DelimiterKind, TextBuffer, TextObjectEditPlan, TextObjectKind, TextObjectScope,
-    TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    DelimiterKind, TextBuffer, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,
+    VisualModeKind, VisualSelectionEditPlan,
 };
 
 #[cfg(test)]

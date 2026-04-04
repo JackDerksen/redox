@@ -111,7 +111,10 @@ impl TextBuffer {
             let range_start = left.min(line_len);
             let range_end = right_exclusive.min(line_len);
             if range_start < range_end {
-                ranges.push((Pos::new(line_idx, range_start), Pos::new(line_idx, range_end)));
+                ranges.push((
+                    Pos::new(line_idx, range_start),
+                    Pos::new(line_idx, range_end),
+                ));
             }
         }
 
@@ -141,7 +144,10 @@ impl TextBuffer {
             let range_start = left.min(line_len);
             let range_end = right_exclusive.min(line_len);
             if range_start < range_end {
-                ranges.push((Pos::new(line_idx, range_start), Pos::new(line_idx, range_end)));
+                ranges.push((
+                    Pos::new(line_idx, range_start),
+                    Pos::new(line_idx, range_end),
+                ));
             }
         }
 

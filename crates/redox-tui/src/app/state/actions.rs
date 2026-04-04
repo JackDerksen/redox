@@ -78,12 +78,14 @@ impl EditorState {
                 if leaving_insert_to_normal {
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
+                    let buffer = self.session.active_buffer();
 
-                    if view.cursor.cursor.col > 0 {
+                    if view.cursor.cursor.col > 0
+                        && !matches!(buffer.char_before(view.cursor.cursor), Some('\t'))
+                    {
                         view.cursor.cursor.col -= 1;
                     }
 
-                    let buffer = self.session.active_buffer();
                     view.cursor
                         .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                 }
@@ -120,7 +122,8 @@ impl EditorState {
                             }
                         }
                         InsertKind::InsertLineStart => {
-                            view.cursor.cursor.col = 0;
+                            let line = buffer.clamp_line(view.cursor.cursor.line);
+                            view.cursor.cursor.col = buffer.line_first_non_whitespace_col(line);
                         }
                         InsertKind::AppendLineEnd => {
                             let line = buffer.clamp_line(view.cursor.cursor.line);
@@ -385,17 +388,8 @@ impl EditorState {
                 }
             }
 
-            InputAction::OperateTextObject { operator, spec } => {
-                if operator == crate::input::TextObjectOperator::Select {
-                    if matches!(
-                        self.mode,
-                        EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                    ) {
-                        self.select_text_object_in_visual_mode(spec);
-                    }
-                } else if self.mode == EditorMode::Normal {
-                    self.apply_text_object_operator(operator, spec, viewport_width_cells, text_vh);
-                }
+            InputAction::OperateTarget { operator, target } => {
+                self.apply_operator_target(operator, &target, viewport_width_cells, text_vh);
             }
 
             InputAction::YankSelectionSystem => {
@@ -428,6 +422,18 @@ impl EditorState {
             InputAction::DeleteCharNoYank => {
                 if self.mode == EditorMode::Normal {
                     self.delete_char_under_cursor_without_yank(viewport_width_cells, text_vh);
+                }
+            }
+
+            InputAction::ReplaceChar(ch) => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Normal
+                        | EditorMode::Visual
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                ) {
+                    self.replace_under_cursor_or_selection(ch, viewport_width_cells, text_vh);
                 }
             }
 
