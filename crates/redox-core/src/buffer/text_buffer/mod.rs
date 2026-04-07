@@ -16,6 +16,7 @@ mod core;
 mod editing;
 mod lines;
 mod positions;
+mod search;
 mod selection;
 mod slicing;
 mod text_objects;
