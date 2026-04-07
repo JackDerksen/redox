@@ -14,6 +14,7 @@ pub enum InputMode {
     Normal,
     Insert,
     Command,
+    Search,
     Visual,
     VisualLine,
     VisualBlock,
@@ -65,6 +66,8 @@ pub enum InputAction {
 
     /// Enter command mode (like Vim's `:`).
     EnterCommand,
+    /// Enter slash-search mode.
+    EnterSearch,
     /// Open explorer surface (`<leader>e`).
     OpenExplorer,
     /// Open item under cursor in active surface (`Enter` in normal mode).
@@ -144,6 +147,19 @@ pub enum InputAction {
     CommandBackspace,
     CommandEnter,
     CommandCancel,
+
+    /// Search-line editing actions.
+    SearchChar(char),
+    SearchBackspace,
+    SearchEnter,
+    SearchCancel,
+
+    /// Repeat the most recent cached search.
+    RepeatSearch {
+        forward: bool,
+    },
+    /// Hide active search highlights while keeping the cached search term.
+    ClearSearch,
 
     /// Insert/editing actions.
     InsertChar(char),
@@ -243,6 +259,7 @@ pub struct InputState {
     pending_sequence: String,
     pending_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
+    pending_search_motion: Option<PendingSearchMotion>,
     pending_replace: bool,
 }
 
@@ -251,6 +268,19 @@ struct PendingOperator {
     operator: TextObjectOperator,
     count: usize,
     scope: Option<TextObjectScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingSearchMotion {
+    operator: Option<PendingOperator>,
+    count: usize,
+    kind: SearchMotionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMotionKind {
+    Find,
+    Till,
 }
 
 impl InputState {
@@ -262,6 +292,7 @@ impl InputState {
         self.pending_sequence.clear();
         self.pending_count = None;
         self.pending_operator = None;
+        self.pending_search_motion = None;
         self.pending_replace = false;
     }
 
@@ -291,7 +322,25 @@ impl InputState {
         self.pending_sequence.clear();
         self.pending_count = None;
         self.pending_operator = None;
+        self.pending_search_motion = None;
         self.pending_replace = true;
+    }
+
+    fn begin_search_motion(
+        &mut self,
+        operator: Option<PendingOperator>,
+        kind: SearchMotionKind,
+        count: usize,
+    ) {
+        self.pending_sequence.clear();
+        self.pending_count = None;
+        self.pending_operator = None;
+        self.pending_replace = false;
+        self.pending_search_motion = Some(PendingSearchMotion {
+            operator,
+            count: count.max(1),
+            kind,
+        });
     }
 }
 
@@ -313,42 +362,46 @@ pub fn map_event_with_context(
             match mode {
                 InputMode::Insert => InputAction::SetMode(InputMode::Normal),
                 InputMode::Command => InputAction::CommandCancel,
+                InputMode::Search => InputAction::SearchCancel,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::SetMode(InputMode::Normal)
                 }
-                InputMode::Normal => InputAction::None,
+                InputMode::Normal => InputAction::ClearSearch,
             }
-        }
+        },
 
         Event::Backspace => {
             state.reset_prefixes();
             match mode {
                 InputMode::Insert => InputAction::Backspace,
                 InputMode::Command => InputAction::CommandBackspace,
+                InputMode::Search => InputAction::SearchBackspace,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
                 InputMode::Normal => InputAction::None,
             }
-        }
+        },
 
         Event::Enter => {
             state.reset_prefixes();
             match mode {
                 InputMode::Insert => InputAction::Enter,
                 InputMode::Command => InputAction::CommandEnter,
+                InputMode::Search => InputAction::SearchEnter,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
                 InputMode::Normal => InputAction::SurfaceOpenSelected,
             }
-        }
+        },
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
 
         Event::Character(c) => match mode {
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
+            InputMode::Search => InputAction::SearchChar(*c),
             InputMode::Normal
             | InputMode::Visual
             | InputMode::VisualLine
@@ -368,6 +421,10 @@ fn modal_char_action(
     if state.pending_replace {
         state.reset_prefixes();
         return InputAction::ReplaceChar(c);
+    }
+
+    if let Some(pending_search_motion) = state.pending_search_motion {
+        return resolve_pending_search_motion(state, c, pending_search_motion);
     }
 
     if let Some(operator) = state.pending_operator {
@@ -402,7 +459,7 @@ fn modal_char_action(
                 InputMode::Visual => InputAction::SetMode(InputMode::Normal),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
                 InputMode::VisualBlock => InputAction::SetMode(InputMode::Visual),
-                InputMode::Insert | InputMode::Command => InputAction::None,
+                InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
             }
         }
         'V' => {
@@ -412,7 +469,7 @@ fn modal_char_action(
                 InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::VisualBlock => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
-                InputMode::Insert | InputMode::Command => InputAction::None,
+                InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
             }
         }
         'y' if matches!(
@@ -503,6 +560,24 @@ fn modal_char_action(
             state.reset_prefixes();
             InputAction::DeleteCharNoYank
         }
+        'f' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            let count = state.take_count_or_1();
+            state.begin_search_motion(None, SearchMotionKind::Find, count);
+            InputAction::None
+        }
+        't' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            let count = state.take_count_or_1();
+            state.begin_search_motion(None, SearchMotionKind::Till, count);
+            InputAction::None
+        }
         'r' if matches!(
             mode,
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -549,6 +624,10 @@ fn modal_char_action(
         ':' => {
             state.reset_prefixes();
             InputAction::EnterCommand
+        }
+        '/' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::EnterSearch
         }
         'i' if mode == InputMode::Normal => {
             state.reset_prefixes();
@@ -680,6 +759,14 @@ fn resolve_pending_operator(
                 count: pending.count,
             },
         }),
+        (_, None, 'f') => {
+            state.begin_search_motion(Some(pending), SearchMotionKind::Find, pending.count);
+            Some(InputAction::None)
+        }
+        (_, None, 't') => {
+            state.begin_search_motion(Some(pending), SearchMotionKind::Till, pending.count);
+            Some(InputAction::None)
+        }
         (_, None, 'i') => {
             state.pending_operator = Some(PendingOperator {
                 scope: Some(TextObjectScope::Inner),
@@ -704,21 +791,31 @@ fn resolve_pending_operator(
                 }),
             })
         }
-        (_, None, motion_char) => operator_motion_from_input(state, motion_char).map(|motion| {
-            InputAction::OperateTarget {
-                operator: pending.operator,
-                target: OperatorTarget::Motion {
-                    motion,
-                    count: pending.count,
-                },
+        (_, None, motion_char) => {
+            if let Some(motion) = operator_motion_from_input(state, motion_char) {
+                Some(InputAction::OperateTarget {
+                    operator: pending.operator,
+                    target: OperatorTarget::Motion {
+                        motion,
+                        count: pending.count,
+                    },
+                })
+            } else if operator_motion_sequence_has_children(state, motion_char) {
+                state.push_sequence_char(motion_char);
+                Some(InputAction::None)
+            } else {
+                None
             }
-        }),
+        }
     };
 
-    if action
-        .as_ref()
-        .is_some_and(|action| !matches!(action, InputAction::None))
-    {
+    let keep_pending_operator = matches!(action, Some(InputAction::None))
+        && (matches!((pending.operator, pending.scope, c), (_, None, 'i' | 'a' | 'f' | 't'))
+            || !state.pending_sequence.is_empty());
+
+    if !matches!(action, Some(InputAction::None)) {
+        state.pending_operator = None;
+    } else if !keep_pending_operator {
         state.pending_operator = None;
     }
 
@@ -742,6 +839,12 @@ fn operator_motion_from_input(state: &mut InputState, c: char) -> Option<Motion>
     motion_from_char(c)
 }
 
+fn operator_motion_sequence_has_children(state: &InputState, c: char) -> bool {
+    let mut candidate = state.pending_sequence.clone();
+    candidate.push(c);
+    motion_sequence_has_children(&candidate)
+}
+
 fn motion_from_char(c: char) -> Option<Motion> {
     match c {
         'h' => Some(Motion::Left),
@@ -762,6 +865,39 @@ fn motion_from_sequence(sequence: &str) -> Option<Motion> {
     match sequence {
         "gg" => Some(Motion::FileStart),
         _ => None,
+    }
+}
+
+fn motion_sequence_has_children(candidate: &str) -> bool {
+    ["gg"]
+        .into_iter()
+        .any(|sequence| sequence.starts_with(candidate) && sequence.len() > candidate.len())
+}
+
+fn resolve_pending_search_motion(
+    state: &mut InputState,
+    c: char,
+    pending: PendingSearchMotion,
+) -> InputAction {
+    state.pending_search_motion = None;
+    let motion = match pending.kind {
+        SearchMotionKind::Find => Motion::FindChar(c),
+        SearchMotionKind::Till => Motion::TillChar(c),
+    };
+
+    if let Some(operator) = pending.operator {
+        InputAction::OperateTarget {
+            operator: operator.operator,
+            target: OperatorTarget::Motion {
+                motion,
+                count: pending.count,
+            },
+        }
+    } else {
+        InputAction::Motion {
+            motion,
+            count: pending.count,
+        }
     }
 }
 
@@ -795,7 +931,7 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
         InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
             VISUAL_SEQUENCE_BINDINGS.iter()
         }
-        InputMode::Insert | InputMode::Command => [].iter(),
+        InputMode::Insert | InputMode::Command | InputMode::Search => [].iter(),
     })
 }
 
@@ -933,7 +1069,55 @@ fn map_key_with_state(
             };
         }
 
+        InputMode::Search => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::SearchCancel;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::SearchCancel,
+                KeyKind::Backspace => InputAction::SearchBackspace,
+                KeyKind::Enter => InputAction::SearchEnter,
+                KeyKind::Tab => InputAction::SearchChar('\t'),
+                KeyKind::Char(c) => InputAction::SearchChar(c),
+                _ => InputAction::None,
+            };
+        }
+
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {}
+    }
+
+    if let Some(pending_search_motion) = state.pending_search_motion {
+        match key {
+            KeyKind::Escape => {
+                state.reset_prefixes();
+                return if matches!(
+                    mode,
+                    InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+                ) {
+                    InputAction::SetMode(InputMode::Normal)
+                } else {
+                    InputAction::None
+                };
+            }
+            KeyKind::Tab => {
+                state.pending_search_motion = None;
+                return resolve_pending_search_motion(state, '\t', pending_search_motion);
+            }
+            KeyKind::Char(c) => {
+                state.pending_search_motion = None;
+                return resolve_pending_search_motion(
+                    state,
+                    replacement_char_from_key(c, mods),
+                    pending_search_motion,
+                );
+            }
+            _ => {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+        }
     }
 
     if state.pending_replace {
@@ -990,6 +1174,26 @@ fn map_key_with_state(
 
     if matches!(
         mode,
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+    ) && mods.ctrl
+        && matches!(key, KeyKind::Char('n') | KeyKind::Char('N'))
+    {
+        state.reset_prefixes();
+        return InputAction::RepeatSearch { forward: true };
+    }
+
+    if matches!(
+        mode,
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+    ) && mods.ctrl
+        && matches!(key, KeyKind::Char('p') | KeyKind::Char('P'))
+    {
+        state.reset_prefixes();
+        return InputAction::RepeatSearch { forward: false };
+    }
+
+    if matches!(
+        mode,
         InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
     ) && mods.ctrl
         && matches!(key, KeyKind::Char('c') | KeyKind::Char('C'))
@@ -1005,7 +1209,7 @@ fn map_key_with_state(
                 InputAction::SetMode(InputMode::VisualBlock)
             }
             InputMode::VisualBlock => InputAction::SetMode(InputMode::Normal),
-            InputMode::Insert | InputMode::Command => InputAction::None,
+            InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
         };
     }
 
@@ -1075,6 +1279,8 @@ fn map_key_with_state(
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
             ) {
                 InputAction::SetMode(InputMode::Normal)
+            } else if mode == InputMode::Normal {
+                InputAction::ClearSearch
             } else {
                 InputAction::None
             }
@@ -1402,7 +1608,7 @@ mod tests {
         let escape = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Escape);
         let after_escape =
             map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('q'));
-        assert_eq!(escape, InputAction::None);
+        assert_eq!(escape, InputAction::ClearSearch);
         assert_eq!(after_escape, InputAction::None);
 
         let mut backspace_state = InputState::new();
@@ -1428,6 +1634,121 @@ mod tests {
             map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Character('q'));
         assert_eq!(enter, InputAction::SurfaceOpenSelected);
         assert_eq!(after_enter, InputAction::None);
+    }
+
+    #[test]
+    fn normal_mode_f_and_t_consume_target_character() {
+        let mut state = InputState::new();
+        let f = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f'));
+        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(f, InputAction::None);
+        assert_eq!(
+            f_target,
+            InputAction::Motion {
+                motion: Motion::FindChar('x'),
+                count: 1,
+            }
+        );
+
+        let mut state = InputState::new();
+        let t = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('t'));
+        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(t, InputAction::None);
+        assert_eq!(
+            t_target,
+            InputAction::Motion {
+                motion: Motion::TillChar('x'),
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_operator_find_and_till_map_into_motion_targets() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('t'));
+        let dt = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(
+            dt,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::TillChar('x'),
+                    count: 1,
+                },
+            }
+        );
+
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f'));
+        let cf = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(
+            cf,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Change,
+                target: OperatorTarget::Motion {
+                    motion: Motion::FindChar('x'),
+                    count: 1,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_slash_enters_search_mode() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('/'));
+        assert_eq!(action, InputAction::EnterSearch);
+    }
+
+    #[test]
+    fn search_mode_characters_map_to_search_actions() {
+        let mut state = InputState::new();
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Search, &Event::Character('x')),
+            InputAction::SearchChar('x')
+        );
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Search, &Event::Backspace),
+            InputAction::SearchBackspace
+        );
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Search, &Event::Enter),
+            InputAction::SearchEnter
+        );
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_repeat_the_most_recent_search() {
+        let mut state = InputState::new();
+        let next = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('n'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(next, InputAction::RepeatSearch { forward: true });
+
+        let prev = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('p'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(prev, InputAction::RepeatSearch { forward: false });
+    }
+
+    #[test]
+    fn normal_mode_escape_clears_active_search_highlights() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Escape);
+        assert_eq!(action, InputAction::ClearSearch);
     }
 
     #[test]
