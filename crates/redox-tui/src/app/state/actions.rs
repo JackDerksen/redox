@@ -247,18 +247,21 @@ impl EditorState {
 
             InputAction::ViewportDownCenter => {
                 if self.mode == EditorMode::Normal {
+                    self.clear_search_highlights();
                     self.scroll_viewport_and_center_cursor(true, text_vh);
                 }
             }
 
             InputAction::ViewportUpCenter => {
                 if self.mode == EditorMode::Normal {
+                    self.clear_search_highlights();
                     self.scroll_viewport_and_center_cursor(false, text_vh);
                 }
             }
 
             InputAction::CenterCursorLine => {
                 if self.mode == EditorMode::Normal {
+                    self.clear_search_highlights();
                     self.center_active_cursor_line(text_vh);
                 }
             }
