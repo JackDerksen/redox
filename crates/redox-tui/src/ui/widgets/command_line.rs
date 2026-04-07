@@ -25,10 +25,6 @@ pub fn draw_command_line_popup(
         _ => return Ok(()),
     };
 
-    if !matches!(state.mode, EditorMode::Command | EditorMode::Search) {
-        return Ok(());
-    }
-
     let (term_w, term_h) = window.get_size();
     let inner_w = command_line_inner_width(term_w, style);
     let inner_h = style.command_line.inner_height_rows.max(1);

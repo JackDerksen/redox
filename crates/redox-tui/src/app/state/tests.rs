@@ -519,6 +519,39 @@ fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
 }
 
 #[test]
+fn paging_and_centering_hide_search_highlights_but_keep_cached_query() {
+    let path = temp_file_path("slash_search_hide_highlights_on_paging");
+    let text = large_text(120);
+    let mut state = state_with_text(path.clone(), &text);
+    let viewport_height_rows = 8usize;
+
+    state.apply_input(InputAction::EnterSearch, 80, viewport_height_rows);
+    for ch in "line".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, viewport_height_rows);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, viewport_height_rows);
+
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn normal_mode_shift_i_enters_insert_at_first_non_whitespace() {
     let path = temp_file_path("shift_i_first_non_whitespace");
     let mut state = state_with_text(path.clone(), "\t  alpha\n");
