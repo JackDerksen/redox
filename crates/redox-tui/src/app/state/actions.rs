@@ -1,4 +1,4 @@
-use redox_core::{Pos, Selection};
+use redox_core::{Pos, Selection, motion::Motion};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
@@ -31,6 +31,12 @@ impl EditorState {
 
         match action {
             InputAction::Motion { motion, count } => {
+                if !matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                    self.clear_search_highlights();
+                }
+                if matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                    self.remember_motion_search(motion, count);
+                }
                 let is_explorer = self.explorer_is_active();
                 let active_id = self.session.active_id();
                 let view = self.views.entry(active_id).or_default();
@@ -70,6 +76,7 @@ impl EditorState {
                     InputMode::Normal => EditorMode::Normal,
                     InputMode::Insert => EditorMode::Insert,
                     InputMode::Command => EditorMode::Command,
+                    InputMode::Search => EditorMode::Search,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
                     InputMode::VisualBlock => EditorMode::VisualBlock,
@@ -88,6 +95,10 @@ impl EditorState {
 
                     view.cursor
                         .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                }
+
+                if mode == InputMode::Normal {
+                    self.clear_search_highlights();
                 }
 
                 if entering_visual && !was_visual {
@@ -162,6 +173,16 @@ impl EditorState {
                 self.input.reset_prefixes();
             }
 
+            InputAction::EnterSearch => {
+                if self.mode == EditorMode::Normal {
+                    self.enter_search_mode();
+                }
+            }
+
+            InputAction::ClearSearch => {
+                self.clear_search_highlights();
+            }
+
             InputAction::CommandCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
@@ -182,6 +203,28 @@ impl EditorState {
 
             InputAction::CommandEnter => {
                 self.execute_command_line();
+            }
+
+            InputAction::SearchCancel => {
+                self.mode = EditorMode::Normal;
+                self.command_line.clear();
+                self.input.reset_prefixes();
+            }
+
+            InputAction::SearchChar(c) => {
+                if self.mode == EditorMode::Search {
+                    self.command_line.push(c);
+                }
+            }
+
+            InputAction::SearchBackspace => {
+                if self.mode == EditorMode::Search {
+                    self.command_line.pop();
+                }
+            }
+
+            InputAction::SearchEnter => {
+                self.execute_search_line(viewport_width_cells, text_vh);
             }
 
             InputAction::OpenExplorer => {
@@ -305,6 +348,7 @@ impl EditorState {
                     self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
                 }
                 EditorMode::Command
+                | EditorMode::Search
                 | EditorMode::Visual
                 | EditorMode::VisualLine
                 | EditorMode::VisualBlock => {}
@@ -389,6 +433,11 @@ impl EditorState {
             }
 
             InputAction::OperateTarget { operator, target } => {
+                if let crate::input::OperatorTarget::Motion { motion, count } = &target
+                    && matches!(motion, Motion::FindChar(_) | Motion::TillChar(_))
+                {
+                    self.remember_motion_search(*motion, *count);
+                }
                 self.apply_operator_target(operator, &target, viewport_width_cells, text_vh);
             }
 
@@ -434,6 +483,18 @@ impl EditorState {
                         | EditorMode::VisualBlock
                 ) {
                     self.replace_under_cursor_or_selection(ch, viewport_width_cells, text_vh);
+                }
+            }
+
+            InputAction::RepeatSearch { forward } => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Normal
+                        | EditorMode::Visual
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                ) {
+                    self.repeat_search(forward, viewport_width_cells, text_vh);
                 }
             }
 

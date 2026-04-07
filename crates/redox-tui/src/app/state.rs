@@ -20,6 +20,7 @@ use explorer::ExplorerState;
 mod actions;
 mod commands;
 mod editing;
+mod search;
 mod surface;
 
 const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
@@ -52,12 +53,41 @@ struct OneShotHighlight {
     remaining_frames: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchLanding {
+    OnMatch,
+    BeforeMatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchQuery {
+    term: String,
+    landing: SearchLanding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchMatch {
+    start: Pos,
+    end: Pos,
+}
+
+#[derive(Debug, Clone)]
+struct SearchState {
+    query: SearchQuery,
+    buffer_id: BufferId,
+    matches: Vec<SearchMatch>,
+    active_match: Option<usize>,
+    visible: bool,
+    dirty: bool,
+}
+
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
     Normal,
     Insert,
     Command,
+    Search,
     Visual,
     VisualLine,
     VisualBlock,
@@ -69,6 +99,7 @@ impl EditorMode {
             EditorMode::Normal => InputMode::Normal,
             EditorMode::Insert => InputMode::Insert,
             EditorMode::Command => InputMode::Command,
+            EditorMode::Search => InputMode::Search,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -127,6 +158,7 @@ pub struct EditorState {
     private_register: String,
     private_register_kind: RegisterKind,
     one_shot_highlight: Option<OneShotHighlight>,
+    search_state: Option<SearchState>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
 }
@@ -160,6 +192,7 @@ impl EditorState {
             private_register: String::new(),
             private_register_kind: RegisterKind::CharWise,
             one_shot_highlight: None,
+            search_state: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
         }
@@ -303,7 +336,9 @@ impl EditorState {
             EditorMode::Visual => VisualModeKind::Char,
             EditorMode::VisualLine => VisualModeKind::Line,
             EditorMode::VisualBlock => VisualModeKind::Block,
-            EditorMode::Normal | EditorMode::Insert | EditorMode::Command => return None,
+            EditorMode::Normal | EditorMode::Insert | EditorMode::Command | EditorMode::Search => {
+                return None;
+            }
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }
@@ -380,6 +415,11 @@ impl EditorState {
             .entry(active_id)
             .or_default()
             .invalidate_render_caches();
+        if let Some(search) = self.search_state.as_mut()
+            && search.buffer_id == active_id
+        {
+            search.dirty = true;
+        }
     }
 
     fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
@@ -474,6 +514,11 @@ impl EditorState {
         self.mode = EditorMode::Normal;
         let _ = self.session.recompute_active_dirty();
         self.clear_status();
+        if let Some(search) = self.search_state.as_mut()
+            && search.buffer_id == active_id
+        {
+            search.dirty = true;
+        }
     }
 }
 

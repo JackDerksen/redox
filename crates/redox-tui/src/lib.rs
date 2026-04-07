@@ -46,8 +46,10 @@ fn draw_buffer_view(
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let popup_overlay_active = state.mode == app::EditorMode::Command
-        || state.explorer_popup().is_some()
+    let popup_overlay_active = matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
         style.dimmed()
@@ -137,7 +139,10 @@ fn draw_buffer_view(
 
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
-        if state.mode == app::EditorMode::Command {
+        if matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) {
             draw_command_line_popup(state, style, window)?;
             return Ok(());
         }
@@ -197,6 +202,8 @@ fn draw_buffer_view(
                 active_scope_guides,
             )
         });
+    let search_highlights =
+        state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
 
     draw_relative_line_numbers(
         window,
@@ -227,6 +234,7 @@ fn draw_buffer_view(
         syntax_spans.as_deref(),
         &delimiter_highlights,
         &active_scope_guides,
+        &search_highlights,
         visual_selection,
         one_shot_highlight,
     )?;
@@ -237,7 +245,10 @@ fn draw_buffer_view(
 
     status.draw(window)?;
 
-    if state.mode == app::EditorMode::Command {
+    if matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    ) {
         draw_command_line_popup(state, style, window)?;
     } else if spec.visible {
         window.request_cursor(minui::window::CursorSpec {
@@ -335,20 +346,18 @@ fn draw_relative_line_numbers(
     Ok(())
 }
 
-fn draw_line_with_selection(
+fn draw_line_with_highlights(
     window: &mut dyn Window,
     row: u16,
     col: u16,
     source_line: &str,
     scroll_x: usize,
     width_cells: usize,
-    sel_start_char: usize,
-    sel_end_char_exclusive: usize,
     normal_color: ColorPair,
-    selection_bg: Color,
     color_column: Option<(usize, Color)>,
     style: UiStyle,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
+    highlight_layers: &[(&[bool], Color)],
     highlight_empty_line: bool,
 ) -> minui::Result<()> {
     if width_cells == 0 {
@@ -357,12 +366,11 @@ fn draw_line_with_selection(
 
     if source_line.is_empty() {
         if highlight_empty_line {
-            window.write_str_colored(
-                row,
-                col,
-                " ",
-                ColorPair::new(normal_color.fg, selection_bg),
-            )?;
+            let bg = highlight_layers
+                .first()
+                .map(|(_, bg)| *bg)
+                .unwrap_or(normal_color.bg);
+            window.write_str_colored(row, col, " ", ColorPair::new(normal_color.fg, bg))?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
                 && visible_col != 0
@@ -389,22 +397,18 @@ fn draw_line_with_selection(
 
     let mut used_cells = 0usize;
     let mut line_cells = 0usize;
-    let mut char_idx = 0usize;
     let mut byte_idx = 0usize;
+    let max_visible_cell = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
         let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
-        let g_chars = g.chars().count();
         let g_bytes = g.len();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
-        let start_char = char_idx;
-        let end_char = char_idx.saturating_add(g_chars);
         let start_byte = byte_idx;
         let end_byte = byte_idx.saturating_add(g_bytes);
 
         line_cells = end_cell;
-        char_idx = end_char;
         byte_idx = end_byte;
 
         if end_cell <= scroll_x {
@@ -413,17 +417,25 @@ fn draw_line_with_selection(
         if start_cell < scroll_x {
             continue;
         }
-
         if used_cells.saturating_add(g_width) > width_cells {
             break;
         }
 
-        let is_selected = start_char < sel_end_char_exclusive && end_char > sel_start_char;
+        let visible_start = start_cell.max(scroll_x).saturating_sub(scroll_x);
+        let visible_end = end_cell.min(max_visible_cell).saturating_sub(scroll_x);
         let base_color = syntax_spans
             .map(|spans| syntax_color_for_range(normal_color, style, spans, start_byte, end_byte))
             .unwrap_or(normal_color);
-        let color = if is_selected {
-            ColorPair::new(base_color.fg, selection_bg)
+        let highlight_bg = highlight_layers.iter().find_map(|(cells, bg)| {
+            (visible_start < visible_end
+                && visible_end <= cells.len()
+                && cells[visible_start..visible_end]
+                    .iter()
+                    .any(|selected| *selected))
+            .then_some(*bg)
+        });
+        let color = if let Some(bg) = highlight_bg {
+            ColorPair::new(base_color.fg, bg)
         } else {
             apply_color_column(base_color, color_column, start_cell, end_cell)
         };
@@ -566,6 +578,7 @@ fn draw_buffer_snapshot_for_id(
         .session
         .buffer(buffer_id)
         .expect("snapshot buffer must exist in session map");
+    let search_highlights = BTreeMap::new();
     draw_snapshot_lines(
         window,
         buffer,
@@ -578,6 +591,7 @@ fn draw_buffer_snapshot_for_id(
         syntax_spans.as_deref(),
         &delimiter_highlights,
         &active_scope_guides,
+        &search_highlights,
         None,
         None,
     )?;
@@ -597,6 +611,7 @@ fn draw_snapshot_lines(
     syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
+    search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
 ) -> minui::Result<()> {
@@ -612,6 +627,9 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let search_cells = search_highlights
+            .get(&line_idx)
+            .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
@@ -627,24 +645,30 @@ fn draw_snapshot_lines(
                 let selected_cells = selected_visible_cells(
                     &source_line,
                     scroll_x,
-                    text_w as usize,
+                    text_w,
                     sel_range.start,
                     sel_range.end,
                 );
-                draw_line_with_selection(
+                let highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
+                    vec![
+                        (selected_cells.as_slice(), selection_bg),
+                        (search_cells.as_slice(), style.theme.selection_bg),
+                    ]
+                } else {
+                    vec![(selected_cells.as_slice(), selection_bg)]
+                };
+                draw_line_with_highlights(
                     window,
                     row as u16,
                     content_x,
                     &source_line,
                     scroll_x,
                     text_w,
-                    sel_range.start,
-                    sel_range.end,
                     default_colors,
-                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    &highlight_layers,
                     highlight_empty_line,
                 )?;
                 draw_indent_guides(
@@ -668,24 +692,62 @@ fn draw_snapshot_lines(
                 continue;
             }
             if highlight_empty_line {
-                draw_line_with_selection(
+                let highlight_layers = [(&[][..], selection_bg)];
+                draw_line_with_highlights(
                     window,
                     row as u16,
                     content_x,
                     "",
                     scroll_x,
                     text_w,
-                    0,
-                    0,
                     default_colors,
-                    selection_bg,
                     color_column,
                     style,
                     syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    &highlight_layers,
                     true,
                 )?;
                 continue;
             }
+        }
+
+        if let Some(search_cells) = search_cells.as_ref()
+            && search_cells.iter().any(|selected| *selected)
+        {
+            let highlight_layers = [(search_cells.as_slice(), style.theme.selection_bg)];
+            draw_line_with_highlights(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                color_column,
+                style,
+                syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                &highlight_layers,
+                false,
+            )?;
+            draw_indent_guides(
+                window,
+                row as u16,
+                content_x,
+                visible_indent_guides,
+                style,
+                None,
+            )?;
+            draw_delimiter_highlights(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                highlighted_chars,
+                style,
+            )?;
+            continue;
         }
 
         if let Some(spans) = syntax_spans.and_then(|rows| rows.get(row))
@@ -764,8 +826,22 @@ fn selected_visible_cells(
     sel_start_char: usize,
     sel_end_char_exclusive: usize,
 ) -> Vec<bool> {
+    highlighted_visible_cells(
+        source_line,
+        scroll_x,
+        width_cells,
+        &[sel_start_char..sel_end_char_exclusive],
+    )
+}
+
+fn highlighted_visible_cells(
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    ranges: &[std::ops::Range<usize>],
+) -> Vec<bool> {
     let mut selected = vec![false; width_cells];
-    if width_cells == 0 || source_line.is_empty() || sel_start_char >= sel_end_char_exclusive {
+    if width_cells == 0 || source_line.is_empty() || ranges.is_empty() {
         return selected;
     }
 
@@ -790,7 +866,10 @@ fn selected_visible_cells(
         if start_cell >= max_visible_cell {
             break;
         }
-        if !(start_char < sel_end_char_exclusive && end_char > sel_start_char) {
+        if !ranges
+            .iter()
+            .any(|range| start_char < range.end && end_char > range.start)
+        {
             continue;
         }
 
@@ -1007,6 +1086,7 @@ mod tests {
             default_colors,
             style,
             None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
             None,
