@@ -515,6 +515,43 @@ fn repeat_search_reports_when_no_other_instances_exist() {
 }
 
 #[test]
+fn repeat_search_rediscovers_single_cached_match_after_hiding_highlights() {
+    let path = temp_file_path("slash_search_single_rediscover");
+    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "beta".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+    state.apply_input(InputAction::ClearSearch, 80, 24);
+    assert!(state.active_search_highlight_ranges(0, 1).is_empty());
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+    assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
+    assert!(state.status_msg.is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
     let path = temp_file_path("slash_search_hide_highlights");
     let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");

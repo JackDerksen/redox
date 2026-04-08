@@ -152,7 +152,7 @@ impl EditorState {
 
             if search.matches.is_empty() {
                 None
-            } else if search.matches.len() == 1 {
+            } else if search.matches.len() == 1 && search.active_match.is_some() {
                 None
             } else if let Some(active) = search.active_match {
                 Some(if forward {
