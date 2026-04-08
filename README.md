@@ -154,6 +154,9 @@ redox src
 | `D` | Delete from cursor position to end of the line |
 | (normal mode) `r` | Replace under cursor (eg. `r-` replaces the cursor cell with a `-`) |
 | (visual mode) `r` | Replace entire selection |
+| `/` | Open search to read for instances of a pattern in the current file |
+| `f` | Move cursor on top of the closest occurrence of the specified character |
+| `t` | Move cursor up to (before) the closest occurrence of the specified character |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
@@ -194,11 +197,11 @@ Notes:
 - [x] Scope indicator lines and delimiter pair highlighting
 - [x] Visual block mode
 - [x] Compound motions (like `daw` or `ci"`)
-- [ ] More Vim motions
+- [x] Basic local search (`/`, `f`, `F`)
 - [ ] Undo tree with stored history
 - [ ] More extendable leader key system with "whichkey" functionality
-- [ ] Local search (`/`, `f`, `F`)
 - [ ] A dashboard screen with similar functionality to nvim dashboards
+- [ ] More Vim motions (ongoing, not marking this complete until I've caught them all!)
 
 </details>
 
