@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "redox-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ropey",
@@ -613,14 +613,14 @@ dependencies = [
 
 [[package]]
 name = "redox-editor"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "redox-tui",
 ]
 
 [[package]]
 name = "redox-tui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "minui",
