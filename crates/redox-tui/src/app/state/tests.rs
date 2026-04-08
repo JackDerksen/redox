@@ -517,7 +517,14 @@ fn repeat_search_reports_when_no_other_instances_exist() {
 #[test]
 fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
     let path = temp_file_path("slash_search_hide_highlights");
-    let mut state = state_with_text(path.clone(), "alpha beta alpha\n");
+    let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
 
     state.apply_input(InputAction::EnterSearch, 80, 24);
     for ch in "alpha".chars() {
@@ -525,19 +532,22 @@ fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
     }
     state.apply_input(InputAction::SearchEnter, 80, 24);
 
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
     assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
 
     state.apply_input(
         InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
+            motion: Motion::Left,
+            count: 10,
         },
         80,
         24,
     );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
     assert!(state.active_search_highlight_ranges(0, 1).is_empty());
 
     state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
     assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
 
     state.apply_input(InputAction::ClearSearch, 80, 24);

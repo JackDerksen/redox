@@ -189,6 +189,7 @@ impl EditorState {
     pub(super) fn clear_search_highlights(&mut self) {
         if let Some(search) = self.search_state.as_mut() {
             search.visible = false;
+            search.active_match = None;
         }
     }
 
