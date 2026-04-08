@@ -64,9 +64,13 @@ impl EditorState {
         let cursor = self.active_cursor_pos();
         let landing = apply_motion_n(buffer, cursor, motion, count.max(1));
         let matches = search_matches_for_buffer(buffer, &query);
-        let active_match = matches
-            .iter()
-            .position(|matched| query.landing_pos(matched.start) == landing);
+        let active_match = motion_search_target_start(buffer, cursor, motion, count.max(1))
+            .and_then(|target_start| matches.iter().position(|matched| matched.start == target_start))
+            .or_else(|| {
+                matches
+                    .iter()
+                    .position(|matched| query.landing_pos(matched.start) == landing)
+            });
 
         self.search_state = Some(SearchState {
             query,
@@ -254,6 +258,45 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
         }),
         _ => None,
     }
+}
+
+fn motion_search_target_start(
+    buffer: &redox_core::TextBuffer,
+    cursor: Pos,
+    motion: Motion,
+    count: usize,
+) -> Option<Pos> {
+    let count = count.max(1);
+    let mut current = buffer.clamp_pos(cursor);
+    let mut target = None;
+
+    match motion {
+        Motion::FindChar(needle) => {
+            for _ in 0..count {
+                let found = buffer.find_char_after_on_line(current, needle)?;
+                target = Some(found);
+                current = found;
+            }
+        }
+        Motion::TillChar(needle) => {
+            for _ in 0..count {
+                let found = buffer.find_char_after_on_line(current, needle)?;
+                target = Some(found);
+                let next = if found.col > 0 {
+                    Pos::new(found.line, found.col - 1)
+                } else {
+                    found
+                };
+                if next == current {
+                    break;
+                }
+                current = next;
+            }
+        }
+        _ => return None,
+    }
+
+    target
 }
 
 fn search_matches_for_buffer(
