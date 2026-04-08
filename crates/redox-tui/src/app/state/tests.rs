@@ -3417,6 +3417,45 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
 }
 
 #[test]
+fn repeat_search_does_not_reuse_active_match_positions_across_buffers() {
+    let path_a = temp_file_path("search_state_buffer_a");
+    let path_b = temp_file_path("search_state_buffer_b");
+    let mut state = state_with_text(path_a.clone(), "alpha beta gamma beta\n");
+    fs::write(&path_b, "beta gamma beta\n").expect("failed to write test file");
+
+    let id_a = state.session.active_id();
+    state
+        .views
+        .get_mut(&id_a)
+        .expect("missing view for buffer A")
+        .cursor
+        .cursor = Pos::new(0, 7);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "beta".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 17));
+
+    run_command(&mut state, &format!("e {}", path_b.display()));
+    let id_b = state.session.active_id();
+    assert_ne!(id_a, id_b);
+    state
+        .views
+        .get_mut(&id_b)
+        .expect("missing view for buffer B")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
+
+    let _ = fs::remove_file(path_a);
+    let _ = fs::remove_file(path_b);
+}
+
+#[test]
 fn normal_mode_cc_changes_current_line_and_enters_insert() {
     let path = temp_file_path("cc_change_line");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");

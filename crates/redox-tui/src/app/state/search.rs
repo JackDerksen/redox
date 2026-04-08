@@ -202,11 +202,16 @@ impl EditorState {
         }
 
         let query = search.query.clone();
-        let previous_start = search
-            .active_match
-            .and_then(|idx| search.matches.get(idx))
-            .map(|matched| matched.start);
+        let previous_buffer_id = search.buffer_id;
         let buffer_id = self.session.active_id();
+        let previous_start = (previous_buffer_id == buffer_id)
+            .then(|| {
+                search
+                    .active_match
+                    .and_then(|idx| search.matches.get(idx))
+                    .map(|matched| matched.start)
+            })
+            .flatten();
         let matches = {
             let buffer = self.session.active_buffer();
             search_matches_for_buffer(buffer, &query)
