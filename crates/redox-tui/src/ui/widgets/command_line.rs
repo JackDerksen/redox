@@ -10,6 +10,8 @@ use crate::ui::widgets::popup::{
 
 const COMMAND_PROMPT: &str = "❯";
 const COMMAND_TITLE: &str = "Command";
+const SEARCH_PROMPT: &str = "/";
+const SEARCH_TITLE: &str = "Search";
 const COMMAND_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 
 pub fn draw_command_line_popup(
@@ -17,9 +19,11 @@ pub fn draw_command_line_popup(
     style: UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
-    if state.mode != EditorMode::Command {
-        return Ok(());
-    }
+    let (title, prompt) = match state.mode {
+        EditorMode::Command => (COMMAND_TITLE, COMMAND_PROMPT),
+        EditorMode::Search => (SEARCH_TITLE, SEARCH_PROMPT),
+        _ => return Ok(()),
+    };
 
     let (term_w, term_h) = window.get_size();
     let inner_w = command_line_inner_width(term_w, style);
@@ -36,7 +40,7 @@ pub fn draw_command_line_popup(
         y,
         inner_w,
         inner_h,
-        COMMAND_TITLE,
+        title,
         PopupChrome {
             border: style.command_line.border,
             title: style.command_line.title,
@@ -46,9 +50,9 @@ pub fn draw_command_line_popup(
     let mut view = popup_window_view(window, layout);
     let row = inner_h / 2;
     let prompt_col = 1u16.min(inner_w.saturating_sub(1));
-    view.write_str_colored(row, prompt_col, COMMAND_PROMPT, style.command_line.prompt)?;
+    view.write_str_colored(row, prompt_col, prompt, style.command_line.prompt)?;
 
-    let input_col = prompt_col.saturating_add(command_text_width(COMMAND_PROMPT) as u16 + 1);
+    let input_col = prompt_col.saturating_add(command_text_width(prompt) as u16 + 1);
     let input_width = inner_w.saturating_sub(input_col);
     let clipped = clip_text_to_cells(&state.command_line, input_width as usize);
     view.write_str_colored(row, input_col, &clipped, style.command_line.text)?;

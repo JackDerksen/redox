@@ -57,6 +57,12 @@ pub enum Motion {
 
     /// Move to end of next word (`e`-ish).
     WordEndAfter,
+
+    /// Move onto the next matching character on the current line (`f`-ish).
+    FindChar(char),
+
+    /// Move just before the next matching character on the current line (`t`-ish).
+    TillChar(char),
 }
 
 /// Apply a single `Motion` to a given cursor position.
@@ -101,6 +107,59 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
         Motion::WordStartAfter => buffer.word_start_after(cursor),
 
         Motion::WordEndAfter => buffer.word_end_after(cursor),
+
+        Motion::FindChar(needle) => buffer
+            .find_char_after_on_line(cursor, needle)
+            .unwrap_or(cursor),
+
+        Motion::TillChar(needle) => buffer
+            .find_char_after_on_line(cursor, needle)
+            .map(|target| {
+                if target.col > 0 {
+                    Pos::new(target.line, target.col - 1)
+                } else {
+                    target
+                }
+            })
+            .unwrap_or(cursor),
+    }
+}
+
+/// Apply a motion using operator semantics for the resulting half-open range end.
+pub fn apply_motion_for_operator(
+    buffer: &TextBuffer,
+    cursor: Pos,
+    motion: Motion,
+    count: usize,
+) -> Pos {
+    match motion {
+        Motion::FindChar(needle) => {
+            let mut current = buffer.clamp_pos(cursor);
+            let mut target = None;
+            for _ in 0..count.max(1) {
+                let Some(found) = buffer.find_char_after_on_line(current, needle) else {
+                    return cursor;
+                };
+                target = Some(found);
+                current = found;
+            }
+            target
+                .map(|found| buffer.move_right(found))
+                .unwrap_or(cursor)
+        }
+        Motion::TillChar(needle) => {
+            let mut current = buffer.clamp_pos(cursor);
+            let mut target = None;
+            for _ in 0..count.max(1) {
+                let Some(found) = buffer.find_char_after_on_line(current, needle) else {
+                    return cursor;
+                };
+                target = Some(found);
+                current = found;
+            }
+            target.unwrap_or(cursor)
+        }
+        _ => apply_motion_n(buffer, cursor, motion, count),
     }
 }
 
@@ -309,5 +368,39 @@ mod tests {
 
         let p = apply_motion(&b, p, Motion::WordEndAfter);
         assert_eq!(p, Pos::new(0, 6)); // /
+    }
+
+    #[test]
+    fn find_and_till_char_stay_on_current_line() {
+        let b = TextBuffer::from_str("alpha beta alpha\n");
+        let cursor = Pos::new(0, 0);
+
+        assert_eq!(
+            apply_motion(&b, cursor, Motion::FindChar('b')),
+            Pos::new(0, 6)
+        );
+        assert_eq!(
+            apply_motion(&b, cursor, Motion::TillChar('b')),
+            Pos::new(0, 5)
+        );
+        assert_eq!(
+            apply_motion_n(&b, cursor, Motion::FindChar('a'), 2),
+            Pos::new(0, 9)
+        );
+    }
+
+    #[test]
+    fn operator_find_char_includes_the_target_character() {
+        let b = TextBuffer::from_str("alpha beta\n");
+        let cursor = Pos::new(0, 0);
+
+        assert_eq!(
+            apply_motion_for_operator(&b, cursor, Motion::FindChar('b'), 1),
+            Pos::new(0, 7)
+        );
+        assert_eq!(
+            apply_motion_for_operator(&b, cursor, Motion::TillChar('b'), 1),
+            Pos::new(0, 6)
+        );
     }
 }

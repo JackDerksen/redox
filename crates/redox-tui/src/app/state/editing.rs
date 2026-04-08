@@ -1,6 +1,6 @@
 use redox_core::{
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
-    motion::{Motion, apply_motion_n},
+    motion::{Motion, apply_motion_for_operator},
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
@@ -170,9 +170,12 @@ impl EditorState {
                             .clamp_line(cursor.line)
                             .saturating_add(n - 1)
                             .min(buffer.len_lines().saturating_sub(1));
-                        Pos::new(target_line, buffer.line_first_non_whitespace_col(target_line))
+                        Pos::new(
+                            target_line,
+                            buffer.line_first_non_whitespace_col(target_line),
+                        )
                     }
-                    _ => apply_motion_n(buffer, cursor, *motion, count),
+                    _ => apply_motion_for_operator(buffer, cursor, *motion, count),
                 };
                 let selection = Selection::new(cursor, end);
                 (!selection.is_empty()).then(|| OperatorTargetPlan {
@@ -444,7 +447,7 @@ impl EditorState {
             EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
                 self.replace_active_visual_selection(replacement, viewport_width_cells, text_vh);
             }
-            EditorMode::Insert | EditorMode::Command => {}
+            EditorMode::Insert | EditorMode::Command | EditorMode::Search => {}
         }
     }
 

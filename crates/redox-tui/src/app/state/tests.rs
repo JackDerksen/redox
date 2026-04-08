@@ -268,6 +268,133 @@ fn normal_mode_operate_motion_line_end_count_spans_multiple_lines() {
 }
 
 #[test]
+fn normal_mode_find_and_till_char_move_to_expected_columns() {
+    let path = temp_file_path("find_till_motion");
+    let mut state = state_with_text(path.clone(), "alpha beta alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::FindChar('b'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::TillChar('b'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn operator_find_and_till_char_apply_expected_ranges() {
+    let path = temp_file_path("operator_find_till");
+    let mut state = state_with_text(path.clone(), "abc def ghi\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::TillChar('g'),
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "ghi\n");
+    assert_eq!(state.private_register, "abc def ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let mut state = state_with_text(path.clone(), "abc def ghi\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Change,
+            target: OperatorTarget::Motion {
+                motion: Motion::FindChar('g'),
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "hi\n");
+    assert_eq!(state.private_register, "abc def g");
+    assert_eq!(state.mode, EditorMode::Insert);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn operator_till_char_matches_vim_style_dtt_behaviour() {
+    let path = temp_file_path("operator_till_char_dtt");
+    let mut state = state_with_text(path.clone(), "formatting\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::TillChar('t'),
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "ftting\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn normal_mode_operate_motion_first_non_whitespace_count_spans_multiple_lines() {
     let path = temp_file_path("operate_motion_delete_first_non_ws_count");
     let mut state = state_with_text(path.clone(), "alpha\n  beta\n\tgamma\n");
@@ -294,6 +421,207 @@ fn normal_mode_operate_motion_first_non_whitespace_count_spans_multiple_lines() 
     assert_eq!(state.session.active_buffer().to_string(), "algamma\n");
     assert_eq!(state.private_register, "pha\n  beta\n\t");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
+    let path = temp_file_path("slash_search_repeat");
+    let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "alpha".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
+    assert_eq!(
+        state.active_search_highlight_ranges(0, 1).get(&0).cloned(),
+        Some(vec![0..5, 11..16, 23..28])
+    );
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 23));
+
+    state.apply_input(InputAction::RepeatSearch { forward: false }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 23));
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn till_char_search_repeat_tracks_the_actual_matched_character() {
+    let path = temp_file_path("till_char_search_repeat_target");
+    let mut state = state_with_text(path.clone(), "aabac\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::TillChar('a'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn repeat_search_reports_when_no_other_instances_exist() {
+    let path = temp_file_path("slash_search_single");
+    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "beta".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("no other pattern instances")
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn repeat_search_rediscovers_single_cached_match_after_hiding_highlights() {
+    let path = temp_file_path("slash_search_single_rediscover");
+    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "beta".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+    state.apply_input(InputAction::ClearSearch, 80, 24);
+    assert!(state.active_search_highlight_ranges(0, 1).is_empty());
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+    assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
+    assert!(state.status_msg.is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
+    let path = temp_file_path("slash_search_hide_highlights");
+    let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "alpha".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
+    assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Left,
+            count: 10,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    assert!(state.active_search_highlight_ranges(0, 1).is_empty());
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
+    assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
+
+    state.apply_input(InputAction::ClearSearch, 80, 24);
+    assert!(state.active_search_highlight_ranges(0, 1).is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn paging_and_centering_hide_search_highlights_but_keep_cached_query() {
+    let path = temp_file_path("slash_search_hide_highlights_on_paging");
+    let text = large_text(120);
+    let mut state = state_with_text(path.clone(), &text);
+    let viewport_height_rows = 8usize;
+
+    state.apply_input(InputAction::EnterSearch, 80, viewport_height_rows);
+    for ch in "line".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, viewport_height_rows);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, viewport_height_rows);
+
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
+
+    state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
+    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
 
     let _ = fs::remove_file(path);
 }
@@ -3083,6 +3411,45 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
 
     state.advance_one_shot_highlight();
     assert!(state.one_shot_highlight().is_none());
+
+    let _ = fs::remove_file(path_a);
+    let _ = fs::remove_file(path_b);
+}
+
+#[test]
+fn repeat_search_does_not_reuse_active_match_positions_across_buffers() {
+    let path_a = temp_file_path("search_state_buffer_a");
+    let path_b = temp_file_path("search_state_buffer_b");
+    let mut state = state_with_text(path_a.clone(), "alpha beta gamma beta\n");
+    fs::write(&path_b, "beta gamma beta\n").expect("failed to write test file");
+
+    let id_a = state.session.active_id();
+    state
+        .views
+        .get_mut(&id_a)
+        .expect("missing view for buffer A")
+        .cursor
+        .cursor = Pos::new(0, 7);
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "beta".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 17));
+
+    run_command(&mut state, &format!("e {}", path_b.display()));
+    let id_b = state.session.active_id();
+    assert_ne!(id_a, id_b);
+    state
+        .views
+        .get_mut(&id_b)
+        .expect("missing view for buffer B")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
 
     let _ = fs::remove_file(path_a);
     let _ = fs::remove_file(path_b);
