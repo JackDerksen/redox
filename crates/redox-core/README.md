@@ -1,10 +1,10 @@
 # redox-core
 
-Core library crate for the Redox editor.
+Core editor library for Redox.
 
-This crate contains editor primitives and logic that are independent of any UI:
+This crate contains the editor primitives and behaviour that should stay independent of any UI:
 - Rope-based text buffer (via `ropey`)
-- Text indexing utilities (line/column, char indices, selections)
-- Small, composable editing operations suitable for building Vim-like behavior
+- Text indexing and cursor utilities (lines, columns, char indices, selections)
+- Motions, text objects, search helpers, and small composable editing operations
 
-The UI system should depend on `redox-core` and keep rendering, input, and platform concerns outside of this crate.
+Frontend crates should depend on `redox-core` and keep rendering, input mapping, and platform concerns outside this crate.
