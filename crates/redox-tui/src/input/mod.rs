@@ -368,7 +368,7 @@ pub fn map_event_with_context(
                 }
                 InputMode::Normal => InputAction::ClearSearch,
             }
-        },
+        }
 
         Event::Backspace => {
             state.reset_prefixes();
@@ -381,7 +381,7 @@ pub fn map_event_with_context(
                 }
                 InputMode::Normal => InputAction::None,
             }
-        },
+        }
 
         Event::Enter => {
             state.reset_prefixes();
@@ -394,7 +394,7 @@ pub fn map_event_with_context(
                 }
                 InputMode::Normal => InputAction::SurfaceOpenSelected,
             }
-        },
+        }
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
 
@@ -810,8 +810,10 @@ fn resolve_pending_operator(
     };
 
     let keep_pending_operator = matches!(action, Some(InputAction::None))
-        && (matches!((pending.operator, pending.scope, c), (_, None, 'i' | 'a' | 'f' | 't'))
-            || !state.pending_sequence.is_empty());
+        && (matches!(
+            (pending.operator, pending.scope, c),
+            (_, None, 'i' | 'a' | 'f' | 't')
+        ) || !state.pending_sequence.is_empty());
 
     if !matches!(action, Some(InputAction::None)) {
         state.pending_operator = None;

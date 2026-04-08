@@ -611,13 +611,21 @@ fn paging_and_centering_hide_search_highlights_but_keep_cached_query() {
     state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
     assert!(state.active_search_highlight_ranges(0, 8).is_empty());
 
-    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    state.apply_input(
+        InputAction::RepeatSearch { forward: true },
+        80,
+        viewport_height_rows,
+    );
     assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
 
     state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
     assert!(state.active_search_highlight_ranges(0, 8).is_empty());
 
-    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, viewport_height_rows);
+    state.apply_input(
+        InputAction::RepeatSearch { forward: true },
+        80,
+        viewport_height_rows,
+    );
     assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
 
     state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
