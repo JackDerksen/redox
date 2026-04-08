@@ -627,6 +627,7 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let occupied_text_cells = occupied_visible_cells(&source_line, scroll_x, text_w);
         let search_cells = search_highlights
             .get(&line_idx)
             .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
@@ -676,6 +677,7 @@ fn draw_snapshot_lines(
                     row as u16,
                     content_x,
                     visible_indent_guides,
+                    &occupied_text_cells,
                     style,
                     Some((&selected_cells, selection_bg)),
                 )?;
@@ -734,6 +736,7 @@ fn draw_snapshot_lines(
                 row as u16,
                 content_x,
                 visible_indent_guides,
+                &occupied_text_cells,
                 style,
                 None,
             )?;
@@ -770,6 +773,7 @@ fn draw_snapshot_lines(
                 row as u16,
                 content_x,
                 visible_indent_guides,
+                &occupied_text_cells,
                 style,
                 None,
             )?;
@@ -801,6 +805,7 @@ fn draw_snapshot_lines(
             row as u16,
             content_x,
             visible_indent_guides,
+            &occupied_text_cells,
             style,
             None,
         )?;
@@ -881,6 +886,44 @@ fn highlighted_visible_cells(
     }
 
     selected
+}
+
+fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize) -> Vec<bool> {
+    let mut occupied = vec![false; width_cells];
+    if width_cells == 0 || source_line.is_empty() {
+        return occupied;
+    }
+
+    let mut line_cells = 0usize;
+    let max_visible_cell = scroll_x.saturating_add(width_cells);
+
+    for g in source_line.graphemes(true) {
+        if g.chars().all(char::is_whitespace) {
+            let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+            line_cells = line_cells.saturating_add(g_width.max(1));
+            continue;
+        }
+
+        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let start_cell = line_cells;
+        let end_cell = line_cells.saturating_add(g_width.max(1));
+        line_cells = end_cell;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell >= max_visible_cell {
+            break;
+        }
+
+        let visible_start = start_cell.saturating_sub(scroll_x);
+        let visible_end = end_cell.min(max_visible_cell).saturating_sub(scroll_x);
+        for cell in visible_start..visible_end.min(occupied.len()) {
+            occupied[cell] = true;
+        }
+    }
+
+    occupied
 }
 
 fn selected_empty_line(

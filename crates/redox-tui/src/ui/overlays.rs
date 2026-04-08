@@ -33,10 +33,14 @@ pub(crate) fn draw_indent_guides(
     row: u16,
     col: u16,
     visible_xs: &[usize],
+    occupied_cells: &[bool],
     style: UiStyle,
     selected_cells: Option<(&[bool], Color)>,
 ) -> minui::Result<()> {
     for &visible_x in visible_xs {
+        if occupied_cells.get(visible_x).copied().unwrap_or(false) {
+            continue;
+        }
         let is_selected = selected_cells
             .and_then(|(cells, _)| cells.get(visible_x))
             .copied()
