@@ -35,6 +35,8 @@ impl TextBuffer {
             return Vec::new();
         }
 
+        // TODO: this is inefficient as hell since it's converting the whole buffer to a string.
+        // Fine for now, but fix it when I add regex-based searching.
         let source = self.to_string();
         source
             .match_indices(needle)
