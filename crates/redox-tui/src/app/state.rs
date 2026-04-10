@@ -9,6 +9,7 @@ use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer, VisualMode
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
+use crate::ui::overlays::DelimiterPairCache;
 use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
@@ -113,6 +114,7 @@ pub struct BufferViewState {
     pub cursor: CursorController,
     pub grapheme_cache: GraphemeCache,
     pub syntax_highlighter: SyntaxHighlighter,
+    pub delimiter_pair_cache: DelimiterPairCache,
     pub visual_anchor: Option<Pos>,
     undo_history: UndoHistory,
     insert_mode_coalesce_base: Option<UndoSnapshot>,
@@ -124,6 +126,7 @@ impl Default for BufferViewState {
             cursor: CursorController::new(),
             grapheme_cache: GraphemeCache::new(512),
             syntax_highlighter: SyntaxHighlighter::default(),
+            delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: None,
             undo_history: UndoHistory::default(),
             insert_mode_coalesce_base: None,
@@ -135,6 +138,7 @@ impl BufferViewState {
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
         self.syntax_highlighter.invalidate();
+        self.delimiter_pair_cache.clear();
     }
 }
 

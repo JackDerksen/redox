@@ -53,6 +53,19 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
+fn invalidate_render_caches_clears_delimiter_pair_cache() {
+    let mut view = BufferViewState::default();
+    let before = TextBuffer::from_str("{ alpha }");
+    let after = TextBuffer::from_str("plain text");
+
+    assert_eq!(view.delimiter_pair_cache.get_or_compute(&before).len(), 1);
+
+    view.invalidate_render_caches();
+
+    assert!(view.delimiter_pair_cache.get_or_compute(&after).is_empty());
+}
+
+#[test]
 fn normal_mode_system_clipboard_paste_matches_p_semantics() {
     let path = temp_file_path("paste_system_clipboard_normal");
     let mut state = state_with_text(path.clone(), "abcd");

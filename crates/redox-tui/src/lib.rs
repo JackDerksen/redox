@@ -157,6 +157,7 @@ fn draw_buffer_view(
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
     let (snapshot, spec, scroll_x, syntax_spans, delimiter_highlights, active_scope_guides) = state
         .with_active_buffer_view_mut(|buffer, view| {
+            let cursor = view.cursor.cursor;
             let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
             let viewport = TextViewport {
                 scroll_x,
@@ -175,25 +176,26 @@ fn draw_buffer_view(
                 snapshot.first_line,
                 snapshot.lines.len(),
             );
-            let tree_sitter_scope = view.syntax_highlighter.active_scope_pair(
-                buffer,
-                syntax_language,
-                view.cursor.cursor,
-            );
+            let tree_sitter_scope =
+                view.syntax_highlighter
+                    .active_scope_pair(buffer, syntax_language, cursor);
+            let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
             let delimiter_highlights = active_delimiter_highlights(
                 buffer,
-                view.cursor.cursor,
+                cursor,
                 snapshot.first_line,
                 snapshot.lines.len(),
+                delimiter_pairs,
             );
             let active_scope_guides = active_scope_indent_guides(
                 tree_sitter_scope,
                 buffer,
-                view.cursor.cursor,
+                cursor,
                 snapshot.first_line,
                 snapshot.lines.len(),
                 scroll_x,
                 text_w as usize,
+                Some(delimiter_pairs),
             );
             (
                 snapshot,
@@ -513,6 +515,7 @@ fn draw_buffer_snapshot_for_id(
         delimiter_highlights,
         active_scope_guides,
     )) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
+        let cursor = view.cursor.cursor;
         let total_lines = buffer.len_lines().max(1);
         let gutter_w = line_number_gutter_width(total_lines);
         let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
@@ -533,21 +536,24 @@ fn draw_buffer_snapshot_for_id(
         );
         let tree_sitter_scope =
             view.syntax_highlighter
-                .active_scope_pair(buffer, syntax_language, view.cursor.cursor);
+                .active_scope_pair(buffer, syntax_language, cursor);
+        let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
         let delimiter_highlights = active_delimiter_highlights(
             buffer,
-            view.cursor.cursor,
+            cursor,
             snapshot.first_line,
             snapshot.lines.len(),
+            delimiter_pairs,
         );
         let active_scope_guides = active_scope_indent_guides(
             tree_sitter_scope,
             buffer,
-            view.cursor.cursor,
+            cursor,
             snapshot.first_line,
             snapshot.lines.len(),
             scroll_x,
             width.saturating_sub(content_x) as usize,
+            Some(delimiter_pairs),
         );
         (
             snapshot,
