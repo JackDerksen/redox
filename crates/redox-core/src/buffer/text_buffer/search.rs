@@ -40,6 +40,7 @@ impl TextBuffer {
         let mut matches = Vec::new();
         let mut overlap = String::new();
         let mut processed_chars = 0usize;
+        let mut last_emitted_end = 0usize;
 
         for chunk in self.rope().chunks() {
             let chunk_chars = chunk.chars().count();
@@ -53,6 +54,7 @@ impl TextBuffer {
                     needle,
                     needle_chars,
                     &mut matches,
+                    &mut last_emitted_end,
                 );
 
                 if overlap_char_limit > 0 {
@@ -73,6 +75,7 @@ impl TextBuffer {
                     needle,
                     needle_chars,
                     &mut matches,
+                    &mut last_emitted_end,
                 );
 
                 overlap = trailing_chars(&segment, overlap_char_limit);
@@ -93,23 +96,39 @@ fn collect_segment_matches(
     needle: &str,
     needle_chars: usize,
     out: &mut Vec<(Pos, Pos)>,
+    last_emitted_end: &mut usize,
 ) {
-    let mut scan_start_byte = 0usize;
-    let mut scan_start_chars = 0usize;
+    let segment_scan_start_char = last_emitted_end.saturating_sub(segment_start_char);
+    let segment_scan_start_byte = byte_idx_for_char(segment, segment_scan_start_char);
+    let mut scan_start_byte = segment_scan_start_byte;
+    let mut scan_start_chars = segment_scan_start_char;
 
-    for (match_start_byte, _) in segment.match_indices(needle) {
+    for (match_start_byte_rel, _) in segment[segment_scan_start_byte..].match_indices(needle) {
+        let match_start_byte = segment_scan_start_byte.saturating_add(match_start_byte_rel);
         scan_start_chars = scan_start_chars
             .saturating_add(segment[scan_start_byte..match_start_byte].chars().count());
 
         let start_char = segment_start_char.saturating_add(scan_start_chars);
         let end_char = start_char.saturating_add(needle_chars);
-        if end_char > emit_after_char {
+        if start_char >= *last_emitted_end && end_char > emit_after_char {
             out.push((buffer.char_to_pos(start_char), buffer.char_to_pos(end_char)));
+            *last_emitted_end = end_char;
         }
 
         scan_start_byte = match_start_byte.saturating_add(needle.len());
         scan_start_chars = scan_start_chars.saturating_add(needle_chars);
     }
+}
+
+fn byte_idx_for_char(text: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(text.len())
 }
 
 fn trailing_chars(text: &str, char_limit: usize) -> String {
@@ -192,6 +211,17 @@ mod tests {
         assert_eq!(
             buffer.find_matches(&boundary_needle),
             naive_find_matches(&buffer, &boundary_needle)
+        );
+    }
+
+    #[test]
+    fn find_matches_preserves_non_overlapping_semantics_across_chunk_boundaries() {
+        let text = "a".repeat(120_000);
+        let buffer = TextBuffer::from_str(&text);
+
+        assert_eq!(
+            buffer.find_matches("aaa"),
+            naive_find_matches(&buffer, "aaa")
         );
     }
 }
