@@ -22,10 +22,27 @@ impl DelimiterKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DelimiterPair {
+pub(crate) struct DelimiterPair {
     start: Pos,
     end: Pos,
     kind: DelimiterKind,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DelimiterPairCache {
+    pairs: Option<Vec<DelimiterPair>>,
+}
+
+impl DelimiterPairCache {
+    pub(crate) fn get_or_compute<'a>(&'a mut self, buffer: &TextBuffer) -> &'a [DelimiterPair] {
+        self.pairs
+            .get_or_insert_with(|| delimiter_pairs(buffer))
+            .as_slice()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.pairs = None;
+    }
 }
 
 pub(crate) fn draw_indent_guides(
@@ -67,15 +84,22 @@ pub(crate) fn active_scope_indent_guides(
     line_count: usize,
     scroll_x: usize,
     width_cells: usize,
+    cached_delimiter_pairs: Option<&[DelimiterPair]>,
 ) -> BTreeMap<usize, Vec<usize>> {
-    let delimiter_pairs = delimiter_pairs(buffer);
     let scope = tree_sitter_scope
         .map(|pair| DelimiterPair {
             start: pair.start,
             end: pair.end,
             kind: DelimiterKind::Brace,
         })
-        .or_else(|| find_active_scope_pair(buffer, cursor, &delimiter_pairs));
+        .or_else(|| {
+            cached_delimiter_pairs
+                .map(|pairs| find_active_scope_pair(buffer, cursor, pairs))
+                .unwrap_or_else(|| {
+                    let pairs = delimiter_pairs(buffer);
+                    find_active_scope_pair(buffer, cursor, &pairs)
+                })
+        });
     let Some(scope) = scope else {
         return BTreeMap::new();
     };
@@ -255,9 +279,9 @@ pub(crate) fn active_delimiter_highlights(
     cursor: Pos,
     first_line: usize,
     line_count: usize,
+    delimiter_pairs: &[DelimiterPair],
 ) -> BTreeMap<usize, Vec<usize>> {
-    let delimiter_pairs = delimiter_pairs(buffer);
-    let Some(active_pair) = find_active_delimiter_pair(buffer, cursor, &delimiter_pairs) else {
+    let Some(active_pair) = find_active_delimiter_pair(buffer, cursor, delimiter_pairs) else {
         return BTreeMap::new();
     };
 
@@ -427,10 +451,12 @@ fn is_escaped(prev_char: Option<char>) -> bool {
 mod tests {
     use redox_core::{Pos, TextBuffer};
 
+    use crate::ui::syntax::SyntaxScopePair;
+
     use super::{
-        active_scope_guide_cell, delimiter_pairs, filter_visible_indent_guides,
-        find_active_delimiter_pair, find_active_scope_pair, leading_indent_guide_cells,
-        visible_delimiter_cells,
+        active_scope_guide_cell, active_scope_indent_guides, delimiter_pairs,
+        filter_visible_indent_guides, find_active_delimiter_pair, find_active_scope_pair,
+        leading_indent_guide_cells, visible_delimiter_cells,
     };
 
     #[test]
@@ -514,6 +540,25 @@ mod tests {
         let pairs = delimiter_pairs(&buffer);
         let scope = find_active_scope_pair(&buffer, Pos::new(2, 2), &pairs).expect("scope");
         assert_eq!(active_scope_guide_cell(&buffer, scope), Some(4));
+    }
+
+    #[test]
+    fn active_scope_guides_use_tree_sitter_scope_without_delimiter_scan() {
+        let buffer = TextBuffer::from_str("{\n    answer();\n}\n");
+        let guides = active_scope_indent_guides(
+            Some(SyntaxScopePair {
+                start: Pos::new(0, 0),
+                end: Pos::new(2, 0),
+            }),
+            &buffer,
+            Pos::new(1, 4),
+            0,
+            3,
+            0,
+            20,
+            None,
+        );
+        assert_eq!(guides.get(&1), Some(&vec![0]));
     }
 
     #[test]

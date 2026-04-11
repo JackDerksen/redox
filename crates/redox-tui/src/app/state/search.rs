@@ -65,7 +65,11 @@ impl EditorState {
         let landing = apply_motion_n(buffer, cursor, motion, count.max(1));
         let matches = search_matches_for_buffer(buffer, &query);
         let active_match = motion_search_target_start(buffer, cursor, motion, count.max(1))
-            .and_then(|target_start| matches.iter().position(|matched| matched.start == target_start))
+            .and_then(|target_start| {
+                matches
+                    .iter()
+                    .position(|matched| matched.start == target_start)
+            })
             .or_else(|| {
                 matches
                     .iter()
