@@ -7,14 +7,15 @@
 </h1>
 
 <p align="center">
-  Redox is a terminal-based, Vim-like text editor written in Rust for my final capstone project. 
+  Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
+  <br><br>
+  <strong>PLEASE NOTE</strong>: This editor is in no way associated with
+  <a href="https://www.redox-os.org/">Redox OS</a>.
 </p>
 
 <p align="center">
     <img width="1541" height="1027" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
-
-**NOTE**: This editor is in no way associated with [Redox OS](https://www.redox-os.org/).
 
 ## General project structure
 
