@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use minui::{Color, ColorPair, Window};
 use redox_core::{Pos, TextBuffer};
@@ -26,22 +27,140 @@ pub(crate) struct DelimiterPair {
     start: Pos,
     end: Pos,
     kind: DelimiterKind,
+    guide_cell: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexedDelimiterPair {
+    pair: DelimiterPair,
+    start_char: usize,
+    end_char: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnclosingRange {
+    start_char: usize,
+    end_char: usize,
+    pair_idx: usize,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DelimiterAnalysis {
+    pairs: Vec<IndexedDelimiterPair>,
+    endpoint_index: HashMap<usize, Vec<usize>>,
+    enclosing_ranges: Vec<EnclosingRange>,
+    scope_ranges: Vec<EnclosingRange>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct DelimiterPairCache {
-    pairs: Option<Vec<DelimiterPair>>,
+    analysis: Option<DelimiterAnalysis>,
 }
 
 impl DelimiterPairCache {
-    pub(crate) fn get_or_compute<'a>(&'a mut self, buffer: &TextBuffer) -> &'a [DelimiterPair] {
-        self.pairs
-            .get_or_insert_with(|| delimiter_pairs(buffer))
-            .as_slice()
+    pub(crate) fn get(&self) -> Option<&DelimiterAnalysis> {
+        self.analysis.as_ref()
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.pairs = None;
+    pub(crate) fn install(&mut self, analysis: DelimiterAnalysis) {
+        self.analysis = Some(analysis);
+    }
+}
+
+impl DelimiterAnalysis {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.pairs.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    fn active_delimiter_pair(&self, buffer: &TextBuffer, cursor: Pos) -> Option<DelimiterPair> {
+        let cursor = buffer.clamp_pos(cursor);
+        let cursor_char = buffer.pos_to_char(cursor);
+
+        if let Some(pair) = self.pair_at_endpoint(cursor_char, |_| true) {
+            return Some(pair);
+        }
+
+        if cursor.col > 0
+            && let Some(pair) = self.pair_at_endpoint(cursor_char - 1, |_| true)
+        {
+            return Some(pair);
+        }
+
+        self.pair_for_enclosing_range(cursor_char, &self.enclosing_ranges)
+    }
+
+    fn active_scope_pair(&self, buffer: &TextBuffer, cursor: Pos) -> Option<DelimiterPair> {
+        let cursor = buffer.clamp_pos(cursor);
+        let cursor_char = buffer.pos_to_char(cursor);
+        let is_scope_pair =
+            |pair: DelimiterPair| pair.kind.is_structural() && pair.start.line < pair.end.line;
+
+        if let Some(pair) = self.pair_at_endpoint(cursor_char, is_scope_pair) {
+            return Some(pair);
+        }
+
+        if cursor.col > 0
+            && let Some(pair) = self.pair_at_endpoint(cursor_char - 1, is_scope_pair)
+        {
+            return Some(pair);
+        }
+
+        self.pair_for_enclosing_range(cursor_char, &self.scope_ranges)
+    }
+
+    fn pair_at_endpoint(
+        &self,
+        char_idx: usize,
+        predicate: impl Fn(DelimiterPair) -> bool,
+    ) -> Option<DelimiterPair> {
+        self.endpoint_index.get(&char_idx)?.iter().find_map(|idx| {
+            let pair = self.pairs.get(*idx)?.pair;
+            predicate(pair).then_some(pair)
+        })
+    }
+
+    fn pair_for_enclosing_range(
+        &self,
+        cursor_char: usize,
+        ranges: &[EnclosingRange],
+    ) -> Option<DelimiterPair> {
+        let idx = ranges
+            .partition_point(|range| range.start_char <= cursor_char)
+            .checked_sub(1)?;
+        let range = ranges[idx];
+        (cursor_char <= range.end_char)
+            .then(|| self.pairs.get(range.pair_idx).map(|indexed| indexed.pair))
+            .flatten()
+    }
+}
+
+pub(crate) fn compute_delimiter_analysis(buffer: &TextBuffer) -> DelimiterAnalysis {
+    let pairs = delimiter_pairs(buffer)
+        .into_iter()
+        .map(|mut pair| {
+            if pair.kind.is_structural() && pair.start.line < pair.end.line {
+                pair.guide_cell = active_scope_guide_cell(buffer, pair);
+            }
+            IndexedDelimiterPair {
+                start_char: buffer.pos_to_char(pair.start),
+                end_char: buffer.pos_to_char(pair.end),
+                pair,
+            }
+        })
+        .collect::<Vec<_>>();
+    DelimiterAnalysis {
+        endpoint_index: delimiter_endpoint_index(&pairs),
+        enclosing_ranges: delimiter_enclosing_ranges(&pairs, |_| true),
+        scope_ranges: delimiter_enclosing_ranges(&pairs, |pair| {
+            pair.kind.is_structural() && pair.start.line < pair.end.line
+        }),
+        pairs,
     }
 }
 
@@ -84,26 +203,27 @@ pub(crate) fn active_scope_indent_guides(
     line_count: usize,
     scroll_x: usize,
     width_cells: usize,
-    cached_delimiter_pairs: Option<&[DelimiterPair]>,
+    cached_delimiter_analysis: Option<&DelimiterAnalysis>,
 ) -> BTreeMap<usize, Vec<usize>> {
     let scope = tree_sitter_scope
         .map(|pair| DelimiterPair {
             start: pair.start,
             end: pair.end,
             kind: DelimiterKind::Brace,
+            guide_cell: None,
         })
         .or_else(|| {
-            cached_delimiter_pairs
-                .map(|pairs| find_active_scope_pair(buffer, cursor, pairs))
-                .unwrap_or_else(|| {
-                    let pairs = delimiter_pairs(buffer);
-                    find_active_scope_pair(buffer, cursor, &pairs)
-                })
+            cached_delimiter_analysis
+                .map(|analysis| analysis.active_scope_pair(buffer, cursor))
+                .unwrap_or(None)
         });
     let Some(scope) = scope else {
         return BTreeMap::new();
     };
-    let Some(guide_cell) = active_scope_guide_cell(buffer, scope) else {
+    let Some(guide_cell) = scope
+        .guide_cell
+        .or_else(|| active_scope_guide_cell(buffer, scope))
+    else {
         return BTreeMap::new();
     };
 
@@ -120,16 +240,6 @@ pub(crate) fn active_scope_indent_guides(
         guides.insert(line_idx, visible_xs.clone());
     }
     guides
-}
-
-fn find_active_scope_pair(
-    buffer: &TextBuffer,
-    cursor: Pos,
-    delimiter_pairs: &[DelimiterPair],
-) -> Option<DelimiterPair> {
-    find_active_pair_matching(buffer, cursor, delimiter_pairs, |pair| {
-        pair.kind.is_structural() && pair.start.line < pair.end.line
-    })
 }
 
 fn active_scope_guide_cell(buffer: &TextBuffer, scope: DelimiterPair) -> Option<usize> {
@@ -279,9 +389,9 @@ pub(crate) fn active_delimiter_highlights(
     cursor: Pos,
     first_line: usize,
     line_count: usize,
-    delimiter_pairs: &[DelimiterPair],
+    delimiter_analysis: &DelimiterAnalysis,
 ) -> BTreeMap<usize, Vec<usize>> {
-    let Some(active_pair) = find_active_delimiter_pair(buffer, cursor, delimiter_pairs) else {
+    let Some(active_pair) = delimiter_analysis.active_delimiter_pair(buffer, cursor) else {
         return BTreeMap::new();
     };
 
@@ -297,78 +407,100 @@ pub(crate) fn active_delimiter_highlights(
     highlights
 }
 
-fn find_active_delimiter_pair(
-    buffer: &TextBuffer,
-    cursor: Pos,
-    delimiter_pairs: &[DelimiterPair],
-) -> Option<DelimiterPair> {
-    find_active_pair_matching(buffer, cursor, delimiter_pairs, |_| true)
+fn delimiter_endpoint_index(pairs: &[IndexedDelimiterPair]) -> HashMap<usize, Vec<usize>> {
+    let mut endpoints: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, pair) in pairs.iter().enumerate() {
+        endpoints.entry(pair.start_char).or_default().push(idx);
+        endpoints.entry(pair.end_char).or_default().push(idx);
+    }
+    endpoints
 }
 
-fn find_active_pair_matching(
-    buffer: &TextBuffer,
-    cursor: Pos,
-    delimiter_pairs: &[DelimiterPair],
+fn delimiter_enclosing_ranges(
+    pairs: &[IndexedDelimiterPair],
     predicate: impl Fn(DelimiterPair) -> bool,
-) -> Option<DelimiterPair> {
-    let cursor = buffer.clamp_pos(cursor);
-
-    if let Some(pair) = pair_for_cursor_char(buffer, cursor, delimiter_pairs, &predicate) {
-        return Some(pair);
+) -> Vec<EnclosingRange> {
+    #[derive(Clone, Copy)]
+    enum EventKind {
+        Start,
+        End,
     }
 
-    if cursor.col > 0 {
-        let before = Pos::new(cursor.line, cursor.col - 1);
-        if let Some(pair) = pair_for_cursor_char(buffer, before, delimiter_pairs, &predicate) {
-            return Some(pair);
-        }
+    #[derive(Clone, Copy)]
+    struct Event {
+        char_idx: usize,
+        kind: EventKind,
+        pair_idx: usize,
     }
 
-    smallest_enclosing_pair(buffer, cursor, delimiter_pairs, predicate)
-}
-
-fn pair_for_cursor_char(
-    buffer: &TextBuffer,
-    pos: Pos,
-    delimiter_pairs: &[DelimiterPair],
-    predicate: &impl Fn(DelimiterPair) -> bool,
-) -> Option<DelimiterPair> {
-    let ch = buffer.char_at(pos)?;
-    delimiter_pairs.iter().copied().find_map(|pair| {
-        if !predicate(pair) {
-            return None;
+    let mut events = Vec::new();
+    for (pair_idx, indexed) in pairs.iter().enumerate() {
+        if predicate(indexed.pair) {
+            events.push(Event {
+                char_idx: indexed.start_char,
+                kind: EventKind::Start,
+                pair_idx,
+            });
+            events.push(Event {
+                char_idx: indexed.end_char,
+                kind: EventKind::End,
+                pair_idx,
+            });
         }
-        let start_ch = buffer.char_at(pair.start)?;
-        let end_ch = buffer.char_at(pair.end)?;
-        if (pos == pair.start && ch == start_ch) || (pos == pair.end && ch == end_ch) {
-            Some(pair)
-        } else {
-            None
-        }
-    })
-}
+    }
+    events.sort_by_key(|event| {
+        (
+            event.char_idx,
+            match event.kind {
+                EventKind::End => 0usize,
+                EventKind::Start => 1,
+            },
+        )
+    });
 
-fn smallest_enclosing_pair(
-    buffer: &TextBuffer,
-    cursor: Pos,
-    delimiter_pairs: &[DelimiterPair],
-    predicate: impl Fn(DelimiterPair) -> bool,
-) -> Option<DelimiterPair> {
-    let cursor_char = buffer.pos_to_char(cursor);
-    delimiter_pairs
-        .iter()
-        .copied()
-        .filter(|pair| predicate(*pair))
-        .filter(|pair| {
-            let start_char = buffer.pos_to_char(pair.start);
-            let end_char = buffer.pos_to_char(pair.end);
-            start_char < cursor_char && cursor_char <= end_char
-        })
-        .min_by_key(|pair| {
-            let start_char = buffer.pos_to_char(pair.start);
-            let end_char = buffer.pos_to_char(pair.end);
-            end_char.saturating_sub(start_char)
-        })
+    let mut ranges = Vec::new();
+    let mut active = vec![false; pairs.len()];
+    let mut innermost = BinaryHeap::<Reverse<(usize, usize)>>::new();
+    let mut prev_char = None;
+    let mut idx = 0;
+    while idx < events.len() {
+        let char_idx = events[idx].char_idx;
+        if let Some(start_char) = prev_char
+            && start_char <= char_idx
+            && let Some(Reverse((_, pair_idx))) = innermost.peek().copied()
+        {
+            ranges.push(EnclosingRange {
+                start_char,
+                end_char: char_idx,
+                pair_idx,
+            });
+        }
+
+        while idx < events.len() && events[idx].char_idx == char_idx {
+            match events[idx].kind {
+                EventKind::Start => {
+                    let pair_idx = events[idx].pair_idx;
+                    active[pair_idx] = true;
+                    innermost.push(Reverse((
+                        pairs[pair_idx].end_char - pairs[pair_idx].start_char,
+                        pair_idx,
+                    )));
+                }
+                EventKind::End => active[events[idx].pair_idx] = false,
+            }
+            idx += 1;
+        }
+
+        while let Some(Reverse((_, pair_idx))) = innermost.peek().copied() {
+            if active[pair_idx] {
+                break;
+            }
+            innermost.pop();
+        }
+        prev_char = char_idx.checked_add(1);
+    }
+
+    ranges
 }
 
 fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
@@ -390,6 +522,7 @@ fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
                         start: buffer.char_to_pos(start),
                         end: buffer.char_to_pos(char_idx),
                         kind: DelimiterKind::Paren,
+                        guide_cell: None,
                     });
                 }
             }
@@ -400,6 +533,7 @@ fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
                         start: buffer.char_to_pos(start),
                         end: buffer.char_to_pos(char_idx),
                         kind: DelimiterKind::Bracket,
+                        guide_cell: None,
                     });
                 }
             }
@@ -410,6 +544,7 @@ fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
                         start: buffer.char_to_pos(start),
                         end: buffer.char_to_pos(char_idx),
                         kind: DelimiterKind::Brace,
+                        guide_cell: None,
                     });
                 }
             }
@@ -419,6 +554,7 @@ fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
                         start: buffer.char_to_pos(start),
                         end: buffer.char_to_pos(char_idx),
                         kind: DelimiterKind::SingleQuote,
+                        guide_cell: None,
                     });
                 } else {
                     single_quotes.push(char_idx);
@@ -430,6 +566,7 @@ fn delimiter_pairs(buffer: &TextBuffer) -> Vec<DelimiterPair> {
                         start: buffer.char_to_pos(start),
                         end: buffer.char_to_pos(char_idx),
                         kind: DelimiterKind::DoubleQuote,
+                        guide_cell: None,
                     });
                 } else {
                     double_quotes.push(char_idx);
@@ -454,16 +591,15 @@ mod tests {
     use crate::ui::syntax::SyntaxScopePair;
 
     use super::{
-        active_scope_guide_cell, active_scope_indent_guides, delimiter_pairs,
-        filter_visible_indent_guides, find_active_delimiter_pair, find_active_scope_pair,
-        leading_indent_guide_cells, visible_delimiter_cells,
+        active_scope_guide_cell, active_scope_indent_guides, compute_delimiter_analysis,
+        filter_visible_indent_guides, leading_indent_guide_cells, visible_delimiter_cells,
     };
 
     #[test]
     fn highlights_pair_when_cursor_is_on_opening_delimiter() {
         let buffer = TextBuffer::from_str("(abc)");
-        let pairs = delimiter_pairs(&buffer);
-        let pair = find_active_delimiter_pair(&buffer, Pos::new(0, 0), &pairs);
+        let analysis = compute_delimiter_analysis(&buffer);
+        let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 0));
         assert_eq!(
             pair.map(|pair| (pair.start, pair.end)),
             Some((Pos::new(0, 0), Pos::new(0, 4)))
@@ -473,8 +609,8 @@ mod tests {
     #[test]
     fn highlights_pair_when_cursor_is_on_closing_delimiter() {
         let buffer = TextBuffer::from_str("(abc)");
-        let pairs = delimiter_pairs(&buffer);
-        let pair = find_active_delimiter_pair(&buffer, Pos::new(0, 4), &pairs);
+        let analysis = compute_delimiter_analysis(&buffer);
+        let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 4));
         assert_eq!(
             pair.map(|pair| (pair.start, pair.end)),
             Some((Pos::new(0, 0), Pos::new(0, 4)))
@@ -484,8 +620,8 @@ mod tests {
     #[test]
     fn highlights_nearest_surrounding_pair_when_cursor_is_inside_nested_pairs() {
         let buffer = TextBuffer::from_str("(\"  \")");
-        let pairs = delimiter_pairs(&buffer);
-        let pair = find_active_delimiter_pair(&buffer, Pos::new(0, 3), &pairs);
+        let analysis = compute_delimiter_analysis(&buffer);
+        let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 3));
         assert_eq!(
             pair.map(|pair| (pair.start, pair.end)),
             Some((Pos::new(0, 1), Pos::new(0, 4)))
@@ -495,8 +631,8 @@ mod tests {
     #[test]
     fn cursor_after_delimiter_still_counts_as_on_it() {
         let buffer = TextBuffer::from_str("\"x\"");
-        let pairs = delimiter_pairs(&buffer);
-        let pair = find_active_delimiter_pair(&buffer, Pos::new(0, 1), &pairs);
+        let analysis = compute_delimiter_analysis(&buffer);
+        let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 1));
         assert_eq!(
             pair.map(|pair| (pair.start, pair.end)),
             Some((Pos::new(0, 0), Pos::new(0, 2)))
@@ -526,8 +662,8 @@ mod tests {
     #[test]
     fn active_scope_uses_structural_pair_outside_same_line_quotes() {
         let buffer = TextBuffer::from_str("{\n\tprintln(\"hi\");\n}\n");
-        let pairs = delimiter_pairs(&buffer);
-        let scope = find_active_scope_pair(&buffer, Pos::new(1, 11), &pairs);
+        let analysis = compute_delimiter_analysis(&buffer);
+        let scope = analysis.active_scope_pair(&buffer, Pos::new(1, 11));
         assert_eq!(
             scope.map(|pair| (pair.start, pair.end)),
             Some((Pos::new(0, 0), Pos::new(2, 0)))
@@ -537,8 +673,10 @@ mod tests {
     #[test]
     fn active_scope_guide_cell_uses_the_inner_indent_column() {
         let buffer = TextBuffer::from_str("if foo {\n\tif bar {\n\t\tbaz();\n\t}\n}\n");
-        let pairs = delimiter_pairs(&buffer);
-        let scope = find_active_scope_pair(&buffer, Pos::new(2, 2), &pairs).expect("scope");
+        let analysis = compute_delimiter_analysis(&buffer);
+        let scope = analysis
+            .active_scope_pair(&buffer, Pos::new(2, 2))
+            .expect("scope");
         assert_eq!(active_scope_guide_cell(&buffer, scope), Some(4));
     }
 

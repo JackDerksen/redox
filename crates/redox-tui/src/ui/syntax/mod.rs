@@ -31,7 +31,6 @@ pub struct LineSyntaxSpan {
 
 #[derive(Default)]
 pub struct SyntaxHighlighter {
-    engine: Option<QuerySyntaxEngine>,
     cache: Option<HighlightCache>,
 }
 
@@ -42,7 +41,6 @@ pub struct SyntaxScopePair {
 }
 
 struct QuerySyntaxEngine {
-    language: SyntaxLanguage,
     parser: Parser,
     query: Query,
     capture_roles: Vec<Option<SyntaxCapture>>,
@@ -52,14 +50,13 @@ struct QuerySyntaxEngine {
 impl std::fmt::Debug for SyntaxHighlighter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyntaxHighlighter")
-            .field("engine_loaded", &self.engine.is_some())
             .field("cache", &self.cache)
             .finish()
     }
 }
 
 #[derive(Debug)]
-struct HighlightCache {
+pub(crate) struct HighlightCache {
     language: SyntaxLanguage,
     line_spans: Vec<Vec<LineSyntaxSpan>>,
     tree: Tree,
@@ -101,7 +98,6 @@ impl QuerySyntaxEngine {
             .collect();
 
         Some(Self {
-            language: config.language,
             parser,
             query,
             capture_roles,
@@ -159,50 +155,32 @@ impl QuerySyntaxEngine {
 }
 
 impl SyntaxHighlighter {
-    fn ensure_cache(
-        &mut self,
+    pub(crate) fn compute_cache(
         buffer: &TextBuffer,
         language: SyntaxLanguage,
-    ) -> Option<&HighlightCache> {
-        let needs_engine = self
-            .engine
-            .as_ref()
-            .map(|engine| engine.language != language)
-            .unwrap_or(true);
-        if needs_engine {
-            let config = language_config_for(language)?;
-            self.engine = QuerySyntaxEngine::new(config);
-        }
-
-        let needs_rebuild = self
-            .cache
-            .as_ref()
-            .map(|cache| cache.language != language)
-            .unwrap_or(true);
-
-        if needs_rebuild {
-            let engine = self.engine.as_mut()?;
-            let source = buffer.to_string();
-            let (spans, tree) = engine.parse_line_spans(&source)?;
-            self.cache = Some(HighlightCache {
-                language,
-                line_spans: spans,
-                tree,
-            });
-        }
-
-        self.cache.as_ref()
+    ) -> Option<HighlightCache> {
+        let config = language_config_for(language)?;
+        let mut engine = QuerySyntaxEngine::new(config)?;
+        let source = buffer.to_string();
+        let (spans, tree) = engine.parse_line_spans(&source)?;
+        Some(HighlightCache {
+            language,
+            line_spans: spans,
+            tree,
+        })
     }
 
-    pub fn visible_line_spans(
-        &mut self,
-        buffer: &TextBuffer,
+    pub fn visible_line_spans_cached(
+        &self,
         language: Option<SyntaxLanguage>,
         first_line: usize,
         line_count: usize,
     ) -> Option<Vec<Vec<LineSyntaxSpan>>> {
         let language = language?;
-        let cache = self.ensure_cache(buffer, language)?;
+        let cache = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.language == language)?;
         let mut out = Vec::with_capacity(line_count);
         for line in first_line..first_line.saturating_add(line_count) {
             out.push(cache.line_spans.get(line).cloned().unwrap_or_default());
@@ -210,14 +188,17 @@ impl SyntaxHighlighter {
         Some(out)
     }
 
-    pub fn active_scope_pair(
-        &mut self,
+    pub fn active_scope_pair_cached(
+        &self,
         buffer: &TextBuffer,
         language: Option<SyntaxLanguage>,
         cursor: Pos,
     ) -> Option<SyntaxScopePair> {
         let language = language?;
-        let cache = self.ensure_cache(buffer, language)?;
+        let cache = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.language == language)?;
         let cursor_byte = buffer.rope().char_to_byte(buffer.pos_to_char(cursor));
         let root = cache.tree.root_node();
         let node = root
@@ -231,8 +212,8 @@ impl SyntaxHighlighter {
         active_scope_pair_for_node(buffer, node)
     }
 
-    pub fn invalidate(&mut self) {
-        self.cache = None;
+    pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
+        self.cache = cache;
     }
 }
 
@@ -551,8 +532,12 @@ mod tests {
     fn comments_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("// comment\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
         let spans = highlighter
-            .visible_line_spans(&buffer, Some(SyntaxLanguage::Rust), 0, 1)
+            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
             .expect("rust spans");
 
         assert!(spans[0].iter().any(|span| {
@@ -564,8 +549,12 @@ mod tests {
     fn string_quotes_are_highlighted_as_string() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("let s = \"hello\";\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
         let spans = highlighter
-            .visible_line_spans(&buffer, Some(SyntaxLanguage::Rust), 0, 1)
+            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
             .expect("rust spans");
 
         assert!(spans[0].iter().any(|span| {
@@ -593,8 +582,12 @@ mod tests {
     fn active_scope_pair_uses_multiline_structural_node() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
         let scope = highlighter
-            .active_scope_pair(&buffer, Some(SyntaxLanguage::Rust), Pos::new(1, 15))
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), Pos::new(1, 15))
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 10));

@@ -5,15 +5,17 @@
 
 use std::collections::HashMap;
 
-use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
+use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter};
+use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter, language_for_path};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
+mod analysis;
+use analysis::AnalysisWorker;
 mod explorer;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
@@ -116,6 +118,7 @@ pub struct BufferViewState {
     pub syntax_highlighter: SyntaxHighlighter,
     pub delimiter_pair_cache: DelimiterPairCache,
     pub visual_anchor: Option<Pos>,
+    analysis_version: u64,
     undo_history: UndoHistory,
     insert_mode_coalesce_base: Option<UndoSnapshot>,
 }
@@ -128,6 +131,7 @@ impl Default for BufferViewState {
             syntax_highlighter: SyntaxHighlighter::default(),
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: None,
+            analysis_version: 0,
             undo_history: UndoHistory::default(),
             insert_mode_coalesce_base: None,
         }
@@ -137,8 +141,7 @@ impl Default for BufferViewState {
 impl BufferViewState {
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
-        self.syntax_highlighter.invalidate();
-        self.delimiter_pair_cache.clear();
+        self.analysis_version = self.analysis_version.wrapping_add(1);
     }
 }
 
@@ -165,6 +168,7 @@ pub struct EditorState {
     search_state: Option<SearchState>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
+    analysis_worker: AnalysisWorker,
 }
 
 impl EditorState {
@@ -178,7 +182,7 @@ impl EditorState {
         let mut views = HashMap::new();
         views.insert(active, BufferViewState::default());
 
-        Self {
+        let state = Self {
             session,
             views,
             about: None,
@@ -199,7 +203,10 @@ impl EditorState {
             search_state: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
-        }
+            analysis_worker: AnalysisWorker::new(),
+        };
+        state.request_analysis(active, 0);
+        state
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -415,15 +422,50 @@ impl EditorState {
 
     fn invalidate_active_render_caches(&mut self) {
         let active_id = self.session.active_id();
-        self.views
-            .entry(active_id)
-            .or_default()
-            .invalidate_render_caches();
+        let version = {
+            let view = self.views.entry(active_id).or_default();
+            view.invalidate_render_caches();
+            view.analysis_version
+        };
+        self.request_analysis(active_id, version);
         if let Some(search) = self.search_state.as_mut()
             && search.buffer_id == active_id
         {
             search.dirty = true;
         }
+    }
+
+    fn request_analysis(&self, buffer_id: BufferId, version: u64) {
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return;
+        };
+        if meta.kind != BufferKind::File {
+            return;
+        }
+        let Some(buffer) = self.session.buffer(buffer_id).cloned() else {
+            return;
+        };
+        let syntax_language = language_for_path(meta.path.as_deref());
+        self.analysis_worker
+            .request(buffer_id, version, buffer, syntax_language);
+    }
+
+    pub fn poll_analysis_results(&mut self) {
+        while let Some(result) = self.analysis_worker.try_recv() {
+            self.apply_analysis_result(result);
+        }
+    }
+
+    fn apply_analysis_result(&mut self, result: analysis::AnalysisResult) {
+        let Some(view) = self.views.get_mut(&result.buffer_id) else {
+            return;
+        };
+        if view.analysis_version != result.version {
+            return;
+        }
+
+        view.syntax_highlighter.replace_cache(result.syntax_cache);
+        view.delimiter_pair_cache.install(result.delimiter_analysis);
     }
 
     fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
@@ -505,24 +547,21 @@ impl EditorState {
             *buffer = std::mem::take(&mut snapshot.buffer);
         }
 
-        let active_id = self.session.active_id();
-        let view = self.views.entry(active_id).or_default();
-        let buffer = self.session.active_buffer();
-        view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
-        view.cursor
-            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-        view.invalidate_render_caches();
-        view.visual_anchor = None;
-        view.insert_mode_coalesce_base = None;
+        {
+            let active_id = self.session.active_id();
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            view.visual_anchor = None;
+            view.insert_mode_coalesce_base = None;
+        }
 
         self.mode = EditorMode::Normal;
         let _ = self.session.recompute_active_dirty();
+        self.invalidate_active_render_caches();
         self.clear_status();
-        if let Some(search) = self.search_state.as_mut()
-            && search.buffer_id == active_id
-        {
-            search.dirty = true;
-        }
     }
 }
 

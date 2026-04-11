@@ -53,16 +53,71 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
-fn invalidate_render_caches_clears_delimiter_pair_cache() {
+fn invalidate_render_caches_keeps_analysis_cache_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
 
-    assert_eq!(view.delimiter_pair_cache.get_or_compute(&before).len(), 1);
+    view.delimiter_pair_cache
+        .install(crate::ui::overlays::compute_delimiter_analysis(&before));
+    assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
 
+    let previous_version = view.analysis_version;
     view.invalidate_render_caches();
 
-    assert!(view.delimiter_pair_cache.get_or_compute(&after).is_empty());
+    assert_ne!(view.analysis_version, previous_version);
+    assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+
+    view.delimiter_pair_cache
+        .install(crate::ui::overlays::compute_delimiter_analysis(&after));
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
+}
+
+#[test]
+fn stale_analysis_results_are_dropped() {
+    let path = temp_file_path("stale_analysis_result");
+    let mut state = state_with_text(path.clone(), "plain text");
+    let active_id = state.session.active_id();
+    let current_version = {
+        let view = state.views.entry(active_id).or_default();
+        view.invalidate_render_caches();
+        view.analysis_version
+    };
+
+    state.apply_analysis_result(analysis::AnalysisResult {
+        buffer_id: active_id,
+        version: current_version,
+        syntax_cache: None,
+        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(
+            state.session.active_buffer(),
+        ),
+    });
+    state.apply_analysis_result(analysis::AnalysisResult {
+        buffer_id: active_id,
+        version: current_version.saturating_sub(1),
+        syntax_cache: None,
+        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(&TextBuffer::from_str(
+            "{ stale }",
+        )),
+    });
+
+    let view = state
+        .views
+        .get_mut(&active_id)
+        .expect("missing active view");
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]

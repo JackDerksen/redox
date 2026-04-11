@@ -49,8 +49,7 @@ impl EditorState {
             };
             let snapshot =
                 snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-            let syntax_spans = view.syntax_highlighter.visible_line_spans(
-                buffer,
+            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
                 syntax_language,
                 snapshot.first_line,
                 snapshot.lines.len(),

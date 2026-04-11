@@ -170,23 +170,26 @@ fn draw_buffer_view(
             let spec = view
                 .cursor
                 .cursor_spec(buffer, text_w as usize, text_h as usize);
-            let syntax_spans = view.syntax_highlighter.visible_line_spans(
-                buffer,
+            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
                 syntax_language,
                 snapshot.first_line,
                 snapshot.lines.len(),
             );
             let tree_sitter_scope =
                 view.syntax_highlighter
-                    .active_scope_pair(buffer, syntax_language, cursor);
-            let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
-            let delimiter_highlights = active_delimiter_highlights(
-                buffer,
-                cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
-                delimiter_pairs,
-            );
+                    .active_scope_pair_cached(buffer, syntax_language, cursor);
+            let delimiter_analysis = view.delimiter_pair_cache.get();
+            let delimiter_highlights = delimiter_analysis
+                .map(|analysis| {
+                    active_delimiter_highlights(
+                        buffer,
+                        cursor,
+                        snapshot.first_line,
+                        snapshot.lines.len(),
+                        analysis,
+                    )
+                })
+                .unwrap_or_default();
             let active_scope_guides = active_scope_indent_guides(
                 tree_sitter_scope,
                 buffer,
@@ -195,7 +198,7 @@ fn draw_buffer_view(
                 snapshot.lines.len(),
                 scroll_x,
                 text_w as usize,
-                Some(delimiter_pairs),
+                delimiter_analysis,
             );
             (
                 snapshot,
@@ -528,23 +531,26 @@ fn draw_buffer_snapshot_for_id(
             height,
         };
         let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-        let syntax_spans = view.syntax_highlighter.visible_line_spans(
-            buffer,
+        let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
             syntax_language,
             snapshot.first_line,
             snapshot.lines.len(),
         );
         let tree_sitter_scope =
             view.syntax_highlighter
-                .active_scope_pair(buffer, syntax_language, cursor);
-        let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
-        let delimiter_highlights = active_delimiter_highlights(
-            buffer,
-            cursor,
-            snapshot.first_line,
-            snapshot.lines.len(),
-            delimiter_pairs,
-        );
+                .active_scope_pair_cached(buffer, syntax_language, cursor);
+        let delimiter_analysis = view.delimiter_pair_cache.get();
+        let delimiter_highlights = delimiter_analysis
+            .map(|analysis| {
+                active_delimiter_highlights(
+                    buffer,
+                    cursor,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                    analysis,
+                )
+            })
+            .unwrap_or_default();
         let active_scope_guides = active_scope_indent_guides(
             tree_sitter_scope,
             buffer,
@@ -553,7 +559,7 @@ fn draw_buffer_snapshot_for_id(
             snapshot.lines.len(),
             scroll_x,
             width.saturating_sub(content_x) as usize,
-            Some(delimiter_pairs),
+            delimiter_analysis,
         );
         (
             snapshot,
@@ -1292,6 +1298,7 @@ pub fn run() -> minui::Result<()> {
                 None => break,
             }
         }
+        state.poll_analysis_results();
 
         if state.rain_is_active() {
             state.advance_rain_animation();
