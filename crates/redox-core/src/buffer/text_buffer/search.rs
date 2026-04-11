@@ -219,6 +219,12 @@ mod tests {
         let text = "a".repeat(120_000);
         let buffer = TextBuffer::from_str(&text);
 
+        // Ensure the buffer actually spans multiple chunks
+        assert!(
+            buffer.rope().chunks().count() > 1,
+            "expected multiple rope chunks"
+        );
+
         assert_eq!(
             buffer.find_matches("aaa"),
             naive_find_matches(&buffer, "aaa")
