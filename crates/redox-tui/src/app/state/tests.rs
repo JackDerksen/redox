@@ -74,16 +74,24 @@ fn invalidate_render_caches_keeps_analysis_cache_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
+    let rust_buffer = TextBuffer::from_str("fn main() {}\n");
 
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&before));
+    view.syntax_highlighter
+        .replace_cache(SyntaxHighlighter::compute_cache(
+            &rust_buffer,
+            SyntaxLanguage::Rust,
+        ));
     assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+    assert!(view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
 
     let previous_version = view.analysis_version;
     view.invalidate_render_caches();
 
     assert_ne!(view.analysis_version, previous_version);
     assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+    assert!(!view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
 
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&after));
