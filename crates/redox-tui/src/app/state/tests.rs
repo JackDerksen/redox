@@ -78,7 +78,7 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
-fn invalidate_render_caches_keeps_analysis_cache_until_worker_result() {
+fn invalidate_render_caches_clears_analysis_caches_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
@@ -98,7 +98,7 @@ fn invalidate_render_caches_keeps_analysis_cache_until_worker_result() {
     view.invalidate_render_caches();
 
     assert_ne!(view.analysis_version, previous_version);
-    assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+    assert!(view.delimiter_pair_cache.get().is_none());
     assert!(!view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
 
     view.delimiter_pair_cache

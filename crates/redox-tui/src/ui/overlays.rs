@@ -65,6 +65,10 @@ impl DelimiterPairCache {
     pub(crate) fn install(&mut self, analysis: DelimiterAnalysis) {
         self.analysis = Some(analysis);
     }
+
+    pub(crate) fn clear(&mut self) {
+        self.analysis = None;
+    }
 }
 
 impl DelimiterAnalysis {

@@ -148,6 +148,7 @@ impl BufferViewState {
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
         self.syntax_highlighter.replace_cache(None);
+        self.delimiter_pair_cache.clear();
         self.analysis_version = self.analysis_version.wrapping_add(1);
     }
 }
