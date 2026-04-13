@@ -46,28 +46,34 @@ pub fn draw_perf_popup_view(
     let left = 2u16.min(inner_w.saturating_sub(1));
     let max_w = inner_w.saturating_sub(left);
     let Some(stats) = popup.stats else {
-        write_line(
-            &mut view,
-            1,
-            left,
-            "collecting frame stats...",
-            style.perf.text,
-            max_w,
-        )?;
+        if inner_h > 1 {
+            write_line(
+                &mut view,
+                1,
+                left,
+                "collecting frame stats...",
+                style.perf.text,
+                max_w,
+            )?;
+        }
         return Ok(());
     };
 
-    let budget = format!("budget {:>4.1} ms", PERF_FRAME_BUDGET_MS);
-    write_line(&mut view, 1, left, &budget, style.perf.dim, max_w)?;
-    write_line(&mut view, 3, left, "metric", style.perf.label, max_w)?;
-    write_line(
-        &mut view,
-        3,
-        left.saturating_add(10),
-        "avg",
-        style.perf.label,
-        max_w,
-    )?;
+    if inner_h > 1 {
+        let budget = format!("budget {:>4.1} ms", PERF_FRAME_BUDGET_MS);
+        write_line(&mut view, 1, left, &budget, style.perf.dim, max_w)?;
+    }
+    if inner_h > 3 {
+        write_line(&mut view, 3, left, "metric", style.perf.label, max_w)?;
+        write_line(
+            &mut view,
+            3,
+            left.saturating_add(10),
+            "avg",
+            style.perf.label,
+            max_w,
+        )?;
+    }
 
     let bar_col = left.saturating_add(19);
     let bar_w = inner_w.saturating_sub(bar_col).saturating_sub(2);
