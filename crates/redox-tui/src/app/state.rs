@@ -20,6 +20,8 @@ mod explorer;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+mod perf;
+pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
 mod commands;
 mod editing;
@@ -139,6 +141,10 @@ impl Default for BufferViewState {
 }
 
 impl BufferViewState {
+    pub(crate) fn analysis_version(&self) -> u64 {
+        self.analysis_version
+    }
+
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
         self.analysis_version = self.analysis_version.wrapping_add(1);
@@ -169,6 +175,8 @@ pub struct EditorState {
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
     analysis_worker: AnalysisWorker,
+    perf_visible: bool,
+    perf_stats: Option<FramePerfStats>,
 }
 
 impl EditorState {
@@ -204,6 +212,8 @@ impl EditorState {
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
             analysis_worker: AnalysisWorker::new(),
+            perf_visible: false,
+            perf_stats: None,
         };
         state.request_analysis(active, 0);
         state
@@ -450,6 +460,29 @@ impl EditorState {
             .request(buffer_id, version, buffer, syntax_language);
     }
 
+    pub(super) fn ensure_buffer_analysis(&mut self, buffer_id: BufferId) {
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return;
+        };
+        if meta.kind != BufferKind::File {
+            return;
+        }
+
+        let syntax_language = language_for_path(meta.path.as_deref());
+        let version = {
+            let view = self.views.entry(buffer_id).or_default();
+            let needs_delimiters = view.delimiter_pair_cache.get().is_none();
+            let needs_syntax = syntax_language
+                .map(|language| !view.syntax_highlighter.has_cache_for(language))
+                .unwrap_or(false);
+            if !needs_delimiters && !needs_syntax {
+                return;
+            }
+            view.analysis_version
+        };
+        self.request_analysis(buffer_id, version);
+    }
+
     pub fn poll_analysis_results(&mut self) {
         while let Some(result) = self.analysis_worker.try_recv() {
             self.apply_analysis_result(result);
@@ -457,15 +490,36 @@ impl EditorState {
     }
 
     fn apply_analysis_result(&mut self, result: analysis::AnalysisResult) {
-        let Some(view) = self.views.get_mut(&result.buffer_id) else {
-            return;
-        };
-        if view.analysis_version != result.version {
-            return;
-        }
+        match result {
+            analysis::AnalysisResult::Syntax {
+                buffer_id,
+                version,
+                syntax_cache,
+            } => {
+                let Some(view) = self.views.get_mut(&buffer_id) else {
+                    return;
+                };
+                if view.analysis_version != version {
+                    return;
+                }
 
-        view.syntax_highlighter.replace_cache(result.syntax_cache);
-        view.delimiter_pair_cache.install(result.delimiter_analysis);
+                view.syntax_highlighter.replace_cache(syntax_cache);
+            }
+            analysis::AnalysisResult::Delimiters {
+                buffer_id,
+                version,
+                delimiter_analysis,
+            } => {
+                let Some(view) = self.views.get_mut(&buffer_id) else {
+                    return;
+                };
+                if view.analysis_version != version {
+                    return;
+                }
+
+                view.delimiter_pair_cache.install(delimiter_analysis);
+            }
+        }
     }
 
     fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {

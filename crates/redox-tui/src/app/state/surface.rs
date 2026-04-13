@@ -72,6 +72,7 @@ impl EditorState {
             && let Some(target) = return_to
         {
             let _ = self.session.activate(target);
+            self.ensure_buffer_analysis(target);
         }
 
         if should_quit_after_close {

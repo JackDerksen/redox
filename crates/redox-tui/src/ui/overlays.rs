@@ -114,6 +114,25 @@ impl DelimiterAnalysis {
         self.pair_for_enclosing_range(cursor_char, &self.scope_ranges)
     }
 
+    fn scope_pair_for_syntax_scope(
+        &self,
+        buffer: &TextBuffer,
+        scope: SyntaxScopePair,
+    ) -> Option<DelimiterPair> {
+        let start_char = buffer.pos_to_char(buffer.clamp_pos(scope.start));
+        let end_char = buffer.pos_to_char(buffer.clamp_pos(scope.end));
+        self.endpoint_index
+            .get(&start_char)?
+            .iter()
+            .find_map(|idx| {
+                let pair = self.pairs.get(*idx)?;
+                let is_matching_scope = pair.end_char == end_char
+                    && pair.pair.kind.is_structural()
+                    && pair.pair.start.line < pair.pair.end.line;
+                is_matching_scope.then_some(pair.pair)
+            })
+    }
+
     fn pair_at_endpoint(
         &self,
         char_idx: usize,
@@ -206,11 +225,15 @@ pub(crate) fn active_scope_indent_guides(
     cached_delimiter_analysis: Option<&DelimiterAnalysis>,
 ) -> BTreeMap<usize, Vec<usize>> {
     let scope = tree_sitter_scope
-        .map(|pair| DelimiterPair {
-            start: pair.start,
-            end: pair.end,
-            kind: DelimiterKind::Brace,
-            guide_cell: None,
+        .map(|pair| {
+            cached_delimiter_analysis
+                .and_then(|analysis| analysis.scope_pair_for_syntax_scope(buffer, pair))
+                .unwrap_or(DelimiterPair {
+                    start: pair.start,
+                    end: pair.end,
+                    kind: DelimiterKind::Brace,
+                    guide_cell: None,
+                })
         })
         .or_else(|| {
             cached_delimiter_analysis
@@ -697,6 +720,38 @@ mod tests {
             None,
         );
         assert_eq!(guides.get(&1), Some(&vec![0]));
+    }
+
+    #[test]
+    fn active_scope_guides_reuse_cached_tree_sitter_scope_guide_cell() {
+        let buffer = TextBuffer::from_str("fn main() {\n    if ready {\n        go();\n    }\n}\n");
+        let analysis = compute_delimiter_analysis(&buffer);
+        let scope = analysis
+            .scope_pair_for_syntax_scope(
+                &buffer,
+                SyntaxScopePair {
+                    start: Pos::new(1, 13),
+                    end: Pos::new(3, 4),
+                },
+            )
+            .expect("scope");
+
+        assert_eq!(scope.guide_cell, Some(4));
+
+        let guides = active_scope_indent_guides(
+            Some(SyntaxScopePair {
+                start: Pos::new(1, 13),
+                end: Pos::new(3, 4),
+            }),
+            &buffer,
+            Pos::new(2, 8),
+            0,
+            5,
+            0,
+            20,
+            Some(&analysis),
+        );
+        assert_eq!(guides.get(&2), Some(&vec![4]));
     }
 
     #[test]

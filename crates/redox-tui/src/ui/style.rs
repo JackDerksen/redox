@@ -379,6 +379,51 @@ impl Default for CommandLineStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct PerfStyle {
+    pub width_percent: u16,
+    pub height_percent: u16,
+    pub min_width: u16,
+    pub min_height: u16,
+    pub border: ColorPair,
+    pub title: ColorPair,
+    pub text: ColorPair,
+    pub label: ColorPair,
+    pub value: ColorPair,
+    pub dim: ColorPair,
+    pub good: ColorPair,
+    pub warn: ColorPair,
+    pub hot: ColorPair,
+    pub bar_bg: ColorPair,
+}
+
+impl PerfStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 56,
+            height_percent: 48,
+            min_width: 50,
+            min_height: 14,
+            border: ColorPair::new(theme.light_gray, theme.bg),
+            title: ColorPair::new(theme.yellow, theme.bg),
+            text: ColorPair::new(theme.white, theme.bg),
+            label: ColorPair::new(theme.light_gray, theme.bg),
+            value: ColorPair::new(theme.white, theme.bg),
+            dim: ColorPair::new(theme.dark_gray, theme.bg),
+            good: ColorPair::new(theme.green, theme.bg),
+            warn: ColorPair::new(theme.yellow, theme.bg),
+            hot: ColorPair::new(theme.red, theme.bg),
+            bar_bg: ColorPair::new(theme.dark_gray, theme.bg),
+        }
+    }
+}
+
+impl Default for PerfStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct SyntaxStyle {
     pub variable_builtin: ColorPair,
     pub variable_parameter: ColorPair,
@@ -493,6 +538,7 @@ pub struct UiStyle {
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
     pub explorer: ExplorerStyle,
+    pub perf: PerfStyle,
     pub syntax: SyntaxStyle,
 }
 
@@ -506,6 +552,7 @@ impl Default for UiStyle {
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
+            perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
     }
@@ -561,6 +608,7 @@ impl UiStyle {
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
+            perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
     }

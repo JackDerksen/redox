@@ -4,7 +4,7 @@ mod languages;
 
 use std::path::Path;
 
-use minui::{ColorPair, ColoredSpan, TabPolicy, Window, cell_width};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
@@ -31,12 +31,28 @@ pub struct LineSyntaxSpan {
 #[derive(Default)]
 pub struct SyntaxHighlighter {
     cache: Option<HighlightCache>,
+    active_scope_cache: Option<ActiveScopeCache>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyntaxScopePair {
     pub start: Pos,
     pub end: Pos,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveScopeCache {
+    language: SyntaxLanguage,
+    analysis_version: u64,
+    cursor_char: usize,
+    scope: Option<SyntaxScopePair>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VisibleLineSyntaxSpans<'a> {
+    line_spans: &'a [Vec<LineSyntaxSpan>],
+    first_line: usize,
+    line_count: usize,
 }
 
 struct QuerySyntaxEngine {
@@ -73,12 +89,6 @@ struct TokenSpan {
 pub(crate) struct SyntaxCapture {
     pub(crate) role: SyntaxRole,
     pub(crate) priority: u16,
-}
-
-#[derive(Debug)]
-struct OwnedColoredSpan {
-    text: String,
-    colors: ColorPair,
 }
 
 /// Language-agnostic syntax highlighting engine with Treesitter.
@@ -174,45 +184,91 @@ impl SyntaxHighlighter {
         language: Option<SyntaxLanguage>,
         first_line: usize,
         line_count: usize,
-    ) -> Option<Vec<Vec<LineSyntaxSpan>>> {
+    ) -> Option<VisibleLineSyntaxSpans<'_>> {
         let language = language?;
         let cache = self
             .cache
             .as_ref()
             .filter(|cache| cache.language == language)?;
-        let mut out = Vec::with_capacity(line_count);
-        for line in first_line..first_line.saturating_add(line_count) {
-            out.push(cache.line_spans.get(line).cloned().unwrap_or_default());
-        }
-        Some(out)
+        Some(VisibleLineSyntaxSpans {
+            line_spans: &cache.line_spans,
+            first_line,
+            line_count,
+        })
+    }
+
+    pub(crate) fn has_cache_for(&self, language: SyntaxLanguage) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|cache| cache.language == language)
     }
 
     pub fn active_scope_pair_cached(
-        &self,
+        &mut self,
         buffer: &TextBuffer,
         language: Option<SyntaxLanguage>,
+        analysis_version: u64,
         cursor: Pos,
     ) -> Option<SyntaxScopePair> {
         let language = language?;
+        let cursor_char = buffer.pos_to_char(cursor);
+        if let Some(cached) = self.active_scope_cache
+            && cached.language == language
+            && cached.analysis_version == analysis_version
+            && cached.cursor_char == cursor_char
+        {
+            return cached.scope;
+        }
+
         let cache = self
             .cache
             .as_ref()
             .filter(|cache| cache.language == language)?;
-        let cursor_byte = buffer.rope().char_to_byte(buffer.pos_to_char(cursor));
+        let cursor_byte = buffer.rope().char_to_byte(cursor_char);
         let root = cache.tree.root_node();
-        let node = root
+        let scope = root
             .named_descendant_for_byte_range(cursor_byte, cursor_byte)
             .or_else(|| {
                 cursor_byte
                     .checked_sub(1)
                     .and_then(|byte| root.named_descendant_for_byte_range(byte, byte))
-            })?;
-
-        active_scope_pair_for_node(buffer, node)
+            })
+            .and_then(|node| active_scope_pair_for_node(buffer, node));
+        self.active_scope_cache = Some(ActiveScopeCache {
+            language,
+            analysis_version,
+            cursor_char,
+            scope,
+        });
+        scope
     }
 
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
         self.cache = cache;
+        self.active_scope_cache = None;
+    }
+}
+
+impl<'a> VisibleLineSyntaxSpans<'a> {
+    pub fn get(&self, row: usize) -> Option<&'a [LineSyntaxSpan]> {
+        if row >= self.line_count {
+            return None;
+        }
+
+        Some(
+            self.line_spans
+                .get(self.first_line.saturating_add(row))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        )
+    }
+}
+
+impl std::ops::Index<usize> for VisibleLineSyntaxSpans<'_> {
+    type Output = [LineSyntaxSpan];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("visible syntax row out of bounds")
     }
 }
 
@@ -272,62 +328,14 @@ pub fn draw_line_with_syntax(
         return Ok(());
     }
 
-    let owned_spans = collect_visible_spans(
-        source_line,
-        scroll_x,
-        width_cells,
-        base_color,
-        color_column,
-        style,
-        spans,
-    );
-    if !owned_spans.is_empty() {
-        let spans_ref: Vec<ColoredSpan<'_>> = owned_spans
-            .iter()
-            .map(|span| ColoredSpan::new(&span.text, span.colors))
-            .collect();
-        window.write_spans_colored(row, col, &spans_ref)?;
-    }
-
-    draw_color_column_gap(
-        window,
-        row,
-        col,
-        source_line,
-        scroll_x,
-        width_cells,
-        color_column,
-    )
-}
-
-pub fn syntax_color_for_range(
-    base_color: ColorPair,
-    style: UiStyle,
-    spans: &[LineSyntaxSpan],
-    start_byte: usize,
-    end_byte: usize,
-) -> ColorPair {
-    if let Some(span) = best_span_for_range(spans, start_byte, end_byte) {
-        style.syntax.color_for(span.role)
-    } else {
-        base_color
-    }
-}
-
-fn collect_visible_spans(
-    source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
-    base_color: ColorPair,
-    color_column: Option<(usize, minui::Color)>,
-    style: UiStyle,
-    spans: &[LineSyntaxSpan],
-) -> Vec<OwnedColoredSpan> {
-    let mut owned_spans: Vec<OwnedColoredSpan> = Vec::new();
     let mut line_cells = 0usize;
     let mut byte_idx = 0usize;
     let mut syntax_idx = 0usize;
     let visible_end = scroll_x.saturating_add(width_cells);
+    let mut pending_start: Option<usize> = None;
+    let mut pending_end = 0usize;
+    let mut pending_visible_x = 0usize;
+    let mut pending_colors = base_color;
 
     for g in source_line.graphemes(true) {
         let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
@@ -364,19 +372,108 @@ fn collect_visible_spans(
             end_byte,
         );
         let colors = apply_color_column(colors, color_column, start_cell, end_cell);
+        let visible_x = clipped_start.saturating_sub(scroll_x);
 
-        let text = if g == "\t" {
-            " ".repeat(clipped_end.saturating_sub(clipped_start))
-        } else if clipped_start == start_cell && clipped_end == end_cell {
-            g.to_owned()
-        } else {
-            // Terminal graphemes are atomic; only tab expansion can be partially clipped.
+        if g == "\t" {
+            flush_pending_syntax_span(
+                window,
+                row,
+                col,
+                source_line,
+                pending_start.take(),
+                pending_end,
+                pending_visible_x,
+                pending_colors,
+            )?;
+            let spaces = " ".repeat(clipped_end.saturating_sub(clipped_start));
+            window.write_str_colored(row, col.saturating_add(visible_x as u16), &spaces, colors)?;
             continue;
-        };
-        push_colored_text(&mut owned_spans, &text, colors);
+        }
+
+        if clipped_start != start_cell || clipped_end != end_cell {
+            continue;
+        }
+
+        if pending_start.is_some() && pending_colors == colors && pending_end == start_byte {
+            pending_end = end_byte;
+            continue;
+        }
+
+        flush_pending_syntax_span(
+            window,
+            row,
+            col,
+            source_line,
+            pending_start.take(),
+            pending_end,
+            pending_visible_x,
+            pending_colors,
+        )?;
+        pending_start = Some(start_byte);
+        pending_end = end_byte;
+        pending_visible_x = visible_x;
+        pending_colors = colors;
     }
 
-    owned_spans
+    flush_pending_syntax_span(
+        window,
+        row,
+        col,
+        source_line,
+        pending_start,
+        pending_end,
+        pending_visible_x,
+        pending_colors,
+    )?;
+
+    draw_color_column_gap(
+        window,
+        row,
+        col,
+        source_line,
+        scroll_x,
+        width_cells,
+        color_column,
+    )
+}
+
+fn flush_pending_syntax_span(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    source_line: &str,
+    start: Option<usize>,
+    end: usize,
+    visible_x: usize,
+    colors: ColorPair,
+) -> minui::Result<()> {
+    let Some(start) = start else {
+        return Ok(());
+    };
+    if start >= end {
+        return Ok(());
+    }
+
+    window.write_str_colored(
+        row,
+        col.saturating_add(visible_x as u16),
+        &source_line[start..end],
+        colors,
+    )
+}
+
+pub fn syntax_color_for_range(
+    base_color: ColorPair,
+    style: UiStyle,
+    spans: &[LineSyntaxSpan],
+    start_byte: usize,
+    end_byte: usize,
+) -> ColorPair {
+    if let Some(span) = best_span_for_range(spans, start_byte, end_byte) {
+        style.syntax.color_for(span.role)
+    } else {
+        base_color
+    }
 }
 
 fn draw_color_column_gap(
@@ -406,24 +503,6 @@ fn draw_color_column_gap(
         " ",
         ColorPair::new(minui::Color::Transparent, bg),
     )
-}
-
-fn push_colored_text(spans: &mut Vec<OwnedColoredSpan>, text: &str, colors: ColorPair) {
-    if text.is_empty() {
-        return;
-    }
-
-    if let Some(last) = spans.last_mut()
-        && last.colors == colors
-    {
-        last.text.push_str(text);
-        return;
-    }
-
-    spans.push(OwnedColoredSpan {
-        text: text.to_string(),
-        colors,
-    });
 }
 
 fn compute_line_start_bytes(source: &str) -> Vec<usize> {
@@ -507,8 +586,7 @@ mod tests {
 
     use redox_core::{Pos, TextBuffer};
 
-    use super::{SyntaxHighlighter, SyntaxLanguage, collect_visible_spans, language_for_path};
-    use crate::ui::UiStyle;
+    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
     use crate::ui::style::SyntaxRole;
 
     #[test]
@@ -560,22 +638,6 @@ mod tests {
     }
 
     #[test]
-    fn partially_scrolled_tab_keeps_visible_tail() {
-        let owned = collect_visible_spans(
-            "\tX",
-            2,
-            3,
-            UiStyle::default().syntax.operator,
-            None,
-            UiStyle::default(),
-            &[],
-        );
-
-        let text = owned.into_iter().map(|span| span.text).collect::<String>();
-        assert_eq!(text, "  X");
-    }
-
-    #[test]
     fn active_scope_pair_uses_multiline_structural_node() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
@@ -584,7 +646,7 @@ mod tests {
             SyntaxLanguage::Rust,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), Pos::new(1, 15))
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, Pos::new(1, 15))
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 10));

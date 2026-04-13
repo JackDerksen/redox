@@ -64,7 +64,7 @@ impl EditorState {
                 text_height as usize,
                 default_colors,
                 style,
-                syntax_spans.as_deref(),
+                syntax_spans,
                 None,
             )
         });

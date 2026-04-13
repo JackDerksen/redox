@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -7,11 +8,17 @@ use crate::ui::overlays::{DelimiterAnalysis, compute_delimiter_analysis};
 use crate::ui::syntax::{HighlightCache, SyntaxHighlighter, SyntaxLanguage};
 
 #[derive(Debug)]
-pub(super) struct AnalysisResult {
-    pub(super) buffer_id: BufferId,
-    pub(super) version: u64,
-    pub(super) syntax_cache: Option<HighlightCache>,
-    pub(super) delimiter_analysis: DelimiterAnalysis,
+pub(super) enum AnalysisResult {
+    Syntax {
+        buffer_id: BufferId,
+        version: u64,
+        syntax_cache: Option<HighlightCache>,
+    },
+    Delimiters {
+        buffer_id: BufferId,
+        version: u64,
+        delimiter_analysis: DelimiterAnalysis,
+    },
 }
 
 struct AnalysisRequest {
@@ -41,21 +48,32 @@ impl AnalysisWorker {
             .name("redox-analysis".to_string())
             .spawn(move || {
                 while let Ok(request) = request_rx.recv() {
-                    let syntax_cache = request.syntax_language.and_then(|language| {
-                        SyntaxHighlighter::compute_cache(&request.buffer, language)
-                    });
-                    let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
+                    for request in drain_latest_requests(request, &request_rx) {
+                        let syntax_cache = request.syntax_language.and_then(|language| {
+                            SyntaxHighlighter::compute_cache(&request.buffer, language)
+                        });
+                        if result_tx
+                            .send(AnalysisResult::Syntax {
+                                buffer_id: request.buffer_id,
+                                version: request.version,
+                                syntax_cache,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
 
-                    if result_tx
-                        .send(AnalysisResult {
-                            buffer_id: request.buffer_id,
-                            version: request.version,
-                            syntax_cache,
-                            delimiter_analysis,
-                        })
-                        .is_err()
-                    {
-                        break;
+                        let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
+                        if result_tx
+                            .send(AnalysisResult::Delimiters {
+                                buffer_id: request.buffer_id,
+                                version: request.version,
+                                delimiter_analysis,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
                 }
             })
@@ -85,4 +103,16 @@ impl AnalysisWorker {
     pub(super) fn try_recv(&self) -> Option<AnalysisResult> {
         self.results.try_recv().ok()
     }
+}
+
+fn drain_latest_requests(
+    first: AnalysisRequest,
+    receiver: &Receiver<AnalysisRequest>,
+) -> Vec<AnalysisRequest> {
+    let mut latest = HashMap::new();
+    latest.insert(first.buffer_id, first);
+    while let Ok(request) = receiver.try_recv() {
+        latest.insert(request.buffer_id, request);
+    }
+    latest.into_values().collect()
 }
