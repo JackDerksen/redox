@@ -9,7 +9,7 @@ use redox_core::{BufferId, EditorSession};
 use minui::input::Clipboard;
 use minui::prelude::{
     input::{Event, KeyKind},
-    render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
+    render::{cell_width, Color, ColorPair, TabPolicy, TerminalWindow, Window},
     widgets::Widget,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -19,19 +19,19 @@ mod input;
 mod ui;
 
 use app::{EditorState, FramePerfSample};
-use input::{InputAction, map_event_with_context};
+use input::{map_event_with_context, InputAction};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
     active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
     draw_indent_guides,
 };
-use ui::syntax::{VisibleLineSyntaxSpans, draw_line_with_syntax, syntax_color_for_range};
+use ui::syntax::{draw_line_with_syntax, syntax_color_for_range, VisibleLineSyntaxSpans};
 use ui::{
-    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view, draw_perf_popup_view, explorer_popup_inner_size, language_for_path,
-    snapshot_lines_wrapped_cached,
+    about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
+    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached, TextViewport,
+    UiStyle, STATUS_BAR_HEIGHT_CELLS,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -672,6 +672,7 @@ fn draw_snapshot_lines(
             && highlighted_chars.is_empty()
             && visible_indent_guides.is_empty()
             && visible_line.is_ascii()
+            && !visible_line.contains('\t')
         {
             draw_visible_ascii_plain_line(
                 window,
