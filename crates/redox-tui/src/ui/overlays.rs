@@ -153,9 +153,11 @@ impl DelimiterAnalysis {
             .partition_point(|range| range.start_char <= cursor_char)
             .checked_sub(1)?;
         let range = ranges[idx];
-        (cursor_char <= range.end_char)
-            .then(|| self.pairs.get(range.pair_idx).map(|indexed| indexed.pair))
-            .flatten()
+		if cursor_char <= range.end_char {
+			self.pairs.get(range.pair_idx).map(|indexed| indexed.pair)
+		} else {
+			None
+		}
     }
 }
 
@@ -236,9 +238,7 @@ pub(crate) fn active_scope_indent_guides(
                 })
         })
         .or_else(|| {
-            cached_delimiter_analysis
-                .map(|analysis| analysis.active_scope_pair(buffer, cursor))
-                .unwrap_or(None)
+			cached_delimiter_analysis.and_then(|analysis| analysis.active_scope_pair(buffer, cursor))
         });
     let Some(scope) = scope else {
         return BTreeMap::new();
