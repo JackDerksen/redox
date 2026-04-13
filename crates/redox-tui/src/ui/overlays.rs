@@ -1,11 +1,11 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
-use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
+use minui::{cell_width, Color, ColorPair, TabPolicy, Window};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::ui::{UiStyle, syntax::SyntaxScopePair};
+use crate::ui::{syntax::SyntaxScopePair, UiStyle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelimiterKind {
@@ -153,11 +153,11 @@ impl DelimiterAnalysis {
             .partition_point(|range| range.start_char <= cursor_char)
             .checked_sub(1)?;
         let range = ranges[idx];
-		if cursor_char <= range.end_char {
-			self.pairs.get(range.pair_idx).map(|indexed| indexed.pair)
-		} else {
-			None
-		}
+        if cursor_char <= range.end_char {
+            self.pairs.get(range.pair_idx).map(|indexed| indexed.pair)
+        } else {
+            None
+        }
     }
 }
 
@@ -238,7 +238,8 @@ pub(crate) fn active_scope_indent_guides(
                 })
         })
         .or_else(|| {
-			cached_delimiter_analysis.and_then(|analysis| analysis.active_scope_pair(buffer, cursor))
+            cached_delimiter_analysis
+                .and_then(|analysis| analysis.active_scope_pair(buffer, cursor))
         });
     let Some(scope) = scope else {
         return BTreeMap::new();

@@ -2,9 +2,9 @@ use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view,
+    clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view, PopupChrome,
 };
-use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
+use crate::ui::{UiStyle, STATUS_BAR_HEIGHT_CELLS};
 
 const PERF_FRAME_BUDGET_MS: f32 = 1_000.0 / 60.0;
 

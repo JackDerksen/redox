@@ -1,7 +1,7 @@
 use minui::ColorPair;
 
 use super::EditorState;
-use crate::ui::{TextViewport, UiStyle, language_for_path, snapshot_lines_wrapped_cached};
+use crate::ui::{language_for_path, snapshot_lines_wrapped_cached, TextViewport, UiStyle};
 
 impl EditorState {
     pub(super) fn command_rain(&mut self) {

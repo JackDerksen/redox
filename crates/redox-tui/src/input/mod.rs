@@ -4,7 +4,7 @@
 //! It also tracks count prefixes and a small command tree for multi-key motions.
 
 use minui::prelude::input::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
-use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec, motion::Motion};
+use redox_core::{motion::Motion, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec};
 
 pub mod cursor;
 

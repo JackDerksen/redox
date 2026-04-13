@@ -1,6 +1,6 @@
 use redox_core::{
+    motion::{apply_motion_for_operator, Motion},
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
-    motion::{Motion, apply_motion_for_operator},
 };
 
 use super::{EditorMode, EditorState, RegisterKind};

@@ -2,12 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
-use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
+use crate::ui::{build_editor_status_bar, snapshot_lines_wrapped_cached, TextViewport, UiStyle};
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 

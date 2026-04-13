@@ -10,7 +10,7 @@ use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter, language_for_path};
+use crate::ui::{language_for_path, GraphemeCache, RainAnimation, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;

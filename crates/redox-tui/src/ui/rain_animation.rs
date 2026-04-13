@@ -1,10 +1,10 @@
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use redox_core::TextBuffer;
 
 use super::helpers::apply_color_column;
 use super::render::GraphemeCache;
 use super::style::UiStyle;
-use super::syntax::{VisibleLineSyntaxSpans, syntax_color_for_range};
+use super::syntax::{syntax_color_for_range, VisibleLineSyntaxSpans};
 
 // ======================================================================================
 // Credit to https://github.com/Eandrju/cellular-automaton.nvim for the inspiration here.
@@ -396,16 +396,12 @@ mod tests {
             let _ = animation.update();
         }
 
-        assert!(
-            animation.grid[3]
-                .iter()
-                .any(|cell| matches!(cell, RainCell::Head(_)))
-        );
-        assert!(
-            animation.grid[0]
-                .iter()
-                .all(|cell| matches!(cell, RainCell::Empty))
-        );
+        assert!(animation.grid[3]
+            .iter()
+            .any(|cell| matches!(cell, RainCell::Head(_))));
+        assert!(animation.grid[0]
+            .iter()
+            .all(|cell| matches!(cell, RainCell::Empty)));
     }
 
     #[test]

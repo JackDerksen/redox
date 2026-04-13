@@ -4,13 +4,13 @@ mod languages;
 
 use std::path::Path;
 
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use redox_core::{Pos, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
-    LanguageConfig, language_config_for, language_for_path as config_language_for_path,
+    language_config_for, language_for_path as config_language_for_path, LanguageConfig,
 };
 use super::style::{SyntaxRole, UiStyle};
 use crate::ui::helpers::apply_color_column;
@@ -586,7 +586,7 @@ mod tests {
 
     use redox_core::{Pos, TextBuffer};
 
-    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
+    use super::{language_for_path, SyntaxHighlighter, SyntaxLanguage};
     use crate::ui::style::SyntaxRole;
 
     #[test]

@@ -16,7 +16,7 @@
 //! Future work:
 //! - Cursor rendering, selection, and incremental updates.
 
-use minui::{TabPolicy, Window, cell_width};
+use minui::{cell_width, TabPolicy, Window};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 

@@ -1,7 +1,7 @@
 use super::*;
 use redox_core::{
-    BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
-    VisualModeKind, motion::Motion,
+    motion::Motion, BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope,
+    TextObjectSpec, VisualModeKind,
 };
 use std::fs;
 use std::io::Write;
@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
-use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::syntax::SyntaxLanguage;
+use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 fn temp_file_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -103,12 +103,11 @@ fn invalidate_render_caches_keeps_analysis_cache_until_worker_result() {
 
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&after));
-    assert!(
-        view.delimiter_pair_cache
-            .get()
-            .expect("analysis")
-            .is_empty()
-    );
+    assert!(view
+        .delimiter_pair_cache
+        .get()
+        .expect("analysis")
+        .is_empty());
 }
 
 #[test]
@@ -141,12 +140,11 @@ fn stale_analysis_results_are_dropped() {
         .views
         .get_mut(&active_id)
         .expect("missing active view");
-    assert!(
-        view.delimiter_pair_cache
-            .get()
-            .expect("analysis")
-            .is_empty()
-    );
+    assert!(view
+        .delimiter_pair_cache
+        .get()
+        .expect("analysis")
+        .is_empty());
 
     let _ = fs::remove_file(path);
 }
@@ -1316,14 +1314,12 @@ fn explorer_command_opens_ui_buffer() {
 
     assert!(state.explorer_popup().is_some());
     assert!(state.active_display_name().contains("[explorer]"));
-    assert!(
-        state
-            .session
-            .active_buffer()
-            .to_string()
-            .lines()
-            .any(|line| line == "../")
-    );
+    assert!(state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .any(|line| line == "../"));
     let popup = state
         .explorer_popup()
         .expect("explorer popup should be active");
@@ -1456,12 +1452,10 @@ fn explorer_write_requires_confirmation_for_deletes() {
         80,
         24,
     );
-    assert!(
-        state
-            .status_msg
-            .as_deref()
-            .is_some_and(|msg| msg.contains("confirm deletion of 1 entry"))
-    );
+    assert!(state
+        .status_msg
+        .as_deref()
+        .is_some_and(|msg| msg.contains("confirm deletion of 1 entry")));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
