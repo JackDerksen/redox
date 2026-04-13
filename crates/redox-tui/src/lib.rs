@@ -8,7 +8,11 @@ use std::time::Instant;
 use redox_core::{BufferId, EditorSession};
 
 use minui::input::Clipboard;
-use minui::{ColorPair, Event, KeyKind, TerminalWindow, Window, prelude::*};
+use minui::prelude::{
+    input::{Event, KeyKind},
+    render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
+    widgets::Widget,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
@@ -408,7 +412,7 @@ fn draw_line_with_highlights(
     let max_visible_cell = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_bytes = g.len();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
@@ -869,7 +873,7 @@ fn highlighted_visible_cells(
     let max_visible_cell = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
@@ -913,12 +917,12 @@ fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize
 
     for g in source_line.graphemes(true) {
         if g.chars().all(char::is_whitespace) {
-            let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+            let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
             line_cells = line_cells.saturating_add(g_width.max(1));
             continue;
         }
 
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width.max(1));
         line_cells = end_cell;
@@ -969,7 +973,7 @@ fn draw_plain_line(
     let mut line_cells = 0usize;
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
         line_cells = end_cell;

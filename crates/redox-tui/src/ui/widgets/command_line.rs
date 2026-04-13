@@ -1,4 +1,4 @@
-use minui::prelude::TabPolicy;
+use minui::prelude::render::TabPolicy;
 use minui::{Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 

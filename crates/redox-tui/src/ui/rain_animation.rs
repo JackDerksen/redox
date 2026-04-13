@@ -1,5 +1,4 @@
-use minui::prelude::TabPolicy;
-use minui::{ColorPair, Window, cell_width};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::TextBuffer;
 
 use super::helpers::apply_color_column;

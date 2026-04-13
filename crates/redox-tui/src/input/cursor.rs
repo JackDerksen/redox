@@ -15,8 +15,7 @@
 //!
 //! This file intentionally does not depend on the rest of `redox-tui::ui` to avoid circular deps.
 
-use minui::prelude::TabPolicy;
-use minui::{cell_width, window::CursorSpec};
+use minui::{cell_width, prelude::render::TabPolicy, window::CursorSpec};
 use redox_core::motion::{Motion, apply_motion_n};
 use redox_core::{Pos, TextBuffer};
 use std::cmp::min;

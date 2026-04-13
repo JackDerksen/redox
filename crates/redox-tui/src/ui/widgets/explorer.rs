@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
-use minui::{ColorPair, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -358,7 +358,7 @@ fn draw_line_with_selection(
     let mut char_idx = 0usize;
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);

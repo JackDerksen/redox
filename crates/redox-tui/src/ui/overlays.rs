@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
-use minui::{Color, ColorPair, Window};
+use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -352,7 +352,7 @@ fn visible_delimiter_cells(
     let mut char_idx = 0usize;
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
