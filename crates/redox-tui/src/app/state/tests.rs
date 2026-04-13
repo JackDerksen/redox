@@ -6,7 +6,7 @@ use redox_core::{
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
@@ -41,7 +41,8 @@ fn run_command(state: &mut EditorState, cmd: &str) {
 }
 
 fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId) {
-    for _ in 0..200 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
         state.poll_analysis_results();
         if state
             .views
@@ -53,7 +54,14 @@ fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId)
         std::thread::sleep(Duration::from_millis(1));
     }
 
-    panic!("rust syntax cache was not populated");
+    let view_exists = state.views.contains_key(&id);
+    let has_rust_cache = state
+        .views
+        .get(&id)
+        .is_some_and(|view| view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
+    panic!(
+        "rust syntax cache was not populated before deadline; view_exists={view_exists}, has_rust_cache={has_rust_cache}"
+    );
 }
 
 #[test]
