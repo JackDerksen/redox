@@ -108,6 +108,7 @@ redox src
 | `:ls` | Show summary of open buffers |
 | `:ex` / `:explorer` | Toggle file explorer |
 | `:about` | Toggle the "about" popup |
+| `:perf` | Toggle the performance metrics popup |
 
 ### Currently working Vim motions
 
