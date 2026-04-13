@@ -1,4 +1,4 @@
-use redox_core::{Pos, Selection, motion::Motion};
+use redox_core::{motion::Motion, Pos, Selection};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};

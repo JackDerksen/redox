@@ -76,6 +76,9 @@ impl EditorState {
             "rain" => {
                 self.command_rain();
             }
+            "perf" => {
+                self.command_toggle_perf();
+            }
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
             }
@@ -92,6 +95,7 @@ impl EditorState {
         match self.session.open_file(path) {
             Ok(id) => {
                 let _ = self.views.entry(id).or_default();
+                self.ensure_buffer_analysis(id);
                 self.clear_status();
             }
             Err(e) => {
@@ -109,6 +113,7 @@ impl EditorState {
 
         if let Some(id) = self.session.switch_next_mru() {
             let _ = self.views.entry(id).or_default();
+            self.ensure_buffer_analysis(id);
             self.clear_status();
         }
     }
@@ -122,6 +127,7 @@ impl EditorState {
 
         if let Some(id) = self.session.switch_prev_mru() {
             let _ = self.views.entry(id).or_default();
+            self.ensure_buffer_analysis(id);
             self.clear_status();
         }
     }

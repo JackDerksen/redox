@@ -1,12 +1,11 @@
-use minui::prelude::TabPolicy;
-use minui::{Window, cell_width};
+use minui::{cell_width, TabPolicy, Window};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
-use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
+    clip_text_to_cells, draw_popup_frame_at, popup_window_view, PopupChrome,
 };
+use crate::ui::UiStyle;
 
 const COMMAND_PROMPT: &str = "❯";
 const COMMAND_TITLE: &str = "Command";

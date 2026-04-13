@@ -1,34 +1,37 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession};
 
 use minui::input::Clipboard;
-use minui::{ColorPair, Event, KeyKind, TerminalWindow, Window, prelude::*};
+use minui::prelude::{
+    input::{Event, KeyKind},
+    render::{cell_width, Color, ColorPair, TabPolicy, TerminalWindow, Window},
+    widgets::Widget,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
 mod input;
 mod ui;
 
-use app::EditorState;
-use input::{InputAction, map_event_with_context};
+use app::{EditorState, FramePerfSample};
+use input::{map_event_with_context, InputAction};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
     active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
     draw_indent_guides,
 };
-use ui::syntax::{draw_line_with_syntax, syntax_color_for_range};
+use ui::syntax::{draw_line_with_syntax, syntax_color_for_range, VisibleLineSyntaxSpans};
 use ui::{
-    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view, explorer_popup_inner_size, language_for_path,
-    snapshot_lines_wrapped_cached,
+    about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
+    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached, TextViewport,
+    UiStyle, STATUS_BAR_HEIGHT_CELLS,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -46,6 +49,7 @@ fn draw_buffer_view(
     state: &mut EditorState,
     style: UiStyle,
     window: &mut dyn Window,
+    perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
     let popup_overlay_active = matches!(
@@ -62,7 +66,9 @@ fn draw_buffer_view(
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
+    let load_start = Instant::now();
     state.pump_active_loading(text_h as usize);
+    perf.load += load_start.elapsed();
 
     if let Some(popup) = state.explorer_popup() {
         if let Some(background_id) = state.explorer_background_buffer_id()
@@ -155,9 +161,8 @@ fn draw_buffer_view(
     let visual_selection = state.active_visual_selection();
     let one_shot_highlight = state.one_shot_highlight();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
-    let (snapshot, spec, scroll_x, syntax_spans, delimiter_highlights, active_scope_guides) = state
-        .with_active_buffer_view_mut(|buffer, view| {
-            let cursor = view.cursor.cursor;
+    let (snapshot, spec, scroll_x, snapshot_time) =
+        state.with_active_buffer_view_mut(|buffer, view| {
             let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
             let viewport = TextViewport {
                 scroll_x,
@@ -165,49 +170,20 @@ fn draw_buffer_view(
                 width: text_w,
                 height: text_h,
             };
+            let snapshot_start = Instant::now();
             let snapshot =
                 snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
             let spec = view
                 .cursor
                 .cursor_spec(buffer, text_w as usize, text_h as usize);
-            let syntax_spans = view.syntax_highlighter.visible_line_spans(
-                buffer,
-                syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
-            );
-            let tree_sitter_scope =
-                view.syntax_highlighter
-                    .active_scope_pair(buffer, syntax_language, cursor);
-            let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
-            let delimiter_highlights = active_delimiter_highlights(
-                buffer,
-                cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
-                delimiter_pairs,
-            );
-            let active_scope_guides = active_scope_indent_guides(
-                tree_sitter_scope,
-                buffer,
-                cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
-                scroll_x,
-                text_w as usize,
-                Some(delimiter_pairs),
-            );
-            (
-                snapshot,
-                spec,
-                scroll_x,
-                syntax_spans,
-                delimiter_highlights,
-                active_scope_guides,
-            )
+            let snapshot_time = snapshot_start.elapsed();
+            (snapshot, spec, scroll_x, snapshot_time)
         });
+    perf.snapshot += snapshot_time;
+    let overlay_start = Instant::now();
     let search_highlights =
         state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
+    perf.overlays += overlay_start.elapsed();
 
     draw_relative_line_numbers(
         window,
@@ -226,28 +202,90 @@ fn draw_buffer_view(
         GUTTER_CONTENT_PADDING,
     )?;
 
-    draw_snapshot_lines(
-        window,
-        state.session.active_buffer(),
-        &snapshot,
-        content_x,
-        scroll_x,
-        text_w as usize,
-        editor_text,
-        background_style,
-        syntax_spans.as_deref(),
-        &delimiter_highlights,
-        &active_scope_guides,
-        &search_highlights,
-        visual_selection,
-        one_shot_highlight,
-    )?;
+    let (syntax_time, overlay_time, lines_time) =
+        state.with_active_buffer_view_mut(|buffer, view| {
+            let cursor = view.cursor.cursor;
+            let syntax_start = Instant::now();
+            let analysis_version = view.analysis_version();
+            let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
+                buffer,
+                syntax_language,
+                analysis_version,
+                cursor,
+            );
+            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
+                syntax_language,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
+            let syntax_time = syntax_start.elapsed();
+            let overlay_start = Instant::now();
+            let delimiter_analysis = view.delimiter_pair_cache.get();
+            let delimiter_highlights = delimiter_analysis
+                .map(|analysis| {
+                    active_delimiter_highlights(
+                        buffer,
+                        cursor,
+                        snapshot.first_line,
+                        snapshot.lines.len(),
+                        analysis,
+                    )
+                })
+                .unwrap_or_default();
+            let active_scope_guides = active_scope_indent_guides(
+                tree_sitter_scope,
+                buffer,
+                cursor,
+                snapshot.first_line,
+                snapshot.lines.len(),
+                scroll_x,
+                text_w as usize,
+                delimiter_analysis,
+            );
+            let overlay_time = overlay_start.elapsed();
+
+            let lines_start = Instant::now();
+            draw_snapshot_lines(
+                window,
+                buffer,
+                &snapshot,
+                content_x,
+                scroll_x,
+                text_w as usize,
+                editor_text,
+                background_style,
+                syntax_spans,
+                &delimiter_highlights,
+                &active_scope_guides,
+                &search_highlights,
+                visual_selection,
+                one_shot_highlight,
+            )?;
+            let lines_time = lines_start.elapsed();
+            Ok::<_, minui::Error>((syntax_time, overlay_time, lines_time))
+        })?;
+    perf.syntax += syntax_time;
+    perf.overlays += overlay_time;
+    perf.lines += lines_time;
     state.advance_one_shot_highlight();
 
     // --- Status bar (bottom row) ---
+    let status_start = Instant::now();
     let status = build_editor_status_bar(state, style);
 
     status.draw(window)?;
+    perf.status += status_start.elapsed();
+
+    if let Some(popup) = state.perf_popup()
+        && !matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        )
+    {
+        draw_perf_popup_view(style, window, popup)?;
+        hide_cursor(window);
+        return Ok(());
+    }
 
     if matches!(
         state.mode,
@@ -405,7 +443,7 @@ fn draw_line_with_highlights(
     let max_visible_cell = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_bytes = g.len();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
@@ -506,15 +544,7 @@ fn draw_buffer_snapshot_for_id(
         .session
         .meta(buffer_id)
         .and_then(|meta| language_for_path(meta.path.as_deref()));
-    let Some((
-        snapshot,
-        cursor_line,
-        total_lines,
-        scroll_x,
-        syntax_spans,
-        delimiter_highlights,
-        active_scope_guides,
-    )) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
+    let Some(result) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
         let cursor = view.cursor.cursor;
         let total_lines = buffer.len_lines().max(1);
         let gutter_w = line_number_gutter_width(total_lines);
@@ -528,23 +558,30 @@ fn draw_buffer_snapshot_for_id(
             height,
         };
         let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-        let syntax_spans = view.syntax_highlighter.visible_line_spans(
+        let analysis_version = view.analysis_version();
+        let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
             buffer,
+            syntax_language,
+            analysis_version,
+            cursor,
+        );
+        let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
             syntax_language,
             snapshot.first_line,
             snapshot.lines.len(),
         );
-        let tree_sitter_scope =
-            view.syntax_highlighter
-                .active_scope_pair(buffer, syntax_language, cursor);
-        let delimiter_pairs = view.delimiter_pair_cache.get_or_compute(buffer);
-        let delimiter_highlights = active_delimiter_highlights(
-            buffer,
-            cursor,
-            snapshot.first_line,
-            snapshot.lines.len(),
-            delimiter_pairs,
-        );
+        let delimiter_analysis = view.delimiter_pair_cache.get();
+        let delimiter_highlights = delimiter_analysis
+            .map(|analysis| {
+                active_delimiter_highlights(
+                    buffer,
+                    cursor,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                    analysis,
+                )
+            })
+            .unwrap_or_default();
         let active_scope_guides = active_scope_indent_guides(
             tree_sitter_scope,
             buffer,
@@ -553,58 +590,41 @@ fn draw_buffer_snapshot_for_id(
             snapshot.lines.len(),
             scroll_x,
             width.saturating_sub(content_x) as usize,
-            Some(delimiter_pairs),
+            delimiter_analysis,
         );
-        (
-            snapshot,
+
+        draw_relative_line_numbers(
+            window,
+            style,
+            gutter_w,
+            height,
+            snapshot.first_line,
             view.cursor.cursor.line,
             total_lines,
+        )?;
+        draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
+
+        let search_highlights = BTreeMap::new();
+        draw_snapshot_lines(
+            window,
+            buffer,
+            &snapshot,
+            content_x,
             scroll_x,
+            width.saturating_sub(content_x) as usize,
+            colors,
+            style,
             syntax_spans,
-            delimiter_highlights,
-            active_scope_guides,
+            &delimiter_highlights,
+            &active_scope_guides,
+            &search_highlights,
+            None,
+            None,
         )
-    })
-    else {
+    }) else {
         return Ok(());
     };
-
-    let gutter_w = line_number_gutter_width(total_lines);
-    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
-    draw_relative_line_numbers(
-        window,
-        style,
-        gutter_w,
-        height,
-        snapshot.first_line,
-        cursor_line,
-        total_lines,
-    )?;
-    draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
-
-    let buffer = state
-        .session
-        .buffer(buffer_id)
-        .expect("snapshot buffer must exist in session map");
-    let search_highlights = BTreeMap::new();
-    draw_snapshot_lines(
-        window,
-        buffer,
-        &snapshot,
-        content_x,
-        scroll_x,
-        width.saturating_sub(content_x) as usize,
-        colors,
-        style,
-        syntax_spans.as_deref(),
-        &delimiter_highlights,
-        &active_scope_guides,
-        &search_highlights,
-        None,
-        None,
-    )?;
-
-    Ok(())
+    result
 }
 
 fn draw_snapshot_lines(
@@ -616,7 +636,7 @@ fn draw_snapshot_lines(
     text_w: usize,
     default_colors: ColorPair,
     style: UiStyle,
-    syntax_spans: Option<&[Vec<ui::syntax::LineSyntaxSpan>]>,
+    syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
@@ -626,7 +646,8 @@ fn draw_snapshot_lines(
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for row in 0..snapshot.lines.len() {
         let line_idx = snapshot.first_line + row;
-        let source_line = buffer.line_string(line_idx);
+        let visible_line = snapshot.lines.get(row).map(String::as_str).unwrap_or("");
+        let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
             .map(Vec::as_slice)
@@ -635,16 +656,45 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let occupied_text_cells = occupied_visible_cells(&source_line, scroll_x, text_w);
-        let search_cells = search_highlights
+        let has_search_highlights = search_highlights
             .get(&line_idx)
-            .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
+            .is_some_and(|ranges| !ranges.is_empty());
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
                 one_shot_highlight
                     .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
             });
+
+        if transient_selection.is_none()
+            && !has_search_highlights
+            && syntax_line_spans.is_none_or(|spans| spans.is_empty())
+            && highlighted_chars.is_empty()
+            && visible_indent_guides.is_empty()
+            && visible_line.is_ascii()
+            && !visible_line.contains('\t')
+        {
+            draw_visible_ascii_plain_line(
+                window,
+                row as u16,
+                content_x,
+                visible_line,
+                text_w,
+                default_colors,
+                color_column,
+            )?;
+            continue;
+        }
+
+        let source_line = buffer.line_string(line_idx);
+        let occupied_text_cells = if visible_indent_guides.is_empty() {
+            Vec::new()
+        } else {
+            occupied_visible_cells(&source_line, scroll_x, text_w)
+        };
+        let search_cells = search_highlights
+            .get(&line_idx)
+            .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
         if let Some((selection, mode, selection_bg)) = transient_selection {
             let highlight_empty_line = buffer.line_len_chars(line_idx) == 0
                 && selected_empty_line(selection, mode, line_idx);
@@ -676,7 +726,7 @@ fn draw_snapshot_lines(
                     default_colors,
                     color_column,
                     style,
-                    syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    syntax_line_spans,
                     &highlight_layers,
                     highlight_empty_line,
                 )?;
@@ -713,7 +763,7 @@ fn draw_snapshot_lines(
                     default_colors,
                     color_column,
                     style,
-                    syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                    syntax_line_spans,
                     &highlight_layers,
                     true,
                 )?;
@@ -735,7 +785,7 @@ fn draw_snapshot_lines(
                 default_colors,
                 color_column,
                 style,
-                syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice)),
+                syntax_line_spans,
                 &highlight_layers,
                 false,
             )?;
@@ -761,7 +811,7 @@ fn draw_snapshot_lines(
             continue;
         }
 
-        if let Some(spans) = syntax_spans.and_then(|rows| rows.get(row))
+        if let Some(spans) = syntax_line_spans
             && !spans.is_empty()
         {
             draw_line_with_syntax(
@@ -863,7 +913,7 @@ fn highlighted_visible_cells(
     let max_visible_cell = scroll_x.saturating_add(width_cells);
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
@@ -907,12 +957,12 @@ fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize
 
     for g in source_line.graphemes(true) {
         if g.chars().all(char::is_whitespace) {
-            let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+            let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
             line_cells = line_cells.saturating_add(g_width.max(1));
             continue;
         }
 
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width.max(1));
         line_cells = end_cell;
@@ -963,7 +1013,7 @@ fn draw_plain_line(
     let mut line_cells = 0usize;
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
         line_cells = end_cell;
@@ -1006,6 +1056,69 @@ fn draw_plain_line(
     }
 
     Ok(())
+}
+
+fn draw_visible_ascii_plain_line(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    visible_line: &str,
+    width_cells: usize,
+    default_colors: ColorPair,
+    color_column: Option<(usize, Color)>,
+) -> minui::Result<()> {
+    if width_cells == 0 {
+        return Ok(());
+    }
+
+    let visible_len = visible_line.len().min(width_cells);
+    let Some((visible_col, bg)) = color_column else {
+        if visible_len > 0 {
+            window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+        }
+        return Ok(());
+    };
+
+    if visible_col >= width_cells {
+        if visible_len > 0 {
+            window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+        }
+        return Ok(());
+    }
+
+    if visible_col < visible_len {
+        if visible_col > 0 {
+            window.write_str_colored(row, col, &visible_line[..visible_col], default_colors)?;
+        }
+
+        let next = visible_col.saturating_add(1);
+        window.write_str_colored(
+            row,
+            col.saturating_add(visible_col as u16),
+            &visible_line[visible_col..next],
+            ColorPair::new(default_colors.fg, bg),
+        )?;
+
+        if next < visible_len {
+            window.write_str_colored(
+                row,
+                col.saturating_add(next as u16),
+                &visible_line[next..visible_len],
+                default_colors,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if visible_len > 0 {
+        window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+    }
+    window.write_str_colored(
+        row,
+        col.saturating_add(visible_col as u16),
+        " ",
+        ColorPair::new(default_colors.fg, bg),
+    )
 }
 
 fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(usize, Color)> {
@@ -1203,6 +1316,10 @@ fn handle_editor_event(
         return !state.should_quit;
     }
 
+    if is_cancel_event(&event) && state.dismiss_perf_popup() {
+        return !state.should_quit;
+    }
+
     let confirm_explorer_delete = state.has_pending_explorer_delete_confirmation();
     let action = match &event {
         Event::Paste(text) => InputAction::Paste(text.clone()),
@@ -1279,12 +1396,25 @@ pub fn run() -> minui::Result<()> {
 
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
+    let mut pending_wake_event: Option<Event> = None;
+
     loop {
         let frame_start = Instant::now();
+        let mut perf_sample = FramePerfSample::default();
+        let input_start = Instant::now();
+        let mut event_count = 0usize;
+
+        if let Some(event) = pending_wake_event.take() {
+            event_count += 1;
+            if !handle_editor_event(&mut state, &mut clipboard, event) {
+                return Ok(());
+            }
+        }
 
         for _ in 0..MAX_EVENTS_PER_FRAME {
             match window.poll_input()? {
                 Some(event) => {
+                    event_count += 1;
                     if !handle_editor_event(&mut state, &mut clipboard, event) {
                         return Ok(());
                     }
@@ -1292,6 +1422,9 @@ pub fn run() -> minui::Result<()> {
                 None => break,
             }
         }
+        perf_sample.input = input_start.elapsed();
+        perf_sample.event_count = event_count;
+        state.poll_analysis_results();
 
         if state.rain_is_active() {
             state.advance_rain_animation();
@@ -1301,8 +1434,12 @@ pub fn run() -> minui::Result<()> {
         let (w, h) = window.get_size();
         state.set_viewport_size(w as usize, h as usize);
         window.clear_screen()?;
-        draw_buffer_view(&mut state, style, &mut window)?;
+        draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
+        let flush_start = Instant::now();
         window.end_frame()?;
+        perf_sample.flush = flush_start.elapsed();
+        perf_sample.frame = frame_start.elapsed();
+        state.record_perf_sample(perf_sample);
 
         if state.should_quit {
             return Ok(());
@@ -1310,7 +1447,10 @@ pub fn run() -> minui::Result<()> {
 
         let remaining = TARGET_FRAME_BUDGET.saturating_sub(frame_start.elapsed());
         if !remaining.is_zero() {
-            thread::sleep(remaining);
+            let event = window.get_input_timeout(remaining)?;
+            if !matches!(event, Event::Unknown) {
+                pending_wake_event = Some(event);
+            }
         }
     }
 }

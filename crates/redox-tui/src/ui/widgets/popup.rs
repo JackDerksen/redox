@@ -1,8 +1,8 @@
 use minui::widgets::WindowView;
-use minui::{ColorPair, Window, cell_width};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use unicode_segmentation::UnicodeSegmentation;
 
-const POPUP_TAB_POLICY: minui::prelude::TabPolicy = minui::prelude::TabPolicy::Fixed(4);
+const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PopupChrome {

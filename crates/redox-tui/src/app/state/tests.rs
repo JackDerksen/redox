@@ -1,14 +1,15 @@
 use super::*;
 use redox_core::{
-    BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
-    VisualModeKind, motion::Motion,
+    motion::Motion, BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope,
+    TextObjectSpec, VisualModeKind,
 };
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
+use crate::ui::syntax::SyntaxLanguage;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 fn temp_file_path(tag: &str) -> PathBuf {
@@ -39,6 +40,30 @@ fn run_command(state: &mut EditorState, cmd: &str) {
     state.apply_input(InputAction::CommandEnter, 80, 24);
 }
 
+fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        state.poll_analysis_results();
+        if state
+            .views
+            .get(&id)
+            .is_some_and(|view| view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust))
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let view_exists = state.views.contains_key(&id);
+    let has_rust_cache = state
+        .views
+        .get(&id)
+        .is_some_and(|view| view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
+    panic!(
+        "rust syntax cache was not populated before deadline; view_exists={view_exists}, has_rust_cache={has_rust_cache}"
+    );
+}
+
 #[test]
 fn normal_mode_paste_inserts_text_and_marks_dirty() {
     let path = temp_file_path("paste_normal");
@@ -53,16 +78,75 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
-fn invalidate_render_caches_clears_delimiter_pair_cache() {
+fn invalidate_render_caches_clears_analysis_caches_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
+    let rust_buffer = TextBuffer::from_str("fn main() {}\n");
 
-    assert_eq!(view.delimiter_pair_cache.get_or_compute(&before).len(), 1);
+    view.delimiter_pair_cache
+        .install(crate::ui::overlays::compute_delimiter_analysis(&before));
+    view.syntax_highlighter
+        .replace_cache(SyntaxHighlighter::compute_cache(
+            &rust_buffer,
+            SyntaxLanguage::Rust,
+        ));
+    assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+    assert!(view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
 
+    let previous_version = view.analysis_version;
     view.invalidate_render_caches();
 
-    assert!(view.delimiter_pair_cache.get_or_compute(&after).is_empty());
+    assert_ne!(view.analysis_version, previous_version);
+    assert!(view.delimiter_pair_cache.get().is_none());
+    assert!(!view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
+
+    view.delimiter_pair_cache
+        .install(crate::ui::overlays::compute_delimiter_analysis(&after));
+    assert!(view
+        .delimiter_pair_cache
+        .get()
+        .expect("analysis")
+        .is_empty());
+}
+
+#[test]
+fn stale_analysis_results_are_dropped() {
+    let path = temp_file_path("stale_analysis_result");
+    let mut state = state_with_text(path.clone(), "plain text");
+    let active_id = state.session.active_id();
+    let current_version = {
+        let view = state.views.entry(active_id).or_default();
+        view.invalidate_render_caches();
+        view.analysis_version
+    };
+
+    state.apply_analysis_result(analysis::AnalysisResult::Delimiters {
+        buffer_id: active_id,
+        version: current_version,
+        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(
+            state.session.active_buffer(),
+        ),
+    });
+    state.apply_analysis_result(analysis::AnalysisResult::Delimiters {
+        buffer_id: active_id,
+        version: current_version.saturating_sub(1),
+        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(&TextBuffer::from_str(
+            "{ stale }",
+        )),
+    });
+
+    let view = state
+        .views
+        .get_mut(&active_id)
+        .expect("missing active view");
+    assert!(view
+        .delimiter_pair_cache
+        .get()
+        .expect("analysis")
+        .is_empty());
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -1086,6 +1170,37 @@ fn command_rain_captures_and_stop_clears_animation_state() {
 }
 
 #[test]
+fn command_perf_toggles_performance_popup() {
+    let path = temp_file_path("perf_popup");
+    let mut state = state_with_text(path.clone(), "let perf = true;\n");
+
+    assert!(state.perf_popup().is_none());
+    run_command(&mut state, "perf");
+
+    assert!(state.perf_popup().is_some());
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    run_command(&mut state, "perf");
+
+    assert!(state.perf_popup().is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn perf_popup_escape_dismisses_in_normal_mode() {
+    let path = temp_file_path("perf_escape");
+    let mut state = state_with_text(path.clone(), "let perf = true;\n");
+
+    run_command(&mut state, "perf");
+
+    assert!(state.dismiss_perf_popup());
+    assert!(state.perf_popup().is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn command_ls_status_is_cleared_on_next_input() {
     let path = temp_file_path("ls_ephemeral");
     let mut state = state_with_text(path.clone(), "alpha");
@@ -1145,6 +1260,22 @@ fn command_e_uses_trimmed_remainder_as_path() {
 }
 
 #[test]
+fn command_e_requests_syntax_analysis_for_opened_rust_file() {
+    let path_a = temp_file_path("e_analysis_a");
+    let path_b = temp_file_path("e_analysis_b").with_extension("rs");
+    let mut state = state_with_text(path_a.clone(), "alpha");
+    fs::write(&path_b, "fn main() {\n    println!(\"hi\");\n}\n")
+        .expect("failed to write test file");
+
+    run_command(&mut state, &format!("e {}", path_b.display()));
+    let rust_id = state.session.active_id();
+    wait_for_rust_syntax_cache(&mut state, rust_id);
+
+    let _ = fs::remove_file(path_a);
+    let _ = fs::remove_file(path_b);
+}
+
+#[test]
 fn dirty_tracking_clears_after_reverting_to_original_content() {
     let path = temp_file_path("dirty_revert_state");
     let mut state = state_with_text(path.clone(), "hello");
@@ -1183,14 +1314,12 @@ fn explorer_command_opens_ui_buffer() {
 
     assert!(state.explorer_popup().is_some());
     assert!(state.active_display_name().contains("[explorer]"));
-    assert!(
-        state
-            .session
-            .active_buffer()
-            .to_string()
-            .lines()
-            .any(|line| line == "../")
-    );
+    assert!(state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .any(|line| line == "../"));
     let popup = state
         .explorer_popup()
         .expect("explorer popup should be active");
@@ -1323,12 +1452,10 @@ fn explorer_write_requires_confirmation_for_deletes() {
         80,
         24,
     );
-    assert!(
-        state
-            .status_msg
-            .as_deref()
-            .is_some_and(|msg| msg.contains("confirm deletion of 1 entry"))
-    );
+    assert!(state
+        .status_msg
+        .as_deref()
+        .is_some_and(|msg| msg.contains("confirm deletion of 1 entry")));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
@@ -1837,9 +1964,9 @@ fn explorer_enter_opens_file_and_closes_explorer() {
             .as_nanos()
     ));
     fs::create_dir(&dir).expect("failed to create temp dir");
-    let file_a = dir.join("a.txt");
+    let file_a = dir.join("a.rs");
     let file_open = dir.join("open.txt");
-    fs::write(&file_a, "aaa").expect("failed to write fixture");
+    fs::write(&file_a, "fn main() {}\n").expect("failed to write fixture");
     fs::write(&file_open, "open").expect("failed to write fixture");
 
     let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
@@ -1850,8 +1977,8 @@ fn explorer_enter_opens_file_and_closes_explorer() {
         let text = state.session.active_buffer().to_string();
         let target_line = text
             .lines()
-            .position(|line| line == "a.txt")
-            .expect("a.txt missing from explorer listing");
+            .position(|line| line == "a.rs")
+            .expect("a.rs missing from explorer listing");
         let id = state.session.active_id();
         state
             .views
@@ -1865,7 +1992,9 @@ fn explorer_enter_opens_file_and_closes_explorer() {
     state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
 
     assert!(state.explorer_popup().is_none());
-    assert_eq!(state.session.active_buffer().to_string(), "aaa");
+    assert_eq!(state.session.active_buffer().to_string(), "fn main() {}\n");
+    let rust_id = state.session.active_id();
+    wait_for_rust_syntax_cache(&mut state, rust_id);
 
     let _ = fs::remove_file(file_a);
     let _ = fs::remove_file(file_open);

@@ -16,7 +16,7 @@
 //! Future work:
 //! - Cursor rendering, selection, and incremental updates.
 
-use minui::{Window, cell_width};
+use minui::{cell_width, TabPolicy, Window};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -309,7 +309,7 @@ fn skip_graphemes_by_cells(graphemes: &[Box<str>], skip_cells: usize) -> usize {
         if skipped >= skip_cells {
             return i;
         }
-        let w = cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let w = cell_width(g, TabPolicy::Fixed(4)) as usize;
         skipped = skipped.saturating_add(w);
     }
 
@@ -337,7 +337,7 @@ fn clip_graphemes_to_cells(graphemes: &[Box<str>], max_cells: usize) -> String {
             break;
         }
 
-        let w = cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let w = cell_width(g, TabPolicy::Fixed(4)) as usize;
 
         // If it doesn't fit, stop (don’t overrun).
         if w > 0 && used + w > max_cells {
@@ -372,7 +372,7 @@ fn clip_graphemes_to_cells_ref(graphemes: &[&str], max_cells: usize) -> String {
             break;
         }
 
-        let w = cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let w = cell_width(g, TabPolicy::Fixed(4)) as usize;
         if w > 0 && used + w > max_cells {
             break;
         }
@@ -457,7 +457,7 @@ fn render_line_window_fast(
 fn cell_width_for_char(ch: char) -> usize {
     let mut buf = [0_u8; 4];
     let s = ch.encode_utf8(&mut buf);
-    cell_width(s, minui::prelude::TabPolicy::Fixed(4)) as usize
+    cell_width(s, TabPolicy::Fixed(4)) as usize
 }
 
 #[cfg(test)]

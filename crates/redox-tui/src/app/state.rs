@@ -5,19 +5,23 @@
 
 use std::collections::HashMap;
 
-use redox_core::{BufferId, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
+use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter};
+use crate::ui::{language_for_path, GraphemeCache, RainAnimation, SyntaxHighlighter};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
+mod analysis;
+use analysis::AnalysisWorker;
 mod explorer;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+mod perf;
+pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
 mod commands;
 mod editing;
@@ -116,6 +120,7 @@ pub struct BufferViewState {
     pub syntax_highlighter: SyntaxHighlighter,
     pub delimiter_pair_cache: DelimiterPairCache,
     pub visual_anchor: Option<Pos>,
+    analysis_version: u64,
     undo_history: UndoHistory,
     insert_mode_coalesce_base: Option<UndoSnapshot>,
 }
@@ -128,6 +133,7 @@ impl Default for BufferViewState {
             syntax_highlighter: SyntaxHighlighter::default(),
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: None,
+            analysis_version: 0,
             undo_history: UndoHistory::default(),
             insert_mode_coalesce_base: None,
         }
@@ -135,10 +141,15 @@ impl Default for BufferViewState {
 }
 
 impl BufferViewState {
+    pub(crate) fn analysis_version(&self) -> u64 {
+        self.analysis_version
+    }
+
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
-        self.syntax_highlighter.invalidate();
+        self.syntax_highlighter.replace_cache(None);
         self.delimiter_pair_cache.clear();
+        self.analysis_version = self.analysis_version.wrapping_add(1);
     }
 }
 
@@ -165,6 +176,9 @@ pub struct EditorState {
     search_state: Option<SearchState>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
+    analysis_worker: AnalysisWorker,
+    perf_visible: bool,
+    perf_stats: Option<FramePerfStats>,
 }
 
 impl EditorState {
@@ -178,7 +192,7 @@ impl EditorState {
         let mut views = HashMap::new();
         views.insert(active, BufferViewState::default());
 
-        Self {
+        let state = Self {
             session,
             views,
             about: None,
@@ -199,7 +213,12 @@ impl EditorState {
             search_state: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
-        }
+            analysis_worker: AnalysisWorker::new(),
+            perf_visible: false,
+            perf_stats: None,
+        };
+        state.request_analysis(active, 0);
+        state
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -415,14 +434,93 @@ impl EditorState {
 
     fn invalidate_active_render_caches(&mut self) {
         let active_id = self.session.active_id();
-        self.views
-            .entry(active_id)
-            .or_default()
-            .invalidate_render_caches();
+        let version = {
+            let view = self.views.entry(active_id).or_default();
+            view.invalidate_render_caches();
+            view.analysis_version
+        };
+        self.request_analysis(active_id, version);
         if let Some(search) = self.search_state.as_mut()
             && search.buffer_id == active_id
         {
             search.dirty = true;
+        }
+    }
+
+    fn request_analysis(&self, buffer_id: BufferId, version: u64) {
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return;
+        };
+        if meta.kind != BufferKind::File {
+            return;
+        }
+        let Some(buffer) = self.session.buffer(buffer_id).cloned() else {
+            return;
+        };
+        let syntax_language = language_for_path(meta.path.as_deref());
+        self.analysis_worker
+            .request(buffer_id, version, buffer, syntax_language);
+    }
+
+    pub(super) fn ensure_buffer_analysis(&mut self, buffer_id: BufferId) {
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return;
+        };
+        if meta.kind != BufferKind::File {
+            return;
+        }
+
+        let syntax_language = language_for_path(meta.path.as_deref());
+        let version = {
+            let view = self.views.entry(buffer_id).or_default();
+            let needs_delimiters = view.delimiter_pair_cache.get().is_none();
+            let needs_syntax = syntax_language
+                .map(|language| !view.syntax_highlighter.has_cache_for(language))
+                .unwrap_or(false);
+            if !needs_delimiters && !needs_syntax {
+                return;
+            }
+            view.analysis_version
+        };
+        self.request_analysis(buffer_id, version);
+    }
+
+    pub fn poll_analysis_results(&mut self) {
+        while let Some(result) = self.analysis_worker.try_recv() {
+            self.apply_analysis_result(result);
+        }
+    }
+
+    fn apply_analysis_result(&mut self, result: analysis::AnalysisResult) {
+        match result {
+            analysis::AnalysisResult::Syntax {
+                buffer_id,
+                version,
+                syntax_cache,
+            } => {
+                let Some(view) = self.views.get_mut(&buffer_id) else {
+                    return;
+                };
+                if view.analysis_version != version {
+                    return;
+                }
+
+                view.syntax_highlighter.replace_cache(syntax_cache);
+            }
+            analysis::AnalysisResult::Delimiters {
+                buffer_id,
+                version,
+                delimiter_analysis,
+            } => {
+                let Some(view) = self.views.get_mut(&buffer_id) else {
+                    return;
+                };
+                if view.analysis_version != version {
+                    return;
+                }
+
+                view.delimiter_pair_cache.install(delimiter_analysis);
+            }
         }
     }
 
@@ -505,24 +603,21 @@ impl EditorState {
             *buffer = std::mem::take(&mut snapshot.buffer);
         }
 
-        let active_id = self.session.active_id();
-        let view = self.views.entry(active_id).or_default();
-        let buffer = self.session.active_buffer();
-        view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
-        view.cursor
-            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-        view.invalidate_render_caches();
-        view.visual_anchor = None;
-        view.insert_mode_coalesce_base = None;
+        {
+            let active_id = self.session.active_id();
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            view.visual_anchor = None;
+            view.insert_mode_coalesce_base = None;
+        }
 
         self.mode = EditorMode::Normal;
         let _ = self.session.recompute_active_dirty();
+        self.invalidate_active_render_caches();
         self.clear_status();
-        if let Some(search) = self.search_state.as_mut()
-            && search.buffer_id == active_id
-        {
-            search.dirty = true;
-        }
     }
 }
 

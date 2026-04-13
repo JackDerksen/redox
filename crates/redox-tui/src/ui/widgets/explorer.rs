@@ -2,12 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
-use minui::{ColorPair, Window};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
-use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
+use crate::ui::{build_editor_status_bar, snapshot_lines_wrapped_cached, TextViewport, UiStyle};
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 
@@ -358,7 +358,7 @@ fn draw_line_with_selection(
     let mut char_idx = 0usize;
 
     for g in source_line.graphemes(true) {
-        let g_width = minui::cell_width(g, minui::prelude::TabPolicy::Fixed(4)) as usize;
+        let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);

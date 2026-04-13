@@ -1,11 +1,10 @@
-use minui::prelude::TabPolicy;
-use minui::{ColorPair, Window, cell_width};
+use minui::{cell_width, ColorPair, TabPolicy, Window};
 use redox_core::TextBuffer;
 
 use super::helpers::apply_color_column;
 use super::render::GraphemeCache;
 use super::style::UiStyle;
-use super::syntax::{LineSyntaxSpan, syntax_color_for_range};
+use super::syntax::{syntax_color_for_range, VisibleLineSyntaxSpans};
 
 // ======================================================================================
 // Credit to https://github.com/Eandrju/cellular-automaton.nvim for the inspiration here.
@@ -53,7 +52,7 @@ impl RainAnimation {
         height: usize,
         default_colors: ColorPair,
         style: UiStyle,
-        syntax_spans: Option<&[Vec<LineSyntaxSpan>]>,
+        syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
         color_column: Option<(usize, minui::Color)>,
     ) -> Self {
         let mut animation = Self {
@@ -77,7 +76,7 @@ impl RainAnimation {
 
             let graphemes = cache.graphemes_for_line(buffer, line_idx);
             let start_g = skip_graphemes_by_cells(graphemes, scroll_x);
-            let spans = syntax_spans.and_then(|rows| rows.get(row).map(Vec::as_slice));
+            let spans = syntax_spans.and_then(|rows| rows.get(row));
             let mut used_cells = 0usize;
             let mut byte_idx: usize = graphemes[..start_g].iter().map(|g| g.len()).sum();
 
@@ -397,16 +396,12 @@ mod tests {
             let _ = animation.update();
         }
 
-        assert!(
-            animation.grid[3]
-                .iter()
-                .any(|cell| matches!(cell, RainCell::Head(_)))
-        );
-        assert!(
-            animation.grid[0]
-                .iter()
-                .all(|cell| matches!(cell, RainCell::Empty))
-        );
+        assert!(animation.grid[3]
+            .iter()
+            .any(|cell| matches!(cell, RainCell::Head(_))));
+        assert!(animation.grid[0]
+            .iter()
+            .all(|cell| matches!(cell, RainCell::Empty)));
     }
 
     #[test]

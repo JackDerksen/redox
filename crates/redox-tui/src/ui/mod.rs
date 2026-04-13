@@ -19,12 +19,13 @@ pub mod widgets;
 
 // Re-export the render helpers/types so call sites can keep using `ui::...`.
 pub use rain_animation::RainAnimation;
-pub use render::{GraphemeCache, TextViewport, snapshot_lines_wrapped_cached};
-pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
-pub use syntax::{SyntaxHighlighter, language_for_path};
+pub use render::{snapshot_lines_wrapped_cached, GraphemeCache, TextViewport};
+pub use style::{UiStyle, STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS};
+pub use syntax::{language_for_path, SyntaxHighlighter};
 
 // Re-export common widgets for convenience.
 pub use widgets::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_explorer_popup_view, explorer_popup_inner_size,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
+    explorer_popup_inner_size,
 };

@@ -3,8 +3,8 @@
 //! This module translates raw MinUI events into mode-aware editor actions.
 //! It also tracks count prefixes and a small command tree for multi-key motions.
 
-use minui::prelude::*;
-use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec, motion::Motion};
+use minui::prelude::input::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
+use redox_core::{motion::Motion, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec};
 
 pub mod cursor;
 

@@ -22,7 +22,7 @@ use redox_core::BufferLoadPhase;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::style::{StatusModuleColors, StatusModuleKind};
-use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
+use crate::ui::{UiStyle, STATUS_BAR_HEIGHT_CELLS};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
 const STATUS_MODULE_EDGE_LEFT: &str = "▌";

@@ -217,6 +217,7 @@ impl EditorState {
         match self.session.open_file(&file_path) {
             Ok(file_id) => {
                 let _ = self.views.entry(file_id).or_default();
+                self.ensure_buffer_analysis(file_id);
                 let _ = self.session.close_buffer(explorer.buffer_id);
                 self.views.remove(&explorer.buffer_id);
                 self.explorer = None;
