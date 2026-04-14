@@ -26,7 +26,9 @@ use ui::overlays::{
     active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
     draw_indent_guides,
 };
-use ui::syntax::{draw_line_with_syntax, syntax_color_for_range, VisibleLineSyntaxSpans};
+use ui::syntax::{
+    draw_line_with_syntax, scope_guides_enabled, syntax_color_for_range, VisibleLineSyntaxSpans,
+};
 use ui::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
     draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
@@ -207,12 +209,18 @@ fn draw_buffer_view(
             let cursor = view.cursor.cursor;
             let syntax_start = Instant::now();
             let analysis_version = view.analysis_version();
-            let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
-                buffer,
-                syntax_language,
-                analysis_version,
-                cursor,
-            );
+            let scope_guides_enabled = scope_guides_enabled(syntax_language);
+            let tree_sitter_scope = scope_guides_enabled
+                .then(|| {
+                    view.syntax_highlighter
+                        .active_scope_pair_for_display_cached(
+                            buffer,
+                            syntax_language,
+                            analysis_version,
+                            cursor,
+                        )
+                })
+                .flatten();
             let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
                 syntax_language,
                 snapshot.first_line,
@@ -232,16 +240,20 @@ fn draw_buffer_view(
                     )
                 })
                 .unwrap_or_default();
-            let active_scope_guides = active_scope_indent_guides(
-                tree_sitter_scope,
-                buffer,
-                cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
-                scroll_x,
-                text_w as usize,
-                delimiter_analysis,
-            );
+            let active_scope_guides = if scope_guides_enabled {
+                active_scope_indent_guides(
+                    tree_sitter_scope,
+                    buffer,
+                    cursor,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                    scroll_x,
+                    text_w as usize,
+                    delimiter_analysis,
+                )
+            } else {
+                BTreeMap::new()
+            };
             let overlay_time = overlay_start.elapsed();
 
             let lines_start = Instant::now();
@@ -559,12 +571,18 @@ fn draw_buffer_snapshot_for_id(
         };
         let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
         let analysis_version = view.analysis_version();
-        let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
-            buffer,
-            syntax_language,
-            analysis_version,
-            cursor,
-        );
+        let scope_guides_enabled = scope_guides_enabled(syntax_language);
+        let tree_sitter_scope = scope_guides_enabled
+            .then(|| {
+                view.syntax_highlighter
+                    .active_scope_pair_for_display_cached(
+                        buffer,
+                        syntax_language,
+                        analysis_version,
+                        cursor,
+                    )
+            })
+            .flatten();
         let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
             syntax_language,
             snapshot.first_line,
@@ -582,16 +600,20 @@ fn draw_buffer_snapshot_for_id(
                 )
             })
             .unwrap_or_default();
-        let active_scope_guides = active_scope_indent_guides(
-            tree_sitter_scope,
-            buffer,
-            cursor,
-            snapshot.first_line,
-            snapshot.lines.len(),
-            scroll_x,
-            width.saturating_sub(content_x) as usize,
-            delimiter_analysis,
-        );
+        let active_scope_guides = if scope_guides_enabled {
+            active_scope_indent_guides(
+                tree_sitter_scope,
+                buffer,
+                cursor,
+                snapshot.first_line,
+                snapshot.lines.len(),
+                scroll_x,
+                width.saturating_sub(content_x) as usize,
+                delimiter_analysis,
+            )
+        } else {
+            BTreeMap::new()
+        };
 
         draw_relative_line_numbers(
             window,

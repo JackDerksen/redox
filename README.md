@@ -38,7 +38,7 @@ redox/
         └── src/
             ├── app/            # Editor app state + command handling
             ├── input/          # Key/event mapping + cursor controller
-            └── ui/             # Rendering and interface widgets such as the statusline
+            └── ui/             # Rendering, syntax highlights, and interface widgets
 ```
 
 ## Getting Started
@@ -191,16 +191,23 @@ Notes:
 - [x] Basic session-bound undo/redo 
 - [x] Syntax highlighting for...
     - [x] Rust
-    - [ ] Markdown
-    - [ ] C/C++
-    - [ ] Go
-    - [ ] Python
+    - [x] Markdown
+    - [x] C/C++
+    - [x] Go
+    - [x] Python
+    - [x] Web langs (HTML, CSS, JS/TS)
+	- [x] json
+	- [x] toml
+	- [x] yaml
 - [x] Subtle colour column at col=80
 - [x] Scope indicator lines and delimiter pair highlighting
 - [x] Visual block mode
 - [x] Compound motions (like `daw` or `ci"`)
 - [x] Basic local search (`/`, `f`, `F`)
-- [ ] Undo tree with stored history
+- [ ] Smart indenting with Tree-sitter
+- [ ] Undo tree UI with stored history
+- [ ] Fuzzy finder (file name) widget for project directory search (like Telescope)
+- [ ] Grep-based fuzzy finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] A dashboard screen with similar functionality to nvim dashboards
 - [ ] More Vim motions (ongoing, not marking this complete until I've caught them all!)

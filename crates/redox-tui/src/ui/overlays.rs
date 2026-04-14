@@ -55,6 +55,7 @@ pub(crate) struct DelimiterAnalysis {
 #[derive(Debug, Default)]
 pub(crate) struct DelimiterPairCache {
     analysis: Option<DelimiterAnalysis>,
+    stale: bool,
 }
 
 impl DelimiterPairCache {
@@ -62,12 +63,24 @@ impl DelimiterPairCache {
         self.analysis.as_ref()
     }
 
-    pub(crate) fn install(&mut self, analysis: DelimiterAnalysis) {
-        self.analysis = Some(analysis);
+    pub(crate) fn has_fresh_analysis(&self) -> bool {
+        self.analysis.is_some() && !self.stale
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.analysis = None;
+    pub(crate) fn install(&mut self, analysis: DelimiterAnalysis) {
+        self.analysis = Some(analysis);
+        self.stale = false;
+    }
+
+    pub(crate) fn mark_stale(&mut self) {
+        if self.analysis.is_some() {
+            self.stale = true;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_stale_analysis(&self) -> bool {
+        self.analysis.is_some() && self.stale
     }
 }
 
@@ -725,6 +738,27 @@ mod tests {
             None,
         );
         assert_eq!(guides.get(&1), Some(&vec![0]));
+    }
+
+    #[test]
+    fn active_scope_guides_include_exclusive_tree_sitter_scope_end() {
+        let buffer = TextBuffer::from_str("while True:\n    try:\n        answer()\n");
+        let guides = active_scope_indent_guides(
+            Some(SyntaxScopePair {
+                start: Pos::new(0, 0),
+                end: Pos::new(3, 0),
+            }),
+            &buffer,
+            Pos::new(2, 8),
+            0,
+            3,
+            0,
+            20,
+            None,
+        );
+
+        assert_eq!(guides.get(&1), Some(&vec![0]));
+        assert_eq!(guides.get(&2), Some(&vec![0]));
     }
 
     #[test]

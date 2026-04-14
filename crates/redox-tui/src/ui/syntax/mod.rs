@@ -4,20 +4,33 @@ mod languages;
 
 use std::path::Path;
 
-use minui::{cell_width, ColorPair, TabPolicy, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
-use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
-    language_config_for, language_for_path as config_language_for_path, LanguageConfig,
+    LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
 use super::style::{SyntaxRole, UiStyle};
 use crate::ui::helpers::apply_color_column;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
+    C,
+    Cpp,
+    Css,
+    Go,
+    Html,
+    JavaScript,
+    Json,
+    Markdown,
+    Python,
     Rust,
+    Toml,
+    TypeScript,
+    Tsx,
+    Yaml,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +44,7 @@ pub struct LineSyntaxSpan {
 #[derive(Default)]
 pub struct SyntaxHighlighter {
     cache: Option<HighlightCache>,
+    cache_stale: bool,
     active_scope_cache: Option<ActiveScopeCache>,
 }
 
@@ -60,6 +74,13 @@ struct QuerySyntaxEngine {
     query: Query,
     capture_roles: Vec<Option<SyntaxCapture>>,
     refine_role: fn(SyntaxRole, &str) -> SyntaxRole,
+    inline: Option<InlineSyntaxEngine>,
+}
+
+struct InlineSyntaxEngine {
+    parser: Parser,
+    query: Query,
+    capture_roles: Vec<Option<SyntaxCapture>>,
 }
 
 impl std::fmt::Debug for SyntaxHighlighter {
@@ -99,18 +120,41 @@ impl QuerySyntaxEngine {
         if parser.set_language(&language).is_err() {
             return None;
         }
-        let query = Query::new(&language, config.highlights_query).ok()?;
+        let query_source = config.highlights_queries.join("\n");
+        let query = Query::new(&language, &query_source).ok()?;
         let capture_roles = query
             .capture_names()
             .iter()
             .map(|capture| (config.capture_mapping)(capture))
             .collect();
 
+        let inline = config.inline_grammar.and_then(|grammar| {
+            let mut parser = Parser::new();
+            let language = grammar();
+            if parser.set_language(&language).is_err() {
+                return None;
+            }
+            let query_source = config.inline_highlights_queries.join("\n");
+            let query = Query::new(&language, &query_source).ok()?;
+            let capture_roles = query
+                .capture_names()
+                .iter()
+                .map(|capture| (config.capture_mapping)(capture))
+                .collect();
+
+            Some(InlineSyntaxEngine {
+                parser,
+                query,
+                capture_roles,
+            })
+        });
+
         Some(Self {
             parser,
             query,
             capture_roles,
             refine_role: config.refine_role,
+            inline,
         })
     }
 
@@ -122,33 +166,17 @@ impl QuerySyntaxEngine {
             return None;
         };
 
-        let mut query_cursor = QueryCursor::new();
         let mut tokens = Vec::new();
-        let mut captures = query_cursor.captures(&self.query, tree.root_node(), source.as_bytes());
-        while {
-            captures.advance();
-            captures.get().is_some()
-        } {
-            let (query_match, capture_index) = captures
-                .get()
-                .expect("query capture should exist after advance");
-            let capture = query_match.captures[*capture_index];
-            let Some(syntax_capture) = self
-                .capture_roles
-                .get(capture.index as usize)
-                .copied()
-                .flatten()
-            else {
-                continue;
-            };
-
-            let role = (self.refine_role)(syntax_capture.role, capture.node.kind());
-            tokens.push(TokenSpan {
-                start_byte: capture.node.start_byte(),
-                end_byte: capture.node.end_byte(),
-                role,
-                priority: syntax_capture.priority,
-            });
+        collect_query_tokens(
+            &self.query,
+            &self.capture_roles,
+            self.refine_role,
+            tree.root_node(),
+            source,
+            &mut tokens,
+        );
+        if let Some(inline) = &mut self.inline {
+            inline.parse_tokens(source, tree.root_node(), self.refine_role, &mut tokens);
         }
 
         for token in tokens {
@@ -160,6 +188,83 @@ impl QuerySyntaxEngine {
         }
 
         Some((line_spans, tree))
+    }
+}
+
+impl InlineSyntaxEngine {
+    fn parse_tokens(
+        &mut self,
+        source: &str,
+        root: Node<'_>,
+        refine_role: fn(SyntaxRole, &str) -> SyntaxRole,
+        tokens: &mut Vec<TokenSpan>,
+    ) {
+        let mut ranges = Vec::new();
+        collect_inline_ranges(root, &mut ranges);
+        for range in ranges {
+            if self.parser.set_included_ranges(&[range]).is_err() {
+                continue;
+            }
+            let Some(tree) = self.parser.parse(source, None) else {
+                continue;
+            };
+            collect_query_tokens(
+                &self.query,
+                &self.capture_roles,
+                refine_role,
+                tree.root_node(),
+                source,
+                tokens,
+            );
+        }
+    }
+}
+
+fn collect_query_tokens(
+    query: &Query,
+    capture_roles: &[Option<SyntaxCapture>],
+    refine_role: fn(SyntaxRole, &str) -> SyntaxRole,
+    node: Node<'_>,
+    source: &str,
+    tokens: &mut Vec<TokenSpan>,
+) {
+    let mut query_cursor = QueryCursor::new();
+    let mut captures = query_cursor.captures(query, node, source.as_bytes());
+    while {
+        captures.advance();
+        captures.get().is_some()
+    } {
+        let (query_match, capture_index) = captures
+            .get()
+            .expect("query capture should exist after advance");
+        let capture = query_match.captures[*capture_index];
+        let Some(syntax_capture) = capture_roles.get(capture.index as usize).copied().flatten()
+        else {
+            continue;
+        };
+
+        let role = refine_role(syntax_capture.role, capture.node.kind());
+        tokens.push(TokenSpan {
+            start_byte: capture.node.start_byte(),
+            end_byte: capture.node.end_byte(),
+            role,
+            priority: syntax_capture.priority,
+        });
+    }
+}
+
+fn collect_inline_ranges(node: Node<'_>, ranges: &mut Vec<Range>) {
+    match node.kind() {
+        "inline" | "pipe_table_cell" => {
+            ranges.push(node.range());
+        }
+        _ => {
+            for idx in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(idx as u32) {
+                    collect_inline_ranges(child, ranges);
+                }
+            }
+        }
     }
 }
 
@@ -198,6 +303,30 @@ impl SyntaxHighlighter {
     }
 
     pub(crate) fn has_cache_for(&self, language: SyntaxLanguage) -> bool {
+        !self.cache_stale
+            && self
+                .cache
+                .as_ref()
+                .is_some_and(|cache| cache.language == language)
+    }
+
+    pub(crate) fn mark_cache_stale(&mut self) {
+        if self.cache.is_some() {
+            self.cache_stale = true;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
+        self.cache_stale
+            && self
+                .cache
+                .as_ref()
+                .is_some_and(|cache| cache.language == language)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_any_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache
             .as_ref()
             .is_some_and(|cache| cache.language == language)
@@ -220,6 +349,11 @@ impl SyntaxHighlighter {
             return cached.scope;
         }
 
+        if self.cache_stale {
+            return None;
+        }
+
+        let config = language_config_for(language)?;
         let cache = self
             .cache
             .as_ref()
@@ -233,7 +367,7 @@ impl SyntaxHighlighter {
                     .checked_sub(1)
                     .and_then(|byte| root.named_descendant_for_byte_range(byte, byte))
             })
-            .and_then(|node| active_scope_pair_for_node(buffer, node));
+            .and_then(|node| active_scope_pair_for_node(buffer, config, node));
         self.active_scope_cache = Some(ActiveScopeCache {
             language,
             analysis_version,
@@ -243,8 +377,30 @@ impl SyntaxHighlighter {
         scope
     }
 
+    pub fn active_scope_pair_for_display_cached(
+        &mut self,
+        buffer: &TextBuffer,
+        language: Option<SyntaxLanguage>,
+        analysis_version: u64,
+        cursor: Pos,
+    ) -> Option<SyntaxScopePair> {
+        let stale_scope = if self.cache_stale {
+            language
+                .and_then(|language| {
+                    self.active_scope_cache
+                        .filter(|cached| cached.language == language)
+                })
+                .and_then(|cached| cached.scope)
+        } else {
+            None
+        };
+        self.active_scope_pair_cached(buffer, language, analysis_version, cursor)
+            .or(stale_scope)
+    }
+
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
         self.cache = cache;
+        self.cache_stale = false;
         self.active_scope_cache = None;
     }
 }
@@ -272,10 +428,14 @@ impl std::ops::Index<usize> for VisibleLineSyntaxSpans<'_> {
     }
 }
 
-fn active_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
+fn active_scope_pair_for_node(
+    buffer: &TextBuffer,
+    config: &LanguageConfig,
+    node: Node<'_>,
+) -> Option<SyntaxScopePair> {
     let mut current = Some(node);
     while let Some(candidate) = current {
-        if let Some(pair) = structural_scope_pair_for_node(buffer, candidate) {
+        if let Some(pair) = structural_scope_pair_for_node(buffer, config, candidate) {
             return Some(pair);
         }
         current = candidate.parent();
@@ -283,11 +443,27 @@ fn active_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option<Syn
     None
 }
 
-fn structural_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
+fn structural_scope_pair_for_node(
+    buffer: &TextBuffer,
+    config: &LanguageConfig,
+    node: Node<'_>,
+) -> Option<SyntaxScopePair> {
     if node.start_position().row >= node.end_position().row {
         return None;
     }
 
+    if let Some(pair) = delimiter_wrapped_scope_pair(buffer, node) {
+        return Some(pair);
+    }
+
+    config
+        .scope_kinds
+        .contains(&node.kind())
+        .then(|| node_scope_pair(buffer, node))
+        .flatten()
+}
+
+fn delimiter_wrapped_scope_pair(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
     let start_pos = byte_to_pos(buffer, node.start_byte())?;
     let end_pos = byte_to_pos(buffer, node.end_byte().checked_sub(1)?)?;
     let start_char = buffer.char_at(start_pos)?;
@@ -300,6 +476,14 @@ fn structural_scope_pair_for_node(buffer: &TextBuffer, node: Node<'_>) -> Option
     )
 }
 
+fn node_scope_pair(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePair> {
+    let last_pos = byte_to_pos(buffer, node.end_byte().checked_sub(1)?)?;
+    Some(SyntaxScopePair {
+        start: byte_to_pos(buffer, node.start_byte())?,
+        end: Pos::new(last_pos.line.saturating_add(1), 0),
+    })
+}
+
 fn byte_to_pos(buffer: &TextBuffer, byte_idx: usize) -> Option<Pos> {
     if byte_idx > buffer.rope().len_bytes() {
         return None;
@@ -310,6 +494,10 @@ fn byte_to_pos(buffer: &TextBuffer, byte_idx: usize) -> Option<Pos> {
 
 pub fn language_for_path(path: Option<&Path>) -> Option<SyntaxLanguage> {
     config_language_for_path(path)
+}
+
+pub fn scope_guides_enabled(language: Option<SyntaxLanguage>) -> bool {
+    !matches!(language, Some(SyntaxLanguage::Markdown))
 }
 
 pub fn draw_line_with_syntax(
@@ -586,7 +774,7 @@ mod tests {
 
     use redox_core::{Pos, TextBuffer};
 
-    use super::{language_for_path, SyntaxHighlighter, SyntaxLanguage};
+    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
     use crate::ui::style::SyntaxRole;
 
     #[test]
@@ -599,8 +787,50 @@ mod tests {
             language_for_path(Some(Path::new("/tmp/MAIN.RS"))),
             Some(SyntaxLanguage::Rust)
         );
-        assert_eq!(language_for_path(Some(Path::new("/tmp/readme.md"))), None);
+        assert_eq!(
+            language_for_path(Some(Path::new("/tmp/readme.md"))),
+            Some(SyntaxLanguage::Markdown)
+        );
         assert_eq!(language_for_path(None), None);
+    }
+
+    #[test]
+    fn detects_new_tree_sitter_language_paths() {
+        let cases = [
+            ("/tmp/main.c", SyntaxLanguage::C),
+            ("/tmp/main.h", SyntaxLanguage::C),
+            ("/tmp/main.cc", SyntaxLanguage::Cpp),
+            ("/tmp/main.cpp", SyntaxLanguage::Cpp),
+            ("/tmp/main.cxx", SyntaxLanguage::Cpp),
+            ("/tmp/style.css", SyntaxLanguage::Css),
+            ("/tmp/main.go", SyntaxLanguage::Go),
+            ("/tmp/index.html", SyntaxLanguage::Html),
+            ("/tmp/index.htm", SyntaxLanguage::Html),
+            ("/tmp/app.js", SyntaxLanguage::JavaScript),
+            ("/tmp/app.jsx", SyntaxLanguage::JavaScript),
+            ("/tmp/app.mjs", SyntaxLanguage::JavaScript),
+            ("/tmp/config.json", SyntaxLanguage::Json),
+            ("/tmp/readme.markdown", SyntaxLanguage::Markdown),
+            ("/tmp/main.py", SyntaxLanguage::Python),
+            ("/tmp/main.pyi", SyntaxLanguage::Python),
+            ("/tmp/Cargo.toml", SyntaxLanguage::Toml),
+            ("/tmp/app.ts", SyntaxLanguage::TypeScript),
+            ("/tmp/app.tsx", SyntaxLanguage::Tsx),
+            ("/tmp/config.yaml", SyntaxLanguage::Yaml),
+            ("/tmp/config.yml", SyntaxLanguage::Yaml),
+        ];
+
+        for (path, language) in cases {
+            assert_eq!(language_for_path(Some(Path::new(path))), Some(language));
+        }
+    }
+
+    #[test]
+    fn scope_guides_are_disabled_for_markdown_only() {
+        assert!(!super::scope_guides_enabled(Some(SyntaxLanguage::Markdown)));
+        assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Python)));
+        assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Rust)));
+        assert!(super::scope_guides_enabled(None));
     }
 
     #[test]
@@ -638,6 +868,255 @@ mod tests {
     }
 
     #[test]
+    fn go_comments_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("// comment\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Go,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Go), 0, 1)
+            .expect("go spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 10
+        }));
+    }
+
+    #[test]
+    fn c_comments_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("// comment\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, SyntaxLanguage::C));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::C), 0, 1)
+            .expect("c spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 10
+        }));
+    }
+
+    #[test]
+    fn cpp_uses_c_and_cpp_highlight_queries() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("auto value = nullptr; // comment\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Cpp,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Cpp), 0, 1)
+            .expect("cpp spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::Type && span.start_byte == 0 && span.end_byte == 4
+        }));
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte <= 22 && span.end_byte >= 32
+        }));
+    }
+
+    #[test]
+    fn new_tree_sitter_languages_highlight_basic_tokens() {
+        let cases = [
+            (SyntaxLanguage::Css, "body { color: red; }\n"),
+            (SyntaxLanguage::Html, "<div class=\"note\">hi</div>\n"),
+            (SyntaxLanguage::JavaScript, "const value = true;\n"),
+            (SyntaxLanguage::Json, "{\"enabled\": true}\n"),
+            (SyntaxLanguage::Toml, "[package]\nname = \"redox\"\n"),
+            (
+                SyntaxLanguage::TypeScript,
+                "type User = { name: string };\n",
+            ),
+            (
+                SyntaxLanguage::Tsx,
+                "const el = <Button label=\"Save\" />;\n",
+            ),
+            (SyntaxLanguage::Yaml, "name: redox\n"),
+        ];
+
+        for (language, source) in cases {
+            let mut highlighter = SyntaxHighlighter::default();
+            let buffer = TextBuffer::from_str(source);
+            highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
+            let spans = highlighter
+                .visible_line_spans_cached(Some(language), 0, 1)
+                .expect("spans");
+
+            assert!(
+                !spans[0].is_empty(),
+                "{language:?} should produce at least one highlight span"
+            );
+        }
+    }
+
+    #[test]
+    fn typescript_combines_javascript_and_typescript_highlight_queries() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str(
+            "export type User = { name: string };\nconst label = format(user.name, \"ok\");\n",
+        );
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::TypeScript,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::TypeScript), 0, 2)
+            .expect("typescript spans");
+
+        assert!(spans[0].iter().any(|span| span.role == SyntaxRole::Keyword));
+        assert!(
+            spans[0]
+                .iter()
+                .any(|span| span.role == SyntaxRole::TypeBuiltin)
+        );
+        assert!(
+            spans[1]
+                .iter()
+                .any(|span| span.role == SyntaxRole::Function)
+        );
+        assert!(spans[1].iter().any(|span| span.role == SyntaxRole::String));
+    }
+
+    #[test]
+    fn markdown_headings_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("# Title\n\nBody\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownHeading && span.start_byte == 0 && span.end_byte >= 7
+        }));
+    }
+
+    #[test]
+    fn markdown_inline_emphasis_is_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("This is **bold** and `code`.\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownEmphasis && span.start_byte <= 8 && span.end_byte >= 16
+        }));
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownCode && span.start_byte <= 21 && span.end_byte >= 27
+        }));
+    }
+
+    #[test]
+    fn markdown_code_blocks_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("```rust\nlet answer = 42;\n```\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 1, 1)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownCode && span.start_byte == 0 && span.end_byte >= 16
+        }));
+    }
+
+    #[test]
+    fn markdown_frontmatter_is_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("---\ntitle: Redox\n---\n\n# Title\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 3)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownFrontmatter
+                && span.start_byte == 0
+                && span.end_byte >= 3
+        }));
+        assert!(spans[1].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownFrontmatter
+                && span.start_byte == 0
+                && span.end_byte >= 12
+        }));
+    }
+
+    #[test]
+    fn markdown_links_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("[Redox](https://example.com)\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownLink && span.start_byte == 0 && span.end_byte >= 28
+        }));
+    }
+
+    #[test]
+    fn markdown_list_markers_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("* item\n- other\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 2)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownListMarker
+                && span.start_byte == 0
+                && span.end_byte >= 1
+        }));
+        assert!(spans[1].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownListMarker
+                && span.start_byte == 0
+                && span.end_byte >= 1
+        }));
+    }
+
+    #[test]
+    fn python_comments_are_highlighted() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("# comment\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Python,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Python), 0, 1)
+            .expect("python spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 9
+        }));
+    }
+
+    #[test]
     fn active_scope_pair_uses_multiline_structural_node() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
@@ -651,5 +1130,130 @@ mod tests {
 
         assert_eq!(scope.start, Pos::new(0, 10));
         assert_eq!(scope.end, Pos::new(2, 0));
+    }
+
+    #[test]
+    fn new_brace_languages_use_tree_sitter_scope_nodes() {
+        let cases = [
+            (
+                SyntaxLanguage::C,
+                "int main() {\n    return 0;\n}\n",
+                Pos::new(0, 11),
+            ),
+            (
+                SyntaxLanguage::Cpp,
+                "int main() {\n    return 0;\n}\n",
+                Pos::new(0, 11),
+            ),
+            (
+                SyntaxLanguage::Go,
+                "func main() {\n    println(\"hi\")\n}\n",
+                Pos::new(0, 12),
+            ),
+            (
+                SyntaxLanguage::Css,
+                "body {\n    color: red;\n}\n",
+                Pos::new(0, 5),
+            ),
+            (
+                SyntaxLanguage::JavaScript,
+                "if (value) {\n    run();\n}\n",
+                Pos::new(0, 11),
+            ),
+            (
+                SyntaxLanguage::Json,
+                "{\n  \"enabled\": true\n}\n",
+                Pos::new(0, 0),
+            ),
+            (
+                SyntaxLanguage::TypeScript,
+                "if (value) {\n    run();\n}\n",
+                Pos::new(0, 11),
+            ),
+            (
+                SyntaxLanguage::Tsx,
+                "if (value) {\n    run();\n}\n",
+                Pos::new(0, 11),
+            ),
+            (
+                SyntaxLanguage::Toml,
+                "values = [\n  \"redox\"\n]\n",
+                Pos::new(0, 9),
+            ),
+        ];
+
+        for (language, source, expected_start) in cases {
+            let mut highlighter = SyntaxHighlighter::default();
+            let buffer = TextBuffer::from_str(source);
+            highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
+            let scope = highlighter
+                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .expect("scope");
+
+            assert_eq!(scope.start, expected_start);
+            assert_eq!(scope.end, Pos::new(2, 0));
+        }
+    }
+
+    #[test]
+    fn tag_and_whitespace_languages_use_tree_sitter_scope_nodes() {
+        let cases = [
+            (
+                SyntaxLanguage::Html,
+                "<main>\n  <p>Text</p>\n</main>\n",
+                Pos::new(0, 0),
+                3,
+            ),
+            (
+                SyntaxLanguage::Yaml,
+                "root:\n  child: value\n",
+                Pos::new(1, 2),
+                2,
+            ),
+        ];
+
+        for (language, source, expected_start, expected_end_line) in cases {
+            let mut highlighter = SyntaxHighlighter::default();
+            let buffer = TextBuffer::from_str(source);
+            highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
+            let scope = highlighter
+                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .expect("scope");
+
+            assert_eq!(scope.start, expected_start);
+            assert_eq!(scope.end.line, expected_end_line);
+        }
+    }
+
+    #[test]
+    fn python_active_scope_pair_uses_tree_sitter_node_range() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("def main():\n    print(\"hi\")\n    return 1\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Python,
+        ));
+        let scope = highlighter
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, Pos::new(1, 8))
+            .expect("scope");
+
+        assert_eq!(scope.start, Pos::new(0, 0));
+        assert_eq!(scope.end.line, 3);
+    }
+
+    #[test]
+    fn markdown_active_scope_pair_uses_tree_sitter_section() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("# Title\n\nBody\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let scope = highlighter
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Markdown), 0, Pos::new(2, 1))
+            .expect("scope");
+
+        assert_eq!(scope.start, Pos::new(0, 0));
+        assert_eq!(scope.end.line, 3);
     }
 }
