@@ -71,6 +71,7 @@ pub struct VisibleLineSyntaxSpans<'a> {
 }
 
 struct QuerySyntaxEngine {
+    language: SyntaxLanguage,
     parser: Parser,
     query: Query,
     capture_roles: Vec<Option<SyntaxCapture>>,
@@ -151,6 +152,7 @@ impl QuerySyntaxEngine {
         });
 
         Some(Self {
+            language: config.language,
             parser,
             query,
             capture_roles,
@@ -178,6 +180,9 @@ impl QuerySyntaxEngine {
         );
         if let Some(inline) = &mut self.inline {
             inline.parse_tokens(source, tree.root_node(), self.refine_role, &mut tokens);
+        }
+        if self.language == SyntaxLanguage::Markdown {
+            collect_markdown_highlight_tokens(source, &line_starts, &mut tokens);
         }
 
         for token in tokens {
@@ -1084,6 +1089,84 @@ fn compute_line_start_bytes(source: &str) -> Vec<usize> {
     starts
 }
 
+fn collect_markdown_highlight_tokens(
+    source: &str,
+    line_starts: &[usize],
+    tokens: &mut Vec<TokenSpan>,
+) {
+    for (line_idx, line_start) in line_starts.iter().copied().enumerate() {
+        let line_end = line_starts
+            .get(line_idx + 1)
+            .copied()
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or(source.len());
+        let line = &source[line_start..line_end];
+        let bytes = line.as_bytes();
+        let mut cursor = 0;
+
+        while let Some(open_offset) = find_markdown_highlight_delimiter(bytes, cursor) {
+            let content_start = open_offset + 2;
+            let Some(close_offset) = find_markdown_highlight_delimiter(bytes, content_start) else {
+                break;
+            };
+
+            if close_offset > content_start {
+                let start = line_start + open_offset;
+                let end = line_start + close_offset + 2;
+                if !source[line_start + content_start..line_start + close_offset]
+                    .trim()
+                    .is_empty()
+                    && !token_overlaps_role(tokens.as_slice(), start, end, SyntaxRole::MarkdownCode)
+                {
+                    tokens.push(TokenSpan {
+                        start_byte: start,
+                        end_byte: end,
+                        role: SyntaxRole::MarkdownHighlight,
+                        priority: 180,
+                    });
+                }
+            }
+
+            cursor = close_offset + 2;
+        }
+    }
+}
+
+fn find_markdown_highlight_delimiter(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut cursor = start;
+    while cursor + 1 < bytes.len() {
+        if bytes[cursor] == b'='
+            && bytes[cursor + 1] == b'='
+            && !is_escaped_ascii_byte(bytes, cursor)
+        {
+            return Some(cursor);
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn is_escaped_ascii_byte(bytes: &[u8], idx: usize) -> bool {
+    let mut slash_count = 0;
+    let mut cursor = idx;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        slash_count += 1;
+        cursor -= 1;
+    }
+    slash_count % 2 == 1
+}
+
+fn token_overlaps_role(
+    tokens: &[TokenSpan],
+    start_byte: usize,
+    end_byte: usize,
+    role: SyntaxRole,
+) -> bool {
+    tokens.iter().any(|token| {
+        token.role == role && token.start_byte < end_byte && token.end_byte > start_byte
+    })
+}
+
 fn line_index_for_byte(line_starts: &[usize], byte: usize) -> usize {
     match line_starts.binary_search(&byte) {
         Ok(idx) => idx,
@@ -1379,7 +1462,7 @@ mod tests {
     #[test]
     fn markdown_inline_emphasis_is_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("This is **bold** and `code`.\n");
+        let buffer = TextBuffer::from_str("This is *italic*, **bold**, and `code`.\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -1392,8 +1475,37 @@ mod tests {
             span.role == SyntaxRole::MarkdownEmphasis && span.start_byte <= 8 && span.end_byte >= 16
         }));
         assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownCode && span.start_byte <= 21 && span.end_byte >= 27
+            span.role == SyntaxRole::MarkdownStrong && span.start_byte <= 18 && span.end_byte >= 26
         }));
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownCode && span.start_byte <= 32 && span.end_byte >= 38
+        }));
+    }
+
+    #[test]
+    fn markdown_highlight_marks_equal_delimited_text() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("Keep ==this== bright, not `==this==`.\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Markdown,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
+            .expect("markdown spans");
+
+        assert!(spans[0].iter().any(|span| {
+            span.role == SyntaxRole::MarkdownHighlight
+                && span.start_byte == 5
+                && span.end_byte == 13
+        }));
+        assert_eq!(
+            spans[0]
+                .iter()
+                .filter(|span| span.role == SyntaxRole::MarkdownHighlight)
+                .count(),
+            1
+        );
     }
 
     #[test]

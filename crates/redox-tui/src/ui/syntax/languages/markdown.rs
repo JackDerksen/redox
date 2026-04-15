@@ -40,10 +40,9 @@ const MARKDOWN_THEME_QUERY: &str = r#"
 "#;
 
 const MARKDOWN_INLINE_THEME_QUERY: &str = r#"
-[
-  (emphasis)
-  (strong_emphasis)
-] @markup.emphasis
+(emphasis) @markup.emphasis
+
+(strong_emphasis) @markup.strong
 
 [
   (code_span)
@@ -95,8 +94,10 @@ fn markdown_capture_mapping(capture: &str) -> Option<SyntaxCapture> {
         "markup.emphasis" => SyntaxRole::MarkdownEmphasis,
         "markup.frontmatter" => SyntaxRole::MarkdownFrontmatter,
         "markup.heading" => SyntaxRole::MarkdownHeading,
+        "markup.highlight" => SyntaxRole::MarkdownHighlight,
         "markup.link" => SyntaxRole::MarkdownLink,
         "markup.list" => SyntaxRole::MarkdownListMarker,
+        "markup.strong" => SyntaxRole::MarkdownStrong,
         _ => return general_capture_mapping(capture),
     };
 
