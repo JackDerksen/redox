@@ -5,6 +5,8 @@ use redox_core::{
 
 use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
+use crate::ui::language_for_path;
+use crate::ui::syntax::desired_indent_for_line;
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -375,7 +377,7 @@ impl EditorState {
         let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
-        let (start_pos, end_pos, mut cut_text) = {
+        let (start_pos, end_pos, mut cut_text, indent) = {
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
             let start_line = buffer.clamp_line(view.cursor.cursor.line);
@@ -384,7 +386,8 @@ impl EditorState {
                 .min(buffer.len_lines() - 1);
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
-            (start_pos, end_pos, text)
+            let indent = leading_line_indent(&buffer.line_string(start_line)).to_string();
+            (start_pos, end_pos, text, indent)
         };
 
         self.private_register = std::mem::take(&mut cut_text);
@@ -394,8 +397,9 @@ impl EditorState {
         {
             let buffer = self.session.active_buffer_mut();
             let new_pos = buffer.delete_range(start_pos, end_pos);
-            let _ = buffer.insert(new_pos, "\n");
-            view.cursor.cursor = new_pos;
+            let replacement = format!("{indent}\n");
+            let _ = buffer.insert(new_pos, &replacement);
+            view.cursor.cursor = Pos::new(new_pos.line, indent.chars().count());
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
@@ -606,6 +610,8 @@ impl EditorState {
         };
         if let Some((new_start, _)) = moved {
             let delta = start_line.saturating_sub(new_start);
+            let new_end = end_line.saturating_sub(delta);
+            self.reindent_active_line_span(new_start, new_end);
             let view = self.views.entry(active_id).or_default();
             if let Some(anchor) = view.visual_anchor.as_mut() {
                 anchor.line = anchor.line.saturating_sub(delta);
@@ -644,6 +650,8 @@ impl EditorState {
         };
         if let Some((new_start, _)) = moved {
             let delta = new_start.saturating_sub(start_line);
+            let new_end = end_line.saturating_add(delta);
+            self.reindent_active_line_span(new_start, new_end);
             let view = self.views.entry(active_id).or_default();
             if let Some(anchor) = view.visual_anchor.as_mut() {
                 anchor.line = anchor.line.saturating_add(delta);
@@ -656,6 +664,48 @@ impl EditorState {
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
+    }
+
+    fn reindent_active_line_span(&mut self, start_line: usize, end_line: usize) {
+        let language = language_for_path(self.session.active_meta().path.as_deref());
+        if language.is_none() {
+            return;
+        }
+
+        for line in start_line..=end_line {
+            let Some(indent) =
+                desired_indent_for_line(self.session.active_buffer(), language, line)
+            else {
+                continue;
+            };
+            let Some((removed, added)) = self
+                .session
+                .active_buffer_mut()
+                .replace_line_indent(line, &indent)
+            else {
+                continue;
+            };
+            self.adjust_active_visual_columns_after_indent_change(line, removed, added);
+        }
+    }
+
+    fn adjust_active_visual_columns_after_indent_change(
+        &mut self,
+        line: usize,
+        removed: usize,
+        added: usize,
+    ) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        if let Some(anchor) = view.visual_anchor.as_mut()
+            && anchor.line == line
+        {
+            anchor.col = adjust_col_after_indent_change(anchor.col, removed, added);
+        }
+        if view.cursor.cursor.line == line {
+            view.cursor.cursor.col =
+                adjust_col_after_indent_change(view.cursor.cursor.col, removed, added);
+        }
     }
 
     pub(super) fn indent_visual_selection(
@@ -805,6 +855,22 @@ fn normalize_clipboard_text(text: &str) -> String {
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
         .collect()
+}
+
+fn leading_line_indent(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
+fn adjust_col_after_indent_change(col: usize, removed: usize, added: usize) -> usize {
+    if col <= removed {
+        added
+    } else {
+        col.saturating_sub(removed).saturating_add(added)
+    }
 }
 
 fn replacement_text_for_range(source: &str, replacement: char) -> String {

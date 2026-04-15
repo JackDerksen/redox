@@ -3676,6 +3676,272 @@ fn normal_mode_cc_changes_current_line_and_enters_insert() {
 }
 
 #[test]
+fn normal_mode_cc_preserves_current_line_indent() {
+    let path = temp_file_path("cc_preserve_indent");
+    let mut state = state_with_text(path.clone(), "one\n\ttwo\nthree\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(1, 2);
+
+    state.apply_input(InputAction::ChangeCurrentLinePrivate { count: 1 }, 80, 24);
+
+    assert_eq!(state.private_register, "\ttwo\n");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "one\n\t\nthree\n"
+    );
+    assert_eq!(state.mode, EditorMode::Insert);
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_enter_uses_tree_sitter_smart_indent() {
+    let path = temp_file_path("smart_enter").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "fn main() {");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 11);
+    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "fn main() {\n\t");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_enter_splits_closing_delimiter_with_smart_indent() {
+    let path = temp_file_path("smart_enter_closing").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "fn main() {}");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 11);
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\t\n}"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_enter_splits_angle_delimiters_with_smart_indent() {
+    let path = temp_file_path("smart_enter_angle").with_extension("html");
+    let mut state = state_with_text(path.clone(), "<>");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "<\n\t\n>");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_enter_splits_quote_delimiters_with_smart_indent() {
+    let path = temp_file_path("smart_enter_quotes").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "let text = \"\";");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 11);
+    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "let text = \"\n\t\n\";"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_enter_splits_backtick_delimiters_with_smart_indent() {
+    let path = temp_file_path("smart_enter_backticks").with_extension("md");
+    let mut state = state_with_text(path.clone(), "``");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "`\n\t\n`");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_o_and_shift_o_indent_between_delimiters() {
+    let path = temp_file_path("smart_open_line").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "fn main() {\n}\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::OpenLineBelow, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\t\n}\n"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(2, 0);
+    state.apply_input(InputAction::OpenLineAbove, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\t\n\t\n}\n"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(2, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn markdown_enter_and_open_line_continue_list_indentation() {
+    let path = temp_file_path("smart_markdown").with_extension("md");
+    let mut state = state_with_text(path.clone(), "- item");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 6);
+    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+    state.apply_input(InputAction::OpenLineBelow, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn smart_indent_does_not_skip_over_blank_lines() {
+    let path = temp_file_path("smart_indent_blank").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "fn main() {\n\tcall();\n\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(2, 0);
+    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\tcall();\n\n\n"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(3, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn smart_indent_floors_partial_tab_widths() {
+    let path = temp_file_path("smart_indent_floor").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "\t  if ready {");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 13);
+    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "\t  if ready {\n\t\t"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn markdown_list_indent_floors_to_full_tab_width() {
+    let path = temp_file_path("smart_markdown_floor").with_extension("md");
+    let mut state = state_with_text(path.clone(), "    - item");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 10);
+    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+
+    state.apply_input(InputAction::Enter, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "    - item\n\t");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_shift_j_and_k_move_selected_lines() {
     let path = temp_file_path("visual_move_lines");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\n");
@@ -3705,6 +3971,34 @@ fn visual_shift_j_and_k_move_selected_lines() {
     assert_eq!(
         state.session.active_buffer().to_string(),
         "one\ntwo\nthree\nfour\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_move_reindents_line_for_new_tree_sitter_scope() {
+    let path = temp_file_path("visual_move_smart_indent").with_extension("rs");
+    let mut state = state_with_text(path.clone(), "fn main() {\n\tcall();\n}\nlet x = 1;\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(3, 0);
+    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+
+    state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\tcall();\n\tlet x = 1;\n}\n"
+    );
+
+    state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n\tcall();\n}\nlet x = 1;\n"
     );
 
     let _ = fs::remove_file(path);

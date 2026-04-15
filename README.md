@@ -204,7 +204,7 @@ Notes:
 - [x] Visual block mode
 - [x] Compound motions (like `daw` or `ci"`)
 - [x] Basic local search (`/`, `f`, `F`)
-- [ ] Smart indenting with Tree-sitter
+- [x] Smart indenting with Tree-sitter
 - [ ] Undo tree UI with stored history
 - [ ] Fuzzy finder (file name) widget for project directory search (like Telescope)
 - [ ] Grep-based fuzzy finder for searching text patterns across files

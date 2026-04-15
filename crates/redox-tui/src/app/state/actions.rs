@@ -2,7 +2,8 @@ use redox_core::{motion::Motion, Pos, Selection};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
-use crate::ui::STATUS_BAR_HEIGHT_ROWS;
+use crate::ui::syntax::smart_newline_insert;
+use crate::ui::{language_for_path, STATUS_BAR_HEIGHT_ROWS};
 
 impl EditorState {
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.
@@ -325,13 +326,22 @@ impl EditorState {
                     }
                     let before = self.capture_active_insert_coalesced_snapshot();
                     let active_id = self.session.active_id();
+                    let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+                    let language = language_for_path(self.session.active_meta().path.as_deref());
+                    let smart_insert =
+                        smart_newline_insert(self.session.active_buffer(), language, cursor);
                     let view = self.views.entry(active_id).or_default();
-                    let sel = Selection::empty(view.cursor.cursor);
 
                     {
                         let buffer = self.session.active_buffer_mut();
-                        let sel = buffer.insert_newline(sel);
-                        view.cursor.cursor = sel.cursor;
+                        if let Some((text, cursor)) = smart_insert {
+                            let _ = buffer.insert(view.cursor.cursor, &text);
+                            view.cursor.cursor = cursor;
+                        } else {
+                            let sel = Selection::empty(view.cursor.cursor);
+                            let sel = buffer.insert_newline(sel);
+                            view.cursor.cursor = sel.cursor;
+                        }
                         view.cursor
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }

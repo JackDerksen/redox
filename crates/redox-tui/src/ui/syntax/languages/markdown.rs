@@ -4,7 +4,7 @@ use crate::ui::style::SyntaxRole;
 use crate::ui::syntax::SyntaxCapture;
 use crate::ui::syntax::SyntaxLanguage;
 
-use super::{LanguageConfig, default_refine_role, general_capture_mapping};
+use super::{default_refine_role, general_capture_mapping, LanguageConfig};
 
 const MARKDOWN_THEME_QUERY: &str = r#"
 [

@@ -113,6 +113,26 @@ impl TextBuffer {
         Selection::empty(new_cursor)
     }
 
+    /// Replace the leading whitespace on `line`.
+    ///
+    /// Returns `(removed_chars, added_chars)` when the line changed.
+    pub fn replace_line_indent(&mut self, line: usize, indent: &str) -> Option<(usize, usize)> {
+        let line = self.clamp_line(line);
+        let text = self.line_string(line);
+        let existing_chars = text
+            .chars()
+            .take_while(|ch| *ch == ' ' || *ch == '\t')
+            .count();
+        let existing: String = text.chars().take(existing_chars).collect();
+        if existing == indent {
+            return None;
+        }
+
+        let _ = self.delete_range(Pos::new(line, 0), Pos::new(line, existing_chars));
+        let _ = self.insert(Pos::new(line, 0), indent);
+        Some((existing_chars, indent.chars().count()))
+    }
+
     /// Apply an `Edit` expressed in char indices.
     ///
     /// Returns the resulting cursor position (end of inserted text, or start of deletion).

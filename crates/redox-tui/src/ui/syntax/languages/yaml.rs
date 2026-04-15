@@ -2,7 +2,7 @@ use tree_sitter::Language;
 
 use crate::ui::syntax::SyntaxLanguage;
 
-use super::{LanguageConfig, default_refine_role, general_capture_mapping};
+use super::{default_refine_role, general_capture_mapping, LanguageConfig};
 
 pub(super) const YAML_LANGUAGE: LanguageConfig = LanguageConfig {
     language: SyntaxLanguage::Yaml,

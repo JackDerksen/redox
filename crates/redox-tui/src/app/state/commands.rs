@@ -4,6 +4,8 @@ use redox_core::Pos;
 use redox_core::Selection;
 
 use super::{EditorMode, EditorState};
+use crate::ui::language_for_path;
+use crate::ui::syntax::smart_open_line_insert;
 
 impl EditorState {
     pub(super) fn execute_command_line(&mut self) {
@@ -192,20 +194,29 @@ impl EditorState {
         self.input.reset_prefixes();
 
         let active_id = self.session.active_id();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let language = language_for_path(self.session.active_meta().path.as_deref());
+        let line = self.session.active_buffer().clamp_line(cursor.line);
+        let smart_insert =
+            smart_open_line_insert(self.session.active_buffer(), language, line, above);
         let view = self.views.entry(active_id).or_default();
 
         {
             let buffer = self.session.active_buffer_mut();
-            let line = buffer.clamp_line(view.cursor.cursor.line);
             let insert_pos = if above {
                 Pos::new(line, 0)
             } else {
                 Pos::new(line, buffer.line_len_chars(line))
             };
 
-            let sel = Selection::empty(insert_pos);
-            let sel = buffer.insert_newline(sel);
-            view.cursor.cursor = if above { Pos::new(line, 0) } else { sel.cursor };
+            if let Some((text, cursor)) = smart_insert {
+                let _ = buffer.insert(insert_pos, &text);
+                view.cursor.cursor = cursor;
+            } else {
+                let sel = Selection::empty(insert_pos);
+                let sel = buffer.insert_newline(sel);
+                view.cursor.cursor = if above { Pos::new(line, 0) } else { sel.cursor };
+            }
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
