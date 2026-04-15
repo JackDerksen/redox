@@ -194,6 +194,7 @@ Notes:
     - [x] Markdown
     - [x] C/C++
     - [x] Go
+    - [x] Lua
     - [x] Python
     - [x] Web langs (HTML, CSS, JS/TS)
 	- [x] json

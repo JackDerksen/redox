@@ -12,6 +12,7 @@ mod go;
 mod html;
 mod javascript;
 mod json;
+mod lua;
 mod markdown;
 mod python;
 mod rust;
@@ -39,6 +40,7 @@ const LANGUAGES: &[LanguageConfig] = &[
     html::HTML_LANGUAGE,
     javascript::JAVASCRIPT_LANGUAGE,
     json::JSON_LANGUAGE,
+    lua::LUA_LANGUAGE,
     markdown::MARKDOWN_LANGUAGE,
     python::PYTHON_LANGUAGE,
     rust::RUST_LANGUAGE,

@@ -24,6 +24,7 @@ pub enum SyntaxLanguage {
     Html,
     JavaScript,
     Json,
+    Lua,
     Markdown,
     Python,
     Rust,
@@ -1190,6 +1191,7 @@ mod tests {
             ("/tmp/app.jsx", SyntaxLanguage::JavaScript),
             ("/tmp/app.mjs", SyntaxLanguage::JavaScript),
             ("/tmp/config.json", SyntaxLanguage::Json),
+            ("/tmp/init.lua", SyntaxLanguage::Lua),
             ("/tmp/readme.markdown", SyntaxLanguage::Markdown),
             ("/tmp/main.py", SyntaxLanguage::Python),
             ("/tmp/main.pyi", SyntaxLanguage::Python),
@@ -1305,6 +1307,7 @@ mod tests {
             (SyntaxLanguage::Html, "<div class=\"note\">hi</div>\n"),
             (SyntaxLanguage::JavaScript, "const value = true;\n"),
             (SyntaxLanguage::Json, "{\"enabled\": true}\n"),
+            (SyntaxLanguage::Lua, "local value = true\nprint(value)\n"),
             (SyntaxLanguage::Toml, "[package]\nname = \"redox\"\n"),
             (
                 SyntaxLanguage::TypeScript,
@@ -1569,6 +1572,22 @@ mod tests {
             assert_eq!(scope.start, expected_start);
             assert_eq!(scope.end, Pos::new(2, 0));
         }
+    }
+
+    #[test]
+    fn lua_uses_tree_sitter_scope_nodes() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("function main()\n    print(\"hi\")\nend\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Lua,
+        ));
+        let scope = highlighter
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Lua), 0, Pos::new(1, 4))
+            .expect("lua scope");
+
+        assert_eq!(scope.start, Pos::new(0, 0));
+        assert_eq!(scope.end, Pos::new(3, 0));
     }
 
     #[test]
