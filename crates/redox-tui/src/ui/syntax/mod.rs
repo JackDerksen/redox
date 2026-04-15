@@ -4,13 +4,13 @@ mod languages;
 
 use std::path::Path;
 
-use minui::{cell_width, ColorPair, TabPolicy, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
-    language_config_for, language_for_path as config_language_for_path, LanguageConfig,
+    LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
 use super::style::{SyntaxRole, UiStyle};
 use crate::ui::helpers::apply_color_column;
@@ -1050,6 +1050,217 @@ pub fn syntax_color_for_range(
     }
 }
 
+pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
+    let mut spans = Vec::new();
+    let bytes = source_line.as_bytes();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        if bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+            continue;
+        }
+
+        if let Some(comment_end) = lexical_comment_end(bytes, cursor) {
+            spans.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: comment_end,
+                role: SyntaxRole::Comment,
+                priority: 10,
+            });
+            if comment_end == bytes.len() {
+                break;
+            }
+            cursor = comment_end;
+            continue;
+        }
+
+        if matches!(bytes[cursor], b'"' | b'\'' | b'`') {
+            let end = lexical_string_end(bytes, cursor);
+            spans.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: end,
+                role: SyntaxRole::String,
+                priority: 10,
+            });
+            cursor = end;
+            continue;
+        }
+
+        if bytes[cursor].is_ascii_digit() {
+            let end = lexical_number_end(bytes, cursor);
+            spans.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: end,
+                role: SyntaxRole::Number,
+                priority: 10,
+            });
+            cursor = end;
+            continue;
+        }
+
+        if is_identifier_start(bytes[cursor]) {
+            let end = lexical_identifier_end(bytes, cursor);
+            let word = &source_line[cursor..end];
+            if is_fallback_boolean(word) {
+                spans.push(LineSyntaxSpan {
+                    start_byte: cursor,
+                    end_byte: end,
+                    role: SyntaxRole::Boolean,
+                    priority: 10,
+                });
+            } else if !is_fallback_keyword(word) && identifier_is_function_call(bytes, end) {
+                spans.push(LineSyntaxSpan {
+                    start_byte: cursor,
+                    end_byte: end,
+                    role: SyntaxRole::Function,
+                    priority: 10,
+                });
+            }
+            cursor = end;
+            continue;
+        }
+
+        cursor += 1;
+    }
+
+    spans
+}
+
+fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
+    match bytes.get(cursor..cursor.saturating_add(2)) {
+        Some(b"//" | b"--") => Some(bytes.len()),
+        Some(b"/*") => {
+            let mut end = cursor + 2;
+            while end + 1 < bytes.len() {
+                if bytes[end] == b'*' && bytes[end + 1] == b'/' {
+                    return Some(end + 2);
+                }
+                end += 1;
+            }
+            Some(bytes.len())
+        }
+        _ if matches!(bytes[cursor], b'#' | b';') => Some(bytes.len()),
+        _ => None,
+    }
+}
+
+fn lexical_string_end(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        if quote != b'`' && bytes[cursor] == b'\\' {
+            cursor = (cursor + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[cursor] == quote {
+            return cursor + 1;
+        }
+        cursor += 1;
+    }
+    bytes.len()
+}
+
+fn lexical_number_end(bytes: &[u8], start: usize) -> usize {
+    if bytes[start] == b'0'
+        && matches!(bytes.get(start + 1), Some(b'x' | b'X'))
+        && bytes
+            .get(start + 2)
+            .is_some_and(|byte| byte.is_ascii_hexdigit())
+    {
+        let mut cursor = start + 3;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_hexdigit() {
+            cursor += 1;
+        }
+        return cursor;
+    }
+
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        cursor += 1;
+    }
+    if cursor < bytes.len()
+        && bytes[cursor] == b'.'
+        && bytes
+            .get(cursor + 1)
+            .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        cursor += 2;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+    }
+    cursor
+}
+
+fn lexical_identifier_end(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && is_identifier_continue(bytes[cursor]) {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn is_identifier_start(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn is_identifier_continue(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn identifier_is_function_call(bytes: &[u8], end: usize) -> bool {
+    bytes.get(end) == Some(&b'(')
+}
+
+fn is_fallback_boolean(word: &str) -> bool {
+    matches!(
+        word,
+        "true"
+            | "false"
+            | "True"
+            | "False"
+            | "TRUE"
+            | "FALSE"
+            | "null"
+            | "nil"
+            | "None"
+            | "NULL"
+            | "NIL"
+            | "yes"
+            | "no"
+            | "on"
+            | "off"
+    )
+}
+
+fn is_fallback_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "return"
+            | "fn"
+            | "function"
+            | "def"
+            | "class"
+            | "struct"
+            | "enum"
+            | "let"
+            | "const"
+            | "var"
+            | "my"
+            | "do"
+            | "catch"
+            | "try"
+            | "match"
+            | "case"
+            | "new"
+    )
+}
+
 fn draw_color_column_gap(
     window: &mut dyn Window,
     row: u16,
@@ -1238,7 +1449,7 @@ mod tests {
 
     use redox_core::{Pos, TextBuffer};
 
-    use super::{language_for_path, SyntaxHighlighter, SyntaxLanguage};
+    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
     use crate::ui::style::SyntaxRole;
 
     #[test]
@@ -1433,12 +1644,16 @@ mod tests {
             .expect("typescript spans");
 
         assert!(spans[0].iter().any(|span| span.role == SyntaxRole::Keyword));
-        assert!(spans[0]
-            .iter()
-            .any(|span| span.role == SyntaxRole::TypeBuiltin));
-        assert!(spans[1]
-            .iter()
-            .any(|span| span.role == SyntaxRole::Function));
+        assert!(
+            spans[0]
+                .iter()
+                .any(|span| span.role == SyntaxRole::TypeBuiltin)
+        );
+        assert!(
+            spans[1]
+                .iter()
+                .any(|span| span.role == SyntaxRole::Function)
+        );
         assert!(spans[1].iter().any(|span| span.role == SyntaxRole::String));
     }
 
@@ -1505,6 +1720,63 @@ mod tests {
                 .filter(|span| span.role == SyntaxRole::MarkdownHighlight)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn lexical_fallback_highlights_basic_code_shapes() {
+        let spans = super::lexical_fallback_line_spans(
+            "answer = call_one(\"text // no\", true, 42) // comment",
+        );
+
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Function && span.start_byte == 9 && span.end_byte == 17
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::String && span.start_byte == 18 && span.end_byte == 30
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Boolean && span.start_byte == 32 && span.end_byte == 36
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Number && span.start_byte == 38 && span.end_byte == 40
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 42 && span.end_byte == 52
+        }));
+    }
+
+    #[test]
+    fn lexical_fallback_ignores_keywords_that_look_like_calls() {
+        let spans = super::lexical_fallback_line_spans("if (enabled) run(0x10, nil);");
+
+        assert!(
+            !spans
+                .iter()
+                .any(|span| span.role == SyntaxRole::Function && span.start_byte == 0)
+        );
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Function && span.start_byte == 13 && span.end_byte == 16
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Number && span.start_byte == 17 && span.end_byte == 21
+        }));
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Boolean && span.start_byte == 23 && span.end_byte == 26
+        }));
+    }
+
+    #[test]
+    fn lexical_fallback_requires_function_paren_to_touch_identifier() {
+        let spans = super::lexical_fallback_line_spans("call_now(1); not_a_call (2);");
+
+        assert!(spans.iter().any(|span| {
+            span.role == SyntaxRole::Function && span.start_byte == 0 && span.end_byte == 8
+        }));
+        assert!(
+            !spans
+                .iter()
+                .any(|span| span.role == SyntaxRole::Function && span.start_byte == 13)
         );
     }
 
