@@ -1142,7 +1142,11 @@ fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
             }
             Some(bytes.len())
         }
-        _ if matches!(bytes[cursor], b'#' | b';') => Some(bytes.len()),
+        _ if matches!(bytes[cursor], b'#' | b';')
+            && (cursor == 0 || bytes[cursor - 1].is_ascii_whitespace()) =>
+        {
+            Some(bytes.len())
+        }
         _ => None,
     }
 }
@@ -1745,6 +1749,27 @@ mod tests {
         }));
         assert!(spans.iter().any(|span| {
             span.role == SyntaxRole::Comment && span.start_byte == 42 && span.end_byte == 52
+        }));
+    }
+
+    #[test]
+    fn lexical_fallback_hash_and_semicolon_comments_need_boundary() {
+        let code_spans = super::lexical_fallback_line_spans("foo(); bar();");
+
+        assert!(
+            !code_spans
+                .iter()
+                .any(|span| span.role == SyntaxRole::Comment)
+        );
+
+        let hash_spans = super::lexical_fallback_line_spans("value # comment");
+        assert!(hash_spans.iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 6 && span.end_byte == 15
+        }));
+
+        let semicolon_spans = super::lexical_fallback_line_spans("  ; comment");
+        assert!(semicolon_spans.iter().any(|span| {
+            span.role == SyntaxRole::Comment && span.start_byte == 2 && span.end_byte == 11
         }));
     }
 
