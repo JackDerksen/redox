@@ -14,6 +14,10 @@ pub(super) const PYTHON_LANGUAGE: LanguageConfig = LanguageConfig {
     extensions: &["py", "pyi", "pyw"],
     scope_kinds: &[
         "class_definition",
+        "else_clause",
+        "except_clause",
+        "except_group_clause",
+        "finally_clause",
         "for_statement",
         "function_definition",
         "if_statement",

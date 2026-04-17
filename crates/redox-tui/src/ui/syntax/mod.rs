@@ -2021,6 +2021,47 @@ mod tests {
     }
 
     #[test]
+    fn python_clause_scope_pairs_use_clause_node_ranges() {
+        let cases = [
+            (
+                "try:\n    risky()\nexcept ValueError:\n    recover()\n",
+                Pos::new(3, 4),
+                Pos::new(2, 0),
+            ),
+            (
+                "try:\n    risky()\nexcept* ValueError:\n    recover()\n",
+                Pos::new(3, 4),
+                Pos::new(2, 0),
+            ),
+            (
+                "try:\n    risky()\nexcept ValueError:\n    recover()\nelse:\n    ok()\n",
+                Pos::new(5, 4),
+                Pos::new(4, 0),
+            ),
+            (
+                "try:\n    risky()\nfinally:\n    done()\n",
+                Pos::new(3, 4),
+                Pos::new(2, 0),
+            ),
+        ];
+
+        for (source, cursor, expected_start) in cases {
+            let mut highlighter = SyntaxHighlighter::default();
+            let buffer = TextBuffer::from_str(source);
+            highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+                &buffer,
+                SyntaxLanguage::Python,
+            ));
+            let scope = highlighter
+                .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, cursor)
+                .expect("scope");
+
+            assert_eq!(scope.start, expected_start, "{source}");
+            assert_eq!(scope.end.line, cursor.line + 1, "{source}");
+        }
+    }
+
+    #[test]
     fn markdown_active_scope_pair_uses_tree_sitter_section() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_str("# Title\n\nBody\n");
