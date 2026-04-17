@@ -78,7 +78,7 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 }
 
 #[test]
-fn invalidate_render_caches_keeps_stale_overlays_until_worker_result() {
+fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
@@ -109,7 +109,7 @@ fn invalidate_render_caches_keeps_stale_overlays_until_worker_result() {
     assert_ne!(view.analysis_version, previous_version);
     assert!(view.delimiter_pair_cache.has_stale_analysis());
     assert!(!view.delimiter_pair_cache.has_fresh_analysis());
-    assert_eq!(view.delimiter_pair_cache.get().expect("analysis").len(), 1);
+    assert!(view.delimiter_pair_cache.get().is_none());
     assert!(view
         .syntax_highlighter
         .has_stale_cache_for(SyntaxLanguage::Rust));

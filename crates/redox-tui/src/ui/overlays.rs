@@ -60,7 +60,11 @@ pub(crate) struct DelimiterPairCache {
 
 impl DelimiterPairCache {
     pub(crate) fn get(&self) -> Option<&DelimiterAnalysis> {
-        self.analysis.as_ref()
+        if self.has_fresh_analysis() {
+            self.analysis.as_ref()
+        } else {
+            None
+        }
     }
 
     pub(crate) fn has_fresh_analysis(&self) -> bool {
