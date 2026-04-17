@@ -197,9 +197,9 @@ Notes:
     - [x] Lua
     - [x] Python
     - [x] Web langs (HTML, CSS, JS/TS)
-	- [x] json
-	- [x] toml
-	- [x] yaml
+    - [x] json
+    - [x] toml
+    - [x] yaml
 - [x] Subtle colour column at col=80
 - [x] Scope indicator lines and delimiter pair highlighting
 - [x] Visual block mode
