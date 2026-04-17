@@ -527,7 +527,7 @@ pub(crate) fn smart_newline_insert(
         let line_start = source_line_start_byte(&source, line)?;
         let cursor_byte = line_start + left.len();
         let line_end = line_start + line_text.len();
-        source.replace_range(cursor_byte..line_end, &left);
+        source.replace_range(cursor_byte..line_end, "");
         source
     };
     let tree = parse_tree(&virtual_source, language)?;
