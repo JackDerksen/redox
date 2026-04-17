@@ -1,6 +1,6 @@
 use redox_core::{
-    motion::{apply_motion_for_operator, Motion},
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    motion::{Motion, apply_motion_for_operator},
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
@@ -611,12 +611,15 @@ impl EditorState {
         if let Some((new_start, _)) = moved {
             let delta = start_line.saturating_sub(new_start);
             let new_end = end_line.saturating_sub(delta);
+            {
+                let view = self.views.entry(active_id).or_default();
+                if let Some(anchor) = view.visual_anchor.as_mut() {
+                    anchor.line = anchor.line.saturating_sub(delta);
+                }
+                view.cursor.cursor.line = view.cursor.cursor.line.saturating_sub(delta);
+            }
             self.reindent_active_line_span(new_start, new_end);
             let view = self.views.entry(active_id).or_default();
-            if let Some(anchor) = view.visual_anchor.as_mut() {
-                anchor.line = anchor.line.saturating_sub(delta);
-            }
-            view.cursor.cursor.line = view.cursor.cursor.line.saturating_sub(delta);
             let buffer = self.session.active_buffer();
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
@@ -651,12 +654,15 @@ impl EditorState {
         if let Some((new_start, _)) = moved {
             let delta = new_start.saturating_sub(start_line);
             let new_end = end_line.saturating_add(delta);
+            {
+                let view = self.views.entry(active_id).or_default();
+                if let Some(anchor) = view.visual_anchor.as_mut() {
+                    anchor.line = anchor.line.saturating_add(delta);
+                }
+                view.cursor.cursor.line = view.cursor.cursor.line.saturating_add(delta);
+            }
             self.reindent_active_line_span(new_start, new_end);
             let view = self.views.entry(active_id).or_default();
-            if let Some(anchor) = view.visual_anchor.as_mut() {
-                anchor.line = anchor.line.saturating_add(delta);
-            }
-            view.cursor.cursor.line = view.cursor.cursor.line.saturating_add(delta);
             let buffer = self.session.active_buffer();
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
