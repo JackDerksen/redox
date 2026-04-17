@@ -136,7 +136,7 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
                 &rust_buffer,
                 Some(SyntaxLanguage::Rust),
                 view.analysis_version,
-                Pos::new(1, 5),
+                Pos::new(1, 4),
             ),
         Some(fresh_scope)
     );

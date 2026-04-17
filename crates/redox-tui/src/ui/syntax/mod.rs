@@ -391,10 +391,12 @@ impl SyntaxHighlighter {
         cursor: Pos,
     ) -> Option<SyntaxScopePair> {
         let stale_scope = if self.cache_stale {
+            let cursor_char = buffer.pos_to_char(cursor);
             language
                 .and_then(|language| {
-                    self.active_scope_cache
-                        .filter(|cached| cached.language == language)
+                    self.active_scope_cache.filter(|cached| {
+                        cached.language == language && cached.cursor_char == cursor_char
+                    })
                 })
                 .and_then(|cached| cached.scope)
         } else {
@@ -1893,6 +1895,41 @@ mod tests {
 
         assert_eq!(scope.start, Pos::new(0, 10));
         assert_eq!(scope.end, Pos::new(2, 0));
+    }
+
+    #[test]
+    fn stale_active_scope_for_display_matches_cached_cursor_only() {
+        let mut highlighter = SyntaxHighlighter::default();
+        let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
+        let cursor = Pos::new(1, 15);
+        let scope = highlighter
+            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
+            .expect("scope");
+
+        highlighter.mark_cache_stale();
+
+        assert_eq!(
+            highlighter.active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Rust),
+                1,
+                cursor,
+            ),
+            Some(scope)
+        );
+        assert_eq!(
+            highlighter.active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Rust),
+                1,
+                Pos::new(1, 16),
+            ),
+            None
+        );
     }
 
     #[test]
