@@ -347,16 +347,16 @@ impl SyntaxHighlighter {
     ) -> Option<SyntaxScopePair> {
         let language = language?;
         let cursor_char = buffer.pos_to_char(cursor);
+        if self.cache_stale {
+            return None;
+        }
+
         if let Some(cached) = self.active_scope_cache
             && cached.language == language
             && cached.analysis_version == analysis_version
             && cached.cursor_char == cursor_char
         {
             return cached.scope;
-        }
-
-        if self.cache_stale {
-            return None;
         }
 
         let config = language_config_for(language)?;
@@ -1943,6 +1943,10 @@ mod tests {
 
         highlighter.mark_cache_stale();
 
+        assert_eq!(
+            highlighter.active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor),
+            None
+        );
         assert_eq!(
             highlighter.active_scope_pair_for_display_cached(
                 &buffer,
