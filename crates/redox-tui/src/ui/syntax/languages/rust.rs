@@ -8,8 +8,11 @@ use super::LanguageConfig;
 pub(super) const RUST_LANGUAGE: LanguageConfig = LanguageConfig {
     language: SyntaxLanguage::Rust,
     grammar: rust_language,
-    highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
+    highlights_queries: &[tree_sitter_rust::HIGHLIGHTS_QUERY],
+    inline_grammar: None,
+    inline_highlights_queries: &[],
     extensions: &["rs"],
+    scope_kinds: &[],
     capture_mapping: rust_capture_mapping,
     refine_role: refine_rust_role,
 };

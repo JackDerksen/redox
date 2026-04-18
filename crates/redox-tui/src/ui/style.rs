@@ -8,6 +8,14 @@ pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum SyntaxRole {
+    MarkdownCode,
+    MarkdownEmphasis,
+    MarkdownFrontmatter,
+    MarkdownHeading,
+    MarkdownHighlight,
+    MarkdownLink,
+    MarkdownListMarker,
+    MarkdownStrong,
     VariableBuiltin,
     VariableParameter,
     Keyword,
@@ -425,6 +433,14 @@ impl Default for PerfStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SyntaxStyle {
+    pub markdown_code: ColorPair,
+    pub markdown_emphasis: ColorPair,
+    pub markdown_frontmatter: ColorPair,
+    pub markdown_heading: ColorPair,
+    pub markdown_highlight: ColorPair,
+    pub markdown_link: ColorPair,
+    pub markdown_list_marker: ColorPair,
+    pub markdown_strong: ColorPair,
     pub variable_builtin: ColorPair,
     pub variable_parameter: ColorPair,
     pub keyword: ColorPair,
@@ -459,6 +475,14 @@ impl SyntaxStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         let bg = theme.bg;
         Self {
+            markdown_code: ColorPair::new(theme.light_gray, bg),
+            markdown_emphasis: ColorPair::new(theme.orange, bg),
+            markdown_frontmatter: ColorPair::new(theme.dark_gray, bg),
+            markdown_heading: ColorPair::new(theme.blue, bg),
+            markdown_highlight: ColorPair::new(theme.black, theme.green),
+            markdown_link: ColorPair::new(theme.purple, bg),
+            markdown_list_marker: ColorPair::new(theme.light_gray, bg),
+            markdown_strong: ColorPair::new(theme.red, bg),
             variable_builtin: ColorPair::new(theme.purple, bg),
             variable_parameter: ColorPair::new(theme.orange, bg),
             keyword: ColorPair::new(theme.red, bg),
@@ -492,6 +516,14 @@ impl SyntaxStyle {
 
     pub fn color_for(self, role: SyntaxRole) -> ColorPair {
         match role {
+            SyntaxRole::MarkdownCode => self.markdown_code,
+            SyntaxRole::MarkdownEmphasis => self.markdown_emphasis,
+            SyntaxRole::MarkdownFrontmatter => self.markdown_frontmatter,
+            SyntaxRole::MarkdownHeading => self.markdown_heading,
+            SyntaxRole::MarkdownHighlight => self.markdown_highlight,
+            SyntaxRole::MarkdownLink => self.markdown_link,
+            SyntaxRole::MarkdownListMarker => self.markdown_list_marker,
+            SyntaxRole::MarkdownStrong => self.markdown_strong,
             SyntaxRole::VariableBuiltin => self.variable_builtin,
             SyntaxRole::VariableParameter => self.variable_parameter,
             SyntaxRole::Keyword => self.keyword,
@@ -632,5 +664,39 @@ mod tests {
             }
         );
         assert_eq!(dimmed.layout.popup_dim_amount, 5);
+    }
+
+    #[test]
+    fn markdown_syntax_roles_use_requested_theme_colours() {
+        let theme = BaseTheme::default();
+        let style = SyntaxStyle::from_theme(theme);
+
+        assert_eq!(style.color_for(SyntaxRole::MarkdownHeading).fg, theme.blue);
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownEmphasis).fg,
+            theme.orange
+        );
+        assert_eq!(style.color_for(SyntaxRole::MarkdownStrong).fg, theme.red);
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownHighlight).fg,
+            theme.black
+        );
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownHighlight).bg,
+            theme.green
+        );
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownCode).fg,
+            theme.light_gray
+        );
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownFrontmatter).fg,
+            theme.dark_gray
+        );
+        assert_eq!(style.color_for(SyntaxRole::MarkdownLink).fg, theme.purple);
+        assert_eq!(
+            style.color_for(SyntaxRole::MarkdownListMarker).fg,
+            theme.light_gray
+        );
     }
 }

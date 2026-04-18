@@ -147,8 +147,8 @@ impl BufferViewState {
 
     fn invalidate_render_caches(&mut self) {
         self.grapheme_cache.clear();
-        self.syntax_highlighter.replace_cache(None);
-        self.delimiter_pair_cache.clear();
+        self.syntax_highlighter.mark_cache_stale();
+        self.delimiter_pair_cache.mark_stale();
         self.analysis_version = self.analysis_version.wrapping_add(1);
     }
 }
@@ -473,7 +473,7 @@ impl EditorState {
         let syntax_language = language_for_path(meta.path.as_deref());
         let version = {
             let view = self.views.entry(buffer_id).or_default();
-            let needs_delimiters = view.delimiter_pair_cache.get().is_none();
+            let needs_delimiters = !view.delimiter_pair_cache.has_fresh_analysis();
             let needs_syntax = syntax_language
                 .map(|language| !view.syntax_highlighter.has_cache_for(language))
                 .unwrap_or(false);

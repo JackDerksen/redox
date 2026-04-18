@@ -26,7 +26,10 @@ use ui::overlays::{
     active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
     draw_indent_guides,
 };
-use ui::syntax::{draw_line_with_syntax, syntax_color_for_range, VisibleLineSyntaxSpans};
+use ui::syntax::{
+    draw_line_with_syntax, lexical_fallback_line_spans, scope_guides_enabled,
+    syntax_color_for_range, VisibleLineSyntaxSpans,
+};
 use ui::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
     draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
@@ -207,12 +210,18 @@ fn draw_buffer_view(
             let cursor = view.cursor.cursor;
             let syntax_start = Instant::now();
             let analysis_version = view.analysis_version();
-            let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
-                buffer,
-                syntax_language,
-                analysis_version,
-                cursor,
-            );
+            let scope_guides_enabled = scope_guides_enabled(syntax_language);
+            let tree_sitter_scope = scope_guides_enabled
+                .then(|| {
+                    view.syntax_highlighter
+                        .active_scope_pair_for_display_cached(
+                            buffer,
+                            syntax_language,
+                            analysis_version,
+                            cursor,
+                        )
+                })
+                .flatten();
             let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
                 syntax_language,
                 snapshot.first_line,
@@ -232,16 +241,20 @@ fn draw_buffer_view(
                     )
                 })
                 .unwrap_or_default();
-            let active_scope_guides = active_scope_indent_guides(
-                tree_sitter_scope,
-                buffer,
-                cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
-                scroll_x,
-                text_w as usize,
-                delimiter_analysis,
-            );
+            let active_scope_guides = if scope_guides_enabled {
+                active_scope_indent_guides(
+                    tree_sitter_scope,
+                    buffer,
+                    cursor,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                    scroll_x,
+                    text_w as usize,
+                    delimiter_analysis,
+                )
+            } else {
+                BTreeMap::new()
+            };
             let overlay_time = overlay_start.elapsed();
 
             let lines_start = Instant::now();
@@ -260,6 +273,7 @@ fn draw_buffer_view(
                 &search_highlights,
                 visual_selection,
                 one_shot_highlight,
+                syntax_language.is_none(),
             )?;
             let lines_time = lines_start.elapsed();
             Ok::<_, minui::Error>((syntax_time, overlay_time, lines_time))
@@ -559,12 +573,18 @@ fn draw_buffer_snapshot_for_id(
         };
         let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
         let analysis_version = view.analysis_version();
-        let tree_sitter_scope = view.syntax_highlighter.active_scope_pair_cached(
-            buffer,
-            syntax_language,
-            analysis_version,
-            cursor,
-        );
+        let scope_guides_enabled = scope_guides_enabled(syntax_language);
+        let tree_sitter_scope = scope_guides_enabled
+            .then(|| {
+                view.syntax_highlighter
+                    .active_scope_pair_for_display_cached(
+                        buffer,
+                        syntax_language,
+                        analysis_version,
+                        cursor,
+                    )
+            })
+            .flatten();
         let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
             syntax_language,
             snapshot.first_line,
@@ -582,16 +602,20 @@ fn draw_buffer_snapshot_for_id(
                 )
             })
             .unwrap_or_default();
-        let active_scope_guides = active_scope_indent_guides(
-            tree_sitter_scope,
-            buffer,
-            cursor,
-            snapshot.first_line,
-            snapshot.lines.len(),
-            scroll_x,
-            width.saturating_sub(content_x) as usize,
-            delimiter_analysis,
-        );
+        let active_scope_guides = if scope_guides_enabled {
+            active_scope_indent_guides(
+                tree_sitter_scope,
+                buffer,
+                cursor,
+                snapshot.first_line,
+                snapshot.lines.len(),
+                scroll_x,
+                width.saturating_sub(content_x) as usize,
+                delimiter_analysis,
+            )
+        } else {
+            BTreeMap::new()
+        };
 
         draw_relative_line_numbers(
             window,
@@ -620,6 +644,7 @@ fn draw_buffer_snapshot_for_id(
             &search_highlights,
             None,
             None,
+            syntax_language.is_none(),
         )
     }) else {
         return Ok(());
@@ -642,12 +667,19 @@ fn draw_snapshot_lines(
     search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    lexical_fallback_enabled: bool,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
     for row in 0..snapshot.lines.len() {
         let line_idx = snapshot.first_line + row;
         let visible_line = snapshot.lines.get(row).map(String::as_str).unwrap_or("");
-        let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
+        let source_line = buffer.line_string(line_idx);
+        let fallback_line_spans = lexical_fallback_enabled
+            .then(|| lexical_fallback_line_spans(&source_line))
+            .filter(|spans| !spans.is_empty());
+        let syntax_line_spans = syntax_spans
+            .and_then(|rows| rows.get(row))
+            .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
             .map(Vec::as_slice)
@@ -686,7 +718,6 @@ fn draw_snapshot_lines(
             continue;
         }
 
-        let source_line = buffer.line_string(line_idx);
         let occupied_text_cells = if visible_indent_guides.is_empty() {
             Vec::new()
         } else {
@@ -1261,6 +1292,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             None,
+            false,
         )
         .expect("plain snapshot draw should succeed");
 
