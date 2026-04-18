@@ -804,6 +804,7 @@ fn paired_closer_for(ch: char) -> Option<char> {
         '[' => Some(']'),
         '(' => Some(')'),
         '<' => Some('>'),
+        '`' => Some('`'),
         _ => None,
     }
 }
@@ -1513,6 +1514,11 @@ mod tests {
         assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Python)));
         assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Rust)));
         assert!(super::scope_guides_enabled(None));
+    }
+
+    #[test]
+    fn paired_closer_includes_backtick() {
+        assert_eq!(super::paired_closer_for('`'), Some('`'));
     }
 
     #[test]

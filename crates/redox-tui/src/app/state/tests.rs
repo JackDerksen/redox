@@ -3787,6 +3787,7 @@ fn insert_enter_splits_quote_delimiters_with_smart_indent() {
 
 #[test]
 fn insert_enter_splits_backtick_delimiters_with_smart_indent() {
+    // Backtick smart-enter behaviour relies on backticks staying paired delimiters.
     let path = temp_file_path("smart_enter_backticks").with_extension("md");
     let mut state = state_with_text(path.clone(), "``");
     let id = state.session.active_id();
