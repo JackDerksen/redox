@@ -1187,6 +1187,27 @@ fn command_ls_populates_compact_status_summary() {
 }
 
 #[test]
+fn command_edit_replaces_empty_startup_buffer() {
+    let path = temp_file_path("edit_replaces_empty_startup");
+    fs::write(&path, "alpha").expect("failed to write fixture");
+    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+    let placeholder_id = session.active_id();
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, &format!("e {}", path.display()));
+
+    assert!(state.session.buffer(placeholder_id).is_none());
+    assert_eq!(state.session.summaries().len(), 1);
+    let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
+    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+
+    run_command(&mut state, "bn");
+    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn command_rain_captures_and_stop_clears_animation_state() {
     let path = temp_file_path("rain_mode");
     let mut state = state_with_text(path.clone(), "let rain = true;\n");
@@ -1858,6 +1879,56 @@ fn explorer_directory_launch_marks_background_as_placeholder_blank() {
         .expect("failed to open explorer at dot");
 
     assert!(state.explorer_background_is_placeholder_blank());
+}
+
+#[test]
+fn explorer_file_open_replaces_empty_startup_background_buffer() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_file_replaces_startup_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_path = dir.join("a.txt");
+    fs::write(&file_path, "alpha").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+    let placeholder_id = session.active_id();
+    let mut state = EditorState::new(session);
+    state
+        .open_explorer_at_path(dir.clone())
+        .expect("failed to open explorer");
+    assert!(state.explorer_background_is_placeholder_blank());
+
+    let explorer_id = state.session.active_id();
+    let file_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "a.txt")
+        .expect("file missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(file_line, 0);
+
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    assert!(state.session.buffer(placeholder_id).is_none());
+    assert!(state.session.buffer(explorer_id).is_none());
+    assert_eq!(state.session.summaries().len(), 1);
+    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+
+    run_command(&mut state, "bp");
+    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -94,10 +94,15 @@ impl EditorState {
         }
 
         let path = PathBuf::from(path_arg);
+        let previous_id = self.session.active_id();
+        let close_previous_placeholder = self.is_empty_unnamed_startup_buffer(previous_id);
         match self.session.open_file(path) {
             Ok(id) => {
                 let _ = self.views.entry(id).or_default();
                 self.ensure_buffer_analysis(id);
+                if close_previous_placeholder && previous_id != id {
+                    let _ = self.close_inactive_empty_unnamed_startup_buffer(previous_id);
+                }
                 self.clear_status();
             }
             Err(e) => {
