@@ -672,6 +672,9 @@ fn opens_line(source: &str, tree: &Tree, language: SyntaxLanguage, line: usize) 
     let Some((ch, byte)) = trailing_significant_char(source, tree, line) else {
         return false;
     };
+    if ch == '`' {
+        return false;
+    }
     if paired_closer_for(ch).is_some() {
         return true;
     }
@@ -691,6 +694,9 @@ fn delimiter_split(source: &str, tree: &Tree, line: usize, right_trimmed: &str) 
     let Some((ch, _)) = trailing_significant_char(source, tree, line) else {
         return false;
     };
+    if ch == '`' {
+        return false;
+    }
     paired_closer_for(ch).is_some_and(|closer| right_trimmed.starts_with(closer))
 }
 
@@ -1519,6 +1525,17 @@ mod tests {
     #[test]
     fn paired_closer_includes_backtick() {
         assert_eq!(super::paired_closer_for('`'), Some('`'));
+    }
+
+    #[test]
+    fn markdown_inline_code_backtick_does_not_open_indent() {
+        assert_eq!(
+            super::desired_indent_for_line_source("`code`\n", SyntaxLanguage::Markdown, 1),
+            Some(String::new())
+        );
+
+        let tree = super::parse_tree("`", SyntaxLanguage::Markdown).expect("markdown tree");
+        assert!(!super::delimiter_split("`", &tree, 0, "`"));
     }
 
     #[test]
