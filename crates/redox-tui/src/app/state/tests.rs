@@ -2074,6 +2074,63 @@ fn explorer_opens_from_startup_about_without_quitting() {
 }
 
 #[test]
+fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_about_file_replaces_startup_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_path = dir.join("a.txt");
+    fs::write(&file_path, "alpha").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let placeholder_id = session.active_id();
+    let mut state = EditorState::new(session);
+    state.command_open_about();
+    assert!(state.about_popup().is_some());
+
+    state
+        .open_explorer_at_path(dir.clone())
+        .expect("failed to open explorer");
+    assert!(state.about_popup().is_none());
+    assert!(state.explorer_popup().is_some());
+    assert!(state.explorer_background_is_placeholder_blank());
+
+    let explorer_id = state.session.active_id();
+    let file_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "a.txt")
+        .expect("file missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(file_line, 0);
+
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    assert!(state.session.buffer(placeholder_id).is_none());
+    assert!(state.session.buffer(explorer_id).is_none());
+    assert_eq!(state.session.summaries().len(), 1);
+    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+
+    run_command(&mut state, "ls");
+    let msg = state.status_msg.as_deref().expect("missing ls status");
+    assert!(!msg.contains("[No Name]"));
+    assert!(!msg.contains(" | "));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn explorer_enter_opens_file_and_closes_explorer() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_enter_test_{}",
