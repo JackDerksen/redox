@@ -872,6 +872,103 @@ fn normal_mode_replace_char_replaces_tab_as_single_logical_character() {
 }
 
 #[test]
+fn normal_mode_tilde_toggles_case_and_moves_right() {
+    let path = temp_file_path("toggle_case_normal");
+    let mut state = state_with_text(path.clone(), "aBc\n");
+
+    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "ABc\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_tilde_count_toggles_letters_and_steps_over_non_letters() {
+    let path = temp_file_path("toggle_case_count");
+    let mut state = state_with_text(path.clone(), "a-Bc\n");
+
+    state.apply_input(InputAction::ToggleCase { count: 4 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "A-bC\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_tilde_on_non_letter_only_moves_cursor() {
+    let path = temp_file_path("toggle_case_non_letter");
+    let mut state = state_with_text(path.clone(), "-a\n");
+
+    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "-a\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    assert!(!state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_char_tilde_toggles_entire_selection_and_normalizes_mode() {
+    let path = temp_file_path("toggle_case_visual_char");
+    let mut state = state_with_text(path.clone(), "aBcD\n");
+
+    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "AbCD\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_block_tilde_toggles_rectangular_selection() {
+    let path = temp_file_path("toggle_case_visual_block");
+    let mut state = state_with_text(path.clone(), "abC\nDeF\n");
+
+    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "ABC\ndEF\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_char_replace_replaces_entire_selection_and_normalizes_mode() {
     let path = temp_file_path("replace_visual_char");
     let mut state = state_with_text(path.clone(), "\tab\n");

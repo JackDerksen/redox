@@ -150,6 +150,7 @@ redox src
 | `dd` | Delete current line |
 | `cc` | Change current line |
 | `yy` | Yank current line |
+| `~` | Invert the capitalisation of the character under the cursor (or a whole selection) |
 | `0` | Go to 0th character in the line |
 | `_` | Go to first non-whitespace character in the line |
 | `$` | Go to end of the line |

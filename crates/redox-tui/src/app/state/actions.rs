@@ -487,6 +487,22 @@ impl EditorState {
                 }
             }
 
+            InputAction::ToggleCase { count } => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Normal
+                        | EditorMode::Visual
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                ) {
+                    self.toggle_case_under_cursor_or_selection(
+                        count.max(1),
+                        viewport_width_cells,
+                        text_vh,
+                    );
+                }
+            }
+
             InputAction::ReplaceChar(ch) => {
                 if matches!(
                     self.mode,

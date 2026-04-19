@@ -123,6 +123,10 @@ pub enum InputAction {
     PastePrivateRegisterBefore,
     /// Delete character under cursor without yanking.
     DeleteCharNoYank,
+    /// Toggle the case of character(s) under the cursor.
+    ToggleCase {
+        count: usize,
+    },
     /// Replace the character under cursor, or the active visual selection, with a character.
     ReplaceChar(char),
     /// Move visual selection up by line(s).
@@ -559,6 +563,15 @@ fn modal_char_action(
         'x' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::DeleteCharNoYank
+        }
+        '~' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            InputAction::ToggleCase {
+                count: state.take_count_or_1(),
+            }
         }
         'f' if matches!(
             mode,
@@ -2068,6 +2081,21 @@ mod tests {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
         assert_eq!(action, InputAction::DeleteCharNoYank);
+    }
+
+    #[test]
+    fn normal_mode_tilde_toggles_case_with_count() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('3'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('~'));
+        assert_eq!(action, InputAction::ToggleCase { count: 3 });
+    }
+
+    #[test]
+    fn visual_mode_tilde_toggles_selection_case() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('~'));
+        assert_eq!(action, InputAction::ToggleCase { count: 1 });
     }
 
     #[test]

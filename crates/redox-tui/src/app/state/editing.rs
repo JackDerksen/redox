@@ -455,6 +455,120 @@ impl EditorState {
         }
     }
 
+    pub(super) fn toggle_case_under_cursor_or_selection(
+        &mut self,
+        count: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        match self.mode {
+            EditorMode::Normal => {
+                self.toggle_case_under_cursor(count, viewport_width_cells, text_vh);
+            }
+            EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
+                self.toggle_case_active_visual_selection(viewport_width_cells, text_vh);
+            }
+            EditorMode::Insert | EditorMode::Command | EditorMode::Search => {}
+        }
+    }
+
+    fn toggle_case_under_cursor(
+        &mut self,
+        count: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let mut cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        if self.session.active_buffer().char_at(cursor).is_none() {
+            return;
+        }
+
+        let before = self.capture_active_undo_snapshot();
+        let mut changed = false;
+        {
+            let buffer = self.session.active_buffer_mut();
+            for _ in 0..count {
+                let Some(ch) = buffer.char_at(cursor) else {
+                    break;
+                };
+                let end = buffer.move_right(cursor);
+                let replacement = toggled_case_text(ch);
+                if replacement != ch.to_string() {
+                    let sel = buffer.replace_selection(Selection::new(cursor, end), &replacement);
+                    cursor = sel.cursor;
+                    changed = true;
+                } else {
+                    cursor = end;
+                }
+            }
+
+            let view = self.views.entry(active_id).or_default();
+            view.cursor.cursor = cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.clear_status();
+        if changed {
+            self.invalidate_active_render_caches();
+            let _ = self.record_active_undo_if_changed(before);
+            let _ = self.session.recompute_active_dirty();
+        }
+    }
+
+    fn toggle_case_active_visual_selection(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let Some(plan) = self.active_visual_selection_edit_plan() else {
+            return;
+        };
+        if plan.delete_ranges.is_empty() {
+            return;
+        }
+
+        let before = self.capture_active_undo_snapshot();
+        let replacements = {
+            let buffer = self.session.active_buffer();
+            plan.delete_ranges
+                .iter()
+                .copied()
+                .map(|(start, end)| {
+                    let source = buffer.slice_pos_range(start, end);
+                    let text = toggle_case_text_for_range(&source);
+                    (start, end, text)
+                })
+                .collect::<Vec<_>>()
+        };
+        let new_cursor = replacements
+            .first()
+            .map(|(start, _, _)| *start)
+            .unwrap_or_else(Pos::zero);
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            for (start, end, text) in replacements.iter().rev() {
+                let _ = buffer.replace_selection(Selection::new(*start, *end), text);
+            }
+            view.cursor.cursor = new_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
     fn replace_char_under_cursor(
         &mut self,
         replacement: char,
@@ -884,4 +998,22 @@ fn replacement_text_for_range(source: &str, replacement: char) -> String {
         .chars()
         .map(|ch| if ch == '\n' { '\n' } else { replacement })
         .collect()
+}
+
+fn toggled_case_text(ch: char) -> String {
+    if ch.is_lowercase() {
+        ch.to_uppercase().collect()
+    } else if ch.is_uppercase() {
+        ch.to_lowercase().collect()
+    } else {
+        ch.to_string()
+    }
+}
+
+fn toggle_case_text_for_range(source: &str) -> String {
+    let mut toggled = String::new();
+    for ch in source.chars() {
+        toggled.push_str(&toggled_case_text(ch));
+    }
+    toggled
 }
