@@ -63,6 +63,12 @@ pub enum Motion {
 
     /// Move just before the next matching character on the current line (`t`-ish).
     TillChar(char),
+
+    /// Move onto the previous matching character on the current line (`F`-ish).
+    FindCharBefore(char),
+
+    /// Move just after the previous matching character on the current line (`T`-ish).
+    TillCharBefore(char),
 }
 
 /// Apply a single `Motion` to a given cursor position.
@@ -122,6 +128,15 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
                 }
             })
             .unwrap_or(cursor),
+
+        Motion::FindCharBefore(needle) => buffer
+            .find_char_before_on_line(cursor, needle)
+            .unwrap_or(cursor),
+
+        Motion::TillCharBefore(needle) => buffer
+            .find_char_before_on_line(cursor, needle)
+            .map(|target| Pos::new(target.line, target.col.saturating_add(1)))
+            .unwrap_or(cursor),
     }
 }
 
@@ -155,6 +170,31 @@ pub fn apply_motion_for_operator(
                     return cursor;
                 };
                 target = Some(found);
+                current = found;
+            }
+            target.unwrap_or(cursor)
+        }
+        Motion::FindCharBefore(needle) => {
+            let mut current = buffer.clamp_pos(cursor);
+            let mut target = None;
+            for _ in 0..count.max(1) {
+                let Some(found) = buffer.find_char_before_on_line(current, needle) else {
+                    return cursor;
+                };
+                target = Some(found);
+                current = found;
+            }
+            target.unwrap_or(cursor)
+        }
+        Motion::TillCharBefore(needle) => {
+            let mut current = buffer.clamp_pos(cursor);
+            let mut target = None;
+            for _ in 0..count.max(1) {
+                let Some(found) = buffer.find_char_before_on_line(current, needle) else {
+                    return cursor;
+                };
+                let after_found = Pos::new(found.line, found.col.saturating_add(1));
+                target = Some(after_found);
                 current = found;
             }
             target.unwrap_or(cursor)
@@ -385,6 +425,25 @@ mod tests {
         );
         assert_eq!(
             apply_motion_n(&b, cursor, Motion::FindChar('a'), 2),
+            Pos::new(0, 9)
+        );
+    }
+
+    #[test]
+    fn backward_find_and_till_char_stay_on_current_line() {
+        let b = TextBuffer::from_str("alpha beta alpha\n");
+        let cursor = Pos::new(0, 15);
+
+        assert_eq!(
+            apply_motion(&b, cursor, Motion::FindCharBefore('b')),
+            Pos::new(0, 6)
+        );
+        assert_eq!(
+            apply_motion(&b, cursor, Motion::TillCharBefore('b')),
+            Pos::new(0, 7)
+        );
+        assert_eq!(
+            apply_motion_n(&b, cursor, Motion::FindCharBefore('a'), 2),
             Pos::new(0, 9)
         );
     }

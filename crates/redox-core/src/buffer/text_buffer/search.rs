@@ -27,6 +27,22 @@ impl TextBuffer {
         None
     }
 
+    /// Find the previous occurrence of `needle` before `pos` on the same line.
+    pub fn find_char_before_on_line(&self, pos: Pos, needle: char) -> Option<Pos> {
+        let pos = self.clamp_pos(pos);
+        let line = self.clamp_line(pos.line);
+        let line_text = self.line_slice(line);
+        let mut found = None;
+
+        for (col, ch) in line_text.chars().enumerate().take(pos.col) {
+            if ch == needle {
+                found = Some(Pos::new(line, col));
+            }
+        }
+
+        found
+    }
+
     /// Find all non-overlapping literal matches of `needle` in the buffer.
     ///
     /// Returned ranges are half-open `(start, end)` position pairs.

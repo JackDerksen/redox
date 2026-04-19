@@ -160,6 +160,8 @@ redox src
 | `/` | Open search to read for instances of a pattern in the current file |
 | `f` | Move cursor on top of the closest occurrence of the specified character |
 | `t` | Move cursor up to (before) the closest occurrence of the specified character |
+| `F` | Move cursor backward onto the closest occurrence of the specified character |
+| `T` | Move cursor backward to just after the closest occurrence of the specified character |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).

@@ -32,10 +32,10 @@ impl EditorState {
 
         match action {
             InputAction::Motion { motion, count } => {
-                if !matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                if !is_char_search_motion(motion) {
                     self.clear_search_highlights();
                 }
-                if matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                if is_char_search_motion(motion) {
                     self.remember_motion_search(motion, count);
                 }
                 let is_explorer = self.explorer_is_active();
@@ -447,7 +447,7 @@ impl EditorState {
 
             InputAction::OperateTarget { operator, target } => {
                 if let crate::input::OperatorTarget::Motion { motion, count } = &target
-                    && matches!(motion, Motion::FindChar(_) | Motion::TillChar(_))
+                    && is_char_search_motion(*motion)
                 {
                     self.remember_motion_search(*motion, *count);
                 }
@@ -668,4 +668,14 @@ impl EditorState {
         let view = self.views.entry(active_id).or_default();
         view.cursor.clamp_for_normal_mode(buffer);
     }
+}
+
+fn is_char_search_motion(motion: Motion) -> bool {
+    matches!(
+        motion,
+        Motion::FindChar(_)
+            | Motion::TillChar(_)
+            | Motion::FindCharBefore(_)
+            | Motion::TillCharBefore(_)
+    )
 }

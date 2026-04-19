@@ -266,6 +266,10 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
             term: ch.to_string(),
             landing: SearchLanding::BeforeMatch,
         }),
+        Motion::FindCharBefore(ch) | Motion::TillCharBefore(ch) => Some(SearchQuery {
+            term: ch.to_string(),
+            landing: SearchLanding::OnMatch,
+        }),
         _ => None,
     }
 }
@@ -301,6 +305,13 @@ fn motion_search_target_start(
                     break;
                 }
                 current = next;
+            }
+        }
+        Motion::FindCharBefore(needle) | Motion::TillCharBefore(needle) => {
+            for _ in 0..count {
+                let found = buffer.find_char_before_on_line(current, needle)?;
+                target = Some(found);
+                current = found;
             }
         }
         _ => return None,

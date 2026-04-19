@@ -450,6 +450,38 @@ fn normal_mode_find_and_till_char_move_to_expected_columns() {
     );
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
 
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 15);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::FindCharBefore('b'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
+
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 15);
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::TillCharBefore('b'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
+
     let _ = fs::remove_file(path);
 }
 

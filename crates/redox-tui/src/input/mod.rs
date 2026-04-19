@@ -285,6 +285,8 @@ struct PendingSearchMotion {
 enum SearchMotionKind {
     Find,
     Till,
+    FindBefore,
+    TillBefore,
 }
 
 impl InputState {
@@ -591,6 +593,24 @@ fn modal_char_action(
             state.begin_search_motion(None, SearchMotionKind::Till, count);
             InputAction::None
         }
+        'F' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            let count = state.take_count_or_1();
+            state.begin_search_motion(None, SearchMotionKind::FindBefore, count);
+            InputAction::None
+        }
+        'T' if matches!(
+            mode,
+            InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            let count = state.take_count_or_1();
+            state.begin_search_motion(None, SearchMotionKind::TillBefore, count);
+            InputAction::None
+        }
         'r' if matches!(
             mode,
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -780,6 +800,14 @@ fn resolve_pending_operator(
             state.begin_search_motion(Some(pending), SearchMotionKind::Till, pending.count);
             Some(InputAction::None)
         }
+        (_, None, 'F') => {
+            state.begin_search_motion(Some(pending), SearchMotionKind::FindBefore, pending.count);
+            Some(InputAction::None)
+        }
+        (_, None, 'T') => {
+            state.begin_search_motion(Some(pending), SearchMotionKind::TillBefore, pending.count);
+            Some(InputAction::None)
+        }
         (_, None, 'i') => {
             state.pending_operator = Some(PendingOperator {
                 scope: Some(TextObjectScope::Inner),
@@ -898,6 +926,8 @@ fn resolve_pending_search_motion(
     let motion = match pending.kind {
         SearchMotionKind::Find => Motion::FindChar(c),
         SearchMotionKind::Till => Motion::TillChar(c),
+        SearchMotionKind::FindBefore => Motion::FindCharBefore(c),
+        SearchMotionKind::TillBefore => Motion::TillCharBefore(c),
     };
 
     if let Some(operator) = pending.operator {
@@ -1283,6 +1313,12 @@ fn map_key_with_state(
         }
         if matches!(key, KeyKind::Char('G') | KeyKind::Char('g')) {
             return modal_char_action(state, mode, confirm_explorer_delete, 'G');
+        }
+        if matches!(key, KeyKind::Char('F') | KeyKind::Char('f')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'F');
+        }
+        if matches!(key, KeyKind::Char('T') | KeyKind::Char('t')) {
+            return modal_char_action(state, mode, confirm_explorer_delete, 'T');
         }
     }
 
@@ -1676,6 +1712,30 @@ mod tests {
                 count: 1,
             }
         );
+
+        let mut state = InputState::new();
+        let f = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('F'));
+        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(f, InputAction::None);
+        assert_eq!(
+            f_target,
+            InputAction::Motion {
+                motion: Motion::FindCharBefore('x'),
+                count: 1,
+            }
+        );
+
+        let mut state = InputState::new();
+        let t = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('T'));
+        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(t, InputAction::None);
+        assert_eq!(
+            t_target,
+            InputAction::Motion {
+                motion: Motion::TillCharBefore('x'),
+                count: 1,
+            }
+        );
     }
 
     #[test]
@@ -1705,6 +1765,36 @@ mod tests {
                 operator: TextObjectOperator::Change,
                 target: OperatorTarget::Motion {
                     motion: Motion::FindChar('x'),
+                    count: 1,
+                },
+            }
+        );
+
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('T'));
+        let dt = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(
+            dt,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::TillCharBefore('x'),
+                    count: 1,
+                },
+            }
+        );
+
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('F'));
+        let cf = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(
+            cf,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Change,
+                target: OperatorTarget::Motion {
+                    motion: Motion::FindCharBefore('x'),
                     count: 1,
                 },
             }
@@ -2297,6 +2387,47 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::PastePrivateRegisterBefore);
+    }
+
+    #[test]
+    fn normal_mode_shift_lowercase_f_and_t_key_events_start_backward_search_motions() {
+        let mut state = InputState::new();
+        let f = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('f'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(f, InputAction::None);
+        assert_eq!(
+            f_target,
+            InputAction::Motion {
+                motion: Motion::FindCharBefore('x'),
+                count: 1,
+            }
+        );
+
+        let mut state = InputState::new();
+        let t = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('t'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(t, InputAction::None);
+        assert_eq!(
+            t_target,
+            InputAction::Motion {
+                motion: Motion::TillCharBefore('x'),
+                count: 1,
+            }
+        );
     }
 
     #[test]
