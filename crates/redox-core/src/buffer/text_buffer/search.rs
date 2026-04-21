@@ -43,6 +43,108 @@ impl TextBuffer {
         found
     }
 
+    /// Find the delimiter paired with the delimiter under `pos`.
+    pub fn matching_delimiter(&self, pos: Pos) -> Option<Pos> {
+        let pos = self.clamp_pos(pos);
+        let char_idx = self.pos_to_char(pos);
+        let ch = self.char_at(pos)?;
+
+        match delimiter_pair_for(ch)? {
+            DelimiterPairKind::Asymmetric { open, close } if ch == open => {
+                self.match_asymmetric_delimiter_forward(char_idx, open, close)
+            }
+            DelimiterPairKind::Asymmetric { open, close } if ch == close => {
+                self.match_asymmetric_delimiter_backward(char_idx, open, close)
+            }
+            DelimiterPairKind::Symmetric { delimiter } => {
+                self.match_symmetric_delimiter(char_idx, delimiter)
+            }
+            DelimiterPairKind::Asymmetric { .. } => None,
+        }
+    }
+
+    fn match_asymmetric_delimiter_forward(
+        &self,
+        start_idx: usize,
+        open: char,
+        close: char,
+    ) -> Option<Pos> {
+        let mut depth = 0usize;
+        for idx in start_idx.saturating_add(1)..self.len_chars() {
+            match self.rope().char(idx) {
+                ch if ch == open => depth = depth.saturating_add(1),
+                ch if ch == close => {
+                    if depth == 0 {
+                        return Some(self.char_to_pos(idx));
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn match_asymmetric_delimiter_backward(
+        &self,
+        end_idx: usize,
+        open: char,
+        close: char,
+    ) -> Option<Pos> {
+        let mut depth = 0usize;
+        for idx in (0..end_idx).rev() {
+            match self.rope().char(idx) {
+                ch if ch == close => depth = depth.saturating_add(1),
+                ch if ch == open => {
+                    if depth == 0 {
+                        return Some(self.char_to_pos(idx));
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn match_symmetric_delimiter(&self, char_idx: usize, delimiter: char) -> Option<Pos> {
+        if self.char_is_escaped_for_pairing(char_idx) {
+            return None;
+        }
+
+        let line = self.char_to_line(char_idx);
+        let line_range = self.line_char_range(line);
+        let mut delimiters = Vec::new();
+        for idx in line_range {
+            if self.rope().char(idx) == delimiter && !self.char_is_escaped_for_pairing(idx) {
+                delimiters.push(idx);
+            }
+        }
+
+        delimiters.chunks_exact(2).find_map(|pair| {
+            if char_idx == pair[0] {
+                Some(self.char_to_pos(pair[1]))
+            } else if char_idx == pair[1] {
+                Some(self.char_to_pos(pair[0]))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn char_is_escaped_for_pairing(&self, char_idx: usize) -> bool {
+        let mut backslashes = 0;
+        let mut idx = char_idx;
+        while idx > 0 {
+            idx -= 1;
+            if self.rope().char(idx) != '\\' {
+                break;
+            }
+            backslashes += 1;
+        }
+        backslashes % 2 == 1
+    }
+
     /// Find all non-overlapping literal matches of `needle` in the buffer.
     ///
     /// Returned ranges are half-open `(start, end)` position pairs.
@@ -101,6 +203,35 @@ impl TextBuffer {
         }
 
         matches
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelimiterPairKind {
+    Asymmetric { open: char, close: char },
+    Symmetric { delimiter: char },
+}
+
+fn delimiter_pair_for(ch: char) -> Option<DelimiterPairKind> {
+    match ch {
+        '(' | ')' => Some(DelimiterPairKind::Asymmetric {
+            open: '(',
+            close: ')',
+        }),
+        '[' | ']' => Some(DelimiterPairKind::Asymmetric {
+            open: '[',
+            close: ']',
+        }),
+        '{' | '}' => Some(DelimiterPairKind::Asymmetric {
+            open: '{',
+            close: '}',
+        }),
+        '<' | '>' => Some(DelimiterPairKind::Asymmetric {
+            open: '<',
+            close: '>',
+        }),
+        '\'' | '"' | '`' => Some(DelimiterPairKind::Symmetric { delimiter: ch }),
+        _ => None,
     }
 }
 

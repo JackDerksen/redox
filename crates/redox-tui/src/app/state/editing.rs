@@ -159,6 +159,26 @@ impl EditorState {
         match target {
             OperatorTarget::Motion { motion, count } => {
                 let count = (*count).max(1);
+                if *motion == Motion::MatchDelimiter {
+                    let target = buffer.matching_delimiter(cursor)?;
+                    if target == cursor {
+                        return None;
+                    }
+                    let (start, inclusive_end) = if cursor <= target {
+                        (cursor, target)
+                    } else {
+                        (target, cursor)
+                    };
+                    let end = buffer.move_right(inclusive_end);
+                    return Some(OperatorTargetPlan {
+                        delete_ranges: vec![(start, end)],
+                        text: buffer.slice_pos_range(start, end),
+                        register_kind: RegisterKind::CharWise,
+                        preserve_blank_line_on_change: false,
+                        yank_highlight: None,
+                    });
+                }
+
                 let end = match (*motion, count) {
                     (Motion::LineEnd, n) if n > 1 => {
                         let target_line = buffer

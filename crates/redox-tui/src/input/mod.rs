@@ -737,6 +737,10 @@ fn modal_char_action(
             motion: Motion::LineFirstNonWhitespace,
             count: state.take_count_or_1(),
         },
+        '%' => InputAction::Motion {
+            motion: Motion::MatchDelimiter,
+            count: state.take_count_or_1(),
+        },
         '$' => InputAction::Motion {
             motion: Motion::LineEnd,
             count: state.take_count_or_1(),
@@ -898,6 +902,7 @@ fn motion_from_char(c: char) -> Option<Motion> {
         'b' => Some(Motion::WordStartBefore),
         'e' => Some(Motion::WordEndAfter),
         '_' => Some(Motion::LineFirstNonWhitespace),
+        '%' => Some(Motion::MatchDelimiter),
         '$' => Some(Motion::LineEnd),
         'G' => Some(Motion::FileEnd),
         _ => None,
@@ -1461,6 +1466,36 @@ mod tests {
             InputAction::Motion {
                 motion: Motion::LineEnd,
                 count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_percent_maps_to_match_delimiter_motion() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('%'));
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::MatchDelimiter,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_percent_after_delete_operator_maps_to_motion_operator() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('%'));
+        assert_eq!(
+            action,
+            InputAction::OperateTarget {
+                operator: TextObjectOperator::Delete,
+                target: OperatorTarget::Motion {
+                    motion: Motion::MatchDelimiter,
+                    count: 1,
+                },
             }
         );
     }

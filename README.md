@@ -154,6 +154,7 @@ redox src
 | `0` | Go to 0th character in the line |
 | `_` | Go to first non-whitespace character in the line |
 | `$` | Go to end of the line |
+| `%` | Jump to the matching delimiter under the cursor |
 | `D` | Delete from cursor position to end of the line |
 | (normal mode) `r` | Replace under cursor (eg. `r-` replaces the cursor cell with a `-`) |
 | (visual mode) `r` | Replace entire selection |

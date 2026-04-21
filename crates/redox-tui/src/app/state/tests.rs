@@ -486,6 +486,74 @@ fn normal_mode_find_and_till_char_move_to_expected_columns() {
 }
 
 #[test]
+fn normal_mode_percent_jumps_between_matching_delimiters() {
+    let path = temp_file_path("match_delimiter_motion");
+    let mut state = state_with_text(path.clone(), "fn main() {\n    call([x]);\n}\n");
+
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 10);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::MatchDelimiter,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(2, 0));
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::MatchDelimiter,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 10));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_mode_operate_percent_deletes_matching_delimiter_range() {
+    let path = temp_file_path("operate_match_delimiter");
+    let mut state = state_with_text(path.clone(), "a(b)c\n");
+
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+
+    state.apply_input(
+        InputAction::OperateTarget {
+            operator: TextObjectOperator::Delete,
+            target: OperatorTarget::Motion {
+                motion: Motion::MatchDelimiter,
+                count: 1,
+            },
+        },
+        80,
+        24,
+    );
+
+    assert_eq!(state.session.active_buffer().to_string(), "ac\n");
+    assert_eq!(state.private_register, "(b)");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn operator_find_and_till_char_apply_expected_ranges() {
     let path = temp_file_path("operator_find_till");
     let mut state = state_with_text(path.clone(), "abc def ghi\n");

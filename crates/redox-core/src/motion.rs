@@ -69,6 +69,9 @@ pub enum Motion {
 
     /// Move just after the previous matching character on the current line (`T`-ish).
     TillCharBefore(char),
+
+    /// Jump to the delimiter paired with the delimiter under the cursor (`%`-ish).
+    MatchDelimiter,
 }
 
 /// Apply a single `Motion` to a given cursor position.
@@ -137,6 +140,8 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
             .find_char_before_on_line(cursor, needle)
             .map(|target| Pos::new(target.line, target.col.saturating_add(1)))
             .unwrap_or(cursor),
+
+        Motion::MatchDelimiter => buffer.matching_delimiter(cursor).unwrap_or(cursor),
     }
 }
 
@@ -199,6 +204,14 @@ pub fn apply_motion_for_operator(
             }
             target.unwrap_or(cursor)
         }
+        Motion::MatchDelimiter => {
+            let target = apply_motion(buffer, cursor, motion);
+            if target > cursor {
+                buffer.move_right(target)
+            } else {
+                target
+            }
+        }
         _ => apply_motion_n(buffer, cursor, motion, count),
     }
 }
@@ -208,6 +221,14 @@ pub fn apply_motion_for_operator(
 /// - If `count == 0`, this returns `cursor` unchanged.
 /// - Motions are applied iteratively so they can clamp naturally at boundaries.
 pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: usize) -> Pos {
+    if motion == Motion::MatchDelimiter {
+        return if count == 0 {
+            buffer.clamp_pos(cursor)
+        } else {
+            apply_motion(buffer, cursor, motion)
+        };
+    }
+
     let mut cur = buffer.clamp_pos(cursor);
     for _ in 0..count {
         let next = apply_motion(buffer, cur, motion);
@@ -445,6 +466,50 @@ mod tests {
         assert_eq!(
             apply_motion_n(&b, cursor, Motion::FindCharBefore('a'), 2),
             Pos::new(0, 9)
+        );
+    }
+
+    #[test]
+    fn match_delimiter_jumps_between_pair_endpoints() {
+        let b = TextBuffer::from_str("fn main() {\n    call([x]);\n}\n");
+
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 7), Motion::MatchDelimiter),
+            Pos::new(0, 8)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 8), Motion::MatchDelimiter),
+            Pos::new(0, 7)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 10), Motion::MatchDelimiter),
+            Pos::new(2, 0)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(1, 9), Motion::MatchDelimiter),
+            Pos::new(1, 11)
+        );
+    }
+
+    #[test]
+    fn match_delimiter_supports_symmetric_and_angle_delimiters() {
+        let b = TextBuffer::from_str("let s = \"a \\\" b\"; let tag = <x>`tick`\n");
+
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 8), Motion::MatchDelimiter),
+            Pos::new(0, 15)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 15), Motion::MatchDelimiter),
+            Pos::new(0, 8)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 28), Motion::MatchDelimiter),
+            Pos::new(0, 30)
+        );
+        assert_eq!(
+            apply_motion(&b, Pos::new(0, 31), Motion::MatchDelimiter),
+            Pos::new(0, 36)
         );
     }
 
