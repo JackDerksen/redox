@@ -84,12 +84,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 ```bash
 redox <file_path>
 ```
-    
+
 Example:
 ```bash
 redox ./README.md
 ```
-    
+
 Open straight into the explorer for any specified directory (including `.`):
 ```bash
 redox src
@@ -192,7 +192,7 @@ Notes:
 - [x] Relative line numbers (no standard line numbers because those are objectively worse)
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
 - [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
-- [x] Basic session-bound undo/redo 
+- [x] Basic session-bound undo/redo
 - [x] Syntax highlighting for...
     - [x] Rust
     - [x] Markdown
