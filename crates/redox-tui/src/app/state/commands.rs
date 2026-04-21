@@ -207,12 +207,10 @@ impl EditorState {
         }
 
         let mut msg = String::new();
-
         for (idx, summary) in summaries.iter().enumerate() {
             if idx > 0 {
-                msg.push_str(" | ");
+                msg.push('\n');
             }
-
             let active = if summary.is_active { '%' } else { '-' };
             let dirty = if summary.dirty { '+' } else { '-' };
             let new_file = if summary.is_new_file { 'n' } else { '-' };

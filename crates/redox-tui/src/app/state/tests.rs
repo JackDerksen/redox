@@ -68,6 +68,10 @@ fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId)
     );
 }
 
+fn expire_status_after_timeout(state: &mut EditorState) {
+    state.expire_status_message(Instant::now() + Duration::from_secs(10));
+}
+
 #[test]
 fn normal_mode_paste_inserts_text_and_marks_dirty() {
     let path = temp_file_path("paste_normal");
@@ -830,6 +834,23 @@ fn repeat_search_reports_when_no_other_instances_exist() {
 }
 
 #[test]
+fn search_reports_match_count_in_status_message() {
+    let path = temp_file_path("slash_search_match_count");
+    let mut state = state_with_text(path.clone(), "test alpha\ntest beta\ngamma test\n");
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "test".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    assert_eq!(state.status_msg.as_deref(), Some("3 instances of 'test'"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn repeat_search_rediscovers_single_cached_match_after_hiding_highlights() {
     let path = temp_file_path("slash_search_single_rediscover");
     let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
@@ -1430,7 +1451,7 @@ fn command_w_writes_active_buffer_only() {
 }
 
 #[test]
-fn command_ls_populates_compact_status_summary() {
+fn command_ls_populates_multiline_status_summary() {
     let path_a = temp_file_path("ls_a");
     let path_b = temp_file_path("ls_b");
     let mut state = state_with_text(path_a.clone(), "alpha");
@@ -1441,10 +1462,9 @@ fn command_ls_populates_compact_status_summary() {
     run_command(&mut state, "ls");
 
     let msg = state.status_msg.as_deref().expect("missing ls status");
-    assert!(msg.contains("|"));
     assert!(msg.contains("%"));
     assert!(msg.contains("+"));
-    assert!(msg.contains(" | "));
+    assert!(msg.contains('\n'));
     for summary in state.session.summaries() {
         assert!(msg.contains(&summary.display_name));
     }
@@ -1537,8 +1557,22 @@ fn perf_popup_escape_dismisses_in_normal_mode() {
 }
 
 #[test]
-fn command_ls_status_is_cleared_on_next_input() {
+fn command_ls_status_expires_after_timeout() {
     let path = temp_file_path("ls_ephemeral");
+    let mut state = state_with_text(path.clone(), "alpha");
+
+    run_command(&mut state, "ls");
+    assert!(state.status_msg.is_some());
+
+    expire_status_after_timeout(&mut state);
+    assert!(state.status_msg.is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_ls_status_survives_input_before_timeout() {
+    let path = temp_file_path("ls_ephemeral_input");
     let mut state = state_with_text(path.clone(), "alpha");
 
     run_command(&mut state, "ls");
@@ -1553,28 +1587,20 @@ fn command_ls_status_is_cleared_on_next_input() {
         24,
     );
 
-    assert!(state.status_msg.is_none());
+    assert!(state.status_msg.is_some());
 
     let _ = fs::remove_file(path);
 }
 
 #[test]
-fn command_write_status_is_cleared_on_next_input() {
+fn command_write_status_expires_after_timeout() {
     let path = temp_file_path("write_status_clears");
     let mut state = state_with_text(path.clone(), "alpha");
 
     run_command(&mut state, "w");
     assert_eq!(state.status_msg.as_deref(), Some("written"));
 
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
+    expire_status_after_timeout(&mut state);
     assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
@@ -1778,7 +1804,7 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .as_deref()
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
-    assert!(!state.status_msg_clear_on_input);
+    assert!(state.status_message_is_sticky());
 
     state.apply_input(
         InputAction::Motion {

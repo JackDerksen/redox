@@ -15,19 +15,27 @@ struct PerfRow {
     hot_ms: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PerfPopupLayout {
+    pub x: u16,
+    pub y: u16,
+    pub inner_w: u16,
+    pub inner_h: u16,
+}
+
 pub fn draw_perf_popup_view(
     style: UiStyle,
     window: &mut dyn Window,
     popup: PerfPopup,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let (inner_w, inner_h) = perf_popup_inner_size(vw, vh, style);
-    let popup_w = inner_w.saturating_add(2);
-    let x = vw.saturating_sub(popup_w);
+    let frame = perf_popup_layout(vw, vh, style);
+    let inner_w = frame.inner_w;
+    let inner_h = frame.inner_h;
     let layout = draw_popup_frame_at(
         window,
-        x,
-        0,
+        frame.x,
+        frame.y,
         inner_w,
         inner_h,
         "performance",
@@ -115,6 +123,17 @@ pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, 
         style.perf.min_width,
         style.perf.min_height,
     )
+}
+
+pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupLayout {
+    let (inner_w, inner_h) = perf_popup_inner_size(term_w, term_h, style);
+    let popup_w = inner_w.saturating_add(2);
+    PerfPopupLayout {
+        x: term_w.saturating_sub(popup_w),
+        y: 0,
+        inner_w,
+        inner_h,
+    }
 }
 
 fn perf_rows(stats: FramePerfStats) -> [PerfRow; 10] {

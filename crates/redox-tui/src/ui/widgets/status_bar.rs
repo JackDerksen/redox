@@ -431,9 +431,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let dirty_width = if state.active_dirty() { 1 } else { 0 };
     let left_text_width = mode_width.saturating_add(dirty_width);
 
-    let center_text = if let Some(msg) = &state.status_msg {
-        format!(" {} ", msg)
-    } else if state.explorer_popup().is_some() {
+    let center_text = if state.explorer_popup().is_some() {
         " explorer ".to_string()
     } else {
         let mut name = state.active_display_name().to_string();

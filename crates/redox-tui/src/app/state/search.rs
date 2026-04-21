@@ -121,6 +121,8 @@ impl EditorState {
             next_match_index_from_cursor(buffer, &matches, cursor, true)
                 .or_else(|| (!matches.is_empty()).then_some(0))
         };
+        let match_count = matches.len();
+        let status_message = format_search_match_count(&query.term, match_count);
 
         self.search_state = Some(SearchState {
             query,
@@ -133,7 +135,7 @@ impl EditorState {
 
         if let Some(index) = active_match {
             self.move_cursor_to_search_match(index, viewport_width_cells, text_vh);
-            self.clear_status();
+            self.set_status(status_message);
         } else {
             self.set_status("pattern not found");
         }
@@ -254,6 +256,11 @@ impl EditorState {
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
     }
+}
+
+fn format_search_match_count(term: &str, count: usize) -> String {
+    let label = if count == 1 { "instance" } else { "instances" };
+    format!("{count} {label} of '{term}'")
 }
 
 fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {

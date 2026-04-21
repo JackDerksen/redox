@@ -13,10 +13,6 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
-        if self.status_msg_clear_on_input {
-            self.clear_status();
-        }
-
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
         let keep_insert_coalesce = self.mode == EditorMode::Insert
             && matches!(

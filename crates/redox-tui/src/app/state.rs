@@ -4,13 +4,14 @@
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::{language_for_path, GraphemeCache, RainAnimation, SyntaxHighlighter};
+use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter, language_for_path};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
@@ -31,6 +32,7 @@ mod surface;
 const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
+const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegisterKind {
@@ -171,7 +173,7 @@ pub struct EditorState {
     pub input: InputState,
     pub command_line: String,
     pub status_msg: Option<String>,
-    status_msg_clear_on_input: bool,
+    status_msg_expires_at: Option<Instant>,
     command_history: CommandHistoryState,
     pub should_quit: bool,
     rain_animation: Option<RainAnimation>,
@@ -209,7 +211,7 @@ impl EditorState {
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
-            status_msg_clear_on_input: false,
+            status_msg_expires_at: None,
             command_history: CommandHistoryState::default(),
             should_quit: false,
             rain_animation: None,
@@ -232,17 +234,31 @@ impl EditorState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
-        self.status_msg_clear_on_input = true;
+        self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
     pub fn set_status_sticky(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
-        self.status_msg_clear_on_input = false;
+        self.status_msg_expires_at = None;
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
-        self.status_msg_clear_on_input = false;
+        self.status_msg_expires_at = None;
+    }
+
+    pub fn expire_status_message(&mut self, now: Instant) {
+        if self
+            .status_msg_expires_at
+            .is_some_and(|expires_at| now >= expires_at)
+        {
+            self.clear_status();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_message_is_sticky(&self) -> bool {
+        self.status_msg.is_some() && self.status_msg_expires_at.is_none()
     }
 
     pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {

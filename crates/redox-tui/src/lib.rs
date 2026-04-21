@@ -32,7 +32,7 @@ use ui::syntax::{
 };
 use ui::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
     explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached, TextViewport,
     UiStyle, STATUS_BAR_HEIGHT_CELLS,
 };
@@ -290,16 +290,17 @@ fn draw_buffer_view(
     status.draw(window)?;
     perf.status += status_start.elapsed();
 
-    if let Some(popup) = state.perf_popup()
+    let perf_popup_visible = if let Some(popup) = state.perf_popup()
         && !matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         )
     {
         draw_perf_popup_view(style, window, popup)?;
-        hide_cursor(window);
-        return Ok(());
-    }
+        true
+    } else {
+        false
+    };
 
     if matches!(
         state.mode,
@@ -312,6 +313,12 @@ fn draw_buffer_view(
             y: spec.y,
             visible: true,
         });
+    }
+
+    draw_status_toast(state, style, window)?;
+
+    if perf_popup_visible {
+        hide_cursor(window);
     }
 
     Ok(())
@@ -1457,6 +1464,7 @@ pub fn run() -> minui::Result<()> {
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
         state.poll_analysis_results();
+        state.expire_status_message(Instant::now());
 
         if state.rain_is_active() {
             state.advance_rain_animation();

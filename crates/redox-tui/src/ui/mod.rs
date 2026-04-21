@@ -26,6 +26,6 @@ pub use syntax::{language_for_path, SyntaxHighlighter};
 // Re-export common widgets for convenience.
 pub use widgets::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
     explorer_popup_inner_size,
 };
