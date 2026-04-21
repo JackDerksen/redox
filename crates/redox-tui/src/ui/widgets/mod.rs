@@ -16,4 +16,4 @@ pub use command_line::draw_command_line_popup;
 pub use explorer::{draw_explorer_popup_view, explorer_popup_inner_size};
 pub use perf::{draw_perf_popup_view, perf_popup_layout, perf_popup_occludes_cursor};
 pub use status_bar::build_editor_status_bar;
-pub use toast::draw_status_toast;
+pub use toast::{draw_status_toast, status_toast_occludes_cursor};

@@ -1,11 +1,12 @@
 use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::EditorState;
+use crate::app::{EditorMode, EditorState};
 use crate::ui::UiStyle;
 use crate::ui::widgets::perf::{PerfPopupLayout, perf_popup_layout};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_window_view, wrap_text_to_cells,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
+    wrap_text_to_cells,
 };
 
 const TOAST_MARGIN_COLS: u16 = 1;
@@ -20,17 +21,15 @@ pub fn draw_status_toast(
     state: &EditorState,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<Option<PopupLayout>> {
     let Some(message) = &state.status_msg else {
-        return Ok(());
+        return Ok(None);
     };
 
     let (term_w, term_h) = window.get_size();
-    let perf_popup = state
-        .perf_popup()
-        .map(|_| perf_popup_layout(term_w, term_h, style));
+    let perf_popup = status_toast_perf_popup_layout(state, term_w, term_h, style);
     let Some(toast) = toast_layout(message, term_w, term_h, perf_popup) else {
-        return Ok(());
+        return Ok(None);
     };
 
     let chrome = PopupChrome {
@@ -59,7 +58,27 @@ pub fn draw_status_toast(
             style.command_line.text,
         )?;
     }
-    Ok(())
+    Ok(Some(layout))
+}
+
+pub fn status_toast_occludes_cursor(layout: PopupLayout, x: u16, y: u16) -> bool {
+    let popup_w = layout.inner_w.saturating_add(2);
+    let popup_h = layout.inner_h.saturating_add(2);
+    x >= layout.x
+        && x < layout.x.saturating_add(popup_w)
+        && y >= layout.y
+        && y < layout.y.saturating_add(popup_h)
+}
+
+fn status_toast_perf_popup_layout(
+    state: &EditorState,
+    term_w: u16,
+    term_h: u16,
+    style: UiStyle,
+) -> Option<PerfPopupLayout> {
+    let perf_popup_visible = state.perf_popup().is_some()
+        && !matches!(state.mode, EditorMode::Command | EditorMode::Search);
+    perf_popup_visible.then(|| perf_popup_layout(term_w, term_h, style))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

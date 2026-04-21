@@ -28,4 +28,5 @@ pub use widgets::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
     draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
     explorer_popup_inner_size, perf_popup_layout, perf_popup_occludes_cursor,
+    status_toast_occludes_cursor,
 };
