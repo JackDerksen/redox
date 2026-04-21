@@ -48,6 +48,9 @@ impl TextBuffer {
         let pos = self.clamp_pos(pos);
         let char_idx = self.pos_to_char(pos);
         let ch = self.char_at(pos)?;
+        if self.char_is_escaped_for_pairing(char_idx) {
+            return None;
+        }
 
         match delimiter_pair_for(ch)? {
             DelimiterPairKind::Asymmetric { open, close } if ch == open => {
@@ -71,6 +74,9 @@ impl TextBuffer {
     ) -> Option<Pos> {
         let mut depth = 0usize;
         for idx in start_idx.saturating_add(1)..self.len_chars() {
+            if self.char_is_escaped_for_pairing(idx) {
+                continue;
+            }
             match self.rope().char(idx) {
                 ch if ch == open => depth = depth.saturating_add(1),
                 ch if ch == close => {
@@ -93,6 +99,9 @@ impl TextBuffer {
     ) -> Option<Pos> {
         let mut depth = 0usize;
         for idx in (0..end_idx).rev() {
+            if self.char_is_escaped_for_pairing(idx) {
+                continue;
+            }
             match self.rope().char(idx) {
                 ch if ch == close => depth = depth.saturating_add(1),
                 ch if ch == open => {
@@ -376,5 +385,20 @@ mod tests {
             buffer.find_matches("aaa"),
             naive_find_matches(&buffer, "aaa")
         );
+    }
+
+    #[test]
+    fn matching_delimiter_ignores_escaped_asymmetric_delimiter_under_cursor() {
+        let buffer = TextBuffer::from_str(r"\(alpha)");
+
+        assert_eq!(buffer.matching_delimiter(Pos::new(0, 1)), None);
+    }
+
+    #[test]
+    fn matching_delimiter_skips_escaped_asymmetric_delimiters_while_scanning() {
+        let buffer = TextBuffer::from_str(r"(alpha \( beta))");
+
+        assert_eq!(buffer.matching_delimiter(Pos::new(0, 0)), Some(Pos::new(0, 14)));
+        assert_eq!(buffer.matching_delimiter(Pos::new(0, 14)), Some(Pos::new(0, 0)));
     }
 }
