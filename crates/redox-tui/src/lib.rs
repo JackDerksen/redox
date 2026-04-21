@@ -33,8 +33,8 @@ use ui::syntax::{
 use ui::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
     draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
-    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached, TextViewport,
-    UiStyle, STATUS_BAR_HEIGHT_CELLS,
+    explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
+    snapshot_lines_wrapped_cached, TextViewport, UiStyle, STATUS_BAR_HEIGHT_CELLS,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -290,25 +290,27 @@ fn draw_buffer_view(
     status.draw(window)?;
     perf.status += status_start.elapsed();
 
-    let perf_popup_visible = if let Some(popup) = state.perf_popup()
+    let perf_popup_layout = if let Some(popup) = state.perf_popup()
         && !matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         )
     {
+        let layout = perf_popup_layout(vw, vh, style);
         draw_perf_popup_view(style, window, popup)?;
-        true
+        Some(layout)
     } else {
-        false
+        None
     };
 
+    let mut cursor_spec = None;
     if matches!(
         state.mode,
         app::EditorMode::Command | app::EditorMode::Search
     ) {
         draw_command_line_popup(state, style, window)?;
     } else if spec.visible {
-        window.request_cursor(minui::window::CursorSpec {
+        cursor_spec = Some(minui::window::CursorSpec {
             x: spec.x.saturating_add(content_x),
             y: spec.y,
             visible: true,
@@ -317,8 +319,14 @@ fn draw_buffer_view(
 
     draw_status_toast(state, style, window)?;
 
-    if perf_popup_visible {
-        hide_cursor(window);
+    if let Some(cursor) = cursor_spec {
+        if perf_popup_layout
+            .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y))
+        {
+            hide_cursor(window);
+        } else {
+            window.request_cursor(cursor);
+        }
     }
 
     Ok(())

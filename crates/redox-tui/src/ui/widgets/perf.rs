@@ -136,6 +136,14 @@ pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupL
     }
 }
 
+pub fn perf_popup_occludes_cursor(layout: PerfPopupLayout, x: u16, y: u16) -> bool {
+    let popup_w = layout.inner_w.saturating_add(2);
+    let popup_h = layout.inner_h.saturating_add(2);
+    let x_end = layout.x.saturating_add(popup_w);
+    let y_end = layout.y.saturating_add(popup_h);
+    x >= layout.x && x < x_end && y >= layout.y && y < y_end
+}
+
 fn perf_rows(stats: FramePerfStats) -> [PerfRow; 10] {
     [
         PerfRow {
@@ -246,4 +254,25 @@ fn write_line(
 
     let clipped = clip_text_to_cells(text, width as usize);
     view.write_str_colored(row, col, &clipped, color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{perf_popup_occludes_cursor, PerfPopupLayout};
+
+    #[test]
+    fn perf_popup_occludes_cursor_inside_frame_bounds() {
+        let layout = PerfPopupLayout {
+            x: 20,
+            y: 0,
+            inner_w: 10,
+            inner_h: 5,
+        };
+
+        assert!(perf_popup_occludes_cursor(layout, 20, 0));
+        assert!(perf_popup_occludes_cursor(layout, 31, 6));
+        assert!(!perf_popup_occludes_cursor(layout, 19, 0));
+        assert!(!perf_popup_occludes_cursor(layout, 32, 6));
+        assert!(!perf_popup_occludes_cursor(layout, 31, 7));
+    }
 }
