@@ -4,9 +4,9 @@ use redox_core::Pos;
 use redox_core::Selection;
 
 use super::{EditorMode, EditorState};
+use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
 use crate::ui::syntax::smart_open_line_insert;
-use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 impl EditorState {
     pub(super) fn execute_command_line(&mut self) {
@@ -146,6 +146,11 @@ impl EditorState {
             return;
         }
         self.command_history.entries.push(command);
+        const MAX_HISTORY: usize = 100;
+        if self.command_history.entries.len() > MAX_HISTORY {
+            let overflow = self.command_history.entries.len() - MAX_HISTORY;
+            self.command_history.entries.drain(0..overflow);
+        }
     }
 
     pub(super) fn command_edit(&mut self, path_arg: &str) {
@@ -246,6 +251,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             self.invalidate_active_render_caches();
             let _ = self.record_active_undo_if_changed(before);
+            let _ = self.session.recompute_active_dirty();
         }
 
         match self.session.save_active() {
