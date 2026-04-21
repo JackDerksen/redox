@@ -16,10 +16,13 @@ impl EditorState {
         let cmd_raw = self.command_line.trim().to_string();
         self.command_line.clear();
         self.mode = EditorMode::Normal;
+        self.reset_command_history_navigation();
 
         if cmd_raw.is_empty() {
             return;
         }
+
+        self.push_command_history(cmd_raw.clone());
 
         let mut parts = cmd_raw.splitn(2, char::is_whitespace);
         let cmd = parts.next().unwrap_or("");
@@ -85,6 +88,63 @@ impl EditorState {
                 self.set_status(format!("unknown command: {cmd_raw}"));
             }
         }
+    }
+
+    pub(super) fn reset_command_history_navigation(&mut self) {
+        self.command_history.nav_index = None;
+        self.command_history.draft.clear();
+    }
+
+    pub(super) fn detach_command_history_navigation(&mut self) {
+        if self.command_history.nav_index.is_some() {
+            self.command_history.draft = self.command_line.clone();
+            self.command_history.nav_index = None;
+        }
+    }
+
+    pub(super) fn command_history_prev(&mut self) {
+        if self.command_history.entries.is_empty() {
+            return;
+        }
+
+        let next_index = match self.command_history.nav_index {
+            Some(0) => 0,
+            Some(idx) => idx.saturating_sub(1),
+            None => {
+                self.command_history.draft = self.command_line.clone();
+                self.command_history.entries.len().saturating_sub(1)
+            }
+        };
+
+        self.command_history.nav_index = Some(next_index);
+        self.command_line = self.command_history.entries[next_index].clone();
+    }
+
+    pub(super) fn command_history_next(&mut self) {
+        let Some(current_index) = self.command_history.nav_index else {
+            return;
+        };
+
+        if current_index + 1 < self.command_history.entries.len() {
+            let next_index = current_index + 1;
+            self.command_history.nav_index = Some(next_index);
+            self.command_line = self.command_history.entries[next_index].clone();
+        } else {
+            self.command_history.nav_index = None;
+            self.command_line = std::mem::take(&mut self.command_history.draft);
+        }
+    }
+
+    fn push_command_history(&mut self, command: String) {
+        if self
+            .command_history
+            .entries
+            .last()
+            .is_some_and(|previous| previous == &command)
+        {
+            return;
+        }
+        self.command_history.entries.push(command);
     }
 
     pub(super) fn command_edit(&mut self, path_arg: &str) {

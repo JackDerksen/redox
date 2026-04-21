@@ -86,6 +86,13 @@ struct SearchState {
     dirty: bool,
 }
 
+#[derive(Debug, Default, Clone)]
+struct CommandHistoryState {
+    entries: Vec<String>,
+    nav_index: Option<usize>,
+    draft: String,
+}
+
 /// Vim-like editor mode for the TUI frontend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
@@ -165,6 +172,7 @@ pub struct EditorState {
     pub command_line: String,
     pub status_msg: Option<String>,
     status_msg_clear_on_input: bool,
+    command_history: CommandHistoryState,
     pub should_quit: bool,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
@@ -202,6 +210,7 @@ impl EditorState {
             command_line: String::new(),
             status_msg: None,
             status_msg_clear_on_input: false,
+            command_history: CommandHistoryState::default(),
             should_quit: false,
             rain_animation: None,
             rain_pending_start: false,

@@ -149,6 +149,8 @@ pub enum InputAction {
     /// Command-line editing actions (buffer is owned by editor state).
     CommandChar(char),
     CommandBackspace,
+    CommandHistoryPrev,
+    CommandHistoryNext,
     CommandEnter,
     CommandCancel,
 
@@ -1110,9 +1112,21 @@ fn map_key_with_state(
                 return InputAction::CommandCancel;
             }
 
+            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+                state.reset_prefixes();
+                return InputAction::CommandHistoryPrev;
+            }
+
+            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+                state.reset_prefixes();
+                return InputAction::CommandHistoryNext;
+            }
+
             return match key {
                 KeyKind::Escape => InputAction::CommandCancel,
                 KeyKind::Backspace => InputAction::CommandBackspace,
+                KeyKind::Up => InputAction::CommandHistoryPrev,
+                KeyKind::Down => InputAction::CommandHistoryNext,
                 KeyKind::Enter => InputAction::CommandEnter,
                 KeyKind::Char(c) => InputAction::CommandChar(c),
                 _ => InputAction::None,
@@ -2108,6 +2122,51 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::CommandCancel);
+    }
+
+    #[test]
+    fn command_mode_up_down_and_ctrl_pn_navigate_history() {
+        let mut state = InputState::new();
+
+        let up = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Up,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(up, InputAction::CommandHistoryPrev);
+
+        let down = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Down,
+                mods: KeyModifiers::none(),
+            }),
+        );
+        assert_eq!(down, InputAction::CommandHistoryNext);
+
+        let ctrl_p = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('p'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(ctrl_p, InputAction::CommandHistoryPrev);
+
+        let ctrl_n = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('n'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(ctrl_n, InputAction::CommandHistoryNext);
     }
 
     #[test]

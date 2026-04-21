@@ -40,6 +40,10 @@ fn run_command(state: &mut EditorState, cmd: &str) {
     state.apply_input(InputAction::CommandEnter, 80, 24);
 }
 
+fn enter_command_mode(state: &mut EditorState) {
+    state.apply_input(InputAction::EnterCommand, 80, 24);
+}
+
 fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -73,6 +77,72 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
 
     assert_eq!(state.session.active_buffer().to_string(), " worldhello");
     assert!(state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_history_up_and_down_restore_previous_draft() {
+    let path = temp_file_path("command_history_draft");
+    let mut state = state_with_text(path.clone(), "hello\n");
+
+    run_command(&mut state, "ls");
+    run_command(&mut state, "about");
+
+    enter_command_mode(&mut state);
+    state.apply_input(InputAction::CommandChar('e'), 80, 24);
+    state.apply_input(InputAction::CommandChar(' '), 80, 24);
+
+    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
+    assert_eq!(state.command_line, "about");
+
+    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
+    assert_eq!(state.command_line, "ls");
+
+    state.apply_input(InputAction::CommandHistoryNext, 80, 24);
+    assert_eq!(state.command_line, "about");
+
+    state.apply_input(InputAction::CommandHistoryNext, 80, 24);
+    assert_eq!(state.command_line, "e ");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_history_editing_recalled_entry_detaches_navigation() {
+    let path = temp_file_path("command_history_detach");
+    let mut state = state_with_text(path.clone(), "hello\n");
+
+    run_command(&mut state, "ls");
+    run_command(&mut state, "about");
+
+    enter_command_mode(&mut state);
+    state.command_line = "e".to_string();
+    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
+    assert_eq!(state.command_line, "about");
+
+    state.apply_input(InputAction::CommandChar('!'), 80, 24);
+    assert_eq!(state.command_line, "about!");
+
+    state.apply_input(InputAction::CommandHistoryNext, 80, 24);
+    assert_eq!(state.command_line, "about!");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_history_skips_consecutive_duplicates() {
+    let path = temp_file_path("command_history_dedupe");
+    let mut state = state_with_text(path.clone(), "hello\n");
+
+    run_command(&mut state, "ls");
+    run_command(&mut state, "ls");
+
+    enter_command_mode(&mut state);
+    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
+    assert_eq!(state.command_line, "ls");
+    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
+    assert_eq!(state.command_line, "ls");
 
     let _ = fs::remove_file(path);
 }

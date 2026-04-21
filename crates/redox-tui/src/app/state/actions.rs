@@ -170,6 +170,7 @@ impl EditorState {
                 self.clear_active_visual_anchor();
                 self.mode = EditorMode::Command;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.clear_status();
                 self.input.reset_prefixes();
             }
@@ -187,18 +188,33 @@ impl EditorState {
             InputAction::CommandCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
 
             InputAction::CommandChar(c) => {
                 if self.mode == EditorMode::Command {
+                    self.detach_command_history_navigation();
                     self.command_line.push(c);
                 }
             }
 
             InputAction::CommandBackspace => {
                 if self.mode == EditorMode::Command {
+                    self.detach_command_history_navigation();
                     self.command_line.pop();
+                }
+            }
+
+            InputAction::CommandHistoryPrev => {
+                if self.mode == EditorMode::Command {
+                    self.command_history_prev();
+                }
+            }
+
+            InputAction::CommandHistoryNext => {
+                if self.mode == EditorMode::Command {
+                    self.command_history_next();
                 }
             }
 
@@ -209,6 +225,7 @@ impl EditorState {
             InputAction::SearchCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
 
