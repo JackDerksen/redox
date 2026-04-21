@@ -812,6 +812,34 @@ fn till_char_search_repeat_tracks_the_actual_matched_character() {
 }
 
 #[test]
+fn till_char_before_search_repeat_tracks_landing_after_the_match() {
+    let path = temp_file_path("till_char_before_search_repeat_target");
+    let mut state = state_with_text(path.clone(), "abacadax\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 6);
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::TillCharBefore('a'),
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
+
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn repeat_search_reports_when_no_other_instances_exist() {
     let path = temp_file_path("slash_search_single");
     let mut state = state_with_text(path.clone(), "alpha beta gamma\n");

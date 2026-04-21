@@ -17,6 +17,7 @@ impl SearchQuery {
                     start
                 }
             }
+            SearchLanding::AfterMatch => Pos::new(start.line, start.col.saturating_add(1)),
         }
     }
 }
@@ -273,9 +274,13 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
             term: ch.to_string(),
             landing: SearchLanding::BeforeMatch,
         }),
-        Motion::FindCharBefore(ch) | Motion::TillCharBefore(ch) => Some(SearchQuery {
+        Motion::FindCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
             landing: SearchLanding::OnMatch,
+        }),
+        Motion::TillCharBefore(ch) => Some(SearchQuery {
+            term: ch.to_string(),
+            landing: SearchLanding::AfterMatch,
         }),
         _ => None,
     }

@@ -64,6 +64,7 @@ struct OneShotHighlight {
 enum SearchLanding {
     OnMatch,
     BeforeMatch,
+    AfterMatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
