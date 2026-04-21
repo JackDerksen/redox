@@ -133,6 +133,27 @@ impl TextBuffer {
         Some((existing_chars, indent.chars().count()))
     }
 
+    /// Remove trailing spaces and tabs from every line in the buffer.
+    ///
+    /// Returns `true` when at least one line was changed.
+    pub fn trim_trailing_whitespace(&mut self) -> bool {
+        let mut changed = false;
+
+        for line in (0..self.len_lines()).rev() {
+            let text = self.line_string(line);
+            let line_len = text.chars().count();
+            let trimmed_len = text.trim_end_matches([' ', '\t']).chars().count();
+            if trimmed_len == line_len {
+                continue;
+            }
+
+            let _ = self.delete_range(Pos::new(line, trimmed_len), Pos::new(line, line_len));
+            changed = true;
+        }
+
+        changed
+    }
+
     /// Apply an `Edit` expressed in char indices.
     ///
     /// Returns the resulting cursor position (end of inserted text, or start of deletion).

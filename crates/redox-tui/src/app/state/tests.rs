@@ -1607,6 +1607,44 @@ fn command_write_status_expires_after_timeout() {
 }
 
 #[test]
+fn command_write_trims_trailing_whitespace_on_save() {
+    let path = temp_file_path("write_trims_trailing_whitespace");
+    let mut state = state_with_text(path.clone(), "alpha  \nbeta\t \n gamma\t\t\n");
+
+    run_command(&mut state, "w");
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha\nbeta\n gamma\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("failed to read saved file"),
+        "alpha\nbeta\n gamma\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_clamps_cursor_after_trimming_trailing_whitespace() {
+    let path = temp_file_path("write_trim_cursor");
+    let mut state = state_with_text(path.clone(), "alpha   \n");
+    let active_id = state.session.active_id();
+    state
+        .views
+        .get_mut(&active_id)
+        .expect("missing active view")
+        .cursor
+        .cursor = Pos::new(0, 7);
+
+    run_command(&mut state, "w");
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn command_e_uses_trimmed_remainder_as_path() {
     let path_a = temp_file_path("e_trimmed_a");
     let path_b = temp_file_path("e_trimmed_b");

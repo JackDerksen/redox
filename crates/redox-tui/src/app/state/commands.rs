@@ -6,6 +6,7 @@ use redox_core::Selection;
 use super::{EditorMode, EditorState};
 use crate::ui::language_for_path;
 use crate::ui::syntax::smart_open_line_insert;
+use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 impl EditorState {
     pub(super) fn execute_command_line(&mut self) {
@@ -233,6 +234,20 @@ impl EditorState {
             return false;
         }
 
+        let before = self.capture_active_undo_snapshot();
+        let trimmed = self.trim_active_trailing_whitespace();
+        if trimmed {
+            let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
+            let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+            let active_id = self.session.active_id();
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            self.invalidate_active_render_caches();
+            let _ = self.record_active_undo_if_changed(before);
+        }
+
         match self.session.save_active() {
             Ok(()) => {
                 self.set_status("written");
@@ -243,6 +258,10 @@ impl EditorState {
                 false
             }
         }
+    }
+
+    fn trim_active_trailing_whitespace(&mut self) -> bool {
+        self.session.active_buffer_mut().trim_trailing_whitespace()
     }
 
     pub(super) fn open_line_and_enter_insert(
