@@ -519,6 +519,9 @@ impl EditorState {
                 let end = buffer.move_right(cursor);
                 let replacement = toggled_case_text(ch);
                 if replacement != ch.to_string() {
+                    // Case toggling can expand to multiple codepoints (for example, `ß` -> `SS`).
+                    // We intentionally advance to the end of the replacement so repeated `~`
+                    // steps move past the expanded text, which matches Vim-like behavior.
                     let sel = buffer.replace_selection(Selection::new(cursor, end), &replacement);
                     cursor = sel.cursor;
                     changed = true;

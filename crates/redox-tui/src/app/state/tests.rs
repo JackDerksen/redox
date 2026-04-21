@@ -1106,6 +1106,21 @@ fn normal_mode_tilde_on_non_letter_only_moves_cursor() {
 }
 
 #[test]
+fn normal_mode_tilde_advances_past_multicodepoint_case_expansion() {
+    let path = temp_file_path("toggle_case_multicodepoint");
+    let mut state = state_with_text(path.clone(), "ßa\n");
+
+    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "SSa\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_char_tilde_toggles_entire_selection_and_normalizes_mode() {
     let path = temp_file_path("toggle_case_visual_char");
     let mut state = state_with_text(path.clone(), "aBcD\n");
