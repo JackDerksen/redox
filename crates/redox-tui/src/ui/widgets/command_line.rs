@@ -93,7 +93,7 @@ fn command_line_view(text: &str, input_width: usize) -> (String, usize) {
     }
 
     let text_width = command_text_width(text);
-    if text_width < input_width {
+    if text_width <= input_width {
         let clipped = clip_text_to_cells(text, input_width);
         let cursor_offset = command_text_width(&clipped);
         return (clipped, cursor_offset);
@@ -142,6 +142,13 @@ mod tests {
         let (visible, cursor_offset) = command_line_view("abcdefghijklmnopqrstuvwxyz", 8);
         assert_eq!(visible, "tuvwxyz");
         assert_eq!(cursor_offset, 7);
+    }
+
+    #[test]
+    fn command_line_view_keeps_exact_fit_input_unclipped() {
+        let (visible, cursor_offset) = command_line_view("exactfit", 8);
+        assert_eq!(visible, "exactfit");
+        assert_eq!(cursor_offset, 8);
     }
 
     #[test]
