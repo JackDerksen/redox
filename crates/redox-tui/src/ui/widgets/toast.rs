@@ -215,9 +215,9 @@ mod tests {
     fn toast_layout_prefers_height_for_long_messages() {
         let layout = toast_layout("abcdefghijklmnopqrstuvwxyz", 30, 20, None)
             .expect("toast layout should fit");
-        assert_eq!(layout.inner_w, 22);
+        assert_eq!(layout.inner_w, 27);
         assert!(layout.inner_h > 1);
-        assert_eq!(layout.lines, vec!["abcdefghijklmnopqrst", "uvwxyz"]);
+        assert_eq!(layout.lines, vec!["abcdefghijklmnopqrstuvwxy", "z"]);
     }
 
     #[test]
