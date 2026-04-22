@@ -1,5 +1,5 @@
-use minui::widgets::Widget;
 use minui::Window;
+use minui::widgets::Widget;
 
 use crate::app::AboutPopup;
 use crate::ui::widgets::popup::{

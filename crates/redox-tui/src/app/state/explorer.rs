@@ -1075,9 +1075,23 @@ fn explorer_entry_label(name: &str, is_dir: bool) -> String {
 fn format_explorer_delete_confirmation(
     deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
 ) -> String {
+    let dir_context_base = common_path_prefix(
+        &deletions_by_dir
+            .iter()
+            .map(|(dir_path, _)| dir_path.as_path())
+            .collect::<Vec<_>>(),
+    );
+    let include_dir_context = deletions_by_dir.len() > 1;
+
     let mut targets = Vec::new();
     for (dir_path, deletions) in deletions_by_dir {
-        targets.extend(explorer_delete_confirmation_targets(dir_path, deletions));
+        let dir_label = include_dir_context
+            .then(|| explorer_delete_confirmation_dir_label(dir_context_base.as_deref(), dir_path));
+        targets.extend(explorer_delete_confirmation_targets_with_dir_context(
+            dir_path,
+            deletions,
+            dir_label.as_deref(),
+        ));
     }
     let noun = if targets.len() == 1 {
         "entry"
@@ -1127,6 +1141,44 @@ fn explorer_delete_confirmation_targets(
             .then_with(|| a.cmp(b))
     });
     targets
+}
+
+fn explorer_delete_confirmation_targets_with_dir_context(
+    dir_path: &Path,
+    deletions: &[ExplorerEntry],
+    dir_label: Option<&str>,
+) -> Vec<String> {
+    explorer_delete_confirmation_targets(dir_path, deletions)
+        .into_iter()
+        .map(|target| match dir_label {
+            Some(dir_label) => format!("{dir_label}{target}"),
+            None => target,
+        })
+        .collect()
+}
+
+fn explorer_delete_confirmation_dir_label(base_dir: Option<&Path>, dir_path: &Path) -> String {
+    let relative_dir = base_dir
+        .and_then(|base_dir| dir_path.strip_prefix(base_dir).ok())
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"));
+
+    match relative_dir {
+        Some(relative_dir) => format!("{relative_dir}/"),
+        None => "./".to_string(),
+    }
+}
+
+fn common_path_prefix(paths: &[&Path]) -> Option<PathBuf> {
+    let mut prefix = paths.first()?.to_path_buf();
+    for path in &paths[1..] {
+        while !path.starts_with(&prefix) {
+            if !prefix.pop() {
+                return None;
+            }
+        }
+    }
+    Some(prefix)
 }
 
 fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &mut Vec<String>) {
@@ -1813,6 +1865,22 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn format_explorer_delete_confirmation_disambiguates_targets_across_directories() {
+        let root = temp_dir_path("delete_confirmation_multi");
+        let child = root.join("child");
+
+        let message = format_explorer_delete_confirmation(&[
+            (root.clone(), vec![file_entry("duplicate.txt")]),
+            (child, vec![file_entry("duplicate.txt")]),
+        ]);
+
+        assert_eq!(
+            message,
+            "confirm deletion of 2 entries:\n  ./duplicate.txt\n  child/duplicate.txt\npress y"
+        );
     }
 
     #[test]

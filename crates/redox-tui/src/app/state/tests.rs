@@ -2175,6 +2175,75 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
 }
 
 #[test]
+fn explorer_write_multi_directory_delete_confirmation_includes_directory_context() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_multi_dir_confirm_delete_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    let root_delete = dir.join("duplicate.txt");
+    let child_delete = child_dir.join("duplicate.txt");
+    fs::write(&file_open, "open").expect("failed to write open fixture");
+    fs::write(&root_delete, "root").expect("failed to write root fixture");
+    fs::write(&child_delete, "child").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    state.surface_go_parent();
+    run_command(&mut state, "w");
+
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 2 entries"));
+    assert!(msg.contains("./duplicate.txt"));
+    assert!(msg.contains("child/duplicate.txt"));
+
+    let _ = fs::remove_file(file_open);
+    let _ = fs::remove_file(root_delete);
+    let _ = fs::remove_file(child_delete);
+    let _ = fs::remove_dir(child_dir);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
 fn explorer_write_preserves_cursor_line_when_still_in_range() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_cursor_preserve_test_{}",
