@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use redox_core::motion::{apply_motion_n, Motion};
 use redox_core::Pos;
+use redox_core::motion::{Motion, apply_motion_n};
 
 use super::{EditorMode, EditorState, SearchLanding, SearchMatch, SearchQuery, SearchState};
 

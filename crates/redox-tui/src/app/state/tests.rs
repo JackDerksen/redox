@@ -1,7 +1,7 @@
 use super::*;
 use redox_core::{
-    motion::Motion, BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope,
-    TextObjectSpec, VisualModeKind,
+    BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
+    VisualModeKind, motion::Motion,
 };
 use std::fs;
 use std::io::Write;
@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
-use crate::ui::syntax::SyntaxLanguage;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
+use crate::ui::syntax::SyntaxLanguage;
 
 fn temp_file_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -184,17 +184,20 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     assert!(view.delimiter_pair_cache.has_stale_analysis());
     assert!(!view.delimiter_pair_cache.has_fresh_analysis());
     assert!(view.delimiter_pair_cache.get().is_none());
-    assert!(view
-        .syntax_highlighter
-        .has_stale_cache_for(SyntaxLanguage::Rust));
-    assert!(view
-        .syntax_highlighter
-        .has_any_cache_for(SyntaxLanguage::Rust));
+    assert!(
+        view.syntax_highlighter
+            .has_stale_cache_for(SyntaxLanguage::Rust)
+    );
+    assert!(
+        view.syntax_highlighter
+            .has_any_cache_for(SyntaxLanguage::Rust)
+    );
     assert!(!view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
-    assert!(view
-        .syntax_highlighter
-        .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
-        .is_some());
+    assert!(
+        view.syntax_highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
+            .is_some()
+    );
     assert_eq!(
         view.syntax_highlighter.active_scope_pair_cached(
             &rust_buffer,
@@ -225,11 +228,12 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&after));
     assert!(view.delimiter_pair_cache.has_fresh_analysis());
-    assert!(view
-        .delimiter_pair_cache
-        .get()
-        .expect("analysis")
-        .is_empty());
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -262,11 +266,12 @@ fn stale_analysis_results_are_dropped() {
         .views
         .get_mut(&active_id)
         .expect("missing active view");
-    assert!(view
-        .delimiter_pair_cache
-        .get()
-        .expect("analysis")
-        .is_empty());
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -1529,7 +1534,10 @@ fn command_edit_replaces_empty_startup_buffer() {
     assert!(state.session.buffer(placeholder_id).is_none());
     assert_eq!(state.session.summaries().len(), 1);
     let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "bn");
     assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
@@ -1757,12 +1765,14 @@ fn explorer_command_opens_ui_buffer() {
 
     assert!(state.explorer_popup().is_some());
     assert!(state.active_display_name().contains("[explorer]"));
-    assert!(state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .any(|line| line == "../"));
+    assert!(
+        state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .any(|line| line == "../")
+    );
     let popup = state
         .explorer_popup()
         .expect("explorer popup should be active");
@@ -2050,14 +2060,19 @@ fn explorer_write_requires_confirmation_for_deletes() {
         80,
         24,
     );
-    assert!(state
-        .status_msg
-        .as_deref()
-        .is_some_and(|msg| msg.contains("confirm deletion of 1 entry")));
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|msg| msg.contains("confirm deletion of 1 entry"))
+    );
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("deleted file: z_delete.txt"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("deleted file: z_delete.txt")
+    );
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
@@ -2150,7 +2165,10 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!doomed_dir.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("deleted directory: nested/"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("deleted directory: nested/")
+    );
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
@@ -2504,7 +2522,10 @@ fn explorer_file_open_replaces_empty_startup_background_buffer() {
     assert!(state.session.buffer(explorer_id).is_none());
     assert_eq!(state.session.summaries().len(), 1);
     let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "bp");
     assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
@@ -2722,7 +2743,10 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
     assert!(state.session.buffer(explorer_id).is_none());
     assert_eq!(state.session.summaries().len(), 2);
     let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "ls");
     let msg = state.status_msg.as_deref().expect("missing ls status");

@@ -2,7 +2,7 @@ use tree_sitter::Language;
 
 use crate::ui::syntax::SyntaxLanguage;
 
-use super::{default_refine_role, general_capture_mapping, LanguageConfig};
+use super::{LanguageConfig, default_refine_role, general_capture_mapping};
 
 pub(super) const HTML_LANGUAGE: LanguageConfig = LanguageConfig {
     language: SyntaxLanguage::Html,

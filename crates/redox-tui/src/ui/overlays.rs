@@ -1,11 +1,11 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
-use minui::{cell_width, Color, ColorPair, TabPolicy, Window};
+use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::ui::{syntax::SyntaxScopePair, UiStyle};
+use crate::ui::{UiStyle, syntax::SyntaxScopePair};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelimiterKind {

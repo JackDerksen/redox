@@ -544,11 +544,7 @@ impl EditorState {
         }
     }
 
-    fn toggle_case_active_visual_selection(
-        &mut self,
-        viewport_width_cells: usize,
-        text_vh: usize,
-    ) {
+    fn toggle_case_active_visual_selection(&mut self, viewport_width_cells: usize, text_vh: usize) {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }

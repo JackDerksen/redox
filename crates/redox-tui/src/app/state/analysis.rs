@@ -4,7 +4,7 @@ use std::thread;
 
 use redox_core::{BufferId, TextBuffer};
 
-use crate::ui::overlays::{compute_delimiter_analysis, DelimiterAnalysis};
+use crate::ui::overlays::{DelimiterAnalysis, compute_delimiter_analysis};
 use crate::ui::syntax::{HighlightCache, SyntaxHighlighter, SyntaxLanguage};
 
 #[derive(Debug)]

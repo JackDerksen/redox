@@ -398,7 +398,13 @@ mod tests {
     fn matching_delimiter_skips_escaped_asymmetric_delimiters_while_scanning() {
         let buffer = TextBuffer::from_str(r"(alpha \( beta))");
 
-        assert_eq!(buffer.matching_delimiter(Pos::new(0, 0)), Some(Pos::new(0, 14)));
-        assert_eq!(buffer.matching_delimiter(Pos::new(0, 14)), Some(Pos::new(0, 0)));
+        assert_eq!(
+            buffer.matching_delimiter(Pos::new(0, 0)),
+            Some(Pos::new(0, 14))
+        );
+        assert_eq!(
+            buffer.matching_delimiter(Pos::new(0, 14)),
+            Some(Pos::new(0, 0))
+        );
     }
 }

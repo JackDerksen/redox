@@ -3,10 +3,10 @@ use minui::Window;
 
 use crate::app::AboutPopup;
 use crate::ui::widgets::popup::{
-    clip_text_to_cells, draw_popup_frame, popup_inner_size, popup_window_view, wrap_text_to_cells,
-    PopupChrome,
+    PopupChrome, clip_text_to_cells, draw_popup_frame, popup_inner_size, popup_window_view,
+    wrap_text_to_cells,
 };
-use crate::ui::{build_editor_status_bar, UiStyle};
+use crate::ui::{UiStyle, build_editor_status_bar};
 
 pub fn draw_about_popup_view(
     state: &mut crate::app::EditorState,

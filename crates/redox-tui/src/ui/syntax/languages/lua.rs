@@ -3,7 +3,7 @@ use tree_sitter::Language;
 use crate::ui::style::SyntaxRole;
 use crate::ui::syntax::{SyntaxCapture, SyntaxLanguage};
 
-use super::{default_refine_role, general_capture_mapping, LanguageConfig};
+use super::{LanguageConfig, default_refine_role, general_capture_mapping};
 
 pub(super) const LUA_LANGUAGE: LanguageConfig = LanguageConfig {
     language: SyntaxLanguage::Lua,

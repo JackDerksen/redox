@@ -1,9 +1,9 @@
-use redox_core::{motion::Motion, Pos, Selection};
+use redox_core::{Pos, Selection, motion::Motion};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
 use crate::ui::syntax::smart_newline_insert;
-use crate::ui::{language_for_path, STATUS_BAR_HEIGHT_ROWS};
+use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
 
 impl EditorState {
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.
