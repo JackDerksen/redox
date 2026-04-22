@@ -71,6 +71,34 @@ impl AppliedExplorerChanges {
             .map(|entry| entry.path.clone())
             .collect()
     }
+
+    fn extend(&mut self, other: AppliedExplorerChanges) {
+        self.renamed_entries.extend(other.renamed_entries);
+        self.deleted_entries.extend(other.deleted_entries);
+        self.created_entries.extend(other.created_entries);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedExplorerRename {
+    old_name: String,
+    new_name: String,
+    old_path: PathBuf,
+    new_path: PathBuf,
+    temp_path: PathBuf,
+    is_dir: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PlannedExplorerDirWrite {
+    changes: AppliedExplorerChanges,
+    renames: Vec<PlannedExplorerRename>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PlannedExplorerWrite {
+    changes: AppliedExplorerChanges,
+    dir_writes: Vec<PlannedExplorerDirWrite>,
 }
 
 impl EditorState {
@@ -277,7 +305,7 @@ impl EditorState {
                 self.about.as_ref().and_then(|about| {
                     (about.buffer_id == return_to_id
                         && self.is_empty_unnamed_startup_buffer(about.return_to_buffer_id))
-                        .then_some(about.return_to_buffer_id)
+                    .then_some(about.return_to_buffer_id)
                 })
             });
         match self.session.open_file(&file_path) {
@@ -368,7 +396,12 @@ impl EditorState {
         };
         let initial_cursor_line = preferred_entry_name
             .as_ref()
-            .and_then(|name| draft.original_entries.iter().position(|entry| entry.name == *name))
+            .and_then(|name| {
+                draft
+                    .original_entries
+                    .iter()
+                    .position(|entry| entry.name == *name)
+            })
             .unwrap_or(0);
         let explorer_id = explorer.buffer_id;
 
@@ -480,31 +513,23 @@ impl EditorState {
             }
         }
 
-        let mut applied_changes = AppliedExplorerChanges::default();
-        for (dir_path, desired_entries) in &desired_entries_by_dir {
-            let Some(draft) = explorer.directory_drafts.get(dir_path) else {
-                continue;
+        let planned_write =
+            match plan_explorer_write(&explorer.directory_drafts, &desired_entries_by_dir) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    self.explorer_delete_confirmation_token = None;
+                    self.set_status(format!("explorer write failed: {e}"));
+                    return false;
+                }
             };
-            let dir_changes =
-                match apply_explorer_changes(dir_path, &draft.original_entries, desired_entries) {
-                    Ok(changes) => changes,
-                    Err(e) => {
-                        self.explorer_delete_confirmation_token = None;
-                        self.set_status(format!("explorer write failed: {e}"));
-                        return false;
-                    }
-                };
-            applied_changes
-                .renamed_entries
-                .extend(dir_changes.renamed_entries);
-            applied_changes
-                .deleted_entries
-                .extend(dir_changes.deleted_entries);
-            applied_changes
-                .created_entries
-                .extend(dir_changes.created_entries);
+
+        if let Err(e) = execute_explorer_write(&planned_write) {
+            self.explorer_delete_confirmation_token = None;
+            self.set_status(format!("explorer write failed: {e}"));
+            return false;
         }
-        self.sync_session_after_explorer_write(&applied_changes);
+
+        self.sync_session_after_explorer_write(&planned_write.changes);
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,
@@ -555,7 +580,7 @@ impl EditorState {
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
-        self.set_status(format_explorer_write_summary(&applied_changes));
+        self.set_status(format_explorer_write_summary(&planned_write.changes));
         true
     }
 
@@ -747,11 +772,92 @@ fn parse_explorer_entries(text: &str) -> anyhow::Result<Vec<ExplorerEntry>> {
     Ok(out)
 }
 
+fn plan_explorer_write(
+    drafts: &HashMap<PathBuf, ExplorerDirectoryDraft>,
+    desired_entries_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
+) -> anyhow::Result<PlannedExplorerWrite> {
+    let mut planned_write = PlannedExplorerWrite::default();
+
+    for (original_dir_path, desired_entries) in desired_entries_by_dir {
+        let Some(draft) = drafts.get(original_dir_path) else {
+            continue;
+        };
+        let Some(resolved_dir_path) =
+            resolve_explorer_draft_dir_path(original_dir_path, &planned_write.changes)
+        else {
+            continue;
+        };
+        let dir_write = plan_explorer_dir_changes(
+            original_dir_path,
+            &resolved_dir_path,
+            &draft.original_entries,
+            desired_entries,
+        )?;
+        planned_write.changes.extend(dir_write.changes.clone());
+        planned_write.dir_writes.push(dir_write);
+    }
+
+    Ok(planned_write)
+}
+
+fn resolve_explorer_draft_dir_path(
+    dir_path: &Path,
+    applied_changes: &AppliedExplorerChanges,
+) -> Option<PathBuf> {
+    let mut resolved = dir_path.to_path_buf();
+
+    for deleted in applied_changes
+        .deleted_entries
+        .iter()
+        .filter(|entry| entry.is_dir)
+    {
+        if resolved == deleted.path || resolved.starts_with(&deleted.path) {
+            return None;
+        }
+    }
+
+    for rename in applied_changes
+        .renamed_entries
+        .iter()
+        .filter(|rename| rename.is_dir)
+    {
+        if resolved == rename.old_path {
+            resolved = rename.new_path.clone();
+            continue;
+        }
+        if let Ok(relative) = resolved.strip_prefix(&rename.old_path) {
+            resolved = rename.new_path.join(relative);
+        }
+    }
+
+    for deleted in applied_changes
+        .deleted_entries
+        .iter()
+        .filter(|entry| entry.is_dir)
+    {
+        if resolved == deleted.path || resolved.starts_with(&deleted.path) {
+            return None;
+        }
+    }
+
+    Some(resolved)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn apply_explorer_changes(
     dir_path: &Path,
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
-) -> anyhow::Result<AppliedExplorerChanges> {
+) -> anyhow::Result<PlannedExplorerDirWrite> {
+    plan_explorer_dir_changes(dir_path, dir_path, old_entries, new_entries)
+}
+
+fn plan_explorer_dir_changes(
+    current_dir_path: &Path,
+    resolved_dir_path: &Path,
+    old_entries: &[ExplorerEntry],
+    new_entries: &[ExplorerEntry],
+) -> anyhow::Result<PlannedExplorerDirWrite> {
     if let Some(old_first) = old_entries.first()
         && old_first.is_parent
     {
@@ -781,16 +887,6 @@ fn apply_explorer_changes(
         }
     }
 
-    #[derive(Debug)]
-    struct PlannedRename {
-        old_name: String,
-        new_name: String,
-        old_path: PathBuf,
-        new_path: PathBuf,
-        temp_path: PathBuf,
-        is_dir: bool,
-    }
-
     let old_index_by_name: HashMap<&str, usize> = old_entries
         .iter()
         .enumerate()
@@ -818,15 +914,15 @@ fn apply_explorer_changes(
     old_missing.sort_by_key(|(idx, _)| *idx);
     new_added.sort_by_key(|(idx, _)| *idx);
 
-    let mut renames: Vec<PlannedRename> = Vec::new();
+    let mut renames = Vec::new();
     let (rename_pairs, deletions, creations) =
         partition_explorer_entry_changes(old_missing, new_added);
     for (old, new) in rename_pairs {
-        renames.push(PlannedRename {
+        renames.push(PlannedExplorerRename {
             old_name: old.name.clone(),
             new_name: new.name.clone(),
-            old_path: explorer_entry_path(dir_path, &old.name),
-            new_path: explorer_entry_path(dir_path, &new.name),
+            old_path: explorer_entry_path(resolved_dir_path, &old.name),
+            new_path: explorer_entry_path(resolved_dir_path, &new.name),
             temp_path: PathBuf::new(),
             is_dir: old.is_dir,
         });
@@ -835,7 +931,8 @@ fn apply_explorer_changes(
     // Allow targets that are part of the rename source set (swap/cycle); reject all others.
     let rename_sources: HashSet<PathBuf> = renames.iter().map(|r| r.old_path.clone()).collect();
     for rename in &renames {
-        if !rename.old_path.exists() {
+        let current_old_path = explorer_entry_path(current_dir_path, &rename.old_name);
+        if !current_old_path.exists() {
             anyhow::bail!("rename source '{}' does not exist", rename.old_name);
         }
         if rename.new_path.exists() && !rename_sources.contains(&rename.new_path) {
@@ -850,7 +947,7 @@ fn apply_explorer_changes(
         let mut attempt = 0usize;
         loop {
             let candidate = format!(".redox_rename_tmp_{idx}_{attempt}");
-            let candidate_path = dir_path.join(&candidate);
+            let candidate_path = resolved_dir_path.join(&candidate);
             if !reserved_temp_paths.contains(&candidate_path) && !candidate_path.exists() {
                 reserved_temp_paths.insert(candidate_path.clone());
                 rename.temp_path = candidate_path;
@@ -863,68 +960,75 @@ fn apply_explorer_changes(
         }
     }
 
-    for rename in &renames {
-        fs::rename(&rename.old_path, &rename.temp_path)?;
-    }
-    for rename in &renames {
-        if let Some(parent) = rename.new_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if rename.new_path.exists() {
-            anyhow::bail!("rename target '{}' already exists", rename.new_name);
-        }
-        fs::rename(&rename.temp_path, &rename.new_path)?;
-    }
+    Ok(PlannedExplorerDirWrite {
+        changes: AppliedExplorerChanges {
+            renamed_entries: renames
+                .iter()
+                .map(|rename| AppliedExplorerRename {
+                    old_name: rename.old_name.clone(),
+                    new_name: rename.new_name.clone(),
+                    old_path: rename.old_path.clone(),
+                    new_path: rename.new_path.clone(),
+                    is_dir: rename.is_dir,
+                })
+                .collect(),
+            deleted_entries: deletions
+                .iter()
+                .map(|entry| AppliedExplorerEntryChange {
+                    name: entry.name.clone(),
+                    path: explorer_entry_path(resolved_dir_path, &entry.name),
+                    is_dir: entry.is_dir,
+                })
+                .collect(),
+            created_entries: creations
+                .iter()
+                .map(|entry| AppliedExplorerEntryChange {
+                    name: entry.name.clone(),
+                    path: explorer_entry_path(resolved_dir_path, &entry.name),
+                    is_dir: entry.is_dir,
+                })
+                .collect(),
+        },
+        renames,
+    })
+}
 
-    for old in &deletions {
-        let path = explorer_entry_path(dir_path, &old.name);
-        if old.is_dir {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
+fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Result<()> {
+    for dir_write in &planned_write.dir_writes {
+        for rename in &dir_write.renames {
+            fs::rename(&rename.old_path, &rename.temp_path)?;
         }
-    }
-
-    for new in &creations {
-        let path = explorer_entry_path(dir_path, &new.name);
-        if new.is_dir {
-            fs::create_dir_all(&path)?;
-        } else {
-            if let Some(parent) = path.parent() {
+        for rename in &dir_write.renames {
+            if let Some(parent) = rename.new_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let _ = fs::File::create(&path)?;
+            if rename.new_path.exists() {
+                anyhow::bail!("rename target '{}' already exists", rename.new_name);
+            }
+            fs::rename(&rename.temp_path, &rename.new_path)?;
         }
     }
 
-    Ok(AppliedExplorerChanges {
-        renamed_entries: renames
-            .iter()
-            .map(|rename| AppliedExplorerRename {
-                old_name: rename.old_name.clone(),
-                new_name: rename.new_name.clone(),
-                old_path: rename.old_path.clone(),
-                new_path: rename.new_path.clone(),
-                is_dir: rename.is_dir,
-            })
-            .collect(),
-        deleted_entries: deletions
-            .iter()
-            .map(|entry| AppliedExplorerEntryChange {
-                name: entry.name.clone(),
-                path: explorer_entry_path(dir_path, &entry.name),
-                is_dir: entry.is_dir,
-            })
-            .collect(),
-        created_entries: creations
-            .iter()
-            .map(|entry| AppliedExplorerEntryChange {
-                name: entry.name.clone(),
-                path: explorer_entry_path(dir_path, &entry.name),
-                is_dir: entry.is_dir,
-            })
-            .collect(),
-    })
+    for deleted in &planned_write.changes.deleted_entries {
+        if deleted.is_dir {
+            fs::remove_dir_all(&deleted.path)?;
+        } else {
+            fs::remove_file(&deleted.path)?;
+        }
+    }
+
+    for created in &planned_write.changes.created_entries {
+        if created.is_dir {
+            fs::create_dir_all(&created.path)?;
+        } else {
+            if let Some(parent) = created.path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let _ = fs::File::create(&created.path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Result<String> {
@@ -936,7 +1040,9 @@ fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Resu
     for component in Path::new(name).components() {
         match component {
             Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
-            Component::CurDir => anyhow::bail!("line {line_number}: '.' path segments are not allowed"),
+            Component::CurDir => {
+                anyhow::bail!("line {line_number}: '.' path segments are not allowed")
+            }
             Component::ParentDir => {
                 anyhow::bail!("line {line_number}: '..' path segments are not allowed")
             }
@@ -954,9 +1060,8 @@ fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Resu
 }
 
 fn explorer_entry_path(dir_path: &Path, name: &str) -> PathBuf {
-    name.split('/').fold(dir_path.to_path_buf(), |path, segment| {
-        path.join(segment)
-    })
+    name.split('/')
+        .fold(dir_path.to_path_buf(), |path, segment| path.join(segment))
 }
 
 fn explorer_entry_label(name: &str, is_dir: bool) -> String {
@@ -974,18 +1079,21 @@ fn format_explorer_delete_confirmation(
     for (dir_path, deletions) in deletions_by_dir {
         targets.extend(explorer_delete_confirmation_targets(dir_path, deletions));
     }
-    let noun = if targets.len() == 1 { "entry" } else { "entries" };
-    let mut lines = vec![format!(
-        "confirm deletion of {} {}:",
-        targets.len(),
-        noun
-    )];
+    let noun = if targets.len() == 1 {
+        "entry"
+    } else {
+        "entries"
+    };
+    let mut lines = vec![format!("confirm deletion of {} {}:", targets.len(), noun)];
     lines.extend(targets.into_iter().map(|target| format!("  {target}")));
     lines.push("press y".to_string());
     lines.join("\n")
 }
 
-fn explorer_delete_confirmation_targets(dir_path: &Path, deletions: &[ExplorerEntry]) -> Vec<String> {
+fn explorer_delete_confirmation_targets(
+    dir_path: &Path,
+    deletions: &[ExplorerEntry],
+) -> Vec<String> {
     let mut targets = Vec::new();
     for entry in deletions {
         targets.push(explorer_entry_label(&entry.name, entry.is_dir));
@@ -1001,8 +1109,14 @@ fn explorer_delete_confirmation_targets(dir_path: &Path, deletions: &[ExplorerEn
         let b_path = b.trim_end_matches('/');
         let a_depth = a_path.split('/').count();
         let b_depth = b_path.split('/').count();
-        let a_parent = a_path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-        let b_parent = b_path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let a_parent = a_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        let b_parent = b_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
         let a_is_dir = a.ends_with('/');
         let b_is_dir = b.ends_with('/');
         a_depth
@@ -1177,12 +1291,16 @@ fn partition_explorer_entry_changes(
         let old_candidates: Vec<(usize, &ExplorerEntry)> = old_missing
             .iter()
             .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| (entry.is_dir == is_dir).then_some((vec_idx, entry)))
+            .filter_map(|(vec_idx, (_, entry))| {
+                (entry.is_dir == is_dir).then_some((vec_idx, entry))
+            })
             .collect();
         let new_candidates: Vec<(usize, &ExplorerEntry)> = new_added
             .iter()
             .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| (entry.is_dir == is_dir).then_some((vec_idx, entry)))
+            .filter_map(|(vec_idx, (_, entry))| {
+                (entry.is_dir == is_dir).then_some((vec_idx, entry))
+            })
             .collect();
 
         for ((old_vec_idx, old_entry), (new_vec_idx, new_entry)) in
@@ -1258,6 +1376,14 @@ mod tests {
         }
     }
 
+    fn parent_entry() -> ExplorerEntry {
+        ExplorerEntry {
+            name: "..".to_string(),
+            is_dir: true,
+            is_parent: true,
+        }
+    }
+
     #[test]
     fn deleting_non_empty_directory_recursively_removes_children() {
         let nanos = SystemTime::now()
@@ -1277,10 +1403,15 @@ mod tests {
         }];
         let new_entries = Vec::new();
 
-        let changes = apply_explorer_changes(&root, &old_entries, &new_entries)
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
             .expect("expected non-empty directory delete to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned.clone()],
+        })
+        .expect("expected non-empty directory delete execution to succeed");
         assert_eq!(
-            changes.deleted_entries,
+            planned.changes.deleted_entries,
             vec![AppliedExplorerEntryChange {
                 name: "doomed".to_string(),
                 path: root.join("doomed"),
@@ -1302,8 +1433,13 @@ mod tests {
         let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
         let new_entries = vec![file_entry("beta.txt"), file_entry("alpha.txt")];
 
-        apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect("expected reorder-only write to succeed");
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected reorder-only plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+        .expect("expected reorder-only write to succeed");
 
         assert_eq!(
             fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
@@ -1327,8 +1463,13 @@ mod tests {
         let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
         let new_entries = vec![file_entry("beta.txt")];
 
-        apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect("expected delete+keep write to succeed");
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected delete+keep plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+        .expect("expected delete+keep write to succeed");
 
         assert!(!root.join("alpha.txt").exists());
         assert_eq!(
@@ -1353,8 +1494,13 @@ mod tests {
             file_entry("beta.txt"),
         ];
 
-        apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect("expected mid-list insert to succeed");
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
+            .expect("expected mid-list insert plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+        .expect("expected mid-list insert to succeed");
 
         assert_eq!(
             fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
@@ -1397,7 +1543,10 @@ mod tests {
         let err = parse_explorer_entries("../\npath/../file.txt")
             .expect_err("expected parent segments to be rejected");
 
-        assert!(err.to_string().contains("..' path segments are not allowed"));
+        assert!(
+            err.to_string()
+                .contains("..' path segments are not allowed")
+        );
     }
 
     #[test]
@@ -1405,14 +1554,18 @@ mod tests {
         let root = temp_dir_path("nested_create");
         fs::create_dir_all(&root).expect("failed to create fixture root");
 
-        apply_explorer_changes(&root, &[], &[file_entry("path/to/file.txt")])
-            .expect("expected nested file create to succeed");
+        let planned = apply_explorer_changes(&root, &[], &[file_entry("path/to/file.txt")])
+            .expect("expected nested file create plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+        .expect("expected nested file create to succeed");
 
         assert!(root.join("path").is_dir());
         assert!(root.join("path/to").is_dir());
         assert_eq!(
-            fs::read_to_string(root.join("path/to/file.txt"))
-                .expect("failed to read nested file"),
+            fs::read_to_string(root.join("path/to/file.txt")).expect("failed to read nested file"),
             ""
         );
 
@@ -1425,15 +1578,20 @@ mod tests {
         fs::create_dir_all(&root).expect("failed to create fixture root");
         fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
 
-        let changes = apply_explorer_changes(
+        let planned = apply_explorer_changes(
             &root,
             &[file_entry("alpha.txt")],
             &[file_entry("nested/path/alpha.txt")],
         )
+        .expect("expected nested rename plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned.clone()],
+        })
         .expect("expected nested rename to succeed");
 
         assert_eq!(
-            changes.renamed_entries,
+            planned.changes.renamed_entries,
             vec![AppliedExplorerRename {
                 old_name: "alpha.txt".to_string(),
                 new_name: "nested/path/alpha.txt".to_string(),
@@ -1457,16 +1615,21 @@ mod tests {
         fs::create_dir_all(&root).expect("failed to create fixture root");
         fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
 
-        let changes = apply_explorer_changes(
-            &root,
-            &[file_entry("alpha.txt")],
-            &[dir_entry("fresh")],
-        )
+        let planned =
+            apply_explorer_changes(&root, &[file_entry("alpha.txt")], &[dir_entry("fresh")])
+                .expect("expected delete+create plan to succeed");
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned.clone()],
+        })
         .expect("expected delete+create to succeed");
 
-        assert_eq!(changes.renamed_entries, Vec::<AppliedExplorerRename>::new());
         assert_eq!(
-            changes.deleted_entries,
+            planned.changes.renamed_entries,
+            Vec::<AppliedExplorerRename>::new()
+        );
+        assert_eq!(
+            planned.changes.deleted_entries,
             vec![AppliedExplorerEntryChange {
                 name: "alpha.txt".to_string(),
                 path: root.join("alpha.txt"),
@@ -1474,7 +1637,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            changes.created_entries,
+            planned.changes.created_entries,
             vec![AppliedExplorerEntryChange {
                 name: "fresh".to_string(),
                 path: root.join("fresh"),
@@ -1488,12 +1651,144 @@ mod tests {
     }
 
     #[test]
-    fn pending_explorer_delete_count_counts_delete_when_create_offsets_length_change() {
-        let count = pending_explorer_deletions(
+    fn planning_explorer_changes_does_not_mutate_filesystem() {
+        let root = temp_dir_path("plan_only");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+
+        let planned = apply_explorer_changes(
+            &root,
             &[file_entry("alpha.txt")],
-            &[dir_entry("fresh")],
+            &[file_entry("renamed.txt")],
         )
-        .len();
+        .expect("expected rename plan to succeed");
+
+        assert_eq!(
+            planned.changes.renamed_entries,
+            vec![AppliedExplorerRename {
+                old_name: "alpha.txt".to_string(),
+                new_name: "renamed.txt".to_string(),
+                old_path: root.join("alpha.txt"),
+                new_path: root.join("renamed.txt"),
+                is_dir: false,
+            }]
+        );
+        assert!(root.join("alpha.txt").exists());
+        assert!(!root.join("renamed.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_explorer_write_remaps_child_drafts_after_parent_rename() {
+        let root = temp_dir_path("remap_child_draft");
+        let old_parent = root.join("old");
+        let child_file = old_parent.join("child.txt");
+        fs::create_dir_all(&old_parent).expect("failed to create fixture directories");
+        fs::write(&child_file, "child").expect("failed to write child fixture");
+
+        let parent_draft = ExplorerDirectoryDraft {
+            original_entries: vec![dir_entry("old")],
+            text: "../\nnew/".to_string(),
+        };
+        let child_draft = ExplorerDirectoryDraft {
+            original_entries: vec![file_entry("child.txt")],
+            text: "../\nrenamed.txt".to_string(),
+        };
+        let drafts = HashMap::from([
+            (root.clone(), parent_draft),
+            (old_parent.clone(), child_draft),
+        ]);
+        let desired_entries_by_dir = vec![
+            (root.clone(), vec![parent_entry(), dir_entry("new")]),
+            (
+                old_parent.clone(),
+                vec![parent_entry(), file_entry("renamed.txt")],
+            ),
+        ];
+
+        let planned = plan_explorer_write(&drafts, &desired_entries_by_dir)
+            .expect("expected parent rename to remap child draft");
+
+        assert_eq!(
+            planned.changes.renamed_entries,
+            vec![
+                AppliedExplorerRename {
+                    old_name: "old".to_string(),
+                    new_name: "new".to_string(),
+                    old_path: root.join("old"),
+                    new_path: root.join("new"),
+                    is_dir: true,
+                },
+                AppliedExplorerRename {
+                    old_name: "child.txt".to_string(),
+                    new_name: "renamed.txt".to_string(),
+                    old_path: root.join("new/child.txt"),
+                    new_path: root.join("new/renamed.txt"),
+                    is_dir: false,
+                },
+            ]
+        );
+        assert!(root.join("old/child.txt").exists());
+        assert!(!root.join("new").exists());
+
+        execute_explorer_write(&planned).expect("expected remapped child write to execute");
+        assert!(!root.join("old").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("new/renamed.txt")).expect("failed to read renamed child"),
+            "child"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_explorer_write_drops_child_drafts_under_deleted_parent() {
+        let root = temp_dir_path("drop_child_draft");
+        let doomed = root.join("doomed");
+        fs::create_dir_all(&doomed).expect("failed to create fixture directories");
+        fs::write(doomed.join("child.txt"), "child").expect("failed to write child fixture");
+
+        let parent_draft = ExplorerDirectoryDraft {
+            original_entries: vec![dir_entry("doomed")],
+            text: "../".to_string(),
+        };
+        let child_draft = ExplorerDirectoryDraft {
+            original_entries: vec![file_entry("child.txt")],
+            text: "../\nrenamed.txt".to_string(),
+        };
+        let drafts = HashMap::from([(root.clone(), parent_draft), (doomed.clone(), child_draft)]);
+        let desired_entries_by_dir = vec![
+            (root.clone(), vec![parent_entry()]),
+            (
+                doomed.clone(),
+                vec![parent_entry(), file_entry("renamed.txt")],
+            ),
+        ];
+
+        let planned = plan_explorer_write(&drafts, &desired_entries_by_dir)
+            .expect("expected parent delete to drop child draft");
+
+        assert_eq!(planned.dir_writes.len(), 1);
+        assert_eq!(
+            planned.changes.deleted_entries,
+            vec![AppliedExplorerEntryChange {
+                name: "doomed".to_string(),
+                path: root.join("doomed"),
+                is_dir: true,
+            }]
+        );
+
+        execute_explorer_write(&planned).expect("expected parent delete to execute");
+        assert!(!root.join("doomed").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_explorer_delete_count_counts_delete_when_create_offsets_length_change() {
+        let count =
+            pending_explorer_deletions(&[file_entry("alpha.txt")], &[dir_entry("fresh")]).len();
 
         assert_eq!(count, 1);
     }
