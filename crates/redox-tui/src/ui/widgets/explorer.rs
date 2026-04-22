@@ -2,12 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use minui::widgets::{Widget, WindowView};
-use minui::{cell_width, ColorPair, TabPolicy, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup};
-use crate::ui::{build_editor_status_bar, snapshot_lines_wrapped_cached, TextViewport, UiStyle};
+use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 
@@ -16,7 +16,7 @@ pub fn draw_explorer_popup_view(
     style: UiStyle,
     window: &mut dyn Window,
     popup: ExplorerPopup,
-) -> minui::Result<()> {
+) -> minui::Result<Option<CursorSpec>> {
     let (vw, vh) = window.get_size();
     let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
     let popup_w = inner_w.saturating_add(2);
@@ -153,18 +153,18 @@ pub fn draw_explorer_popup_view(
         }
         view.write_str_colored(row as u16, content_x, line, color)?;
     }
-    if spec.visible {
-        view.request_cursor(minui::window::CursorSpec {
-            x: spec.x.saturating_add(content_x),
-            y: spec.y,
-            visible: true,
-        });
-    }
+    let cursor = spec.visible.then_some(CursorSpec {
+        x: x.saturating_add(1)
+            .saturating_add(spec.x)
+            .saturating_add(content_x),
+        y: y.saturating_add(1).saturating_add(spec.y),
+        visible: true,
+    });
 
     let status = build_editor_status_bar(state, style);
     status.draw(window)?;
 
-    Ok(())
+    Ok(cursor)
 }
 
 fn reconcile_explorer_cursor_for_popup(
