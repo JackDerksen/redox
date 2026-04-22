@@ -13,7 +13,7 @@ const TOAST_MARGIN_COLS: u16 = 1;
 const TOAST_MARGIN_ROWS: u16 = 1;
 const TOAST_HORIZONTAL_PADDING: u16 = 1;
 const TOAST_VERTICAL_PADDING: u16 = 0;
-const TOAST_MAX_TEXT_WIDTH: usize = 25;
+const TOAST_MAX_TEXT_WIDTH: usize = 40;
 const TOAST_GAP_ROWS: u16 = 0;
 const TOAST_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 

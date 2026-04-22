@@ -15,8 +15,8 @@
 //!
 //! This file intentionally does not depend on the rest of `redox-tui::ui` to avoid circular deps.
 
-use minui::{cell_width, window::CursorSpec, TabPolicy};
-use redox_core::motion::{apply_motion_n, Motion};
+use minui::{TabPolicy, cell_width, window::CursorSpec};
+use redox_core::motion::{Motion, apply_motion_n};
 use redox_core::{Pos, TextBuffer};
 use std::cmp::min;
 use unicode_segmentation::UnicodeSegmentation;

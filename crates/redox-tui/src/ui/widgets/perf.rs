@@ -2,9 +2,9 @@ use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
 use crate::ui::widgets::popup::{
-    clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view, PopupChrome,
+    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
-use crate::ui::{UiStyle, STATUS_BAR_HEIGHT_CELLS};
+use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const PERF_FRAME_BUDGET_MS: f32 = 1_000.0 / 60.0;
 
@@ -258,7 +258,7 @@ fn write_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{perf_popup_occludes_cursor, PerfPopupLayout};
+    use super::{PerfPopupLayout, perf_popup_occludes_cursor};
 
     #[test]
     fn perf_popup_occludes_cursor_inside_frame_bounds() {

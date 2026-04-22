@@ -9,7 +9,7 @@ use redox_core::{BufferId, EditorSession};
 use minui::input::Clipboard;
 use minui::prelude::{
     input::{Event, KeyKind},
-    render::{cell_width, Color, ColorPair, TabPolicy, TerminalWindow, Window},
+    render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
     widgets::Widget,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -19,7 +19,7 @@ mod input;
 mod ui;
 
 use app::{EditorState, FramePerfSample};
-use input::{map_event_with_context, InputAction};
+use input::{InputAction, map_event_with_context};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
@@ -27,15 +27,15 @@ use ui::overlays::{
     draw_indent_guides,
 };
 use ui::syntax::{
-    draw_line_with_syntax, lexical_fallback_line_spans, scope_guides_enabled,
-    syntax_color_for_range, VisibleLineSyntaxSpans,
+    VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
+    scope_guides_enabled, syntax_color_for_range,
 };
 use ui::{
-    about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
-    explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
-    snapshot_lines_wrapped_cached, status_toast_occludes_cursor, TextViewport, UiStyle,
-    STATUS_BAR_HEIGHT_CELLS,
+    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
+    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
+    draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast, explorer_popup_inner_size,
+    language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
+    snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -93,7 +93,17 @@ fn draw_buffer_view(
             inner_w as usize,
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        draw_explorer_popup_view(state, style, window, popup)?;
+        let cursor_spec = draw_explorer_popup_view(state, style, window, popup)?;
+        let toast_layout = draw_status_toast(state, style, window)?;
+        if let Some(cursor) = cursor_spec {
+            let cursor_hidden_by_toast = toast_layout
+                .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+            if cursor_hidden_by_toast {
+                hide_cursor(window);
+            } else {
+                window.request_cursor(cursor);
+            }
+        }
         return Ok(());
     }
 
@@ -295,8 +305,7 @@ fn draw_buffer_view(
         && !matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
-        )
-    {
+        ) {
         let layout = perf_popup_layout(vw, vh, style);
         draw_perf_popup_view(style, window, popup)?;
         Some(layout)
@@ -1182,11 +1191,21 @@ fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(us
 mod tests {
     use super::*;
     use minui::{ColorPair, Window};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn target_frame_budget_matches_sixty_fps() {
         assert_eq!(TARGET_FRAME_RATE_HZ, 60);
         assert_eq!(TARGET_FRAME_BUDGET, Duration::from_nanos(16_666_666));
+    }
+
+    fn temp_dir_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("redox_lib_test_{tag}_{nanos}"))
     }
 
     struct TestWindow {
@@ -1315,6 +1334,33 @@ mod tests {
         .expect("plain snapshot draw should succeed");
 
         assert_eq!(window.row_text(0), "ijklmnop");
+    }
+
+    #[test]
+    fn draw_buffer_view_shows_status_toast_while_explorer_is_open() {
+        let dir = temp_dir_path("explorer_toast");
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("alpha.txt"), "alpha").expect("failed to write fixture");
+
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        state.set_status("explorer write failed: invalid file name");
+
+        let mut window = TestWindow::new(80, 24);
+        let mut perf = FramePerfSample::default();
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf)
+            .expect("draw should succeed");
+
+        let screen = (0..24)
+            .map(|row| window.row_text(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("explorer write failed"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
 

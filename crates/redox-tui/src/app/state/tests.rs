@@ -1,7 +1,7 @@
 use super::*;
 use redox_core::{
-    motion::Motion, BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope,
-    TextObjectSpec, VisualModeKind,
+    BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
+    VisualModeKind, motion::Motion,
 };
 use std::fs;
 use std::io::Write;
@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
-use crate::ui::syntax::SyntaxLanguage;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
+use crate::ui::syntax::SyntaxLanguage;
 
 fn temp_file_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -184,17 +184,20 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     assert!(view.delimiter_pair_cache.has_stale_analysis());
     assert!(!view.delimiter_pair_cache.has_fresh_analysis());
     assert!(view.delimiter_pair_cache.get().is_none());
-    assert!(view
-        .syntax_highlighter
-        .has_stale_cache_for(SyntaxLanguage::Rust));
-    assert!(view
-        .syntax_highlighter
-        .has_any_cache_for(SyntaxLanguage::Rust));
+    assert!(
+        view.syntax_highlighter
+            .has_stale_cache_for(SyntaxLanguage::Rust)
+    );
+    assert!(
+        view.syntax_highlighter
+            .has_any_cache_for(SyntaxLanguage::Rust)
+    );
     assert!(!view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
-    assert!(view
-        .syntax_highlighter
-        .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
-        .is_some());
+    assert!(
+        view.syntax_highlighter
+            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
+            .is_some()
+    );
     assert_eq!(
         view.syntax_highlighter.active_scope_pair_cached(
             &rust_buffer,
@@ -225,11 +228,12 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&after));
     assert!(view.delimiter_pair_cache.has_fresh_analysis());
-    assert!(view
-        .delimiter_pair_cache
-        .get()
-        .expect("analysis")
-        .is_empty());
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -262,11 +266,12 @@ fn stale_analysis_results_are_dropped() {
         .views
         .get_mut(&active_id)
         .expect("missing active view");
-    assert!(view
-        .delimiter_pair_cache
-        .get()
-        .expect("analysis")
-        .is_empty());
+    assert!(
+        view.delimiter_pair_cache
+            .get()
+            .expect("analysis")
+            .is_empty()
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -1529,7 +1534,10 @@ fn command_edit_replaces_empty_startup_buffer() {
     assert!(state.session.buffer(placeholder_id).is_none());
     assert_eq!(state.session.summaries().len(), 1);
     let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "bn");
     assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
@@ -1757,12 +1765,14 @@ fn explorer_command_opens_ui_buffer() {
 
     assert!(state.explorer_popup().is_some());
     assert!(state.active_display_name().contains("[explorer]"));
-    assert!(state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .any(|line| line == "../"));
+    assert!(
+        state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .any(|line| line == "../")
+    );
     let popup = state
         .explorer_popup()
         .expect("explorer popup should be active");
@@ -1799,6 +1809,10 @@ fn explorer_write_applies_rename_and_create() {
 
     run_command(&mut state, "w");
 
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("renamed files: a.txt -> renamed.txt, open.txt -> created.txt")
+    );
     assert!(dir.join("renamed.txt").exists());
     assert!(dir.join("created.txt").exists());
     assert!(!dir.join("a.txt").exists());
@@ -1807,6 +1821,156 @@ fn explorer_write_applies_rename_and_create() {
     let _ = fs::remove_file(dir.join("created.txt"));
     let _ = fs::remove_file(file_open);
     let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_creates_nested_paths() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_nested_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nfolder/nested.txt\ndeep/tree/");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created directory: deep/tree/; renamed file: open.txt -> folder/nested.txt")
+    );
+    assert!(dir.join("folder").is_dir());
+    assert!(dir.join("folder/nested.txt").exists());
+    assert!(dir.join("deep/tree").is_dir());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explorer_preserves_unsaved_directory_draft_across_navigation() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_preserve_draft_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+    fs::write(child_dir.join("keep.txt"), "keep").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+    state.surface_go_parent();
+
+    assert!(
+        state
+            .session
+            .active_buffer()
+            .to_string()
+            .contains("root_new.txt")
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explorer_write_applies_cached_drafts_from_multiple_directories() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_multi_dir_write_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+    fs::write(child_dir.join("keep.txt"), "keep").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nkeep.txt\nchild_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert!(dir.join("root_new.txt").exists());
+    assert!(child_dir.join("child_new.txt").exists());
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created files: root_new.txt, child_new.txt")
+    );
+
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1885,6 +2049,7 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .as_deref()
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("z_delete.txt"));
     assert!(state.status_message_is_sticky());
 
     state.apply_input(
@@ -1895,17 +2060,70 @@ fn explorer_write_requires_confirmation_for_deletes() {
         80,
         24,
     );
-    assert!(state
-        .status_msg
-        .as_deref()
-        .is_some_and(|msg| msg.contains("confirm deletion of 1 entry")));
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|msg| msg.contains("confirm deletion of 1 entry"))
+    );
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("deleted file: z_delete.txt")
+    );
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_delete_file_and_create_directory_still_requires_delete_confirmation() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_delete_create_kind_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_keep = dir.join("keep.txt");
+    let file_delete = dir.join("delete.txt");
+    fs::write(&file_keep, "keep").expect("failed to write fixture");
+    fs::write(&file_delete, "delete").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_keep).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nkeep.txt\nfresh/");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert!(file_delete.exists());
+    assert!(!dir.join("fresh").exists());
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("delete.txt"));
+
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created directory: fresh/; deleted file: delete.txt")
+    );
+    assert!(!file_delete.exists());
+    assert!(dir.join("fresh").is_dir());
+
+    let _ = fs::remove_file(file_keep);
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1939,13 +2157,89 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
         .status_msg
         .as_deref()
         .expect("missing confirmation prompt");
-    assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("confirm deletion of 2 entries"));
+    assert!(msg.contains("nested/"));
+    assert!(msg.contains("nested/child.txt"));
+    assert!(msg.contains("\n  nested/"));
+    assert!(msg.contains("\npress y"));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!doomed_dir.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("deleted directory: nested/")
+    );
 
     let _ = fs::remove_file(file_keep);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_multi_directory_delete_confirmation_includes_directory_context() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_multi_dir_confirm_delete_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    let root_delete = dir.join("duplicate.txt");
+    let child_delete = child_dir.join("duplicate.txt");
+    fs::write(&file_open, "open").expect("failed to write open fixture");
+    fs::write(&root_delete, "root").expect("failed to write root fixture");
+    fs::write(&child_delete, "child").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    state.surface_go_parent();
+    run_command(&mut state, "w");
+
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 2 entries"));
+    assert!(msg.contains("./duplicate.txt"));
+    assert!(msg.contains("child/duplicate.txt"));
+
+    let _ = fs::remove_file(file_open);
+    let _ = fs::remove_file(root_delete);
+    let _ = fs::remove_file(child_delete);
+    let _ = fs::remove_dir(child_dir);
     let _ = fs::remove_dir(dir);
 }
 
@@ -2297,7 +2591,10 @@ fn explorer_file_open_replaces_empty_startup_background_buffer() {
     assert!(state.session.buffer(explorer_id).is_none());
     assert_eq!(state.session.summaries().len(), 1);
     let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "bp");
     assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
@@ -2437,6 +2734,7 @@ fn explorer_opens_from_startup_about_without_quitting() {
     let session = EditorSession::open_initial_unnamed().expect("failed to open session");
     let mut state = EditorState::new(session);
     state.command_open_about();
+    let about_id = state.session.active_id();
     assert!(state.about_popup().is_some());
 
     run_command(&mut state, "explorer");
@@ -2444,7 +2742,25 @@ fn explorer_opens_from_startup_about_without_quitting() {
     assert!(!state.should_quit);
     assert!(state.about_popup().is_none());
     assert!(state.explorer_popup().is_some());
+    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
     assert!(state.explorer_background_is_placeholder_blank());
+}
+
+#[test]
+fn explorer_escape_from_startup_about_returns_to_about() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let mut state = EditorState::new(session);
+    state.command_open_about();
+    assert!(state.about_popup().is_some());
+
+    run_command(&mut state, "explorer");
+    assert!(state.explorer_popup().is_some());
+
+    assert!(state.handle_normal_mode_escape_on_surface());
+
+    assert!(!state.should_quit);
+    assert!(state.explorer_popup().is_none());
+    assert!(state.about_popup().is_some());
 }
 
 #[test]
@@ -2464,6 +2780,7 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
     let placeholder_id = session.active_id();
     let mut state = EditorState::new(session);
     state.command_open_about();
+    let about_id = state.session.active_id();
     assert!(state.about_popup().is_some());
 
     state
@@ -2471,6 +2788,7 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
         .expect("failed to open explorer");
     assert!(state.about_popup().is_none());
     assert!(state.explorer_popup().is_some());
+    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
     assert!(state.explorer_background_is_placeholder_blank());
 
     let explorer_id = state.session.active_id();
@@ -2492,9 +2810,12 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
 
     assert!(state.session.buffer(placeholder_id).is_none());
     assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
+    assert_eq!(state.session.summaries().len(), 2);
     let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
+    assert_eq!(
+        state.session.active_meta().path.as_ref(),
+        Some(&expected_path)
+    );
 
     run_command(&mut state, "ls");
     let msg = state.status_msg.as_deref().expect("missing ls status");

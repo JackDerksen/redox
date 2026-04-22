@@ -1,5 +1,5 @@
 use minui::widgets::WindowView;
-use minui::{cell_width, ColorPair, TabPolicy, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
