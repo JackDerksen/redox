@@ -214,12 +214,17 @@ impl EditorState {
         }
 
         let file_path = explorer.dir_path.join(entry.name);
+        let return_to_id = explorer.return_to_buffer_id;
+        let close_return_placeholder = self.is_empty_unnamed_startup_buffer(return_to_id);
         match self.session.open_file(&file_path) {
             Ok(file_id) => {
                 let _ = self.views.entry(file_id).or_default();
                 self.ensure_buffer_analysis(file_id);
                 let _ = self.session.close_buffer(explorer.buffer_id);
                 self.views.remove(&explorer.buffer_id);
+                if close_return_placeholder && return_to_id != file_id {
+                    let _ = self.close_inactive_empty_unnamed_startup_buffer(return_to_id);
+                }
                 self.explorer = None;
                 self.mode = EditorMode::Normal;
                 self.clear_status();

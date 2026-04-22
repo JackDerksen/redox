@@ -15,19 +15,27 @@ struct PerfRow {
     hot_ms: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PerfPopupLayout {
+    pub x: u16,
+    pub y: u16,
+    pub inner_w: u16,
+    pub inner_h: u16,
+}
+
 pub fn draw_perf_popup_view(
     style: UiStyle,
     window: &mut dyn Window,
     popup: PerfPopup,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let (inner_w, inner_h) = perf_popup_inner_size(vw, vh, style);
-    let popup_w = inner_w.saturating_add(2);
-    let x = vw.saturating_sub(popup_w);
+    let frame = perf_popup_layout(vw, vh, style);
+    let inner_w = frame.inner_w;
+    let inner_h = frame.inner_h;
     let layout = draw_popup_frame_at(
         window,
-        x,
-        0,
+        frame.x,
+        frame.y,
         inner_w,
         inner_h,
         "performance",
@@ -115,6 +123,25 @@ pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, 
         style.perf.min_width,
         style.perf.min_height,
     )
+}
+
+pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupLayout {
+    let (inner_w, inner_h) = perf_popup_inner_size(term_w, term_h, style);
+    let popup_w = inner_w.saturating_add(2);
+    PerfPopupLayout {
+        x: term_w.saturating_sub(popup_w),
+        y: 0,
+        inner_w,
+        inner_h,
+    }
+}
+
+pub fn perf_popup_occludes_cursor(layout: PerfPopupLayout, x: u16, y: u16) -> bool {
+    let popup_w = layout.inner_w.saturating_add(2);
+    let popup_h = layout.inner_h.saturating_add(2);
+    let x_end = layout.x.saturating_add(popup_w);
+    let y_end = layout.y.saturating_add(popup_h);
+    x >= layout.x && x < x_end && y >= layout.y && y < y_end
 }
 
 fn perf_rows(stats: FramePerfStats) -> [PerfRow; 10] {
@@ -227,4 +254,25 @@ fn write_line(
 
     let clipped = clip_text_to_cells(text, width as usize);
     view.write_str_colored(row, col, &clipped, color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{perf_popup_occludes_cursor, PerfPopupLayout};
+
+    #[test]
+    fn perf_popup_occludes_cursor_inside_frame_bounds() {
+        let layout = PerfPopupLayout {
+            x: 20,
+            y: 0,
+            inner_w: 10,
+            inner_h: 5,
+        };
+
+        assert!(perf_popup_occludes_cursor(layout, 20, 0));
+        assert!(perf_popup_occludes_cursor(layout, 31, 6));
+        assert!(!perf_popup_occludes_cursor(layout, 19, 0));
+        assert!(!perf_popup_occludes_cursor(layout, 32, 6));
+        assert!(!perf_popup_occludes_cursor(layout, 31, 7));
+    }
 }

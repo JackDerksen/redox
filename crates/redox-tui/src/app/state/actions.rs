@@ -13,10 +13,6 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
-        if self.status_msg_clear_on_input {
-            self.clear_status();
-        }
-
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
         let keep_insert_coalesce = self.mode == EditorMode::Insert
             && matches!(
@@ -32,10 +28,10 @@ impl EditorState {
 
         match action {
             InputAction::Motion { motion, count } => {
-                if !matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                if !is_char_search_motion(motion) {
                     self.clear_search_highlights();
                 }
-                if matches!(motion, Motion::FindChar(_) | Motion::TillChar(_)) {
+                if is_char_search_motion(motion) {
                     self.remember_motion_search(motion, count);
                 }
                 let is_explorer = self.explorer_is_active();
@@ -170,6 +166,7 @@ impl EditorState {
                 self.clear_active_visual_anchor();
                 self.mode = EditorMode::Command;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.clear_status();
                 self.input.reset_prefixes();
             }
@@ -187,18 +184,33 @@ impl EditorState {
             InputAction::CommandCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
 
             InputAction::CommandChar(c) => {
                 if self.mode == EditorMode::Command {
+                    self.detach_command_history_navigation();
                     self.command_line.push(c);
                 }
             }
 
             InputAction::CommandBackspace => {
                 if self.mode == EditorMode::Command {
+                    self.detach_command_history_navigation();
                     self.command_line.pop();
+                }
+            }
+
+            InputAction::CommandHistoryPrev => {
+                if self.mode == EditorMode::Command {
+                    self.command_history_prev();
+                }
+            }
+
+            InputAction::CommandHistoryNext => {
+                if self.mode == EditorMode::Command {
+                    self.command_history_next();
                 }
             }
 
@@ -209,6 +221,7 @@ impl EditorState {
             InputAction::SearchCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
 
@@ -447,7 +460,7 @@ impl EditorState {
 
             InputAction::OperateTarget { operator, target } => {
                 if let crate::input::OperatorTarget::Motion { motion, count } = &target
-                    && matches!(motion, Motion::FindChar(_) | Motion::TillChar(_))
+                    && is_char_search_motion(*motion)
                 {
                     self.remember_motion_search(*motion, *count);
                 }
@@ -484,6 +497,22 @@ impl EditorState {
             InputAction::DeleteCharNoYank => {
                 if self.mode == EditorMode::Normal {
                     self.delete_char_under_cursor_without_yank(viewport_width_cells, text_vh);
+                }
+            }
+
+            InputAction::ToggleCase { count } => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Normal
+                        | EditorMode::Visual
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                ) {
+                    self.toggle_case_under_cursor_or_selection(
+                        count.max(1),
+                        viewport_width_cells,
+                        text_vh,
+                    );
                 }
             }
 
@@ -652,4 +681,14 @@ impl EditorState {
         let view = self.views.entry(active_id).or_default();
         view.cursor.clamp_for_normal_mode(buffer);
     }
+}
+
+fn is_char_search_motion(motion: Motion) -> bool {
+    matches!(
+        motion,
+        Motion::FindChar(_)
+            | Motion::TillChar(_)
+            | Motion::FindCharBefore(_)
+            | Motion::TillCharBefore(_)
+    )
 }

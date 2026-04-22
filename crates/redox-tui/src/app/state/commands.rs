@@ -4,6 +4,7 @@ use redox_core::Pos;
 use redox_core::Selection;
 
 use super::{EditorMode, EditorState};
+use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
 use crate::ui::syntax::smart_open_line_insert;
 
@@ -16,10 +17,13 @@ impl EditorState {
         let cmd_raw = self.command_line.trim().to_string();
         self.command_line.clear();
         self.mode = EditorMode::Normal;
+        self.reset_command_history_navigation();
 
         if cmd_raw.is_empty() {
             return;
         }
+
+        self.push_command_history(cmd_raw.clone());
 
         let mut parts = cmd_raw.splitn(2, char::is_whitespace);
         let cmd = parts.next().unwrap_or("");
@@ -87,6 +91,68 @@ impl EditorState {
         }
     }
 
+    pub(super) fn reset_command_history_navigation(&mut self) {
+        self.command_history.nav_index = None;
+        self.command_history.draft.clear();
+    }
+
+    pub(super) fn detach_command_history_navigation(&mut self) {
+        if self.command_history.nav_index.is_some() {
+            self.command_history.draft = self.command_line.clone();
+            self.command_history.nav_index = None;
+        }
+    }
+
+    pub(super) fn command_history_prev(&mut self) {
+        if self.command_history.entries.is_empty() {
+            return;
+        }
+
+        let next_index = match self.command_history.nav_index {
+            Some(0) => 0,
+            Some(idx) => idx.saturating_sub(1),
+            None => {
+                self.command_history.draft = self.command_line.clone();
+                self.command_history.entries.len().saturating_sub(1)
+            }
+        };
+
+        self.command_history.nav_index = Some(next_index);
+        self.command_line = self.command_history.entries[next_index].clone();
+    }
+
+    pub(super) fn command_history_next(&mut self) {
+        let Some(current_index) = self.command_history.nav_index else {
+            return;
+        };
+
+        if current_index + 1 < self.command_history.entries.len() {
+            let next_index = current_index + 1;
+            self.command_history.nav_index = Some(next_index);
+            self.command_line = self.command_history.entries[next_index].clone();
+        } else {
+            self.command_history.nav_index = None;
+            self.command_line = std::mem::take(&mut self.command_history.draft);
+        }
+    }
+
+    fn push_command_history(&mut self, command: String) {
+        if self
+            .command_history
+            .entries
+            .last()
+            .is_some_and(|previous| previous == &command)
+        {
+            return;
+        }
+        self.command_history.entries.push(command);
+        const MAX_HISTORY: usize = 100;
+        if self.command_history.entries.len() > MAX_HISTORY {
+            let overflow = self.command_history.entries.len() - MAX_HISTORY;
+            self.command_history.entries.drain(0..overflow);
+        }
+    }
+
     pub(super) fn command_edit(&mut self, path_arg: &str) {
         if path_arg.is_empty() {
             self.set_status("usage: e <path>");
@@ -94,10 +160,15 @@ impl EditorState {
         }
 
         let path = PathBuf::from(path_arg);
+        let previous_id = self.session.active_id();
+        let close_previous_placeholder = self.is_empty_unnamed_startup_buffer(previous_id);
         match self.session.open_file(path) {
             Ok(id) => {
                 let _ = self.views.entry(id).or_default();
                 self.ensure_buffer_analysis(id);
+                if close_previous_placeholder && previous_id != id {
+                    let _ = self.close_inactive_empty_unnamed_startup_buffer(previous_id);
+                }
                 self.clear_status();
             }
             Err(e) => {
@@ -142,12 +213,10 @@ impl EditorState {
         }
 
         let mut msg = String::new();
-
         for (idx, summary) in summaries.iter().enumerate() {
             if idx > 0 {
-                msg.push_str(" | ");
+                msg.push('\n');
             }
-
             let active = if summary.is_active { '%' } else { '-' };
             let dirty = if summary.dirty { '+' } else { '-' };
             let new_file = if summary.is_new_file { 'n' } else { '-' };
@@ -170,6 +239,21 @@ impl EditorState {
             return false;
         }
 
+        let before = self.capture_active_undo_snapshot();
+        let trimmed = self.trim_active_trailing_whitespace();
+        if trimmed {
+            let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
+            let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+            let active_id = self.session.active_id();
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            self.invalidate_active_render_caches();
+            let _ = self.record_active_undo_if_changed(before);
+            let _ = self.session.recompute_active_dirty();
+        }
+
         match self.session.save_active() {
             Ok(()) => {
                 self.set_status("written");
@@ -180,6 +264,10 @@ impl EditorState {
                 false
             }
         }
+    }
+
+    fn trim_active_trailing_whitespace(&mut self) -> bool {
+        self.session.active_buffer_mut().trim_trailing_whitespace()
     }
 
     pub(super) fn open_line_and_enter_insert(

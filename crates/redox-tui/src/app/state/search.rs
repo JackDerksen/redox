@@ -17,6 +17,7 @@ impl SearchQuery {
                     start
                 }
             }
+            SearchLanding::AfterMatch => Pos::new(start.line, start.col.saturating_add(1)),
         }
     }
 }
@@ -121,6 +122,8 @@ impl EditorState {
             next_match_index_from_cursor(buffer, &matches, cursor, true)
                 .or_else(|| (!matches.is_empty()).then_some(0))
         };
+        let match_count = matches.len();
+        let status_message = format_search_match_count(&query.term, match_count);
 
         self.search_state = Some(SearchState {
             query,
@@ -133,7 +136,7 @@ impl EditorState {
 
         if let Some(index) = active_match {
             self.move_cursor_to_search_match(index, viewport_width_cells, text_vh);
-            self.clear_status();
+            self.set_status(status_message);
         } else {
             self.set_status("pattern not found");
         }
@@ -256,6 +259,11 @@ impl EditorState {
     }
 }
 
+fn format_search_match_count(term: &str, count: usize) -> String {
+    let label = if count == 1 { "instance" } else { "instances" };
+    format!("{count} {label} of '{term}'")
+}
+
 fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
     match motion {
         Motion::FindChar(ch) => Some(SearchQuery {
@@ -265,6 +273,14 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
         Motion::TillChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
             landing: SearchLanding::BeforeMatch,
+        }),
+        Motion::FindCharBefore(ch) => Some(SearchQuery {
+            term: ch.to_string(),
+            landing: SearchLanding::OnMatch,
+        }),
+        Motion::TillCharBefore(ch) => Some(SearchQuery {
+            term: ch.to_string(),
+            landing: SearchLanding::AfterMatch,
         }),
         _ => None,
     }
@@ -301,6 +317,13 @@ fn motion_search_target_start(
                     break;
                 }
                 current = next;
+            }
+        }
+        Motion::FindCharBefore(needle) | Motion::TillCharBefore(needle) => {
+            for _ in 0..count {
+                let found = buffer.find_char_before_on_line(current, needle)?;
+                target = Some(found);
+                current = found;
             }
         }
         _ => return None,

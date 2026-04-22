@@ -1,4 +1,4 @@
-use redox_core::BufferKind;
+use redox_core::{BufferId, BufferKind};
 
 use super::{EditorMode, EditorState};
 
@@ -96,5 +96,18 @@ impl EditorState {
         self.session
             .buffer(id)
             .is_some_and(|buffer| buffer.to_string().is_empty())
+    }
+
+    pub(super) fn close_inactive_empty_unnamed_startup_buffer(&mut self, id: BufferId) -> bool {
+        if self.session.active_id() == id || !self.is_empty_unnamed_startup_buffer(id) {
+            return false;
+        }
+
+        if self.session.close_buffer(id) {
+            self.views.remove(&id);
+            true
+        } else {
+            false
+        }
     }
 }

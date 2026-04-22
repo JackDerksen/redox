@@ -84,12 +84,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 ```bash
 redox <file_path>
 ```
-    
+
 Example:
 ```bash
 redox ./README.md
 ```
-    
+
 Open straight into the explorer for any specified directory (including `.`):
 ```bash
 redox src
@@ -150,15 +150,19 @@ redox src
 | `dd` | Delete current line |
 | `cc` | Change current line |
 | `yy` | Yank current line |
+| `~` | Invert the capitalisation of the character under the cursor (or a whole selection) |
 | `0` | Go to 0th character in the line |
 | `_` | Go to first non-whitespace character in the line |
 | `$` | Go to end of the line |
+| `%` | Jump to the matching delimiter under the cursor |
 | `D` | Delete from cursor position to end of the line |
 | (normal mode) `r` | Replace under cursor (eg. `r-` replaces the cursor cell with a `-`) |
 | (visual mode) `r` | Replace entire selection |
 | `/` | Open search to read for instances of a pattern in the current file |
 | `f` | Move cursor on top of the closest occurrence of the specified character |
 | `t` | Move cursor up to (before) the closest occurrence of the specified character |
+| `F` | Move cursor backward onto the closest occurrence of the specified character |
+| `T` | Move cursor backward to just after the closest occurrence of the specified character |
 
 Notes:
 - Count prefixes are supported for motion keys (for example: `3w`, `5j`, `2G`).
@@ -188,7 +192,7 @@ Notes:
 - [x] Relative line numbers (no standard line numbers because those are objectively worse)
 - [x] The ability to open redox into the entire current working directory with `$ redox .`
 - [x] Visual mode and visual line mode (with my custom line movement keybinds of shift+j/k)
-- [x] Basic session-bound undo/redo 
+- [x] Basic session-bound undo/redo
 - [x] Syntax highlighting for...
     - [x] Rust
     - [x] Markdown

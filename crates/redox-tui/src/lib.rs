@@ -32,9 +32,10 @@ use ui::syntax::{
 };
 use ui::{
     about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view,
-    explorer_popup_inner_size, language_for_path, snapshot_lines_wrapped_cached, TextViewport,
-    UiStyle, STATUS_BAR_HEIGHT_CELLS,
+    draw_command_line_popup, draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast,
+    explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
+    snapshot_lines_wrapped_cached, status_toast_occludes_cursor, TextViewport, UiStyle,
+    STATUS_BAR_HEIGHT_CELLS,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -290,28 +291,45 @@ fn draw_buffer_view(
     status.draw(window)?;
     perf.status += status_start.elapsed();
 
-    if let Some(popup) = state.perf_popup()
+    let perf_popup_layout = if let Some(popup) = state.perf_popup()
         && !matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         )
     {
+        let layout = perf_popup_layout(vw, vh, style);
         draw_perf_popup_view(style, window, popup)?;
-        hide_cursor(window);
-        return Ok(());
-    }
+        Some(layout)
+    } else {
+        None
+    };
 
+    let mut cursor_spec = None;
     if matches!(
         state.mode,
         app::EditorMode::Command | app::EditorMode::Search
     ) {
         draw_command_line_popup(state, style, window)?;
     } else if spec.visible {
-        window.request_cursor(minui::window::CursorSpec {
+        cursor_spec = Some(minui::window::CursorSpec {
             x: spec.x.saturating_add(content_x),
             y: spec.y,
             visible: true,
         });
+    }
+
+    let toast_layout = draw_status_toast(state, style, window)?;
+
+    if let Some(cursor) = cursor_spec {
+        let cursor_hidden_by_perf = perf_popup_layout
+            .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y));
+        let cursor_hidden_by_toast = toast_layout
+            .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+        if cursor_hidden_by_perf || cursor_hidden_by_toast {
+            hide_cursor(window);
+        } else {
+            window.request_cursor(cursor);
+        }
     }
 
     Ok(())
@@ -1457,6 +1475,7 @@ pub fn run() -> minui::Result<()> {
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
         state.poll_analysis_results();
+        state.expire_status_message(Instant::now());
 
         if state.rain_is_active() {
             state.advance_rain_animation();
