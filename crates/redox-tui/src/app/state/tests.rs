@@ -1810,6 +1810,39 @@ fn explorer_write_applies_rename_and_create() {
 }
 
 #[test]
+fn explorer_write_creates_nested_paths() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_nested_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nfolder/nested.txt\ndeep/tree/");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert!(dir.join("folder").is_dir());
+    assert!(dir.join("folder/nested.txt").exists());
+    assert!(dir.join("deep/tree").is_dir());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn explorer_write_insert_in_middle_preserves_existing_file_contents() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_insert_middle_test_{}",
@@ -1906,6 +1939,50 @@ fn explorer_write_requires_confirmation_for_deletes() {
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn explorer_write_delete_file_and_create_directory_still_requires_delete_confirmation() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_delete_create_kind_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let file_keep = dir.join("keep.txt");
+    let file_delete = dir.join("delete.txt");
+    fs::write(&file_keep, "keep").expect("failed to write fixture");
+    fs::write(&file_delete, "delete").expect("failed to write fixture");
+
+    let session = EditorSession::open_initial_file(&file_keep).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nkeep.txt\nfresh/");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert!(file_delete.exists());
+    assert!(!dir.join("fresh").exists());
+    let msg = state
+        .status_msg
+        .as_deref()
+        .expect("missing confirmation prompt");
+    assert!(msg.contains("confirm deletion of 1 entry"));
+
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert!(!file_delete.exists());
+    assert!(dir.join("fresh").is_dir());
+
+    let _ = fs::remove_file(file_keep);
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 
@@ -531,9 +531,43 @@ fn pending_explorer_delete_count(
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
 ) -> usize {
-    let old_len = old_entries.iter().filter(|entry| !entry.is_parent).count();
-    let new_len = new_entries.iter().filter(|entry| !entry.is_parent).count();
-    old_len.saturating_sub(new_len)
+    let old_entries: Vec<ExplorerEntry> = old_entries
+        .iter()
+        .filter(|entry| !entry.is_parent)
+        .cloned()
+        .collect();
+    let new_entries: Vec<ExplorerEntry> = new_entries
+        .iter()
+        .filter(|entry| !entry.is_parent)
+        .cloned()
+        .collect();
+
+    let old_index_by_name: HashMap<&str, usize> = old_entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (entry.name.as_str(), idx))
+        .collect();
+    let new_index_by_name: HashMap<&str, usize> = new_entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (entry.name.as_str(), idx))
+        .collect();
+
+    let old_missing: Vec<(usize, ExplorerEntry)> = old_entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
+        .map(|(idx, entry)| (idx, entry.clone()))
+        .collect();
+    let new_added: Vec<(usize, ExplorerEntry)> = new_entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
+        .map(|(idx, entry)| (idx, entry.clone()))
+        .collect();
+
+    let (_, deletions, _) = partition_explorer_entry_changes(old_missing, new_added);
+    deletions.len()
 }
 
 fn explorer_delete_confirmation_token(dir_path: &Path, current_text: &str) -> String {
@@ -555,16 +589,19 @@ fn parse_explorer_entries(text: &str) -> anyhow::Result<Vec<ExplorerEntry>> {
             (line, false)
         };
 
-        if name.is_empty() {
-            anyhow::bail!("line {}: empty name", idx + 1);
-        }
-        if name.contains('/') {
-            anyhow::bail!("line {}: names cannot contain '/'", idx + 1);
-        }
         let is_parent = name == "..";
+        let name = if is_parent {
+            if is_dir {
+                "..".to_string()
+            } else {
+                anyhow::bail!("line {}: '..' must remain a directory entry", idx + 1);
+            }
+        } else {
+            normalize_explorer_entry_name(name, idx + 1)?
+        };
 
         out.push(ExplorerEntry {
-            name: name.to_string(),
+            name,
             is_dir: is_dir || is_parent,
             is_parent,
         });
@@ -643,63 +680,40 @@ fn apply_explorer_changes(
     old_missing.sort_by_key(|(idx, _)| *idx);
     new_added.sort_by_key(|(idx, _)| *idx);
 
-    let paired_rename_count = old_missing.len().min(new_added.len());
     let mut renames: Vec<PlannedRename> = Vec::new();
-    for i in 0..paired_rename_count {
-        let (_, old) = &old_missing[i];
-        let (_, new) = &new_added[i];
-        if old.is_dir != new.is_dir {
-            anyhow::bail!(
-                "cannot change entry kind from '{}' to '{}'",
-                old.name,
-                new.name
-            );
-        }
-
+    let (rename_pairs, deletions, creations) =
+        partition_explorer_entry_changes(old_missing, new_added);
+    for (old, new) in rename_pairs {
         renames.push(PlannedRename {
             old_name: old.name.clone(),
             new_name: new.name.clone(),
-            old_path: dir_path.join(&old.name),
-            new_path: dir_path.join(&new.name),
+            old_path: explorer_entry_path(dir_path, &old.name),
+            new_path: explorer_entry_path(dir_path, &new.name),
             temp_path: PathBuf::new(),
         });
     }
-    let deletions: Vec<ExplorerEntry> = old_missing
-        .into_iter()
-        .skip(paired_rename_count)
-        .map(|(_, entry)| entry)
-        .collect();
-    let creations: Vec<ExplorerEntry> = new_added
-        .into_iter()
-        .skip(paired_rename_count)
-        .map(|(_, entry)| entry)
-        .collect();
 
     // Allow targets that are part of the rename source set (swap/cycle); reject all others.
-    let rename_sources: HashSet<&str> = renames.iter().map(|r| r.old_name.as_str()).collect();
+    let rename_sources: HashSet<PathBuf> = renames.iter().map(|r| r.old_path.clone()).collect();
     for rename in &renames {
         if !rename.old_path.exists() {
             anyhow::bail!("rename source '{}' does not exist", rename.old_name);
         }
-        if rename.new_path.exists() && !rename_sources.contains(rename.new_name.as_str()) {
+        if rename.new_path.exists() && !rename_sources.contains(&rename.new_path) {
             anyhow::bail!("rename target '{}' already exists", rename.new_name);
         }
     }
 
     // Stage each source to a unique temporary path first so swaps/cycles cannot conflict.
-    let mut reserved_names: HashSet<String> = old_entries
-        .iter()
-        .map(|entry| entry.name.clone())
-        .chain(new_entries.iter().map(|entry| entry.name.clone()))
-        .collect();
+    let mut reserved_temp_paths: HashSet<PathBuf> = HashSet::new();
 
     for (idx, rename) in renames.iter_mut().enumerate() {
         let mut attempt = 0usize;
         loop {
             let candidate = format!(".redox_rename_tmp_{idx}_{attempt}");
             let candidate_path = dir_path.join(&candidate);
-            if !reserved_names.contains(&candidate) && !candidate_path.exists() {
-                reserved_names.insert(candidate);
+            if !reserved_temp_paths.contains(&candidate_path) && !candidate_path.exists() {
+                reserved_temp_paths.insert(candidate_path.clone());
                 rename.temp_path = candidate_path;
                 break;
             }
@@ -714,6 +728,9 @@ fn apply_explorer_changes(
         fs::rename(&rename.old_path, &rename.temp_path)?;
     }
     for rename in &renames {
+        if let Some(parent) = rename.new_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         if rename.new_path.exists() {
             anyhow::bail!("rename target '{}' already exists", rename.new_name);
         }
@@ -721,7 +738,7 @@ fn apply_explorer_changes(
     }
 
     for old in &deletions {
-        let path = dir_path.join(&old.name);
+        let path = explorer_entry_path(dir_path, &old.name);
         if old.is_dir {
             fs::remove_dir_all(&path)?;
         } else {
@@ -730,10 +747,13 @@ fn apply_explorer_changes(
     }
 
     for new in &creations {
-        let path = dir_path.join(&new.name);
+        let path = explorer_entry_path(dir_path, &new.name);
         if new.is_dir {
-            fs::create_dir(&path)?;
+            fs::create_dir_all(&path)?;
         } else {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
             let _ = fs::File::create(&path)?;
         }
     }
@@ -745,9 +765,112 @@ fn apply_explorer_changes(
             .collect(),
         deleted_paths: deletions
             .iter()
-            .map(|entry| dir_path.join(&entry.name))
+            .map(|entry| explorer_entry_path(dir_path, &entry.name))
             .collect(),
     })
+}
+
+fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Result<String> {
+    if name.is_empty() {
+        anyhow::bail!("line {line_number}: empty name");
+    }
+
+    let mut parts = Vec::new();
+    for component in Path::new(name).components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::CurDir => anyhow::bail!("line {line_number}: '.' path segments are not allowed"),
+            Component::ParentDir => {
+                anyhow::bail!("line {line_number}: '..' path segments are not allowed")
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("line {line_number}: absolute paths are not allowed")
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        anyhow::bail!("line {line_number}: empty name");
+    }
+
+    Ok(parts.join("/"))
+}
+
+fn explorer_entry_path(dir_path: &Path, name: &str) -> PathBuf {
+    name.split('/').fold(dir_path.to_path_buf(), |path, segment| {
+        path.join(segment)
+    })
+}
+
+fn partition_explorer_entry_changes(
+    old_missing: Vec<(usize, ExplorerEntry)>,
+    new_added: Vec<(usize, ExplorerEntry)>,
+) -> (
+    Vec<(ExplorerEntry, ExplorerEntry)>,
+    Vec<ExplorerEntry>,
+    Vec<ExplorerEntry>,
+) {
+    fn pair_by_kind(
+        old_missing: &[(usize, ExplorerEntry)],
+        new_added: &[(usize, ExplorerEntry)],
+        is_dir: bool,
+        rename_pairs: &mut Vec<(ExplorerEntry, ExplorerEntry)>,
+        old_paired: &mut HashSet<usize>,
+        new_paired: &mut HashSet<usize>,
+    ) {
+        let old_candidates: Vec<(usize, &ExplorerEntry)> = old_missing
+            .iter()
+            .enumerate()
+            .filter_map(|(vec_idx, (_, entry))| (entry.is_dir == is_dir).then_some((vec_idx, entry)))
+            .collect();
+        let new_candidates: Vec<(usize, &ExplorerEntry)> = new_added
+            .iter()
+            .enumerate()
+            .filter_map(|(vec_idx, (_, entry))| (entry.is_dir == is_dir).then_some((vec_idx, entry)))
+            .collect();
+
+        for ((old_vec_idx, old_entry), (new_vec_idx, new_entry)) in
+            old_candidates.into_iter().zip(new_candidates.into_iter())
+        {
+            rename_pairs.push((old_entry.clone(), new_entry.clone()));
+            old_paired.insert(old_vec_idx);
+            new_paired.insert(new_vec_idx);
+        }
+    }
+
+    let mut rename_pairs = Vec::new();
+    let mut old_paired = HashSet::new();
+    let mut new_paired = HashSet::new();
+
+    pair_by_kind(
+        &old_missing,
+        &new_added,
+        false,
+        &mut rename_pairs,
+        &mut old_paired,
+        &mut new_paired,
+    );
+    pair_by_kind(
+        &old_missing,
+        &new_added,
+        true,
+        &mut rename_pairs,
+        &mut old_paired,
+        &mut new_paired,
+    );
+
+    let deletions = old_missing
+        .into_iter()
+        .enumerate()
+        .filter_map(|(vec_idx, (_, entry))| (!old_paired.contains(&vec_idx)).then_some(entry))
+        .collect();
+    let creations = new_added
+        .into_iter()
+        .enumerate()
+        .filter_map(|(vec_idx, (_, entry))| (!new_paired.contains(&vec_idx)).then_some(entry))
+        .collect();
+
+    (rename_pairs, deletions, creations)
 }
 
 #[cfg(test)]
@@ -767,6 +890,14 @@ mod tests {
         ExplorerEntry {
             name: name.to_string(),
             is_dir: false,
+            is_parent: false,
+        }
+    }
+
+    fn dir_entry(name: &str) -> ExplorerEntry {
+        ExplorerEntry {
+            name: name.to_string(),
+            is_dir: true,
             is_parent: false,
         }
     }
@@ -876,5 +1007,109 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_explorer_entries_accepts_nested_relative_paths() {
+        let parsed = parse_explorer_entries("../\npath/to/file.txt\nnested/dir/\na//b.txt")
+            .expect("expected nested paths to parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                ExplorerEntry {
+                    name: "..".to_string(),
+                    is_dir: true,
+                    is_parent: true,
+                },
+                file_entry("path/to/file.txt"),
+                dir_entry("nested/dir"),
+                file_entry("a/b.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_explorer_entries_rejects_parent_segments_inside_paths() {
+        let err = parse_explorer_entries("../\npath/../file.txt")
+            .expect_err("expected parent segments to be rejected");
+
+        assert!(err.to_string().contains("..' path segments are not allowed"));
+    }
+
+    #[test]
+    fn apply_explorer_changes_creates_parent_directories_for_nested_files() {
+        let root = temp_dir_path("nested_create");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+
+        apply_explorer_changes(&root, &[], &[file_entry("path/to/file.txt")])
+            .expect("expected nested file create to succeed");
+
+        assert!(root.join("path").is_dir());
+        assert!(root.join("path/to").is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("path/to/file.txt"))
+                .expect("failed to read nested file"),
+            ""
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_explorer_changes_renames_into_nested_path() {
+        let root = temp_dir_path("nested_rename");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+
+        let changes = apply_explorer_changes(
+            &root,
+            &[file_entry("alpha.txt")],
+            &[file_entry("nested/path/alpha.txt")],
+        )
+        .expect("expected nested rename to succeed");
+
+        assert_eq!(
+            changes.renamed_paths,
+            vec![(root.join("alpha.txt"), root.join("nested/path/alpha.txt"))]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("nested/path/alpha.txt"))
+                .expect("failed to read renamed file"),
+            "alpha"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_explorer_changes_treats_file_delete_and_dir_create_as_separate_changes() {
+        let root = temp_dir_path("delete_file_create_dir");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
+
+        let changes = apply_explorer_changes(
+            &root,
+            &[file_entry("alpha.txt")],
+            &[dir_entry("fresh")],
+        )
+        .expect("expected delete+create to succeed");
+
+        assert_eq!(changes.renamed_paths, Vec::<(PathBuf, PathBuf)>::new());
+        assert_eq!(changes.deleted_paths, vec![root.join("alpha.txt")]);
+        assert!(!root.join("alpha.txt").exists());
+        assert!(root.join("fresh").is_dir());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_explorer_delete_count_counts_delete_when_create_offsets_length_change() {
+        let count = pending_explorer_delete_count(
+            &[file_entry("alpha.txt")],
+            &[dir_entry("fresh")],
+        );
+
+        assert_eq!(count, 1);
     }
 }
