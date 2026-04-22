@@ -1850,6 +1850,120 @@ fn explorer_write_creates_nested_paths() {
 }
 
 #[test]
+fn explorer_preserves_unsaved_directory_draft_across_navigation() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_preserve_draft_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+    fs::write(child_dir.join("keep.txt"), "keep").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+    state.surface_go_parent();
+
+    assert!(
+        state
+            .session
+            .active_buffer()
+            .to_string()
+            .contains("root_new.txt")
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn explorer_write_applies_cached_drafts_from_multiple_directories() {
+    let dir = std::env::temp_dir().join(format!(
+        "redox_explorer_multi_dir_write_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock went backwards")
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).expect("failed to create temp dir");
+    let child_dir = dir.join("child");
+    fs::create_dir(&child_dir).expect("failed to create child dir");
+    let file_open = dir.join("open.txt");
+    fs::write(&file_open, "open").expect("failed to write fixture");
+    fs::write(child_dir.join("keep.txt"), "keep").expect("failed to write child fixture");
+
+    let session = EditorSession::open_initial_file(&file_open).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, "explorer");
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    let explorer_id = state.session.active_id();
+    let child_line = state
+        .session
+        .active_buffer()
+        .to_string()
+        .lines()
+        .position(|line| line == "child/")
+        .expect("child directory missing from explorer");
+    state
+        .views
+        .get_mut(&explorer_id)
+        .expect("missing explorer view")
+        .cursor
+        .cursor = Pos::new(child_line, 0);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    {
+        let buffer = state.session.active_buffer_mut();
+        *buffer = TextBuffer::from_str("../\nkeep.txt\nchild_new.txt");
+    }
+    let _ = state.session.recompute_active_dirty();
+
+    run_command(&mut state, "w");
+
+    assert!(dir.join("root_new.txt").exists());
+    assert!(child_dir.join("child_new.txt").exists());
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created files: root_new.txt, child_new.txt")
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn explorer_write_insert_in_middle_preserves_existing_file_contents() {
     let dir = std::env::temp_dir().join(format!(
         "redox_explorer_insert_middle_test_{}",

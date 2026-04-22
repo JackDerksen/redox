@@ -24,8 +24,14 @@ pub struct ExplorerPopup {
 pub(super) struct ExplorerState {
     pub(super) buffer_id: BufferId,
     pub(super) dir_path: PathBuf,
-    pub(super) original_entries: Vec<ExplorerEntry>,
+    pub(super) directory_drafts: HashMap<PathBuf, ExplorerDirectoryDraft>,
     pub(super) return_to_buffer_id: BufferId,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExplorerDirectoryDraft {
+    pub(super) original_entries: Vec<ExplorerEntry>,
+    pub(super) text: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -187,8 +193,14 @@ impl EditorState {
 
         self.explorer = Some(ExplorerState {
             buffer_id: explorer_id,
-            dir_path,
-            original_entries: entries,
+            dir_path: dir_path.clone(),
+            directory_drafts: HashMap::from([(
+                dir_path.clone(),
+                ExplorerDirectoryDraft {
+                    original_entries: entries,
+                    text,
+                },
+            )]),
             return_to_buffer_id: return_to,
         });
         Ok(())
@@ -316,30 +328,54 @@ impl EditorState {
         self.refresh_explorer_directory_with_selection(dir_path, None)
     }
 
+    fn persist_active_explorer_draft(&mut self) {
+        let Some(explorer) = self.explorer.as_mut() else {
+            return;
+        };
+        if explorer.buffer_id != self.session.active_id() {
+            return;
+        }
+        let current_text = self.session.active_buffer().to_string();
+        if let Some(draft) = explorer.directory_drafts.get_mut(&explorer.dir_path) {
+            draft.text = current_text;
+        }
+    }
+
     fn refresh_explorer_directory_with_selection(
         &mut self,
         dir_path: PathBuf,
         preferred_entry_name: Option<String>,
     ) -> anyhow::Result<()> {
         self.explorer_delete_confirmation_token = None;
+        self.persist_active_explorer_draft();
         let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
-        let entries = list_explorer_entries(&dir_path)?;
-        let initial_cursor_line = preferred_entry_name
-            .as_ref()
-            .and_then(|name| entries.iter().position(|entry| entry.name == *name))
-            .unwrap_or(0);
-        let text = explorer_entries_to_text(&entries);
-
         let Some(mut explorer) = self.explorer.clone() else {
             return Ok(());
         };
+        let draft = if let Some(existing) = explorer.directory_drafts.get(&dir_path) {
+            existing.clone()
+        } else {
+            let entries = list_explorer_entries(&dir_path)?;
+            let text = explorer_entries_to_text(&entries);
+            let draft = ExplorerDirectoryDraft {
+                original_entries: entries,
+                text,
+            };
+            explorer
+                .directory_drafts
+                .insert(dir_path.clone(), draft.clone());
+            draft
+        };
+        let initial_cursor_line = preferred_entry_name
+            .as_ref()
+            .and_then(|name| draft.original_entries.iter().position(|entry| entry.name == *name))
+            .unwrap_or(0);
         let explorer_id = explorer.buffer_id;
 
         if let Some(buffer) = self.session.buffer_mut(explorer_id) {
-            *buffer = TextBuffer::from_str(&text);
+            *buffer = TextBuffer::from_str(&draft.text);
         }
         explorer.dir_path = dir_path;
-        explorer.original_entries = entries;
         self.explorer = Some(explorer);
 
         if let Some(view) = self.views.get_mut(&explorer_id) {
@@ -387,24 +423,49 @@ impl EditorState {
         }
 
         let current_text = self.session.active_buffer().to_string();
-        let desired_entries = match parse_explorer_entries(&current_text) {
-            Ok(entries) => entries,
-            Err(e) => {
-                self.explorer_delete_confirmation_token = None;
-                self.set_status(format!("explorer parse error: {e}"));
-                return false;
+        if let Some(draft) = explorer.directory_drafts.get_mut(&explorer.dir_path) {
+            draft.text = current_text;
+        }
+
+        let mut desired_entries_by_dir = Vec::new();
+        for (dir_path, draft) in &explorer.directory_drafts {
+            let desired_entries = match parse_explorer_entries(&draft.text) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    self.explorer_delete_confirmation_token = None;
+                    self.set_status(format!("explorer parse error: {e}"));
+                    return false;
+                }
+            };
+            desired_entries_by_dir.push((dir_path.clone(), desired_entries));
+        }
+
+        desired_entries_by_dir.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut pending_deletions_by_dir = Vec::new();
+        for (dir_path, desired_entries) in &desired_entries_by_dir {
+            let Some(draft) = explorer.directory_drafts.get(dir_path) else {
+                continue;
+            };
+            let pending_deletions =
+                pending_explorer_deletions(&draft.original_entries, desired_entries);
+            if !pending_deletions.is_empty() {
+                pending_deletions_by_dir.push((dir_path.clone(), pending_deletions));
             }
-        };
-        let pending_deletions =
-            pending_explorer_deletions(&explorer.original_entries, &desired_entries);
-        let delete_count = pending_deletions.len();
+        }
+
+        let delete_count: usize = pending_deletions_by_dir
+            .iter()
+            .map(|(dir_path, deletions)| {
+                explorer_delete_confirmation_targets(dir_path, deletions).len()
+            })
+            .sum();
         if delete_count > 0 {
-            let token = explorer_delete_confirmation_token(&explorer.dir_path, &current_text);
+            let token = explorer_delete_confirmation_token_for_drafts(&explorer.directory_drafts);
             if !confirm_delete {
                 self.explorer_delete_confirmation_token = Some(token);
                 self.set_status_sticky(format_explorer_delete_confirmation(
-                    &explorer.dir_path,
-                    &pending_deletions,
+                    &pending_deletions_by_dir,
                 ));
                 return false;
             }
@@ -419,18 +480,30 @@ impl EditorState {
             }
         }
 
-        let applied_changes = match apply_explorer_changes(
-            &explorer.dir_path,
-            &explorer.original_entries,
-            &desired_entries,
-        ) {
-            Ok(changes) => changes,
-            Err(e) => {
-                self.explorer_delete_confirmation_token = None;
-                self.set_status(format!("explorer write failed: {e}"));
-                return false;
-            }
-        };
+        let mut applied_changes = AppliedExplorerChanges::default();
+        for (dir_path, desired_entries) in &desired_entries_by_dir {
+            let Some(draft) = explorer.directory_drafts.get(dir_path) else {
+                continue;
+            };
+            let dir_changes =
+                match apply_explorer_changes(dir_path, &draft.original_entries, desired_entries) {
+                    Ok(changes) => changes,
+                    Err(e) => {
+                        self.explorer_delete_confirmation_token = None;
+                        self.set_status(format!("explorer write failed: {e}"));
+                        return false;
+                    }
+                };
+            applied_changes
+                .renamed_entries
+                .extend(dir_changes.renamed_entries);
+            applied_changes
+                .deleted_entries
+                .extend(dir_changes.deleted_entries);
+            applied_changes
+                .created_entries
+                .extend(dir_changes.created_entries);
+        }
         self.sync_session_after_explorer_write(&applied_changes);
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
@@ -469,7 +542,13 @@ impl EditorState {
             view.invalidate_render_caches();
         }
 
-        explorer.original_entries = refreshed_entries;
+        explorer.directory_drafts = HashMap::from([(
+            explorer.dir_path.clone(),
+            ExplorerDirectoryDraft {
+                original_entries: refreshed_entries,
+                text: refreshed_text.clone(),
+            },
+        )]);
         if let Some(updated_explorer) = self.explorer.as_ref() {
             explorer.return_to_buffer_id = updated_explorer.return_to_buffer_id;
         }
@@ -621,8 +700,15 @@ fn pending_explorer_deletions(
     deletions
 }
 
-fn explorer_delete_confirmation_token(dir_path: &Path, current_text: &str) -> String {
-    format!("{}::{current_text}", dir_path.display())
+fn explorer_delete_confirmation_token_for_drafts(
+    drafts: &HashMap<PathBuf, ExplorerDirectoryDraft>,
+) -> String {
+    let mut dirs: Vec<_> = drafts.iter().collect();
+    dirs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    dirs.into_iter()
+        .map(|(dir_path, draft)| format!("{}::{}", dir_path.display(), draft.text))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_explorer_entries(text: &str) -> anyhow::Result<Vec<ExplorerEntry>> {
@@ -881,8 +967,13 @@ fn explorer_entry_label(name: &str, is_dir: bool) -> String {
     }
 }
 
-fn format_explorer_delete_confirmation(dir_path: &Path, deletions: &[ExplorerEntry]) -> String {
-    let targets = explorer_delete_confirmation_targets(dir_path, deletions);
+fn format_explorer_delete_confirmation(
+    deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
+) -> String {
+    let mut targets = Vec::new();
+    for (dir_path, deletions) in deletions_by_dir {
+        targets.extend(explorer_delete_confirmation_targets(dir_path, deletions));
+    }
     let noun = if targets.len() == 1 { "entry" } else { "entries" };
     let mut lines = vec![format!(
         "confirm deletion of {} {}:",
@@ -1416,10 +1507,10 @@ mod tests {
         fs::write(root.join("nested/deeper/grandchild.txt"), "grandchild")
             .expect("failed to write grandchild fixture");
 
-        let message = format_explorer_delete_confirmation(&root, &[
-            file_entry("alpha.txt"),
-            dir_entry("nested"),
-        ]);
+        let message = format_explorer_delete_confirmation(&[(
+            root.clone(),
+            vec![file_entry("alpha.txt"), dir_entry("nested")],
+        )]);
 
         assert_eq!(
             message,
