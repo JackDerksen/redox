@@ -1799,6 +1799,10 @@ fn explorer_write_applies_rename_and_create() {
 
     run_command(&mut state, "w");
 
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("renamed files: a.txt -> renamed.txt, open.txt -> created.txt")
+    );
     assert!(dir.join("renamed.txt").exists());
     assert!(dir.join("created.txt").exists());
     assert!(!dir.join("a.txt").exists());
@@ -1834,7 +1838,10 @@ fn explorer_write_creates_nested_paths() {
 
     run_command(&mut state, "w");
 
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created directory: deep/tree/; renamed file: open.txt -> folder/nested.txt")
+    );
     assert!(dir.join("folder").is_dir());
     assert!(dir.join("folder/nested.txt").exists());
     assert!(dir.join("deep/tree").is_dir());
@@ -1918,6 +1925,7 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .as_deref()
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("z_delete.txt"));
     assert!(state.status_message_is_sticky());
 
     state.apply_input(
@@ -1935,7 +1943,7 @@ fn explorer_write_requires_confirmation_for_deletes() {
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!file_delete.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(state.status_msg.as_deref(), Some("deleted file: z_delete.txt"));
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);
@@ -1974,10 +1982,14 @@ fn explorer_write_delete_file_and_create_directory_still_requires_delete_confirm
         .as_deref()
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("delete.txt"));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
 
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("created directory: fresh/; deleted file: delete.txt")
+    );
     assert!(!file_delete.exists());
     assert!(dir.join("fresh").is_dir());
 
@@ -2016,11 +2028,15 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
         .status_msg
         .as_deref()
         .expect("missing confirmation prompt");
-    assert!(msg.contains("confirm deletion of 1 entry"));
+    assert!(msg.contains("confirm deletion of 2 entries"));
+    assert!(msg.contains("nested/"));
+    assert!(msg.contains("nested/child.txt"));
+    assert!(msg.contains("\n  nested/"));
+    assert!(msg.contains("\npress y"));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
     assert!(!doomed_dir.exists());
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    assert_eq!(state.status_msg.as_deref(), Some("deleted directory: nested/"));
 
     let _ = fs::remove_file(file_keep);
     let _ = fs::remove_dir(dir);

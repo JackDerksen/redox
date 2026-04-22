@@ -29,9 +29,42 @@ pub(super) struct ExplorerState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AppliedExplorerEntryChange {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppliedExplorerRename {
+    old_name: String,
+    new_name: String,
+    old_path: PathBuf,
+    new_path: PathBuf,
+    is_dir: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AppliedExplorerChanges {
-    renamed_paths: Vec<(PathBuf, PathBuf)>,
-    deleted_paths: Vec<PathBuf>,
+    renamed_entries: Vec<AppliedExplorerRename>,
+    deleted_entries: Vec<AppliedExplorerEntryChange>,
+    created_entries: Vec<AppliedExplorerEntryChange>,
+}
+
+impl AppliedExplorerChanges {
+    fn renamed_paths(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.renamed_entries
+            .iter()
+            .map(|rename| (rename.old_path.clone(), rename.new_path.clone()))
+            .collect()
+    }
+
+    fn deleted_paths(&self) -> Vec<PathBuf> {
+        self.deleted_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
 }
 
 impl EditorState {
@@ -341,19 +374,16 @@ impl EditorState {
                 return false;
             }
         };
-        let delete_count =
-            pending_explorer_delete_count(&explorer.original_entries, &desired_entries);
+        let pending_deletions =
+            pending_explorer_deletions(&explorer.original_entries, &desired_entries);
+        let delete_count = pending_deletions.len();
         if delete_count > 0 {
             let token = explorer_delete_confirmation_token(&explorer.dir_path, &current_text);
             if !confirm_delete {
                 self.explorer_delete_confirmation_token = Some(token);
-                let noun = if delete_count == 1 {
-                    "entry"
-                } else {
-                    "entries"
-                };
-                self.set_status_sticky(format!(
-                    "confirm deletion of {delete_count} {noun}: press y"
+                self.set_status_sticky(format_explorer_delete_confirmation(
+                    &explorer.dir_path,
+                    &pending_deletions,
                 ));
                 return false;
             }
@@ -425,7 +455,7 @@ impl EditorState {
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
-        self.set_status("written");
+        self.set_status(format_explorer_write_summary(&applied_changes));
         true
     }
 
@@ -436,7 +466,7 @@ impl EditorState {
 
         let result = self
             .session
-            .sync_file_buffers_with_paths(&changes.renamed_paths, &changes.deleted_paths);
+            .sync_file_buffers_with_paths(&changes.renamed_paths(), &changes.deleted_paths());
         for id in result.closed_ids {
             self.views.remove(&id);
         }
@@ -527,10 +557,10 @@ fn format_explorer_dir_path(dir_path: &Path) -> String {
     rendered
 }
 
-fn pending_explorer_delete_count(
+fn pending_explorer_deletions(
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
-) -> usize {
+) -> Vec<ExplorerEntry> {
     let old_entries: Vec<ExplorerEntry> = old_entries
         .iter()
         .filter(|entry| !entry.is_parent)
@@ -567,7 +597,7 @@ fn pending_explorer_delete_count(
         .collect();
 
     let (_, deletions, _) = partition_explorer_entry_changes(old_missing, new_added);
-    deletions.len()
+    deletions
 }
 
 fn explorer_delete_confirmation_token(dir_path: &Path, current_text: &str) -> String {
@@ -651,6 +681,7 @@ fn apply_explorer_changes(
         old_path: PathBuf,
         new_path: PathBuf,
         temp_path: PathBuf,
+        is_dir: bool,
     }
 
     let old_index_by_name: HashMap<&str, usize> = old_entries
@@ -690,6 +721,7 @@ fn apply_explorer_changes(
             old_path: explorer_entry_path(dir_path, &old.name),
             new_path: explorer_entry_path(dir_path, &new.name),
             temp_path: PathBuf::new(),
+            is_dir: old.is_dir,
         });
     }
 
@@ -759,13 +791,31 @@ fn apply_explorer_changes(
     }
 
     Ok(AppliedExplorerChanges {
-        renamed_paths: renames
+        renamed_entries: renames
             .iter()
-            .map(|rename| (rename.old_path.clone(), rename.new_path.clone()))
+            .map(|rename| AppliedExplorerRename {
+                old_name: rename.old_name.clone(),
+                new_name: rename.new_name.clone(),
+                old_path: rename.old_path.clone(),
+                new_path: rename.new_path.clone(),
+                is_dir: rename.is_dir,
+            })
             .collect(),
-        deleted_paths: deletions
+        deleted_entries: deletions
             .iter()
-            .map(|entry| explorer_entry_path(dir_path, &entry.name))
+            .map(|entry| AppliedExplorerEntryChange {
+                name: entry.name.clone(),
+                path: explorer_entry_path(dir_path, &entry.name),
+                is_dir: entry.is_dir,
+            })
+            .collect(),
+        created_entries: creations
+            .iter()
+            .map(|entry| AppliedExplorerEntryChange {
+                name: entry.name.clone(),
+                path: explorer_entry_path(dir_path, &entry.name),
+                is_dir: entry.is_dir,
+            })
             .collect(),
     })
 }
@@ -800,6 +850,200 @@ fn explorer_entry_path(dir_path: &Path, name: &str) -> PathBuf {
     name.split('/').fold(dir_path.to_path_buf(), |path, segment| {
         path.join(segment)
     })
+}
+
+fn explorer_entry_label(name: &str, is_dir: bool) -> String {
+    if is_dir {
+        format!("{name}/")
+    } else {
+        name.to_string()
+    }
+}
+
+fn format_explorer_delete_confirmation(dir_path: &Path, deletions: &[ExplorerEntry]) -> String {
+    let targets = explorer_delete_confirmation_targets(dir_path, deletions);
+    let noun = if targets.len() == 1 { "entry" } else { "entries" };
+    let mut lines = vec![format!(
+        "confirm deletion of {} {}:",
+        targets.len(),
+        noun
+    )];
+    lines.extend(targets.into_iter().map(|target| format!("  {target}")));
+    lines.push("press y".to_string());
+    lines.join("\n")
+}
+
+fn explorer_delete_confirmation_targets(dir_path: &Path, deletions: &[ExplorerEntry]) -> Vec<String> {
+    let mut targets = Vec::new();
+    for entry in deletions {
+        targets.push(explorer_entry_label(&entry.name, entry.is_dir));
+        if !entry.is_dir {
+            continue;
+        }
+
+        let path = explorer_entry_path(dir_path, &entry.name);
+        collect_directory_delete_targets(dir_path, &path, &mut targets);
+    }
+    targets.sort_by(|a, b| {
+        let a_path = a.trim_end_matches('/');
+        let b_path = b.trim_end_matches('/');
+        let a_depth = a_path.split('/').count();
+        let b_depth = b_path.split('/').count();
+        let a_parent = a_path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let b_parent = b_path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let a_is_dir = a.ends_with('/');
+        let b_is_dir = b.ends_with('/');
+        a_depth
+            .cmp(&b_depth)
+            .then_with(|| a_parent.to_lowercase().cmp(&b_parent.to_lowercase()))
+            .then_with(|| a_is_dir.cmp(&b_is_dir))
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+            .then_with(|| a.cmp(b))
+    });
+    targets
+}
+
+fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir_path) else {
+        return;
+    };
+
+    let mut children: Vec<_> = entries.filter_map(Result::ok).collect();
+    children.sort_by(|a, b| {
+        a.file_name()
+            .to_string_lossy()
+            .to_lowercase()
+            .cmp(&b.file_name().to_string_lossy().to_lowercase())
+    });
+
+    for child in children {
+        let child_path = child.path();
+        let relative_name = child_path
+            .strip_prefix(root_dir)
+            .ok()
+            .map(|path| path.to_string_lossy().replace('\\', "/"));
+        let is_dir = child_path.is_dir();
+        if let Some(relative_name) = relative_name {
+            targets.push(explorer_entry_label(&relative_name, is_dir));
+        }
+        if is_dir {
+            collect_directory_delete_targets(root_dir, &child_path, targets);
+        }
+    }
+}
+
+fn format_explorer_write_summary(changes: &AppliedExplorerChanges) -> String {
+    let mut parts = Vec::new();
+
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "created",
+        "file",
+        "files",
+        &changes
+            .created_entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| explorer_entry_label(&entry.name, entry.is_dir))
+            .collect::<Vec<_>>(),
+    );
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "created",
+        "directory",
+        "directories",
+        &changes
+            .created_entries
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| explorer_entry_label(&entry.name, entry.is_dir))
+            .collect::<Vec<_>>(),
+    );
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "renamed",
+        "file",
+        "files",
+        &changes
+            .renamed_entries
+            .iter()
+            .filter(|rename| !rename.is_dir)
+            .map(|rename| {
+                format!(
+                    "{} -> {}",
+                    explorer_entry_label(&rename.old_name, rename.is_dir),
+                    explorer_entry_label(&rename.new_name, rename.is_dir)
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "renamed",
+        "directory",
+        "directories",
+        &changes
+            .renamed_entries
+            .iter()
+            .filter(|rename| rename.is_dir)
+            .map(|rename| {
+                format!(
+                    "{} -> {}",
+                    explorer_entry_label(&rename.old_name, rename.is_dir),
+                    explorer_entry_label(&rename.new_name, rename.is_dir)
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "deleted",
+        "file",
+        "files",
+        &changes
+            .deleted_entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| explorer_entry_label(&entry.name, entry.is_dir))
+            .collect::<Vec<_>>(),
+    );
+    push_explorer_entry_change_summary(
+        &mut parts,
+        "deleted",
+        "directory",
+        "directories",
+        &changes
+            .deleted_entries
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| explorer_entry_label(&entry.name, entry.is_dir))
+            .collect::<Vec<_>>(),
+    );
+
+    if parts.is_empty() {
+        "no explorer changes".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn push_explorer_entry_change_summary(
+    parts: &mut Vec<String>,
+    action: &str,
+    singular_kind: &str,
+    plural_kind: &str,
+    labels: &[String],
+) {
+    if labels.is_empty() {
+        return;
+    }
+
+    let kind = if labels.len() == 1 {
+        singular_kind
+    } else {
+        plural_kind
+    };
+    parts.push(format!("{action} {kind}: {}", labels.join(", ")));
 }
 
 fn partition_explorer_entry_changes(
@@ -923,7 +1167,14 @@ mod tests {
 
         let changes = apply_explorer_changes(&root, &old_entries, &new_entries)
             .expect("expected non-empty directory delete to succeed");
-        assert_eq!(changes.deleted_paths, vec![root.join("doomed")]);
+        assert_eq!(
+            changes.deleted_entries,
+            vec![AppliedExplorerEntryChange {
+                name: "doomed".to_string(),
+                path: root.join("doomed"),
+                is_dir: true,
+            }]
+        );
         assert!(!doomed.exists());
 
         let _ = fs::remove_dir_all(root);
@@ -1070,8 +1321,14 @@ mod tests {
         .expect("expected nested rename to succeed");
 
         assert_eq!(
-            changes.renamed_paths,
-            vec![(root.join("alpha.txt"), root.join("nested/path/alpha.txt"))]
+            changes.renamed_entries,
+            vec![AppliedExplorerRename {
+                old_name: "alpha.txt".to_string(),
+                new_name: "nested/path/alpha.txt".to_string(),
+                old_path: root.join("alpha.txt"),
+                new_path: root.join("nested/path/alpha.txt"),
+                is_dir: false,
+            }]
         );
         assert_eq!(
             fs::read_to_string(root.join("nested/path/alpha.txt"))
@@ -1095,8 +1352,23 @@ mod tests {
         )
         .expect("expected delete+create to succeed");
 
-        assert_eq!(changes.renamed_paths, Vec::<(PathBuf, PathBuf)>::new());
-        assert_eq!(changes.deleted_paths, vec![root.join("alpha.txt")]);
+        assert_eq!(changes.renamed_entries, Vec::<AppliedExplorerRename>::new());
+        assert_eq!(
+            changes.deleted_entries,
+            vec![AppliedExplorerEntryChange {
+                name: "alpha.txt".to_string(),
+                path: root.join("alpha.txt"),
+                is_dir: false,
+            }]
+        );
+        assert_eq!(
+            changes.created_entries,
+            vec![AppliedExplorerEntryChange {
+                name: "fresh".to_string(),
+                path: root.join("fresh"),
+                is_dir: true,
+            }]
+        );
         assert!(!root.join("alpha.txt").exists());
         assert!(root.join("fresh").is_dir());
 
@@ -1105,11 +1377,62 @@ mod tests {
 
     #[test]
     fn pending_explorer_delete_count_counts_delete_when_create_offsets_length_change() {
-        let count = pending_explorer_delete_count(
+        let count = pending_explorer_deletions(
             &[file_entry("alpha.txt")],
             &[dir_entry("fresh")],
-        );
+        )
+        .len();
 
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn format_explorer_delete_confirmation_lists_targets() {
+        let root = temp_dir_path("delete_confirmation_targets");
+        fs::create_dir_all(root.join("nested/deeper")).expect("failed to create nested fixture");
+        fs::write(root.join("nested/child.txt"), "child").expect("failed to write child fixture");
+        fs::write(root.join("nested/file2.txt"), "file2").expect("failed to write sibling fixture");
+        fs::write(root.join("nested/deeper/grandchild.txt"), "grandchild")
+            .expect("failed to write grandchild fixture");
+
+        let message = format_explorer_delete_confirmation(&root, &[
+            file_entry("alpha.txt"),
+            dir_entry("nested"),
+        ]);
+
+        assert_eq!(
+            message,
+            "confirm deletion of 6 entries:\n  alpha.txt\n  nested/\n  nested/child.txt\n  nested/file2.txt\n  nested/deeper/\n  nested/deeper/grandchild.txt\npress y"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn format_explorer_write_summary_describes_changes() {
+        let message = format_explorer_write_summary(&AppliedExplorerChanges {
+            created_entries: vec![AppliedExplorerEntryChange {
+                name: "created.txt".to_string(),
+                path: PathBuf::from("created.txt"),
+                is_dir: false,
+            }],
+            renamed_entries: vec![AppliedExplorerRename {
+                old_name: "old.txt".to_string(),
+                new_name: "new.txt".to_string(),
+                old_path: PathBuf::from("old.txt"),
+                new_path: PathBuf::from("new.txt"),
+                is_dir: false,
+            }],
+            deleted_entries: vec![AppliedExplorerEntryChange {
+                name: "gone".to_string(),
+                path: PathBuf::from("gone"),
+                is_dir: true,
+            }],
+        });
+
+        assert_eq!(
+            message,
+            "created file: created.txt; renamed file: old.txt -> new.txt; deleted directory: gone/"
+        );
     }
 }
