@@ -69,7 +69,7 @@ impl AppliedExplorerChanges {
 
 impl EditorState {
     pub fn open_explorer_at_path(&mut self, dir_path: PathBuf) -> anyhow::Result<()> {
-        if self.active_buffer_is_surface() {
+        if self.active_buffer_is_surface() && !self.about_is_active() {
             let _ = self.close_active_surface_buffer_without_quit();
         }
         self.open_explorer_buffer_with_dir(dir_path)
@@ -92,9 +92,13 @@ impl EditorState {
         if explorer.buffer_id != self.session.active_id() {
             return None;
         }
-        self.session
-            .buffer(explorer.return_to_buffer_id)
-            .map(|_| explorer.return_to_buffer_id)
+        let background_id = self
+            .about
+            .as_ref()
+            .filter(|about| about.buffer_id == explorer.return_to_buffer_id)
+            .map(|about| about.return_to_buffer_id)
+            .unwrap_or(explorer.return_to_buffer_id);
+        self.session.buffer(background_id).map(|_| background_id)
     }
 
     pub fn explorer_background_is_placeholder_blank(&self) -> bool {
@@ -104,7 +108,13 @@ impl EditorState {
         if explorer.buffer_id != self.session.active_id() {
             return false;
         }
-        self.is_empty_unnamed_startup_buffer(explorer.return_to_buffer_id)
+        let background_id = self
+            .about
+            .as_ref()
+            .filter(|about| about.buffer_id == explorer.return_to_buffer_id)
+            .map(|about| about.return_to_buffer_id)
+            .unwrap_or(explorer.return_to_buffer_id);
+        self.is_empty_unnamed_startup_buffer(background_id)
     }
 
     pub(super) fn command_open_explorer(&mut self) {
@@ -115,7 +125,7 @@ impl EditorState {
             return;
         }
 
-        if self.active_buffer_is_surface() {
+        if self.active_buffer_is_surface() && !self.about_is_active() {
             let _ = self.close_active_surface_buffer_without_quit();
         }
 
@@ -248,15 +258,26 @@ impl EditorState {
 
         let file_path = explorer.dir_path.join(entry.name);
         let return_to_id = explorer.return_to_buffer_id;
-        let close_return_placeholder = self.is_empty_unnamed_startup_buffer(return_to_id);
+        let close_return_placeholder = self
+            .is_empty_unnamed_startup_buffer(return_to_id)
+            .then_some(return_to_id)
+            .or_else(|| {
+                self.about.as_ref().and_then(|about| {
+                    (about.buffer_id == return_to_id
+                        && self.is_empty_unnamed_startup_buffer(about.return_to_buffer_id))
+                        .then_some(about.return_to_buffer_id)
+                })
+            });
         match self.session.open_file(&file_path) {
             Ok(file_id) => {
                 let _ = self.views.entry(file_id).or_default();
                 self.ensure_buffer_analysis(file_id);
                 let _ = self.session.close_buffer(explorer.buffer_id);
                 self.views.remove(&explorer.buffer_id);
-                if close_return_placeholder && return_to_id != file_id {
-                    let _ = self.close_inactive_empty_unnamed_startup_buffer(return_to_id);
+                if let Some(placeholder_id) = close_return_placeholder
+                    && placeholder_id != file_id
+                {
+                    let _ = self.close_inactive_empty_unnamed_startup_buffer(placeholder_id);
                 }
                 self.explorer = None;
                 self.mode = EditorMode::Normal;

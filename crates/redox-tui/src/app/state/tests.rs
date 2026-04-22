@@ -2530,6 +2530,7 @@ fn explorer_opens_from_startup_about_without_quitting() {
     let session = EditorSession::open_initial_unnamed().expect("failed to open session");
     let mut state = EditorState::new(session);
     state.command_open_about();
+    let about_id = state.session.active_id();
     assert!(state.about_popup().is_some());
 
     run_command(&mut state, "explorer");
@@ -2537,7 +2538,25 @@ fn explorer_opens_from_startup_about_without_quitting() {
     assert!(!state.should_quit);
     assert!(state.about_popup().is_none());
     assert!(state.explorer_popup().is_some());
+    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
     assert!(state.explorer_background_is_placeholder_blank());
+}
+
+#[test]
+fn explorer_escape_from_startup_about_returns_to_about() {
+    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+    let mut state = EditorState::new(session);
+    state.command_open_about();
+    assert!(state.about_popup().is_some());
+
+    run_command(&mut state, "explorer");
+    assert!(state.explorer_popup().is_some());
+
+    assert!(state.handle_normal_mode_escape_on_surface());
+
+    assert!(!state.should_quit);
+    assert!(state.explorer_popup().is_none());
+    assert!(state.about_popup().is_some());
 }
 
 #[test]
@@ -2557,6 +2576,7 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
     let placeholder_id = session.active_id();
     let mut state = EditorState::new(session);
     state.command_open_about();
+    let about_id = state.session.active_id();
     assert!(state.about_popup().is_some());
 
     state
@@ -2564,6 +2584,7 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
         .expect("failed to open explorer");
     assert!(state.about_popup().is_none());
     assert!(state.explorer_popup().is_some());
+    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
     assert!(state.explorer_background_is_placeholder_blank());
 
     let explorer_id = state.session.active_id();
@@ -2585,7 +2606,7 @@ fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
 
     assert!(state.session.buffer(placeholder_id).is_none());
     assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
+    assert_eq!(state.session.summaries().len(), 2);
     let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
     assert_eq!(state.session.active_meta().path.as_ref(), Some(&expected_path));
 
