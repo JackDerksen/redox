@@ -1,4 +1,4 @@
-use minui::{TabPolicy, Window, cell_width};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
@@ -10,7 +10,7 @@ use crate::ui::widgets::popup::{
 };
 
 const TOAST_MARGIN_COLS: u16 = 1;
-const TOAST_MARGIN_ROWS: u16 = 1;
+const TOAST_MARGIN_ROWS: u16 = 0;
 const TOAST_HORIZONTAL_PADDING: u16 = 1;
 const TOAST_VERTICAL_PADDING: u16 = 0;
 const TOAST_MAX_TEXT_WIDTH: usize = 40;
@@ -51,11 +51,12 @@ pub fn draw_status_toast(
         if row as u16 >= toast.inner_h {
             break;
         }
-        view.write_str_colored(
+        write_toast_line(
+            &mut view,
             row as u16 + TOAST_VERTICAL_PADDING,
             TOAST_HORIZONTAL_PADDING,
             line,
-            style.command_line.text,
+            style,
         )?;
     }
     Ok(Some(layout))
@@ -212,6 +213,95 @@ fn build_toast_body(
     Some((lines, inner_w, inner_h))
 }
 
+fn write_toast_line(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    line: &str,
+    style: UiStyle,
+) -> minui::Result<()> {
+    if line.trim() == "press y" {
+        return window.write_str_colored(
+            row,
+            col,
+            line,
+            ColorPair::new(style.theme.dark_gray, style.command_line.text.bg),
+        );
+    }
+
+    let mut cursor = 0;
+    let mut cell_col = col;
+    while cursor < line.len() {
+        let ch = line[cursor..]
+            .chars()
+            .next()
+            .expect("cursor should be on a character boundary");
+        if is_toast_token_delimiter(ch) {
+            let segment = ch.to_string();
+            window.write_str_colored(row, cell_col, &segment, style.command_line.text)?;
+            cell_col = cell_col.saturating_add(text_cell_width(&segment) as u16);
+            cursor += ch.len_utf8();
+            continue;
+        }
+
+        let token_end = line[cursor..]
+            .char_indices()
+            .find_map(|(idx, ch)| is_toast_token_delimiter(ch).then_some(cursor + idx))
+            .unwrap_or(line.len());
+        let token = &line[cursor..token_end];
+        cell_col = write_toast_token(window, row, cell_col, token, style)?;
+        cursor = token_end;
+    }
+
+    Ok(())
+}
+
+fn write_toast_token(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    token: &str,
+    style: UiStyle,
+) -> minui::Result<u16> {
+    let mut cell_col = col;
+    for (segment, is_dir) in toast_token_segments(token) {
+        let color = if is_dir {
+            style.explorer.directory
+        } else {
+            style.command_line.text
+        };
+        window.write_str_colored(row, cell_col, segment, color)?;
+        cell_col = cell_col.saturating_add(text_cell_width(segment) as u16);
+    }
+
+    Ok(cell_col)
+}
+
+fn toast_token_segments(token: &str) -> Vec<(&str, bool)> {
+    let mut segments = Vec::new();
+    let mut cursor = 0;
+
+    for (idx, ch) in token.char_indices() {
+        if ch != '/' {
+            continue;
+        }
+
+        let end = idx + ch.len_utf8();
+        segments.push((&token[cursor..end], true));
+        cursor = end;
+    }
+
+    if cursor < token.len() {
+        segments.push((&token[cursor..], false));
+    }
+
+    segments
+}
+
+fn is_toast_token_delimiter(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, ',' | ';' | ':')
+}
+
 fn text_cell_width(text: &str) -> usize {
     text.graphemes(true)
         .map(|g| (cell_width(g, TOAST_TAB_POLICY) as usize).max(1))
@@ -220,13 +310,13 @@ fn text_cell_width(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::toast_layout;
+    use super::{toast_layout, toast_token_segments};
     use crate::ui::widgets::perf::PerfPopupLayout;
 
     #[test]
     fn toast_layout_anchors_to_top_right() {
         let layout = toast_layout("written", 40, 20, None).expect("toast layout should fit");
-        assert_eq!(layout.y, 1);
+        assert_eq!(layout.y, 0);
         assert_eq!(layout.x + layout.inner_w + 2 + 1, 40);
     }
 
@@ -272,5 +362,21 @@ mod tests {
         .expect("toast layout should fit");
         assert_eq!(layout.y, 0);
         assert_eq!(layout.x + layout.inner_w + 2, 20);
+    }
+
+    #[test]
+    fn toast_token_segments_mark_directory_prefixes() {
+        assert_eq!(
+            toast_token_segments("nested/file.txt"),
+            vec![("nested/", true), ("file.txt", false)]
+        );
+        assert_eq!(
+            toast_token_segments("one/two/three.txt"),
+            vec![("one/", true), ("two/", true), ("three.txt", false)]
+        );
+        assert_eq!(
+            toast_token_segments("nested/"),
+            vec![("nested/", true)]
+        );
     }
 }
