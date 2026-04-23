@@ -4,6 +4,7 @@
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
@@ -18,9 +19,12 @@ use about::AboutState;
 mod analysis;
 use analysis::AnalysisWorker;
 mod explorer;
+mod finder;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
+use finder::{FinderState, PinSelectorState, PinnedFilesState};
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
@@ -103,6 +107,8 @@ pub enum EditorMode {
     Insert,
     Command,
     Search,
+    Finder,
+    PinSelect,
     Visual,
     VisualLine,
     VisualBlock,
@@ -115,6 +121,8 @@ impl EditorMode {
             EditorMode::Insert => InputMode::Insert,
             EditorMode::Command => InputMode::Command,
             EditorMode::Search => InputMode::Search,
+            EditorMode::Finder => InputMode::Finder,
+            EditorMode::PinSelect => InputMode::PinSelect,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -170,6 +178,9 @@ pub struct EditorState {
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
     explorer: Option<ExplorerState>,
+    finder: Option<FinderState>,
+    pin_selector: Option<PinSelectorState>,
+    pinned_files: PinnedFilesState,
     pub mode: EditorMode,
     pub input: InputState,
     pub command_line: String,
@@ -187,6 +198,8 @@ pub struct EditorState {
     search_state: Option<SearchState>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
+    transient_origin_buffer_id: Option<BufferId>,
+    transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
@@ -208,6 +221,9 @@ impl EditorState {
             views,
             about: None,
             explorer: None,
+            finder: None,
+            pin_selector: None,
+            pinned_files: PinnedFilesState::load(),
             mode: EditorMode::Normal,
             input: InputState::new(),
             command_line: String::new(),
@@ -225,6 +241,8 @@ impl EditorState {
             search_state: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
+            transient_origin_buffer_id: None,
+            transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
             perf_visible: false,
             perf_stats: None,
@@ -385,9 +403,12 @@ impl EditorState {
             EditorMode::Visual => VisualModeKind::Char,
             EditorMode::VisualLine => VisualModeKind::Line,
             EditorMode::VisualBlock => VisualModeKind::Block,
-            EditorMode::Normal | EditorMode::Insert | EditorMode::Command | EditorMode::Search => {
-                return None;
-            }
+            EditorMode::Normal
+            | EditorMode::Insert
+            | EditorMode::Command
+            | EditorMode::Search
+            | EditorMode::Finder
+            | EditorMode::PinSelect => return None,
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }

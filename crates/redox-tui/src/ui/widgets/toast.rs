@@ -374,9 +374,6 @@ mod tests {
             toast_token_segments("one/two/three.txt"),
             vec![("one/", true), ("two/", true), ("three.txt", false)]
         );
-        assert_eq!(
-            toast_token_segments("nested/"),
-            vec![("nested/", true)]
-        );
+        assert_eq!(toast_token_segments("nested/"), vec![("nested/", true)]);
     }
 }

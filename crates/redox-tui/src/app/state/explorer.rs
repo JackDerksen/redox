@@ -183,6 +183,8 @@ impl EditorState {
         self.explorer_delete_confirmation_token = None;
         let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let return_to = self.session.active_id();
+        self.transient_origin_buffer_id = None;
+        self.transient_origin_dir = None;
         let entries = list_explorer_entries(&dir_path)?;
         let preferred_name = self.session.active_meta().path.as_ref().and_then(|path| {
             let parent = path.parent().unwrap_or(path.as_path());
@@ -235,6 +237,17 @@ impl EditorState {
     }
 
     pub(super) fn explorer_target_directory(&self) -> anyhow::Result<PathBuf> {
+        if let Some(dir) = &self.transient_origin_dir {
+            return Ok(dir.clone());
+        }
+
+        if let Some(origin_id) = self.transient_origin_buffer_id
+            && let Some(meta) = self.session.meta(origin_id)
+            && let Some(path) = &meta.path
+        {
+            return Ok(path.parent().unwrap_or(path.as_path()).to_path_buf());
+        }
+
         let active_meta = self.session.active_meta();
         if let Some(path) = &active_meta.path {
             return Ok(path.parent().unwrap_or(path.as_path()).to_path_buf());

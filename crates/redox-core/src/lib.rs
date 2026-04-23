@@ -12,6 +12,7 @@
 //!   but those are not used as the primary index type in this crate.
 
 pub mod buffer;
+pub mod fuzzy;
 pub mod io;
 pub mod logic;
 pub mod motion;
@@ -23,6 +24,10 @@ pub mod text;
 pub use buffer::{
     DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextObjectEditPlan,
     TextObjectKind, TextObjectScope, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+};
+pub use fuzzy::{
+    FuzzyMatch, FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges,
+    path_match_score,
 };
 pub use session::{
     BufferId, BufferKind, BufferLoadPhase, BufferLoadStatus, BufferMeta, BufferSummary,

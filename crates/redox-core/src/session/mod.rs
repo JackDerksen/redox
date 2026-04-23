@@ -360,6 +360,11 @@ impl EditorSession {
     }
 
     #[inline]
+    pub fn launch_dir(&self) -> &Path {
+        &self.launch_dir
+    }
+
+    #[inline]
     pub fn buffer_load_status(&self, id: BufferId) -> Option<BufferLoadStatus> {
         self.buffers.get(&id).map(|rec| rec.load_status.clone())
     }

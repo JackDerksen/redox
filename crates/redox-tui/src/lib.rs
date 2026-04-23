@@ -33,9 +33,9 @@ use ui::syntax::{
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view, draw_perf_popup_view, draw_status_toast, explorer_popup_inner_size,
-    language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
-    snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
+    draw_explorer_popup_view, draw_finder_popup, draw_perf_popup_view, draw_pin_selector_popup,
+    draw_status_toast, explorer_popup_inner_size, language_for_path, perf_popup_layout,
+    perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -58,7 +58,10 @@ fn draw_buffer_view(
     let (vw, vh) = window.get_size();
     let popup_overlay_active = matches!(
         state.mode,
-        app::EditorMode::Command | app::EditorMode::Search
+        app::EditorMode::Command
+            | app::EditorMode::Search
+            | app::EditorMode::Finder
+            | app::EditorMode::PinSelect
     ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
@@ -304,7 +307,10 @@ fn draw_buffer_view(
     let perf_popup_layout = if let Some(popup) = state.perf_popup()
         && !matches!(
             state.mode,
-            app::EditorMode::Command | app::EditorMode::Search
+            app::EditorMode::Command
+                | app::EditorMode::Search
+                | app::EditorMode::Finder
+                | app::EditorMode::PinSelect
         ) {
         let layout = perf_popup_layout(vw, vh, style);
         draw_perf_popup_view(style, window, popup)?;
@@ -319,6 +325,10 @@ fn draw_buffer_view(
         app::EditorMode::Command | app::EditorMode::Search
     ) {
         draw_command_line_popup(state, style, window)?;
+    } else if let Some(popup) = state.finder_popup() {
+        draw_finder_popup(&popup, style, window)?;
+    } else if let Some(popup) = state.pin_selector_popup() {
+        draw_pin_selector_popup(&popup, style, window)?;
     } else if spec.visible {
         cursor_spec = Some(minui::window::CursorSpec {
             x: spec.x.saturating_add(content_x),

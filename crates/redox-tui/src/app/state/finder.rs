@@ -1,0 +1,868 @@
+use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::Read;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+use ignore::WalkBuilder;
+use redox_core::{
+    FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges, path_match_score,
+};
+
+use super::{EditorMode, EditorState};
+
+const MAX_PINNED_FILES: usize = 5;
+const PREVIEW_MAX_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct FinderPopup {
+    pub entries: Vec<FinderPopupEntry>,
+    pub query: String,
+    pub selected: usize,
+    pub result_count: usize,
+    pub total_count: usize,
+    pub query_error: Option<String>,
+    pub preview: Option<FinderPreview>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinderPopupEntry {
+    pub label: String,
+    pub highlights: Vec<Range<usize>>,
+    pub is_pinned: bool,
+    pub hotkey: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinderPreview {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PinSelectorPopup {
+    pub path_label: String,
+    pub slots: Vec<PinSelectorSlot>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PinSelectorSlot {
+    pub slot: usize,
+    pub path_label: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct FinderState {
+    launch_dir: PathBuf,
+    query: String,
+    all_files: Vec<FinderFileCandidate>,
+    file_results: Vec<FinderFileResult>,
+    combined_entries: Vec<FinderCombinedEntry>,
+    selected: usize,
+    query_error: Option<String>,
+    preview: Option<FinderPreviewCache>,
+}
+
+#[derive(Debug, Clone)]
+struct FinderFileCandidate {
+    path: PathBuf,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct FinderFileResult {
+    path: PathBuf,
+    label: String,
+    highlights: Vec<Range<usize>>,
+    score: PathMatchScore,
+}
+
+#[derive(Debug, Clone)]
+struct FinderCombinedEntry {
+    path: PathBuf,
+    label: String,
+    highlights: Vec<Range<usize>>,
+    kind: FinderCombinedKind,
+}
+
+#[derive(Debug, Clone)]
+struct PinnedFileEntry {
+    slot: usize,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinderCombinedKind {
+    Pinned { slot: usize },
+    File,
+}
+
+#[derive(Debug, Clone)]
+struct FinderPreviewCache {
+    path: PathBuf,
+    preview: FinderPreview,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PinSelectorState {
+    source_path: Option<PathBuf>,
+    selected_slot: usize,
+    return_mode: EditorMode,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PinnedFilesState {
+    slots: Vec<Option<PathBuf>>,
+    storage_path: PathBuf,
+}
+
+impl FinderState {
+    fn new(
+        launch_dir: PathBuf,
+        all_files: Vec<FinderFileCandidate>,
+        pinned_files: &[PinnedFileEntry],
+    ) -> Self {
+        let initial_selected = all_files.len().saturating_sub(1);
+        let mut state = Self {
+            launch_dir,
+            query: String::new(),
+            all_files,
+            file_results: Vec::new(),
+            combined_entries: Vec::new(),
+            selected: initial_selected,
+            query_error: None,
+            preview: None,
+        };
+        state.refresh_results(pinned_files, None);
+        state
+    }
+
+    fn popup(&self) -> FinderPopup {
+        FinderPopup {
+            entries: self
+                .combined_entries
+                .iter()
+                .map(|entry| FinderPopupEntry {
+                    label: entry.label.clone(),
+                    highlights: entry.highlights.clone(),
+                    is_pinned: matches!(entry.kind, FinderCombinedKind::Pinned { .. }),
+                    hotkey: match entry.kind {
+                        FinderCombinedKind::Pinned { slot } => Some(format!("Ctrl+{}", slot + 1)),
+                        FinderCombinedKind::File => None,
+                    },
+                })
+                .collect(),
+            query: self.query.clone(),
+            selected: self.selected,
+            result_count: self.file_results.len(),
+            total_count: self.all_files.len(),
+            query_error: self.query_error.clone(),
+            preview: self.preview.as_ref().map(|preview| preview.preview.clone()),
+        }
+    }
+
+    fn selected_path(&self) -> Option<&Path> {
+        self.combined_entries
+            .get(self.selected)
+            .map(|entry| entry.path.as_path())
+    }
+
+    fn selected_entry_is_pinned(&self) -> bool {
+        self.combined_entries
+            .get(self.selected)
+            .is_some_and(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.combined_entries.is_empty() {
+            self.selected = 0;
+            return;
+        }
+
+        let max_index = self.combined_entries.len().saturating_sub(1) as isize;
+        let next = (self.selected as isize + delta).clamp(0, max_index) as usize;
+        self.selected = next;
+    }
+
+    fn set_query_char(&mut self, ch: char) {
+        self.query.push(ch);
+    }
+
+    fn pop_query_char(&mut self) {
+        self.query.pop();
+    }
+
+    fn refresh_results(&mut self, pinned_files: &[PinnedFileEntry], preferred_path: Option<&Path>) {
+        let query = FuzzyQuery::new(&self.query);
+        self.query_error = None;
+        self.file_results = self
+            .all_files
+            .iter()
+            .filter_map(|candidate| filter_file_result(candidate, &query))
+            .collect();
+        self.file_results.sort_by(compare_file_results);
+        self.file_results.reverse();
+
+        self.rebuild_combined_entries(pinned_files, preferred_path);
+        self.refresh_preview();
+    }
+
+    fn rebuild_combined_entries(
+        &mut self,
+        pinned_files: &[PinnedFileEntry],
+        preferred_path: Option<&Path>,
+    ) {
+        let previous_path = preferred_path
+            .map(Path::to_path_buf)
+            .or_else(|| self.selected_path().map(Path::to_path_buf));
+
+        self.combined_entries.clear();
+        let query = FuzzyQuery::new(&self.query);
+        for pinned_file in pinned_files {
+            let slot = pinned_file.slot;
+            let path = &pinned_file.path;
+            let label = display_path_for_popup(path, &self.launch_dir);
+            let highlights = fuzzy_match_ranges(&label, &query)
+                .map(|matched| matched.highlights)
+                .unwrap_or_default();
+            self.combined_entries.push(FinderCombinedEntry {
+                path: path.clone(),
+                label,
+                highlights,
+                kind: FinderCombinedKind::Pinned { slot },
+            });
+        }
+
+        let pinned_paths = pinned_files
+            .iter()
+            .map(|pinned| pinned.path.as_path())
+            .collect::<HashSet<_>>();
+        self.combined_entries.extend(
+            self.file_results
+                .iter()
+                .filter(|result| !pinned_paths.contains(result.path.as_path()))
+                .map(|result| FinderCombinedEntry {
+                    path: result.path.clone(),
+                    label: result.label.clone(),
+                    highlights: result.highlights.clone(),
+                    kind: FinderCombinedKind::File,
+                }),
+        );
+
+        if self.combined_entries.is_empty() {
+            self.selected = 0;
+            self.preview = None;
+            return;
+        }
+
+        self.selected = previous_path
+            .as_ref()
+            .and_then(|path| {
+                self.combined_entries
+                    .iter()
+                    .position(|entry| &entry.path == path)
+            })
+            .unwrap_or_else(|| self.combined_entries.len().saturating_sub(1));
+    }
+
+    fn refresh_results_to_bottom(&mut self, pinned_files: &[PinnedFileEntry]) {
+        self.refresh_results(pinned_files, None);
+        self.selected = self.combined_entries.len().saturating_sub(1);
+    }
+
+    fn refresh_preview(&mut self) {
+        let Some(path) = self.selected_path().map(Path::to_path_buf) else {
+            self.preview = None;
+            return;
+        };
+
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.path == path)
+        {
+            return;
+        }
+
+        self.preview = Some(FinderPreviewCache {
+            path: path.clone(),
+            preview: load_preview(&path, &self.launch_dir),
+        });
+    }
+}
+
+impl PinnedFilesState {
+    pub(super) fn load() -> Self {
+        let storage_path = pinned_files_storage_path();
+        let mut slots = vec![None; MAX_PINNED_FILES];
+        if let Ok(contents) = fs::read_to_string(&storage_path) {
+            for (slot, raw_line) in contents.lines().take(MAX_PINNED_FILES).enumerate() {
+                let line = raw_line.trim();
+                if line.is_empty() || line == "-" {
+                    continue;
+                }
+
+                let path = PathBuf::from(line);
+                if !path.is_absolute() {
+                    continue;
+                }
+                let canonical = fs::canonicalize(&path).unwrap_or(path);
+                if slots
+                    .iter()
+                    .flatten()
+                    .any(|existing| existing == &canonical)
+                {
+                    continue;
+                }
+                slots[slot] = Some(canonical);
+            }
+        }
+
+        Self {
+            slots,
+            storage_path,
+        }
+    }
+
+    #[cfg(test)]
+    fn occupied_paths(&self) -> Vec<PathBuf> {
+        self.slots.iter().flatten().cloned().collect()
+    }
+
+    fn occupied_entries(&self) -> Vec<PinnedFileEntry> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, path)| {
+                path.as_ref().map(|path| PinnedFileEntry {
+                    slot,
+                    path: path.clone(),
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn slots(&self) -> &[Option<PathBuf>] {
+        &self.slots
+    }
+
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn get(&self, slot: usize) -> Option<&PathBuf> {
+        self.slots.get(slot).and_then(Option::as_ref)
+    }
+
+    fn index_of(&self, path: &Path) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|existing| existing.as_deref() == Some(path))
+    }
+
+    fn first_open_slot(&self) -> Option<usize> {
+        self.slots.iter().position(Option::is_none)
+    }
+
+    fn assign_slot(&mut self, slot: usize, path: PathBuf) -> Option<PathBuf> {
+        if slot >= self.slots.len() {
+            return None;
+        }
+
+        for (existing_slot, existing) in self.slots.iter_mut().enumerate() {
+            if existing_slot != slot && existing.as_ref() == Some(&path) {
+                *existing = None;
+            }
+        }
+
+        let replaced = self.slots[slot].replace(path.clone());
+        replaced.filter(|replaced| replaced != &path)
+    }
+
+    fn swap_slots(&mut self, left: usize, right: usize) -> bool {
+        if left >= self.slots.len() || right >= self.slots.len() {
+            return false;
+        }
+        self.slots.swap(left, right);
+        true
+    }
+
+    fn remove_at(&mut self, slot: usize) -> Option<PathBuf> {
+        self.slots.get_mut(slot).and_then(Option::take)
+    }
+
+    fn save(&self) -> std::io::Result<()> {
+        if let Some(parent) = self.storage_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut output = String::new();
+        for path in &self.slots {
+            if let Some(path) = path {
+                output.push_str(&path.display().to_string());
+            } else {
+                output.push('-');
+            }
+            output.push('\n');
+        }
+        fs::write(&self.storage_path, output)
+    }
+}
+
+impl EditorState {
+    fn finder_or_pinboard_is_blocked(&self) -> bool {
+        self.active_buffer_is_surface()
+            || self.perf_visible
+            || matches!(self.mode, EditorMode::Command | EditorMode::Search)
+    }
+
+    pub fn finder_popup(&self) -> Option<FinderPopup> {
+        (self.mode == EditorMode::Finder)
+            .then(|| self.finder.as_ref().map(FinderState::popup))
+            .flatten()
+    }
+
+    pub fn pin_selector_popup(&self) -> Option<PinSelectorPopup> {
+        let selector = self.pin_selector.as_ref()?;
+        Some(PinSelectorPopup {
+            path_label: selector
+                .source_path
+                .as_ref()
+                .map(|path| display_path_for_popup(path, self.session.launch_dir()))
+                .unwrap_or_else(|| "Pinned files".to_string()),
+            slots: (0..MAX_PINNED_FILES)
+                .map(|slot| PinSelectorSlot {
+                    slot,
+                    path_label: self
+                        .pinned_files
+                        .get(slot)
+                        .map(|path| display_path_for_popup(path, self.session.launch_dir())),
+                })
+                .collect(),
+            selected: selector.selected_slot,
+        })
+    }
+
+    pub(super) fn open_finder(&mut self) {
+        if self.finder_or_pinboard_is_blocked() {
+            return;
+        }
+
+        let launch_dir = self.session.launch_dir().to_path_buf();
+        let files = collect_files(&launch_dir);
+        let pinned_files = self.pinned_files.occupied_entries();
+        self.finder = Some(FinderState::new(launch_dir, files, &pinned_files));
+        self.pin_selector = None;
+        self.mode = EditorMode::Finder;
+        self.clear_status();
+        self.input.reset_prefixes();
+    }
+
+    pub(super) fn close_finder(&mut self) {
+        self.finder = None;
+        self.mode = EditorMode::Normal;
+        self.clear_status();
+        self.input.reset_prefixes();
+    }
+
+    pub(super) fn finder_type_char(&mut self, ch: char) {
+        let pinned = self.pinned_files.occupied_entries();
+        if let Some(finder) = self.finder.as_mut() {
+            finder.set_query_char(ch);
+            finder.refresh_results_to_bottom(&pinned);
+        }
+    }
+
+    pub(super) fn finder_backspace(&mut self) {
+        let pinned = self.pinned_files.occupied_entries();
+        if let Some(finder) = self.finder.as_mut() {
+            finder.pop_query_char();
+            finder.refresh_results_to_bottom(&pinned);
+        }
+    }
+
+    pub(super) fn finder_move_selection(&mut self, delta: isize) {
+        if let Some(finder) = self.finder.as_mut() {
+            finder.move_selection(delta);
+            finder.refresh_preview();
+        }
+    }
+
+    pub(super) fn begin_pin_selection_for_current_buffer(&mut self) {
+        if self.finder_or_pinboard_is_blocked() {
+            return;
+        }
+
+        let source_path = self
+            .session
+            .active_meta()
+            .path
+            .clone()
+            .map(|path| fs::canonicalize(&path).unwrap_or(path));
+        self.begin_pin_selection(source_path, self.mode);
+    }
+
+    pub(super) fn begin_pin_selection_for_finder_entry(&mut self) {
+        let Some(path) = self
+            .finder
+            .as_ref()
+            .and_then(|finder| finder.selected_path().map(Path::to_path_buf))
+        else {
+            self.set_status("no file selected");
+            return;
+        };
+
+        self.begin_pin_selection(Some(path), EditorMode::Finder);
+    }
+
+    fn begin_pin_selection(&mut self, source_path: Option<PathBuf>, return_mode: EditorMode) {
+        let selected_slot = source_path
+            .as_ref()
+            .and_then(|path| self.pinned_files.index_of(path))
+            .unwrap_or_else(|| {
+                self.pinned_files
+                    .first_open_slot()
+                    .unwrap_or(MAX_PINNED_FILES.saturating_sub(1))
+            });
+        self.pin_selector = Some(PinSelectorState {
+            source_path,
+            selected_slot,
+            return_mode,
+        });
+        self.mode = EditorMode::PinSelect;
+        self.clear_status();
+        self.input.reset_prefixes();
+    }
+
+    pub(super) fn cancel_pin_selection(&mut self) {
+        let Some(selector) = self.pin_selector.take() else {
+            return;
+        };
+        self.mode = selector.return_mode;
+        self.clear_status();
+        self.input.reset_prefixes();
+    }
+
+    pub(super) fn pin_selector_move(&mut self, delta: isize) {
+        let Some(selector) = self.pin_selector.as_mut() else {
+            return;
+        };
+        let max_index = MAX_PINNED_FILES.saturating_sub(1) as isize;
+        selector.selected_slot =
+            (selector.selected_slot as isize + delta).clamp(0, max_index) as usize;
+    }
+
+    pub(super) fn assign_selected_pin_slot(&mut self) {
+        let Some(selector) = self.pin_selector.as_ref() else {
+            return;
+        };
+        self.assign_pin_slot(selector.selected_slot);
+    }
+
+    pub(super) fn assign_pin_slot(&mut self, slot: usize) {
+        let Some(selector) = self.pin_selector.as_ref().cloned() else {
+            return;
+        };
+        let Some(source_path) = selector
+            .source_path
+            .clone()
+            .or_else(|| self.current_active_file_path())
+        else {
+            self.set_status("no file available to pin");
+            return;
+        };
+
+        let previous_slots = self.pinned_files.slots.clone();
+        let dropped = self.pinned_files.assign_slot(slot, source_path.clone());
+        if let Err(err) = self.pinned_files.save() {
+            self.pinned_files.slots = previous_slots;
+            self.mode = EditorMode::PinSelect;
+            self.pin_selector = Some(selector);
+            self.set_status(format!("pin save failed: {err}"));
+            return;
+        }
+
+        self.pin_selector = None;
+        self.mode = selector.return_mode;
+
+        if let Some(finder) = self.finder.as_mut() {
+            let pinned_files = self.pinned_files.occupied_entries();
+            finder.refresh_results(&pinned_files, Some(&source_path));
+        }
+
+        let mut status = format!(
+            "pinned {} to slot {}",
+            display_path_for_popup(&source_path, self.session.launch_dir()),
+            slot + 1
+        );
+        if let Some(dropped) = dropped
+            && dropped != source_path
+        {
+            status.push_str(&format!(
+                " and dropped {}",
+                display_path_for_popup(&dropped, self.session.launch_dir())
+            ));
+        }
+        self.set_status(status);
+    }
+
+    pub(super) fn pin_selector_reorder_selected(&mut self, direction: isize) {
+        let Some(selector) = self.pin_selector.as_mut() else {
+            return;
+        };
+        let slot = selector.selected_slot;
+        let next_slot = slot as isize + direction;
+        if next_slot < 0 || next_slot >= self.pinned_files.len() as isize {
+            return;
+        }
+        let previous_slots = self.pinned_files.slots.clone();
+        if !self.pinned_files.swap_slots(slot, next_slot as usize) {
+            return;
+        }
+        if let Err(err) = self.pinned_files.save() {
+            self.pinned_files.slots = previous_slots;
+            self.set_status(format!("pin save failed: {err}"));
+            return;
+        }
+        selector.selected_slot = next_slot as usize;
+
+        if let Some(finder) = self.finder.as_mut() {
+            let preferred_path = selector.source_path.as_deref().or_else(|| {
+                self.pinned_files
+                    .get(selector.selected_slot)
+                    .map(PathBuf::as_path)
+            });
+            let pinned_files = self.pinned_files.occupied_entries();
+            finder.refresh_results(&pinned_files, preferred_path);
+        }
+    }
+
+    pub(super) fn pin_selector_delete_selected(&mut self) {
+        let Some(selector) = self.pin_selector.as_mut() else {
+            return;
+        };
+        let slot = selector.selected_slot;
+        let Some(removed) = self.pinned_files.remove_at(slot) else {
+            return;
+        };
+        if let Err(err) = self.pinned_files.save() {
+            self.set_status(format!("pin save failed: {err}"));
+            let _ = self.pinned_files.assign_slot(slot, removed);
+            return;
+        }
+
+        if let Some(finder) = self.finder.as_mut() {
+            let preferred_path = selector.source_path.as_deref().or_else(|| {
+                self.pinned_files
+                    .get(selector.selected_slot)
+                    .map(PathBuf::as_path)
+            });
+            let pinned_files = self.pinned_files.occupied_entries();
+            finder.refresh_results(&pinned_files, preferred_path);
+        }
+
+        self.set_status(format!(
+            "unpinned {} from slot {}",
+            display_path_for_popup(&removed, self.session.launch_dir()),
+            slot + 1
+        ));
+    }
+
+    pub(super) fn open_selected_finder_entry(&mut self) {
+        let Some((path, is_pinned)) = self.finder.as_ref().and_then(|finder| {
+            finder
+                .selected_path()
+                .map(|path| (path.to_path_buf(), finder.selected_entry_is_pinned()))
+        }) else {
+            return;
+        };
+        self.finder = None;
+        self.mode = EditorMode::Normal;
+        if is_pinned {
+            self.open_pinned_path_in_editor(path);
+        } else {
+            self.open_path_in_editor(path, false);
+        }
+    }
+
+    pub(super) fn open_pinned_slot(&mut self, slot: usize) {
+        let Some(path) = self.pinned_files.get(slot).cloned() else {
+            self.set_status(format!("pin slot {} is empty", slot + 1));
+            return;
+        };
+
+        self.clear_active_visual_anchor();
+        self.finder = None;
+        self.pin_selector = None;
+        self.mode = EditorMode::Normal;
+        self.open_pinned_path_in_editor(path);
+    }
+
+    pub(super) fn open_selected_pin_selector_entry(&mut self) {
+        let Some(slot) = self
+            .pin_selector
+            .as_ref()
+            .map(|selector| selector.selected_slot)
+        else {
+            return;
+        };
+        self.open_pinned_slot(slot);
+    }
+
+    fn open_pinned_path_in_editor(&mut self, path: PathBuf) {
+        self.transient_origin_dir = self.current_work_context_directory();
+        self.transient_origin_buffer_id = Some(self.session.active_id());
+        self.open_path_in_editor(path, true);
+    }
+
+    fn open_path_in_editor(&mut self, path: PathBuf, preserve_transient_origin: bool) {
+        if !preserve_transient_origin {
+            self.transient_origin_buffer_id = None;
+            self.transient_origin_dir = None;
+        }
+        let previous_id = self.session.active_id();
+        let close_previous_placeholder = self.is_empty_unnamed_startup_buffer(previous_id);
+        match self.session.open_file(&path) {
+            Ok(id) => {
+                let _ = self.views.entry(id).or_default();
+                self.ensure_buffer_analysis(id);
+                if close_previous_placeholder && previous_id != id {
+                    let _ = self.close_inactive_empty_unnamed_startup_buffer(previous_id);
+                }
+                self.clear_status();
+            }
+            Err(err) => {
+                self.set_status(format!("open failed: {err}"));
+            }
+        }
+    }
+
+    fn current_active_file_path(&self) -> Option<PathBuf> {
+        self.session
+            .active_meta()
+            .path
+            .clone()
+            .map(|path| fs::canonicalize(&path).unwrap_or(path))
+    }
+
+    fn current_work_context_directory(&self) -> Option<PathBuf> {
+        self.current_active_file_path()
+            .as_deref()
+            .map(|path| path.parent().unwrap_or(path).to_path_buf())
+            .or_else(|| {
+                self.explorer
+                    .as_ref()
+                    .map(|explorer| explorer.dir_path.clone())
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pinned_files_for_test(&self) -> Vec<PathBuf> {
+        self.pinned_files.occupied_paths()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_slots_for_test(&self) -> Vec<Option<PathBuf>> {
+        self.pinned_files.slots().to_vec()
+    }
+}
+
+fn pinned_files_storage_path() -> PathBuf {
+    if let Some(xdg_config) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg_config)
+            .join("redox")
+            .join("pinned_files.txt");
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("redox")
+            .join("pinned_files.txt");
+    }
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".config")
+        .join("redox")
+        .join("pinned_files.txt")
+}
+
+fn collect_files(root: &Path) -> Vec<FinderFileCandidate> {
+    let mut files = WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.into_path();
+            path.is_file().then(|| FinderFileCandidate {
+                label: display_path_for_popup(&path, root),
+                path,
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files
+}
+
+fn filter_file_result(
+    candidate: &FinderFileCandidate,
+    query: &FuzzyQuery,
+) -> Option<FinderFileResult> {
+    let matched = fuzzy_match_ranges(&candidate.label, query)?;
+    let score = path_match_score(&candidate.label, &matched, query);
+
+    Some(FinderFileResult {
+        path: candidate.path.clone(),
+        score,
+        label: candidate.label.clone(),
+        highlights: matched.highlights,
+    })
+}
+
+fn compare_file_results(left: &FinderFileResult, right: &FinderFileResult) -> Ordering {
+    compare_path_match_scores(&left.score, &right.score).then(left.label.cmp(&right.label))
+}
+
+fn display_path_for_popup(path: &Path, launch_dir: &Path) -> String {
+    path.strip_prefix(launch_dir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn load_preview(path: &Path, launch_dir: &Path) -> FinderPreview {
+    let title = display_path_for_popup(path, launch_dir);
+    let mut buffer = Vec::with_capacity(PREVIEW_MAX_BYTES);
+    let preview = File::open(path)
+        .and_then(|mut file| {
+            let mut limited = (&mut file).take(PREVIEW_MAX_BYTES as u64);
+            limited.read_to_end(&mut buffer)
+        })
+        .map(|_| String::from_utf8(buffer))
+        .ok();
+
+    let lines = match preview {
+        Some(Ok(contents)) => {
+            let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
+            if contents.ends_with('\n') {
+                lines.push(String::new());
+            }
+            if lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines
+        }
+        Some(Err(_)) => vec!["<binary file>".to_string()],
+        None => vec!["<preview unavailable>".to_string()],
+    };
+
+    FinderPreview { title, lines }
+}

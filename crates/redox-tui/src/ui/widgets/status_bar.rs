@@ -25,8 +25,8 @@ use crate::ui::style::{StatusModuleColors, StatusModuleKind};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
-const STATUS_MODULE_EDGE_LEFT: &str = "▌";
-const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
+pub(crate) const STATUS_MODULE_EDGE_LEFT: &str = "▌";
+pub(crate) const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
 const STATUS_MODULE_EDGE_WIDTH: u16 = 1;
 
 fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {
@@ -56,7 +56,7 @@ fn resolve_minimap_pair(base: ColorPair, status_bg: Color) -> ColorPair {
     )
 }
 
-fn scroll_minimap_cell(
+pub(crate) fn scroll_minimap_cell(
     cursor_line: usize,
     total_lines: usize,
     minimap: ColorPair,
@@ -411,19 +411,13 @@ impl Widget for EditorStatusBar {
 /// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
     let module_theme = style.palette.status_modules;
-    let (mode_label, mode_colors) = if state.rain_is_active() {
-        ("RAIN", style.palette.mode_command)
-    } else {
-        match state.mode {
-            EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
-            EditorMode::Insert => ("INSERT", style.palette.mode_insert),
-            EditorMode::Command => ("COMMAND", style.palette.mode_command),
-            EditorMode::Search => ("SEARCH", style.palette.mode_command),
-            EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
-            EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
-            EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
-        }
-    };
+    let (mode_label, mode_colors) = status_bar_mode_presentation(
+        state.mode,
+        state.rain_is_active(),
+        state.finder_popup().is_some(),
+        state.pin_selector_popup().is_some(),
+        style,
+    );
 
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
@@ -431,7 +425,11 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let dirty_width = if state.active_dirty() { 1 } else { 0 };
     let left_text_width = mode_width.saturating_add(dirty_width);
 
-    let center_text = if state.explorer_popup().is_some() {
+    let center_text = if state.finder_popup().is_some() {
+        " finder ".to_string()
+    } else if state.pin_selector_popup().is_some() {
+        " pinboard ".to_string()
+    } else if state.explorer_popup().is_some() {
         " explorer ".to_string()
     } else {
         let mut name = state.active_display_name().to_string();
@@ -510,6 +508,34 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .add_module(minimap_module);
 
     status_bar
+}
+
+fn status_bar_mode_presentation(
+    mode: EditorMode,
+    rain_active: bool,
+    finder_visible: bool,
+    pinboard_visible: bool,
+    style: UiStyle,
+) -> (&'static str, ColorPair) {
+    if rain_active {
+        return ("RAIN", style.palette.mode_command);
+    }
+
+    if finder_visible || pinboard_visible {
+        return ("NORMAL", style.palette.mode_normal);
+    }
+
+    match mode {
+        EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
+        EditorMode::Insert => ("INSERT", style.palette.mode_insert),
+        EditorMode::Command => ("COMMAND", style.palette.mode_command),
+        EditorMode::Search => ("SEARCH", style.palette.mode_command),
+        EditorMode::Finder => ("FINDER", style.palette.mode_command),
+        EditorMode::PinSelect => ("PINBOARD", style.palette.mode_command),
+        EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
+        EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
+        EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
+    }
 }
 
 #[cfg(test)]
@@ -651,5 +677,25 @@ mod tests {
     fn status_bar_balances_side_reservations_for_centering() {
         assert_eq!(balanced_status_side_width(8, 12, 18, 18), 18);
         assert_eq!(balanced_status_side_width(20, 12, 18, 18), 20);
+    }
+
+    #[test]
+    fn finder_popup_uses_normal_mode_chip() {
+        let style = UiStyle::default();
+        let (label, colors) =
+            status_bar_mode_presentation(EditorMode::Finder, false, true, false, style);
+
+        assert_eq!(label, "NORMAL");
+        assert_eq!(colors, style.palette.mode_normal);
+    }
+
+    #[test]
+    fn pinboard_popup_uses_normal_mode_chip() {
+        let style = UiStyle::default();
+        let (label, colors) =
+            status_bar_mode_presentation(EditorMode::PinSelect, false, false, true, style);
+
+        assert_eq!(label, "NORMAL");
+        assert_eq!(colors, style.palette.mode_normal);
     }
 }
