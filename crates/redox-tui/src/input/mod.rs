@@ -1643,8 +1643,8 @@ fn pin_slot_from_key(key: KeyKind) -> Option<usize> {
         KeyKind::Char('1') | KeyKind::Char('!') => Some(0),
         KeyKind::Char('2') | KeyKind::Char('@') => Some(1),
         KeyKind::Char('3') | KeyKind::Char('#') => Some(2),
-        KeyKind::Char('4') => Some(3),
-        KeyKind::Char('5') => Some(4),
+        KeyKind::Char('4') | KeyKind::Char('$') => Some(3),
+        KeyKind::Char('5') | KeyKind::Char('%') => Some(4),
         _ => None,
     }
 }
@@ -1936,21 +1936,42 @@ mod tests {
     #[test]
     fn normal_mode_ctrl_shift_symbol_opens_pinned_slot() {
         let mut state = InputState::new();
+        let ctrl_shift = KeyModifiers {
+            ctrl: true,
+            shift: true,
+            alt: false,
+            super_key: false,
+        };
 
         let action = map_event_with_state(
             &mut state,
             InputMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
                 key: KeyKind::Char('!'),
-                mods: KeyModifiers {
-                    ctrl: true,
-                    shift: true,
-                    alt: false,
-                    super_key: false,
-                },
+                mods: ctrl_shift,
             }),
         );
         assert_eq!(action, InputAction::OpenPinnedSlot { slot: 0 });
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('$'),
+                mods: ctrl_shift,
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 3 });
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('%'),
+                mods: ctrl_shift,
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 4 });
     }
 
     #[test]
