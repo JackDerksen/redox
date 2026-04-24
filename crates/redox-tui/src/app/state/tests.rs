@@ -7,7 +7,6 @@ use std::fs;
 use std::io::Write;
 use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
@@ -106,13 +105,19 @@ fn expire_status_after_timeout(state: &mut EditorState) {
     state.expire_status_message(Instant::now() + Duration::from_secs(10));
 }
 
-fn isolated_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn lock_global_test_state() -> std::sync::MutexGuard<'static, ()> {
+    global_test_state_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn with_global_test_state_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _lock = lock_global_test_state();
+    f()
 }
 
 fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindSafe) -> T {
-    let _lock = isolated_env_lock().lock().expect("env lock poisoned");
+    let _lock = lock_global_test_state();
     let root = temp_file_path(tag);
     fs::create_dir_all(&root).expect("failed to create temp root");
     let previous_cwd = std::env::current_dir().expect("failed to capture cwd");
@@ -275,49 +280,55 @@ fn pinned_files_load_json_before_legacy_format() {
 
 #[test]
 fn finder_does_not_open_while_about_popup_is_active() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
 
-    assert!(state.about_popup().is_some());
+        assert!(state.about_popup().is_some());
 
-    state.apply_input(InputAction::OpenFinder, 80, 24);
+        state.apply_input(InputAction::OpenFinder, 80, 24);
 
-    assert!(state.about_popup().is_some());
-    assert!(state.finder_popup().is_none());
-    assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.about_popup().is_some());
+        assert!(state.finder_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
 }
 
 #[test]
 fn finder_does_not_open_while_explorer_popup_is_active() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(state.session.launch_dir().to_path_buf())
-        .expect("failed to open explorer");
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(state.session.launch_dir().to_path_buf())
+            .expect("failed to open explorer");
 
-    assert!(state.explorer_popup().is_some());
+        assert!(state.explorer_popup().is_some());
 
-    state.apply_input(InputAction::OpenFinder, 80, 24);
+        state.apply_input(InputAction::OpenFinder, 80, 24);
 
-    assert!(state.explorer_popup().is_some());
-    assert!(state.finder_popup().is_none());
-    assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.explorer_popup().is_some());
+        assert!(state.finder_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
 }
 
 #[test]
 fn quick_pin_does_not_open_pinboard_while_about_popup_is_active() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
 
-    assert!(state.about_popup().is_some());
+        assert!(state.about_popup().is_some());
 
-    state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
 
-    assert!(state.about_popup().is_some());
-    assert!(state.pin_selector_popup().is_none());
-    assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.about_popup().is_some());
+        assert!(state.pin_selector_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
 }
 
 #[test]
@@ -2350,26 +2361,29 @@ fn command_ls_populates_multiline_status_summary() {
 
 #[test]
 fn command_edit_replaces_empty_startup_buffer() {
-    let path = temp_file_path("edit_replaces_empty_startup");
-    fs::write(&path, "alpha").expect("failed to write fixture");
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let path = temp_file_path("edit_replaces_empty_startup");
+        fs::write(&path, "alpha").expect("failed to write fixture");
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, &format!("e {}", path.display()));
+        run_command(&mut state, &format!("e {}", path.display()));
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
-    let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+        let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "bn");
-    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+        run_command(&mut state, "bn");
+        assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
 
-    let _ = fs::remove_file(path);
+        let _ = fs::remove_file(path);
+    });
 }
 
 #[test]
@@ -3332,109 +3346,121 @@ fn explorer_q_closes_surface_buffer_only() {
 
 #[test]
 fn explorer_q_from_directory_launch_quits_in_one_step() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_single_q_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    fs::write(dir.join("a.txt"), "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_single_q_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("a.txt"), "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.explorer_popup().is_some());
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.explorer_popup().is_some());
 
-    run_command(&mut state, "q");
+        run_command(&mut state, "q");
 
-    assert!(state.should_quit);
+        assert!(state.should_quit);
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]
 fn explorer_open_at_dot_resolves_title_to_real_directory_path() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
 
-    state
-        .open_explorer_at_path(PathBuf::from("."))
-        .expect("failed to open explorer at dot");
-    let popup = state
-        .explorer_popup()
-        .expect("explorer popup should be active");
+        state
+            .open_explorer_at_path(PathBuf::from("."))
+            .expect("failed to open explorer at dot");
+        let popup = state
+            .explorer_popup()
+            .expect("explorer popup should be active");
 
-    assert!(!popup.title.starts_with("~./"));
-    assert!(popup.title.ends_with('/'));
+        assert!(!popup.title.starts_with("~./"));
+        assert!(popup.title.ends_with('/'));
+    });
 }
 
 #[test]
 fn explorer_directory_launch_marks_background_as_placeholder_blank() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
 
-    state
-        .open_explorer_at_path(PathBuf::from("."))
-        .expect("failed to open explorer at dot");
+        state
+            .open_explorer_at_path(PathBuf::from("."))
+            .expect("failed to open explorer at dot");
 
-    assert!(state.explorer_background_is_placeholder_blank());
+        assert!(state.explorer_background_is_placeholder_blank());
+    });
 }
 
 #[test]
 fn explorer_file_open_replaces_empty_startup_background_buffer() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_file_replaces_startup_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    let file_path = dir.join("a.txt");
-    fs::write(&file_path, "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_file_replaces_startup_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_path = dir.join("a.txt");
+        fs::write(&file_path, "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.explorer_background_is_placeholder_blank());
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.explorer_background_is_placeholder_blank());
 
-    let explorer_id = state.session.active_id();
-    let file_line = state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .position(|line| line == "a.txt")
-        .expect("file missing from explorer");
-    state
-        .views
-        .get_mut(&explorer_id)
-        .expect("missing explorer view")
-        .cursor
-        .cursor = Pos::new(file_line, 0);
+        let explorer_id = state.session.active_id();
+        let file_line = state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .position(|line| line == "a.txt")
+            .expect("file missing from explorer");
+        state
+            .views
+            .get_mut(&explorer_id)
+            .expect("missing explorer view")
+            .cursor
+            .cursor = Pos::new(file_line, 0);
 
-    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+        state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
-    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert!(state.session.buffer(explorer_id).is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+        let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "bp");
-    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+        run_command(&mut state, "bp");
+        assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]
@@ -3502,16 +3528,18 @@ fn about_q_closes_surface_buffer_only() {
 
 #[test]
 fn about_q_quits_from_empty_startup_buffer() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, "about");
-    assert!(state.about_popup().is_some());
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "q");
+        run_command(&mut state, "q");
 
-    assert!(state.should_quit);
-    assert!(state.about_popup().is_none());
+        assert!(state.should_quit);
+        assert!(state.about_popup().is_none());
+    });
 }
 
 #[test]
@@ -3534,16 +3562,18 @@ fn about_escape_key_closes_surface_buffer_only() {
 
 #[test]
 fn about_escape_key_quits_from_empty_startup_buffer() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, "about");
-    assert!(state.about_popup().is_some());
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
 
-    assert!(state.handle_normal_mode_escape_on_surface());
+        assert!(state.handle_normal_mode_escape_on_surface());
 
-    assert!(state.should_quit);
-    assert!(state.about_popup().is_none());
+        assert!(state.should_quit);
+        assert!(state.about_popup().is_none());
+    });
 }
 
 #[test]
@@ -3566,98 +3596,104 @@ fn explorer_escape_key_closes_surface_buffer_only() {
 
 #[test]
 fn explorer_opens_from_startup_about_without_quitting() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    let about_id = state.session.active_id();
-    assert!(state.about_popup().is_some());
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        let about_id = state.session.active_id();
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "explorer");
+        run_command(&mut state, "explorer");
 
-    assert!(!state.should_quit);
-    assert!(state.about_popup().is_none());
-    assert!(state.explorer_popup().is_some());
-    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
-    assert!(state.explorer_background_is_placeholder_blank());
+        assert!(!state.should_quit);
+        assert!(state.about_popup().is_none());
+        assert!(state.explorer_popup().is_some());
+        assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
+        assert!(state.explorer_background_is_placeholder_blank());
+    });
 }
 
 #[test]
 fn explorer_escape_from_startup_about_returns_to_about() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    assert!(state.about_popup().is_some());
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "explorer");
-    assert!(state.explorer_popup().is_some());
+        run_command(&mut state, "explorer");
+        assert!(state.explorer_popup().is_some());
 
-    assert!(state.handle_normal_mode_escape_on_surface());
+        assert!(state.handle_normal_mode_escape_on_surface());
 
-    assert!(!state.should_quit);
-    assert!(state.explorer_popup().is_none());
-    assert!(state.about_popup().is_some());
+        assert!(!state.should_quit);
+        assert!(state.explorer_popup().is_none());
+        assert!(state.about_popup().is_some());
+    });
 }
 
 #[test]
 fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_about_file_replaces_startup_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    let file_path = dir.join("a.txt");
-    fs::write(&file_path, "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_about_file_replaces_startup_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_path = dir.join("a.txt");
+        fs::write(&file_path, "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    let about_id = state.session.active_id();
-    assert!(state.about_popup().is_some());
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        let about_id = state.session.active_id();
+        assert!(state.about_popup().is_some());
 
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.about_popup().is_none());
-    assert!(state.explorer_popup().is_some());
-    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
-    assert!(state.explorer_background_is_placeholder_blank());
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.about_popup().is_none());
+        assert!(state.explorer_popup().is_some());
+        assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
+        assert!(state.explorer_background_is_placeholder_blank());
 
-    let explorer_id = state.session.active_id();
-    let file_line = state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .position(|line| line == "a.txt")
-        .expect("file missing from explorer");
-    state
-        .views
-        .get_mut(&explorer_id)
-        .expect("missing explorer view")
-        .cursor
-        .cursor = Pos::new(file_line, 0);
+        let explorer_id = state.session.active_id();
+        let file_line = state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .position(|line| line == "a.txt")
+            .expect("file missing from explorer");
+        state
+            .views
+            .get_mut(&explorer_id)
+            .expect("missing explorer view")
+            .cursor
+            .cursor = Pos::new(file_line, 0);
 
-    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+        state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 2);
-    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert!(state.session.buffer(explorer_id).is_none());
+        assert_eq!(state.session.summaries().len(), 2);
+        let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "ls");
-    let msg = state.status_msg.as_deref().expect("missing ls status");
-    assert!(!msg.contains("[No Name]"));
-    assert!(!msg.contains(" | "));
+        run_command(&mut state, "ls");
+        let msg = state.status_msg.as_deref().expect("missing ls status");
+        assert!(!msg.contains("[No Name]"));
+        assert!(!msg.contains(" | "));
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]

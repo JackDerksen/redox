@@ -38,6 +38,12 @@ const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
 const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegisterKind {
     CharWise,

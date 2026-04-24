@@ -1348,6 +1348,9 @@ mod tests {
 
     #[test]
     fn draw_buffer_view_shows_status_toast_while_explorer_is_open() {
+        let _lock = app::state::global_test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = temp_dir_path("explorer_toast");
         fs::create_dir(&dir).expect("failed to create temp dir");
         fs::write(dir.join("alpha.txt"), "alpha").expect("failed to write fixture");
