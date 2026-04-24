@@ -22,7 +22,6 @@ pub struct FinderPopup {
     pub selected: usize,
     pub result_count: usize,
     pub total_count: usize,
-    pub query_error: Option<String>,
     pub preview: Option<FinderPreview>,
 }
 
@@ -61,7 +60,6 @@ pub(super) struct FinderState {
     file_results: Vec<FinderFileResult>,
     combined_entries: Vec<FinderCombinedEntry>,
     selected: usize,
-    query_error: Option<String>,
     preview: Option<FinderPreviewCache>,
 }
 
@@ -132,7 +130,6 @@ impl FinderState {
             file_results: Vec::new(),
             combined_entries: Vec::new(),
             selected: initial_selected,
-            query_error: None,
             preview: None,
         };
         state.refresh_results(pinned_files, None);
@@ -158,7 +155,6 @@ impl FinderState {
             selected: self.selected,
             result_count: self.file_results.len(),
             total_count: self.all_files.len(),
-            query_error: self.query_error.clone(),
             preview: self.preview.as_ref().map(|preview| preview.preview.clone()),
         }
     }
@@ -196,7 +192,6 @@ impl FinderState {
 
     fn refresh_results(&mut self, pinned_files: &[PinnedFileEntry], preferred_path: Option<&Path>) {
         let query = FuzzyQuery::new(&self.query);
-        self.query_error = None;
         self.file_results = self
             .all_files
             .iter()

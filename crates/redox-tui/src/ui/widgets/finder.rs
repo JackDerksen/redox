@@ -649,17 +649,9 @@ fn finder_input_cursor_offset(text: &str, max_cells: usize) -> usize {
 }
 
 fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
-    let text = popup
-        .query_error
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| format!("{}/{}", popup.result_count, popup.total_count));
-    let text_colors = if popup.query_error.is_some() {
-        style.finder.match_highlight
-    } else {
-        style.finder.dim
-    };
-    let indicator = popup.query_error.is_none().then(|| {
+    let text = format!("{}/{}", popup.result_count, popup.total_count);
+    let text_colors = style.finder.dim;
+    let indicator = {
         let minimap_module_colors = style
             .palette
             .status_modules
@@ -685,12 +677,12 @@ fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter
             wrapper_colors: ColorPair::new(minimap_module_colors.wrapper.bg, style.finder.text.bg),
             content_colors: colors,
         }
-    });
+    };
 
     FinderRightFooter {
         text,
         text_colors,
-        indicator,
+        indicator: Some(indicator),
     }
 }
 
@@ -799,30 +791,12 @@ mod tests {
             selected: 0,
             result_count: 84,
             total_count: 84,
-            query_error: None,
             preview: None,
         };
         let footer = finder_right_footer(&popup, UiStyle::default());
 
         assert!(footer.indicator.is_some());
         assert_eq!(footer.width(), text_width("84/84") as u16 + 3);
-    }
-
-    #[test]
-    fn finder_footer_hides_scroll_indicator_when_showing_query_error() {
-        let popup = FinderPopup {
-            entries: Vec::new(),
-            query: "[".to_string(),
-            selected: 0,
-            result_count: 0,
-            total_count: 84,
-            query_error: Some("query error".to_string()),
-            preview: None,
-        };
-        let footer = finder_right_footer(&popup, UiStyle::default());
-
-        assert!(footer.indicator.is_none());
-        assert_eq!(footer.width(), text_width("query error") as u16);
     }
 
     #[test]
