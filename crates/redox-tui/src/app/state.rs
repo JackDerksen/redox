@@ -115,6 +115,13 @@ pub enum EditorMode {
 }
 
 impl EditorMode {
+    pub fn has_popup_overlay(self) -> bool {
+        matches!(
+            self,
+            EditorMode::Command | EditorMode::Search | EditorMode::Finder | EditorMode::PinSelect
+        )
+    }
+
     pub fn as_input_mode(self) -> InputMode {
         match self {
             EditorMode::Normal => InputMode::Normal,

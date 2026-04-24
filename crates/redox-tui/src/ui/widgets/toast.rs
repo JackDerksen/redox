@@ -1,7 +1,7 @@
 use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::{EditorMode, EditorState, StatusMessageStyle};
+use crate::app::{EditorState, StatusMessageStyle};
 use crate::ui::UiStyle;
 use crate::ui::widgets::perf::{PerfPopupLayout, perf_popup_layout};
 use crate::ui::widgets::popup::{
@@ -84,8 +84,7 @@ fn status_toast_perf_popup_layout(
     term_h: u16,
     style: UiStyle,
 ) -> Option<PerfPopupLayout> {
-    let perf_popup_visible = state.perf_popup().is_some()
-        && !matches!(state.mode, EditorMode::Command | EditorMode::Search);
+    let perf_popup_visible = state.perf_popup().is_some() && !state.mode.has_popup_overlay();
     perf_popup_visible.then(|| perf_popup_layout(term_w, term_h, style))
 }
 
