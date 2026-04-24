@@ -171,6 +171,12 @@ impl BufferViewState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusMessageStyle {
+    Normal,
+    Dim,
+}
+
 /// Multi-buffer editor state for the TUI frontend.
 #[derive(Debug)]
 pub struct EditorState {
@@ -185,6 +191,7 @@ pub struct EditorState {
     pub input: InputState,
     pub command_line: String,
     pub status_msg: Option<String>,
+    pub status_msg_line_styles: Vec<StatusMessageStyle>,
     status_msg_expires_at: Option<Instant>,
     command_history: CommandHistoryState,
     pub should_quit: bool,
@@ -228,6 +235,7 @@ impl EditorState {
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
+            status_msg_line_styles: Vec::new(),
             status_msg_expires_at: None,
             command_history: CommandHistoryState::default(),
             should_quit: false,
@@ -253,16 +261,20 @@ impl EditorState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
+        self.status_msg_line_styles.clear();
         self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
-    pub fn set_status_sticky(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some(msg.into());
+    pub fn set_status_sticky_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
+        self.status_msg = Some(lines.join("\n"));
+        self.status_msg_line_styles = styles;
         self.status_msg_expires_at = None;
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
+        self.status_msg_line_styles.clear();
         self.status_msg_expires_at = None;
     }
 

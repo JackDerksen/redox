@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 
-use super::{EditorMode, EditorState};
+use super::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,7 +510,7 @@ impl EditorState {
             let token = explorer_delete_confirmation_token_for_drafts(&explorer.directory_drafts);
             if !confirm_delete {
                 self.explorer_delete_confirmation_token = Some(token);
-                self.set_status_sticky(format_explorer_delete_confirmation(
+                self.set_status_sticky_lines(format_explorer_delete_confirmation_lines(
                     &pending_deletions_by_dir,
                 ));
                 return false;
@@ -1085,9 +1085,20 @@ fn explorer_entry_label(name: &str, is_dir: bool) -> String {
     }
 }
 
+#[cfg(test)]
 fn format_explorer_delete_confirmation(
     deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
 ) -> String {
+    format_explorer_delete_confirmation_lines(deletions_by_dir)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_explorer_delete_confirmation_lines(
+    deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
+) -> Vec<(String, StatusMessageStyle)> {
     let dir_context_base = common_path_prefix(
         &deletions_by_dir
             .iter()
@@ -1111,10 +1122,17 @@ fn format_explorer_delete_confirmation(
     } else {
         "entries"
     };
-    let mut lines = vec![format!("confirm deletion of {} {}:", targets.len(), noun)];
-    lines.extend(targets.into_iter().map(|target| format!("  {target}")));
-    lines.push("press y".to_string());
-    lines.join("\n")
+    let mut lines = vec![(
+        format!("confirm deletion of {} {}:", targets.len(), noun),
+        StatusMessageStyle::Normal,
+    )];
+    lines.extend(
+        targets
+            .into_iter()
+            .map(|target| (format!(" {target}"), StatusMessageStyle::Normal)),
+    );
+    lines.push(("press y".to_string(), StatusMessageStyle::Dim));
+    lines
 }
 
 fn explorer_delete_confirmation_targets(
@@ -1874,7 +1892,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "confirm deletion of 6 entries:\n  alpha.txt\n  nested/\n  nested/child.txt\n  nested/file2.txt\n  nested/deeper/\n  nested/deeper/grandchild.txt\npress y"
+            "confirm deletion of 6 entries:\n alpha.txt\n nested/\n nested/child.txt\n nested/file2.txt\n nested/deeper/\n nested/deeper/grandchild.txt\npress y"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -1892,7 +1910,7 @@ mod tests {
 
         assert_eq!(
             message,
-            "confirm deletion of 2 entries:\n  ./duplicate.txt\n  child/duplicate.txt\npress y"
+            "confirm deletion of 2 entries:\n ./duplicate.txt\n child/duplicate.txt\npress y"
         );
     }
 

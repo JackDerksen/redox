@@ -1,7 +1,7 @@
 use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::{EditorMode, EditorState};
+use crate::app::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::UiStyle;
 use crate::ui::widgets::perf::{PerfPopupLayout, perf_popup_layout};
 use crate::ui::widgets::popup::{
@@ -28,7 +28,13 @@ pub fn draw_status_toast(
 
     let (term_w, term_h) = window.get_size();
     let perf_popup = status_toast_perf_popup_layout(state, term_w, term_h, style);
-    let Some(toast) = toast_layout(message, term_w, term_h, perf_popup) else {
+    let Some(toast) = toast_layout(
+        message,
+        &state.status_msg_line_styles,
+        term_w,
+        term_h,
+        perf_popup,
+    ) else {
         return Ok(None);
     };
 
@@ -55,7 +61,8 @@ pub fn draw_status_toast(
             &mut view,
             row as u16 + TOAST_VERTICAL_PADDING,
             TOAST_HORIZONTAL_PADDING,
-            line,
+            &line.text,
+            line.style,
             style,
         )?;
     }
@@ -88,11 +95,18 @@ struct ToastLayout {
     y: u16,
     inner_w: u16,
     inner_h: u16,
-    lines: Vec<String>,
+    lines: Vec<ToastLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToastLine {
+    text: String,
+    style: StatusMessageStyle,
 }
 
 fn toast_layout(
     message: &str,
+    line_styles: &[StatusMessageStyle],
     term_w: u16,
     term_h: u16,
     perf_popup: Option<PerfPopupLayout>,
@@ -102,10 +116,10 @@ fn toast_layout(
     }
 
     if let Some(perf) = perf_popup {
-        if let Some(layout) = toast_layout_below_perf(message, term_w, term_h, perf) {
+        if let Some(layout) = toast_layout_below_perf(message, line_styles, term_w, term_h, perf) {
             return Some(layout);
         }
-        if let Some(layout) = toast_layout_left_of_perf(message, term_h, perf) {
+        if let Some(layout) = toast_layout_left_of_perf(message, line_styles, term_h, perf) {
             return Some(layout);
         }
     }
@@ -113,7 +127,8 @@ fn toast_layout(
     let y = TOAST_MARGIN_ROWS.min(term_h.saturating_sub(3));
     let popup_max_w = term_w.saturating_sub(TOAST_MARGIN_COLS);
     let popup_max_h = term_h.saturating_sub(y).saturating_sub(TOAST_MARGIN_ROWS);
-    let (lines, inner_w, inner_h) = build_toast_body(message, popup_max_w, popup_max_h)?;
+    let (lines, inner_w, inner_h) =
+        build_toast_body(message, line_styles, popup_max_w, popup_max_h)?;
     let popup_w = inner_w.saturating_add(2);
     let x = term_w.saturating_sub(popup_w.saturating_add(TOAST_MARGIN_COLS));
 
@@ -128,6 +143,7 @@ fn toast_layout(
 
 fn toast_layout_below_perf(
     message: &str,
+    line_styles: &[StatusMessageStyle],
     term_w: u16,
     term_h: u16,
     perf_popup: PerfPopupLayout,
@@ -139,7 +155,8 @@ fn toast_layout_below_perf(
         .saturating_add(TOAST_GAP_ROWS);
     let popup_max_w = term_w.saturating_sub(TOAST_MARGIN_COLS);
     let popup_max_h = term_h.saturating_sub(y).saturating_sub(TOAST_MARGIN_ROWS);
-    let (lines, inner_w, inner_h) = build_toast_body(message, popup_max_w, popup_max_h)?;
+    let (lines, inner_w, inner_h) =
+        build_toast_body(message, line_styles, popup_max_w, popup_max_h)?;
     let popup_w = inner_w.saturating_add(2);
     let x = term_w.saturating_sub(popup_w.saturating_add(TOAST_MARGIN_COLS));
 
@@ -154,13 +171,15 @@ fn toast_layout_below_perf(
 
 fn toast_layout_left_of_perf(
     message: &str,
+    line_styles: &[StatusMessageStyle],
     term_h: u16,
     perf_popup: PerfPopupLayout,
 ) -> Option<ToastLayout> {
     let y = perf_popup.y;
     let popup_max_w = perf_popup.x.saturating_sub(TOAST_MARGIN_COLS);
     let popup_max_h = term_h.saturating_sub(y).saturating_sub(TOAST_MARGIN_ROWS);
-    let (lines, inner_w, inner_h) = build_toast_body(message, popup_max_w, popup_max_h)?;
+    let (lines, inner_w, inner_h) =
+        build_toast_body(message, line_styles, popup_max_w, popup_max_h)?;
     let popup_w = inner_w.saturating_add(2);
     let x = perf_popup.x.saturating_sub(popup_w);
 
@@ -175,9 +194,10 @@ fn toast_layout_left_of_perf(
 
 fn build_toast_body(
     message: &str,
+    line_styles: &[StatusMessageStyle],
     popup_max_w: u16,
     popup_max_h: u16,
-) -> Option<(Vec<String>, u16, u16)> {
+) -> Option<(Vec<ToastLine>, u16, u16)> {
     if popup_max_w <= 2 {
         return None;
     }
@@ -190,7 +210,21 @@ fn build_toast_body(
         .max(1) as usize)
         .min(TOAST_MAX_TEXT_WIDTH);
 
-    let mut lines = wrap_text_to_cells(message, text_max_w);
+    let mut lines = Vec::new();
+    for (idx, line) in message.lines().enumerate() {
+        let line_style = line_styles
+            .get(idx)
+            .copied()
+            .unwrap_or(StatusMessageStyle::Normal);
+        lines.extend(
+            wrap_toast_line_to_cells(line, text_max_w)
+                .into_iter()
+                .map(|text| ToastLine {
+                    text,
+                    style: line_style,
+                }),
+        );
+    }
     let inner_max_h = popup_max_h.saturating_sub(2);
     let text_max_h = inner_max_h
         .saturating_sub(TOAST_VERTICAL_PADDING.saturating_mul(2))
@@ -198,14 +232,14 @@ fn build_toast_body(
     if lines.len() > text_max_h {
         lines.truncate(text_max_h);
         if let Some(last_line) = lines.last_mut() {
-            *last_line = clip_text_to_cells(last_line, text_max_w.saturating_sub(1));
-            last_line.push('…');
+            last_line.text = clip_text_to_cells(&last_line.text, text_max_w.saturating_sub(1));
+            last_line.text.push('…');
         }
     }
 
     let widest_line = lines
         .iter()
-        .map(|line| text_cell_width(line))
+        .map(|line| text_cell_width(&line.text))
         .max()
         .unwrap_or(0);
     let inner_w = widest_line as u16 + TOAST_HORIZONTAL_PADDING.saturating_mul(2);
@@ -213,14 +247,35 @@ fn build_toast_body(
     Some((lines, inner_w, inner_h))
 }
 
+fn wrap_toast_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
+    let indent_len = line
+        .char_indices()
+        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
+        .unwrap_or(line.len());
+    let indent = &line[..indent_len];
+    if indent.is_empty() {
+        return wrap_text_to_cells(line, max_cells);
+    }
+
+    let indent_w = text_cell_width(indent);
+    let content_max_w = max_cells.saturating_sub(indent_w).max(1);
+    let content = &line[indent_len..];
+    let wrapped = wrap_text_to_cells(content, content_max_w);
+    wrapped
+        .into_iter()
+        .map(|line| format!("{indent}{line}"))
+        .collect()
+}
+
 fn write_toast_line(
     window: &mut dyn Window,
     row: u16,
     col: u16,
     line: &str,
+    message_style: StatusMessageStyle,
     style: UiStyle,
 ) -> minui::Result<()> {
-    if line.trim() == "press y" {
+    if message_style == StatusMessageStyle::Dim {
         return window.write_str_colored(
             row,
             col,
@@ -311,28 +366,37 @@ fn text_cell_width(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{toast_layout, toast_token_segments};
+    use crate::app::StatusMessageStyle;
     use crate::ui::widgets::perf::PerfPopupLayout;
 
     #[test]
     fn toast_layout_anchors_to_top_right() {
-        let layout = toast_layout("written", 40, 20, None).expect("toast layout should fit");
+        let layout = toast_layout("written", &[], 40, 20, None).expect("toast layout should fit");
         assert_eq!(layout.y, 0);
         assert_eq!(layout.x + layout.inner_w + 2 + 1, 40);
     }
 
     #[test]
     fn toast_layout_prefers_height_for_long_messages() {
-        let layout = toast_layout("abcdefghijklmnopqrstuvwxyz", 30, 20, None)
+        let layout = toast_layout("abcdefghijklmnopqrstuvwxyz", &[], 30, 20, None)
             .expect("toast layout should fit");
         assert_eq!(layout.inner_w, 27);
         assert!(layout.inner_h > 1);
-        assert_eq!(layout.lines, vec!["abcdefghijklmnopqrstuvwxy", "z"]);
+        assert_eq!(
+            layout
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abcdefghijklmnopqrstuvwxy", "z"]
+        );
     }
 
     #[test]
     fn toast_layout_respects_perf_popup_offset() {
         let layout = toast_layout(
             "written",
+            &[],
             40,
             20,
             Some(PerfPopupLayout {
@@ -350,6 +414,7 @@ mod tests {
     fn toast_layout_falls_back_to_left_of_perf_when_below_does_not_fit() {
         let layout = toast_layout(
             "written",
+            &[],
             40,
             9,
             Some(PerfPopupLayout {
@@ -362,6 +427,32 @@ mod tests {
         .expect("toast layout should fit");
         assert_eq!(layout.y, 0);
         assert_eq!(layout.x + layout.inner_w + 2, 20);
+    }
+
+    #[test]
+    fn toast_layout_preserves_styles_for_wrapped_source_lines() {
+        let layout = toast_layout(
+            "normal words\n   prompt words",
+            &[StatusMessageStyle::Normal, StatusMessageStyle::Dim],
+            16,
+            20,
+            None,
+        )
+        .expect("toast layout should fit");
+
+        assert_eq!(
+            layout
+                .lines
+                .iter()
+                .map(|line| (line.text.as_str(), line.style))
+                .collect::<Vec<_>>(),
+            vec![
+                ("normal", StatusMessageStyle::Normal),
+                ("words", StatusMessageStyle::Normal),
+                ("   prompt", StatusMessageStyle::Dim),
+                ("   words", StatusMessageStyle::Dim),
+            ]
+        );
     }
 
     #[test]

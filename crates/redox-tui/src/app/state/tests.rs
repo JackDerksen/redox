@@ -2717,6 +2717,14 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
     assert!(msg.contains("z_delete.txt"));
+    assert_eq!(
+        state.status_msg_line_styles,
+        vec![
+            StatusMessageStyle::Normal,
+            StatusMessageStyle::Normal,
+            StatusMessageStyle::Dim
+        ]
+    );
     assert!(state.status_message_is_sticky());
 
     state.apply_input(
@@ -2827,7 +2835,7 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
     assert!(msg.contains("confirm deletion of 2 entries"));
     assert!(msg.contains("nested/"));
     assert!(msg.contains("nested/child.txt"));
-    assert!(msg.contains("\n  nested/"));
+    assert!(msg.contains("\n nested/"));
     assert!(msg.contains("\npress y"));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);

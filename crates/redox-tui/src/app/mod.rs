@@ -8,5 +8,5 @@ pub mod state;
 
 pub use state::{
     AboutPopup, EditorMode, EditorState, ExplorerPopup, FinderPopup, FinderPreview,
-    FramePerfSample, FramePerfStats, PerfPopup, PinSelectorPopup,
+    FramePerfSample, FramePerfStats, PerfPopup, PinSelectorPopup, StatusMessageStyle,
 };
