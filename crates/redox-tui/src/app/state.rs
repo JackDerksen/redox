@@ -4,6 +4,7 @@
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
@@ -18,9 +19,12 @@ use about::AboutState;
 mod analysis;
 use analysis::AnalysisWorker;
 mod explorer;
+mod finder;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
+pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
@@ -33,6 +37,12 @@ const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
 const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(test)]
+pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegisterKind {
@@ -103,18 +113,29 @@ pub enum EditorMode {
     Insert,
     Command,
     Search,
+    Finder,
+    PinSelect,
     Visual,
     VisualLine,
     VisualBlock,
 }
 
 impl EditorMode {
+    pub fn has_popup_overlay(self) -> bool {
+        matches!(
+            self,
+            EditorMode::Command | EditorMode::Search | EditorMode::Finder | EditorMode::PinSelect
+        )
+    }
+
     pub fn as_input_mode(self) -> InputMode {
         match self {
             EditorMode::Normal => InputMode::Normal,
             EditorMode::Insert => InputMode::Insert,
             EditorMode::Command => InputMode::Command,
             EditorMode::Search => InputMode::Search,
+            EditorMode::Finder => InputMode::Finder,
+            EditorMode::PinSelect => InputMode::PinSelect,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -163,6 +184,12 @@ impl BufferViewState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusMessageStyle {
+    Normal,
+    Dim,
+}
+
 /// Multi-buffer editor state for the TUI frontend.
 #[derive(Debug)]
 pub struct EditorState {
@@ -170,10 +197,17 @@ pub struct EditorState {
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
     explorer: Option<ExplorerState>,
+    finder: Option<FinderState>,
+    finder_index_worker: Option<FinderIndexWorker>,
+    finder_index_files: Vec<finder::FinderFileCandidate>,
+    finder_index_cache: HashMap<PathBuf, Vec<finder::FinderFileCandidate>>,
+    pin_selector: Option<PinSelectorState>,
+    pinned_files: PinnedFilesState,
     pub mode: EditorMode,
     pub input: InputState,
     pub command_line: String,
     pub status_msg: Option<String>,
+    pub status_msg_line_styles: Vec<StatusMessageStyle>,
     status_msg_expires_at: Option<Instant>,
     command_history: CommandHistoryState,
     pub should_quit: bool,
@@ -187,6 +221,8 @@ pub struct EditorState {
     search_state: Option<SearchState>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
+    transient_origin_buffer_id: Option<BufferId>,
+    transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
@@ -208,10 +244,17 @@ impl EditorState {
             views,
             about: None,
             explorer: None,
+            finder: None,
+            finder_index_worker: None,
+            finder_index_files: Vec::new(),
+            finder_index_cache: HashMap::new(),
+            pin_selector: None,
+            pinned_files: PinnedFilesState::load(),
             mode: EditorMode::Normal,
             input: InputState::new(),
             command_line: String::new(),
             status_msg: None,
+            status_msg_line_styles: Vec::new(),
             status_msg_expires_at: None,
             command_history: CommandHistoryState::default(),
             should_quit: false,
@@ -225,6 +268,8 @@ impl EditorState {
             search_state: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
+            transient_origin_buffer_id: None,
+            transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
             perf_visible: false,
             perf_stats: None,
@@ -235,16 +280,20 @@ impl EditorState {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some(msg.into());
+        self.status_msg_line_styles.clear();
         self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
-    pub fn set_status_sticky(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some(msg.into());
+    pub fn set_status_sticky_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
+        self.status_msg = Some(lines.join("\n"));
+        self.status_msg_line_styles = styles;
         self.status_msg_expires_at = None;
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
+        self.status_msg_line_styles.clear();
         self.status_msg_expires_at = None;
     }
 
@@ -385,9 +434,12 @@ impl EditorState {
             EditorMode::Visual => VisualModeKind::Char,
             EditorMode::VisualLine => VisualModeKind::Line,
             EditorMode::VisualBlock => VisualModeKind::Block,
-            EditorMode::Normal | EditorMode::Insert | EditorMode::Command | EditorMode::Search => {
-                return None;
-            }
+            EditorMode::Normal
+            | EditorMode::Insert
+            | EditorMode::Command
+            | EditorMode::Search
+            | EditorMode::Finder
+            | EditorMode::PinSelect => return None,
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }

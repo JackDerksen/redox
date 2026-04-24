@@ -199,6 +199,9 @@ mod tests {
 
     #[test]
     fn latest_request_channel_replaces_pending_request() {
+        let _lock = crate::app::state::global_test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (sender, receiver) = latest_request_channel();
         let buffer_id = redox_core::EditorSession::open_initial_unnamed()
             .expect("session")
@@ -214,6 +217,9 @@ mod tests {
 
     #[test]
     fn drain_latest_requests_returns_newest_pending_request() {
+        let _lock = crate::app::state::global_test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (sender, receiver) = latest_request_channel();
         let buffer_id = redox_core::EditorSession::open_initial_unnamed()
             .expect("session")

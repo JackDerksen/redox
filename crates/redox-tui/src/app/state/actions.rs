@@ -74,6 +74,8 @@ impl EditorState {
                     InputMode::Insert => EditorMode::Insert,
                     InputMode::Command => EditorMode::Command,
                     InputMode::Search => EditorMode::Search,
+                    InputMode::Finder => EditorMode::Finder,
+                    InputMode::PinSelect => EditorMode::PinSelect,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
                     InputMode::VisualBlock => EditorMode::VisualBlock,
@@ -111,6 +113,8 @@ impl EditorState {
 
             InputAction::EnterInsert(kind) => {
                 self.clear_active_visual_anchor();
+                self.transient_origin_buffer_id = None;
+                self.transient_origin_dir = None;
                 self.mode = EditorMode::Insert;
                 self.clear_status();
                 self.input.reset_prefixes();
@@ -218,6 +222,12 @@ impl EditorState {
                 self.execute_command_line();
             }
 
+            InputAction::OpenFinder => {
+                if self.mode == EditorMode::Normal {
+                    self.open_finder();
+                }
+            }
+
             InputAction::SearchCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
@@ -241,6 +251,118 @@ impl EditorState {
                 self.execute_search_line(viewport_width_cells, text_vh);
             }
 
+            InputAction::FinderCancel => {
+                if self.mode == EditorMode::Finder {
+                    self.close_finder();
+                }
+            }
+
+            InputAction::FinderChar(c) => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_type_char(c);
+                }
+            }
+
+            InputAction::FinderBackspace => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_backspace();
+                }
+            }
+
+            InputAction::FinderMoveNext => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_move_selection(1);
+                }
+            }
+
+            InputAction::FinderMovePrev => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_move_selection(-1);
+                }
+            }
+
+            InputAction::FinderEnter => {
+                if self.mode == EditorMode::Finder {
+                    self.open_selected_finder_entry();
+                }
+            }
+
+            InputAction::FinderBeginPin => {
+                if self.mode == EditorMode::Finder {
+                    self.begin_pin_selection_for_finder_entry();
+                }
+            }
+
+            InputAction::PinSelectorMoveNext => {
+                if self.mode == EditorMode::PinSelect {
+                    self.pin_selector_move(1);
+                }
+            }
+
+            InputAction::PinSelectorMovePrev => {
+                if self.mode == EditorMode::PinSelect {
+                    self.pin_selector_move(-1);
+                }
+            }
+
+            InputAction::PinSelectorOpenSelected => {
+                if self.mode == EditorMode::PinSelect {
+                    self.open_selected_pin_selector_entry();
+                }
+            }
+
+            InputAction::PinSelectorAssign => {
+                if self.mode == EditorMode::PinSelect {
+                    self.assign_selected_pin_slot();
+                }
+            }
+
+            InputAction::PinSelectorReorderUp => {
+                if self.mode == EditorMode::PinSelect {
+                    self.pin_selector_reorder_selected(-1);
+                }
+            }
+
+            InputAction::PinSelectorReorderDown => {
+                if self.mode == EditorMode::PinSelect {
+                    self.pin_selector_reorder_selected(1);
+                }
+            }
+
+            InputAction::PinSelectorDeleteSelected => {
+                if self.mode == EditorMode::PinSelect {
+                    self.pin_selector_delete_selected();
+                }
+            }
+
+            InputAction::PinSelectorCancel => {
+                if self.mode == EditorMode::PinSelect {
+                    self.cancel_pin_selection();
+                }
+            }
+
+            InputAction::AssignPinSlot { slot } => {
+                if self.mode == EditorMode::PinSelect {
+                    self.assign_pin_slot(slot);
+                }
+            }
+
+            InputAction::OpenPinnedSlot { slot } => {
+                self.open_pinned_slot(slot);
+            }
+
+            InputAction::QuickPinCurrentFile => {
+                if !matches!(
+                    self.mode,
+                    EditorMode::Command
+                        | EditorMode::Search
+                        | EditorMode::Finder
+                        | EditorMode::PinSelect
+                ) {
+                    self.begin_pin_selection_for_current_buffer();
+                }
+            }
+
             InputAction::OpenExplorer => {
                 if self.mode == EditorMode::Normal {
                     self.command_open_explorer();
@@ -249,6 +371,8 @@ impl EditorState {
 
             InputAction::SurfaceOpenSelected => {
                 if self.mode == EditorMode::Normal {
+                    self.transient_origin_buffer_id = None;
+                    self.transient_origin_dir = None;
                     self.surface_open_selected();
                 }
             }
@@ -375,6 +499,8 @@ impl EditorState {
                 }
                 EditorMode::Command
                 | EditorMode::Search
+                | EditorMode::Finder
+                | EditorMode::PinSelect
                 | EditorMode::Visual
                 | EditorMode::VisualLine
                 | EditorMode::VisualBlock => {}

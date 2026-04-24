@@ -5,6 +5,7 @@ use redox_core::{
 };
 use std::fs;
 use std::io::Write;
+use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -68,8 +69,83 @@ fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId)
     );
 }
 
+fn wait_for_finder_popup(
+    state: &mut EditorState,
+    predicate: impl Fn(&FinderPopup) -> bool,
+) -> FinderPopup {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        state.poll_finder_results();
+        if let Some(popup) = state.finder_popup()
+            && predicate(&popup)
+        {
+            return popup;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let popup = state.finder_popup();
+    panic!("finder popup did not reach expected state before deadline; popup={popup:?}");
+}
+
+fn wait_for_finder_index_idle(state: &mut EditorState) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        state.poll_finder_results();
+        if state.finder_index_worker.is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    panic!("finder index worker did not finish before deadline");
+}
+
 fn expire_status_after_timeout(state: &mut EditorState) {
     state.expire_status_message(Instant::now() + Duration::from_secs(10));
+}
+
+fn lock_global_test_state() -> std::sync::MutexGuard<'static, ()> {
+    global_test_state_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn with_global_test_state_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _lock = lock_global_test_state();
+    f()
+}
+
+fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindSafe) -> T {
+    let _lock = lock_global_test_state();
+    let root = temp_file_path(tag);
+    fs::create_dir_all(&root).expect("failed to create temp root");
+    let previous_cwd = std::env::current_dir().expect("failed to capture cwd");
+    let previous_xdg = std::env::var_os("XDG_CONFIG_HOME");
+    let config_root = root.join("config");
+
+    std::env::set_current_dir(&root).expect("failed to switch cwd");
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &config_root);
+    }
+
+    let result = panic::catch_unwind(|| f(root.clone()));
+
+    std::env::set_current_dir(&previous_cwd).expect("failed to restore cwd");
+    match previous_xdg {
+        Some(value) => unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        },
+        None => unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        },
+    }
+    let _ = fs::remove_dir_all(&root);
+
+    match result {
+        Ok(value) => value,
+        Err(err) => panic::resume_unwind(err),
+    }
 }
 
 #[test]
@@ -83,6 +159,768 @@ fn normal_mode_paste_inserts_text_and_marks_dirty() {
     assert!(state.session.active_meta().dirty);
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn quick_pin_current_file_opens_selector_before_persisting() {
+    with_isolated_launch_env("quick_pin_current_file_selector", |root| {
+        let file_path = root.join("alpha.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        let popup = state.pin_selector_popup().expect("pin selector popup");
+        assert_eq!(popup.path_label, "alpha.txt");
+        assert_eq!(popup.selected, 0);
+
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+        assert_eq!(
+            state.pinned_files_for_test(),
+            std::slice::from_ref(&canonical)
+        );
+
+        let config_path = root.join("config").join("redox").join("pinned_files.txt");
+        let saved = fs::read_to_string(config_path).expect("failed to read pin file");
+        assert!(saved.contains(&canonical.display().to_string()));
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn pinned_files_save_as_json_array_atomically() {
+    with_isolated_launch_env("pinned_files_save_json", |root| {
+        let file_path = root.join("line\nbreak.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::AssignPinSlot { slot: 2 }, 80, 24);
+
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        let saved = fs::read_to_string(&config_file).expect("failed to read pin file");
+        let slots: Vec<Option<String>> =
+            serde_json::from_str(&saved).expect("pin file should be JSON");
+        assert_eq!(slots.len(), 5);
+        assert_eq!(slots[0], None);
+        assert_eq!(slots[1], None);
+        assert_eq!(slots[2], Some(canonical.display().to_string()));
+        assert!(!config_file.with_extension("tmp").exists());
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to reopen file");
+        let reloaded = EditorState::new(session);
+        assert_eq!(
+            reloaded.pin_slots_for_test(),
+            vec![None, None, Some(canonical), None, None]
+        );
+    });
+}
+
+#[test]
+fn pinned_files_load_legacy_format_without_trimming_paths() {
+    with_isolated_launch_env("pinned_files_legacy_trailing_space", |root| {
+        let file_path = root.join("trail   ");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        fs::create_dir_all(config_file.parent().expect("pin config dir"))
+            .expect("failed to create config dir");
+        fs::write(&config_file, format!("-\n{}\n", file_path.display()))
+            .expect("failed to write legacy pin file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let state = EditorState::new(session);
+
+        assert_eq!(
+            state.pin_slots_for_test(),
+            vec![None, Some(canonical), None, None, None]
+        );
+    });
+}
+
+#[test]
+fn pinned_files_load_json_before_legacy_format() {
+    with_isolated_launch_env("pinned_files_load_json", |root| {
+        let first_path = root.join("first.txt");
+        let extra_path = root.join("extra.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&extra_path, "extra\n").expect("failed to write extra file");
+        let canonical = fs::canonicalize(&first_path).expect("canonical path");
+
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        fs::create_dir_all(config_file.parent().expect("pin config dir"))
+            .expect("failed to create config dir");
+        let saved = serde_json::json!([
+            null,
+            first_path.display().to_string(),
+            "-",
+            "relative.txt",
+            first_path.display().to_string(),
+            extra_path.display().to_string()
+        ]);
+        fs::write(&config_file, saved.to_string()).expect("failed to write JSON pin file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let state = EditorState::new(session);
+
+        assert_eq!(
+            state.pin_slots_for_test(),
+            vec![None, Some(canonical), None, None, None]
+        );
+    });
+}
+
+#[test]
+fn finder_does_not_open_while_about_popup_is_active() {
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+
+        assert!(state.about_popup().is_some());
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+
+        assert!(state.about_popup().is_some());
+        assert!(state.finder_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn finder_does_not_open_while_explorer_popup_is_active() {
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(state.session.launch_dir().to_path_buf())
+            .expect("failed to open explorer");
+
+        assert!(state.explorer_popup().is_some());
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+
+        assert!(state.explorer_popup().is_some());
+        assert!(state.finder_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn quick_pin_does_not_open_pinboard_while_about_popup_is_active() {
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+
+        assert!(state.about_popup().is_some());
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+        assert!(state.about_popup().is_some());
+        assert!(state.pin_selector_popup().is_none());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn quick_pin_does_not_open_pinboard_while_perf_popup_is_active() {
+    let path = temp_file_path("quick_pin_blocked_by_perf");
+    let mut state = state_with_text(path.clone(), "alpha\n");
+    state.command_toggle_perf();
+
+    assert!(state.perf_popup().is_some());
+
+    state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+    assert!(state.perf_popup().is_some());
+    assert!(state.pin_selector_popup().is_none());
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn open_pinned_slot_from_normal_mode_opens_file_without_changing_launch_dir() {
+    with_isolated_launch_env("open_pinned_slot_normal_mode", |root| {
+        let first_path = root.join("first.txt");
+        let second_path = root.join("second.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&second_path, "second\n").expect("failed to write second file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        let launch_dir = state.session.launch_dir().to_path_buf();
+
+        let _ = state
+            .session
+            .open_file(&second_path)
+            .expect("failed to switch file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&first_path)
+            .expect("failed to return to first file");
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+
+        let second_canonical = fs::canonicalize(&second_path).expect("second canonical");
+        assert_eq!(
+            state.session.active_meta().path.as_deref(),
+            Some(second_canonical.as_path())
+        );
+        assert_eq!(state.session.launch_dir(), launch_dir.as_path());
+    });
+}
+
+#[test]
+fn open_pinned_slot_from_visual_mode_clears_visual_state() {
+    with_isolated_launch_env("open_pinned_slot_visual_mode", |root| {
+        let first_path = root.join("first.txt");
+        let second_path = root.join("second.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&second_path, "second\n").expect("failed to write second file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        let _ = state
+            .session
+            .open_file(&second_path)
+            .expect("failed to switch to second file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&first_path)
+            .expect("failed to return to first file");
+        state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+        assert_eq!(state.mode, EditorMode::Visual);
+        assert!(state.active_visual_selection().is_some());
+
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+
+        let second_canonical = fs::canonicalize(&second_path).expect("second canonical");
+        assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.active_visual_selection().is_none());
+        assert_eq!(
+            state.session.active_meta().path.as_deref(),
+            Some(second_canonical.as_path())
+        );
+    });
+}
+
+#[test]
+fn failed_pin_assignment_rolls_back_and_keeps_selector_open() {
+    with_isolated_launch_env("pin_assignment_save_failure", |root| {
+        let config_blocker = root.join("config");
+        fs::write(&config_blocker, "not a directory\n").expect("failed to write config blocker");
+        let file_path = root.join("alpha.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        assert!(state.pin_selector_popup().is_some());
+        assert!(state.pinned_files_for_test().is_empty());
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|msg| msg.starts_with("pin save failed:"))
+        );
+    });
+}
+
+#[test]
+fn failed_pin_reorder_rolls_back_in_memory_slots() {
+    with_isolated_launch_env("pin_reorder_save_failure", |root| {
+        let first_path = root.join("first.txt");
+        let second_path = root.join("second.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&second_path, "second\n").expect("failed to write second file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+        let _ = state
+            .session
+            .open_file(&second_path)
+            .expect("failed to switch to second file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let original_slots = state.pin_slots_for_test();
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        fs::remove_file(&config_file).expect("failed to remove pin file");
+        fs::remove_dir(config_file.parent().expect("pin config dir"))
+            .expect("failed to remove pin config dir");
+        fs::write(
+            config_file.parent().expect("pin config dir"),
+            "not a directory\n",
+        )
+        .expect("failed to write config blocker");
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorReorderUp, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        assert_eq!(state.pin_slots_for_test(), original_slots);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|msg| msg.starts_with("pin save failed:"))
+        );
+    });
+}
+
+#[test]
+fn pin_selector_shift_enter_assigns_current_file_to_selected_slot() {
+    with_isolated_launch_env("pin_selector_shift_enter_assigns_current_file", |root| {
+        let file_path = root.join("alpha.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        let popup = state.pin_selector_popup().expect("pin selector popup");
+        assert_eq!(popup.selected, 0);
+
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+        assert_eq!(state.pinned_files_for_test(), &[canonical]);
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn pin_selector_enter_opens_selected_pinned_file() {
+    with_isolated_launch_env("pin_selector_enter_opens_selected_pinned_file", |root| {
+        let first_path = root.join("first.txt");
+        let second_path = root.join("second.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&second_path, "second\n").expect("failed to write second file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&second_path)
+            .expect("failed to switch to second file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::AssignPinSlot { slot: 1 }, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&second_path)
+            .expect("failed to return to second file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorMovePrev, 80, 24);
+        state.apply_input(InputAction::PinSelectorOpenSelected, 80, 24);
+
+        let first_canonical = fs::canonicalize(&first_path).expect("first canonical");
+        assert_eq!(
+            state.session.active_meta().path.as_deref(),
+            Some(first_canonical.as_path())
+        );
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn explorer_stays_in_previous_context_after_opening_pinned_file() {
+    with_isolated_launch_env(
+        "explorer_stays_in_previous_context_after_pinned_open",
+        |root| {
+            let left_dir = root.join("left");
+            let right_dir = root.join("right");
+            fs::create_dir_all(&left_dir).expect("failed to create left dir");
+            fs::create_dir_all(&right_dir).expect("failed to create right dir");
+
+            let left_file = left_dir.join("left.txt");
+            let pinned_file = right_dir.join("pinned.txt");
+            fs::write(&left_file, "left\n").expect("failed to write left file");
+            fs::write(&pinned_file, "pinned\n").expect("failed to write pinned file");
+
+            let session =
+                EditorSession::open_initial_file(&left_file).expect("failed to open session");
+            let mut state = EditorState::new(session);
+
+            let _ = state
+                .session
+                .open_file(&pinned_file)
+                .expect("failed to switch to pinned file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+            let _ = state
+                .session
+                .open_file(&left_file)
+                .expect("failed to return to left file");
+            state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+
+            let pinned_canonical = fs::canonicalize(&pinned_file).expect("pinned canonical");
+            assert_eq!(
+                state.session.active_meta().path.as_deref(),
+                Some(pinned_canonical.as_path())
+            );
+
+            state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+            let popup = state.explorer_popup().expect("explorer popup");
+            assert_eq!(
+                popup.dir_path,
+                fs::canonicalize(&left_dir).expect("left dir canonical")
+            );
+        },
+    );
+}
+
+#[test]
+fn explorer_stays_in_previous_context_after_opening_pinned_finder_entry() {
+    with_isolated_launch_env(
+        "explorer_stays_in_previous_context_after_pinned_finder_entry",
+        |root| {
+            let left_dir = root.join("left");
+            let right_dir = root.join("right");
+            fs::create_dir_all(&left_dir).expect("failed to create left dir");
+            fs::create_dir_all(&right_dir).expect("failed to create right dir");
+
+            let left_file = left_dir.join("left.txt");
+            let pinned_file = right_dir.join("pinned.txt");
+            fs::write(&left_file, "left\n").expect("failed to write left file");
+            fs::write(&pinned_file, "pinned\n").expect("failed to write pinned file");
+
+            let session =
+                EditorSession::open_initial_file(&left_file).expect("failed to open session");
+            let mut state = EditorState::new(session);
+
+            let _ = state
+                .session
+                .open_file(&pinned_file)
+                .expect("failed to switch to pinned file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+            let _ = state
+                .session
+                .open_file(&left_file)
+                .expect("failed to return to left file");
+            state.apply_input(InputAction::OpenFinder, 80, 24);
+
+            let finder = state.finder_popup().expect("finder popup");
+            assert!(finder.entries[0].is_pinned);
+
+            for _ in 0..finder.entries.len() {
+                state.apply_input(InputAction::FinderMovePrev, 80, 24);
+            }
+            state.apply_input(InputAction::FinderEnter, 80, 24);
+
+            let pinned_canonical = fs::canonicalize(&pinned_file).expect("pinned canonical");
+            assert_eq!(
+                state.session.active_meta().path.as_deref(),
+                Some(pinned_canonical.as_path())
+            );
+
+            state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+            let popup = state.explorer_popup().expect("explorer popup");
+            assert_eq!(
+                popup.dir_path,
+                fs::canonicalize(&left_dir).expect("left dir canonical")
+            );
+        },
+    );
+}
+
+#[test]
+fn explorer_opened_from_pinned_file_keeps_pinned_file_as_background() {
+    with_isolated_launch_env("explorer_background_stays_on_pinned_file", |root| {
+        let left_dir = root.join("left");
+        let right_dir = root.join("right");
+        fs::create_dir_all(&left_dir).expect("failed to create left dir");
+        fs::create_dir_all(&right_dir).expect("failed to create right dir");
+
+        let left_file = left_dir.join("left.txt");
+        let pinned_file = right_dir.join("pinned.txt");
+        fs::write(&left_file, "left\n").expect("failed to write left file");
+        fs::write(&pinned_file, "pinned\n").expect("failed to write pinned file");
+
+        let session = EditorSession::open_initial_file(&left_file).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        let _ = state
+            .session
+            .open_file(&pinned_file)
+            .expect("failed to switch to pinned file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&left_file)
+            .expect("failed to return to left file");
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+        let pinned_id = state.session.active_id();
+
+        state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+        assert!(state.explorer_popup().is_some());
+        assert_eq!(state.explorer_background_buffer_id(), Some(pinned_id));
+    });
+}
+
+#[test]
+fn quick_pin_enters_selector_when_pin_list_is_full() {
+    with_isolated_launch_env("quick_pin_full_selector", |root| {
+        let files = (0..6)
+            .map(|idx| {
+                let path = root.join(format!("file-{idx}.txt"));
+                fs::write(&path, format!("file-{idx}\n")).expect("failed to write file");
+                path
+            })
+            .collect::<Vec<_>>();
+
+        let session = EditorSession::open_initial_file(&files[0]).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+        for path in &files[1..5] {
+            let _ = state
+                .session
+                .open_file(path)
+                .expect("failed to switch file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+        }
+
+        let _ = state
+            .session
+            .open_file(&files[5])
+            .expect("failed to switch file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        assert!(state.pin_selector_popup().is_some());
+
+        state.apply_input(InputAction::AssignPinSlot { slot: 1 }, 80, 24);
+
+        let expected = vec![
+            fs::canonicalize(&files[0]).expect("pin 0"),
+            fs::canonicalize(&files[5]).expect("pin 5"),
+            fs::canonicalize(&files[2]).expect("pin 2"),
+            fs::canonicalize(&files[3]).expect("pin 3"),
+            fs::canonicalize(&files[4]).expect("pin 4"),
+        ];
+        assert_eq!(state.pinned_files_for_test(), expected.as_slice());
+        assert_eq!(state.mode, EditorMode::Normal);
+    });
+}
+
+#[test]
+fn pin_selector_can_assign_directly_to_empty_later_slot() {
+    with_isolated_launch_env("pin_selector_assign_empty_later_slot", |root| {
+        let file_path = root.join("alpha.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::AssignPinSlot { slot: 3 }, 80, 24);
+
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+        assert_eq!(
+            state.pin_slots_for_test(),
+            vec![None, None, None, Some(canonical.clone()), None,]
+        );
+        assert_eq!(state.pinned_files_for_test(), vec![canonical]);
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        assert_eq!(popup.entries[0].hotkey.as_deref(), Some("Ctrl+4"));
+    });
+}
+
+#[test]
+fn pin_manager_reorders_and_deletes_existing_pins() {
+    with_isolated_launch_env("pin_manager_reorders_and_deletes", |root| {
+        let files = (0..3)
+            .map(|idx| {
+                let path = root.join(format!("pin-{idx}.txt"));
+                fs::write(&path, format!("pin-{idx}\n")).expect("failed to write pinned file");
+                path
+            })
+            .collect::<Vec<_>>();
+
+        let session = EditorSession::open_initial_file(&files[0]).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        for path in &files {
+            let _ = state
+                .session
+                .open_file(path)
+                .expect("failed to open pinned file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+        }
+
+        let _ = state
+            .session
+            .open_file(&files[0])
+            .expect("failed to return to first file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::PinSelect);
+        let popup = state.pin_selector_popup().expect("pin manager popup");
+        assert_eq!(popup.selected, 0);
+
+        state.apply_input(InputAction::PinSelectorMoveNext, 80, 24);
+        state.apply_input(InputAction::PinSelectorReorderDown, 80, 24);
+
+        let pinned = state.pinned_files_for_test();
+        assert_eq!(
+            pinned[0],
+            fs::canonicalize(&files[0]).expect("pin 0 canonical")
+        );
+        assert_eq!(
+            pinned[1],
+            fs::canonicalize(&files[2]).expect("pin 2 canonical")
+        );
+        assert_eq!(
+            pinned[2],
+            fs::canonicalize(&files[1]).expect("pin 1 canonical")
+        );
+
+        state.apply_input(InputAction::PinSelectorDeleteSelected, 80, 24);
+
+        let pinned = state.pinned_files_for_test();
+        assert_eq!(pinned.len(), 2);
+        assert_eq!(
+            pinned[0],
+            fs::canonicalize(&files[0]).expect("pin 0 canonical after delete")
+        );
+        assert_eq!(
+            pinned[1],
+            fs::canonicalize(&files[2]).expect("pin 2 canonical after delete")
+        );
+        assert_eq!(state.mode, EditorMode::PinSelect);
+    });
+}
+
+#[test]
+fn finder_shows_pins_and_filters_files() {
+    with_isolated_launch_env("finder_shows_pins_and_filters_files", |root| {
+        let main_path = root.join("src").join("main.rs");
+        let lib_path = root.join("src").join("lib.rs");
+        let notes_path = root.join("notes.md");
+        fs::create_dir_all(main_path.parent().expect("src dir")).expect("failed to create src");
+        fs::write(&main_path, "fn main() {}\n").expect("failed to write main");
+        fs::write(&lib_path, "pub fn lib() {}\n").expect("failed to write lib");
+        fs::write(&notes_path, "# Notes\n").expect("failed to write notes");
+
+        let session =
+            EditorSession::open_initial_file(&notes_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+        let _ = state
+            .session
+            .open_file(&main_path)
+            .expect("failed to switch file");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        assert!(popup.entries[0].is_pinned);
+        assert!(popup.entries[1].is_pinned);
+        assert_eq!(popup.selected, popup.entries.len().saturating_sub(1));
+
+        for ch in "sma".chars() {
+            state.apply_input(InputAction::FinderChar(ch), 80, 24);
+        }
+        let popup = wait_for_finder_popup(&mut state, |popup| popup.result_count == 1);
+        assert_eq!(popup.result_count, 1);
+        assert_eq!(popup.selected, popup.entries.len().saturating_sub(1));
+        assert!(
+            popup
+                .entries
+                .iter()
+                .any(|entry| entry.label.contains("src/main.rs"))
+        );
+    });
+}
+
+#[test]
+fn finder_reopens_from_cache_and_refreshes_stale_paths() {
+    with_isolated_launch_env("finder_reopens_from_cache", |root| {
+        let keep_path = root.join("keep.rs");
+        let stale_path = root.join("stale.rs");
+        fs::write(&keep_path, "keep\n").expect("failed to write kept file");
+        fs::write(&stale_path, "stale\n").expect("failed to write stale file");
+
+        let session = EditorSession::open_initial_file(&keep_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        wait_for_finder_index_idle(&mut state);
+        let popup = state.finder_popup().expect("finder popup");
+        assert_eq!(popup.result_count, 2);
+
+        state.apply_input(InputAction::FinderCancel, 80, 24);
+        fs::remove_file(&stale_path).expect("failed to remove stale file");
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        let cached_popup = state.finder_popup().expect("cached finder popup");
+        assert_eq!(cached_popup.result_count, 2);
+        assert!(
+            cached_popup
+                .entries
+                .iter()
+                .any(|entry| entry.label == "stale.rs")
+        );
+
+        wait_for_finder_index_idle(&mut state);
+        let refreshed_popup = state.finder_popup().expect("refreshed finder popup");
+        assert_eq!(refreshed_popup.result_count, 1);
+        assert!(
+            refreshed_popup
+                .entries
+                .iter()
+                .all(|entry| entry.label != "stale.rs")
+        );
+    });
 }
 
 #[test]
@@ -1523,26 +2361,29 @@ fn command_ls_populates_multiline_status_summary() {
 
 #[test]
 fn command_edit_replaces_empty_startup_buffer() {
-    let path = temp_file_path("edit_replaces_empty_startup");
-    fs::write(&path, "alpha").expect("failed to write fixture");
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let path = temp_file_path("edit_replaces_empty_startup");
+        fs::write(&path, "alpha").expect("failed to write fixture");
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, &format!("e {}", path.display()));
+        run_command(&mut state, &format!("e {}", path.display()));
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
-    let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+        let expected_path = fs::canonicalize(&path).unwrap_or(path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "bn");
-    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+        run_command(&mut state, "bn");
+        assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
 
-    let _ = fs::remove_file(path);
+        let _ = fs::remove_file(path);
+    });
 }
 
 #[test]
@@ -2050,6 +2891,14 @@ fn explorer_write_requires_confirmation_for_deletes() {
         .expect("missing confirmation prompt");
     assert!(msg.contains("confirm deletion of 1 entry"));
     assert!(msg.contains("z_delete.txt"));
+    assert_eq!(
+        state.status_msg_line_styles,
+        vec![
+            StatusMessageStyle::Normal,
+            StatusMessageStyle::Normal,
+            StatusMessageStyle::Dim
+        ]
+    );
     assert!(state.status_message_is_sticky());
 
     state.apply_input(
@@ -2160,7 +3009,7 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
     assert!(msg.contains("confirm deletion of 2 entries"));
     assert!(msg.contains("nested/"));
     assert!(msg.contains("nested/child.txt"));
-    assert!(msg.contains("\n  nested/"));
+    assert!(msg.contains("\n nested/"));
     assert!(msg.contains("\npress y"));
 
     state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
@@ -2497,109 +3346,121 @@ fn explorer_q_closes_surface_buffer_only() {
 
 #[test]
 fn explorer_q_from_directory_launch_quits_in_one_step() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_single_q_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    fs::write(dir.join("a.txt"), "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_single_q_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("a.txt"), "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.explorer_popup().is_some());
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.explorer_popup().is_some());
 
-    run_command(&mut state, "q");
+        run_command(&mut state, "q");
 
-    assert!(state.should_quit);
+        assert!(state.should_quit);
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]
 fn explorer_open_at_dot_resolves_title_to_real_directory_path() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
 
-    state
-        .open_explorer_at_path(PathBuf::from("."))
-        .expect("failed to open explorer at dot");
-    let popup = state
-        .explorer_popup()
-        .expect("explorer popup should be active");
+        state
+            .open_explorer_at_path(PathBuf::from("."))
+            .expect("failed to open explorer at dot");
+        let popup = state
+            .explorer_popup()
+            .expect("explorer popup should be active");
 
-    assert!(!popup.title.starts_with("~./"));
-    assert!(popup.title.ends_with('/'));
+        assert!(!popup.title.starts_with("~./"));
+        assert!(popup.title.ends_with('/'));
+    });
 }
 
 #[test]
 fn explorer_directory_launch_marks_background_as_placeholder_blank() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
 
-    state
-        .open_explorer_at_path(PathBuf::from("."))
-        .expect("failed to open explorer at dot");
+        state
+            .open_explorer_at_path(PathBuf::from("."))
+            .expect("failed to open explorer at dot");
 
-    assert!(state.explorer_background_is_placeholder_blank());
+        assert!(state.explorer_background_is_placeholder_blank());
+    });
 }
 
 #[test]
 fn explorer_file_open_replaces_empty_startup_background_buffer() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_file_replaces_startup_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    let file_path = dir.join("a.txt");
-    fs::write(&file_path, "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_file_replaces_startup_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_path = dir.join("a.txt");
+        fs::write(&file_path, "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.explorer_background_is_placeholder_blank());
+        let session =
+            EditorSession::open_initial_unnamed().expect("failed to open unnamed session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.explorer_background_is_placeholder_blank());
 
-    let explorer_id = state.session.active_id();
-    let file_line = state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .position(|line| line == "a.txt")
-        .expect("file missing from explorer");
-    state
-        .views
-        .get_mut(&explorer_id)
-        .expect("missing explorer view")
-        .cursor
-        .cursor = Pos::new(file_line, 0);
+        let explorer_id = state.session.active_id();
+        let file_line = state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .position(|line| line == "a.txt")
+            .expect("file missing from explorer");
+        state
+            .views
+            .get_mut(&explorer_id)
+            .expect("missing explorer view")
+            .cursor
+            .cursor = Pos::new(file_line, 0);
 
-    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+        state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 1);
-    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert!(state.session.buffer(explorer_id).is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+        let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "bp");
-    assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
+        run_command(&mut state, "bp");
+        assert_eq!(state.status_msg.as_deref(), Some("only one buffer"));
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]
@@ -2667,16 +3528,18 @@ fn about_q_closes_surface_buffer_only() {
 
 #[test]
 fn about_q_quits_from_empty_startup_buffer() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, "about");
-    assert!(state.about_popup().is_some());
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "q");
+        run_command(&mut state, "q");
 
-    assert!(state.should_quit);
-    assert!(state.about_popup().is_none());
+        assert!(state.should_quit);
+        assert!(state.about_popup().is_none());
+    });
 }
 
 #[test]
@@ -2699,16 +3562,18 @@ fn about_escape_key_closes_surface_buffer_only() {
 
 #[test]
 fn about_escape_key_quits_from_empty_startup_buffer() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
 
-    run_command(&mut state, "about");
-    assert!(state.about_popup().is_some());
+        run_command(&mut state, "about");
+        assert!(state.about_popup().is_some());
 
-    assert!(state.handle_normal_mode_escape_on_surface());
+        assert!(state.handle_normal_mode_escape_on_surface());
 
-    assert!(state.should_quit);
-    assert!(state.about_popup().is_none());
+        assert!(state.should_quit);
+        assert!(state.about_popup().is_none());
+    });
 }
 
 #[test]
@@ -2731,98 +3596,104 @@ fn explorer_escape_key_closes_surface_buffer_only() {
 
 #[test]
 fn explorer_opens_from_startup_about_without_quitting() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    let about_id = state.session.active_id();
-    assert!(state.about_popup().is_some());
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        let about_id = state.session.active_id();
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "explorer");
+        run_command(&mut state, "explorer");
 
-    assert!(!state.should_quit);
-    assert!(state.about_popup().is_none());
-    assert!(state.explorer_popup().is_some());
-    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
-    assert!(state.explorer_background_is_placeholder_blank());
+        assert!(!state.should_quit);
+        assert!(state.about_popup().is_none());
+        assert!(state.explorer_popup().is_some());
+        assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
+        assert!(state.explorer_background_is_placeholder_blank());
+    });
 }
 
 #[test]
 fn explorer_escape_from_startup_about_returns_to_about() {
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    assert!(state.about_popup().is_some());
+    with_global_test_state_lock(|| {
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        assert!(state.about_popup().is_some());
 
-    run_command(&mut state, "explorer");
-    assert!(state.explorer_popup().is_some());
+        run_command(&mut state, "explorer");
+        assert!(state.explorer_popup().is_some());
 
-    assert!(state.handle_normal_mode_escape_on_surface());
+        assert!(state.handle_normal_mode_escape_on_surface());
 
-    assert!(!state.should_quit);
-    assert!(state.explorer_popup().is_none());
-    assert!(state.about_popup().is_some());
+        assert!(!state.should_quit);
+        assert!(state.explorer_popup().is_none());
+        assert!(state.about_popup().is_some());
+    });
 }
 
 #[test]
 fn explorer_file_open_from_startup_about_replaces_empty_startup_buffer() {
-    let dir = std::env::temp_dir().join(format!(
-        "redox_explorer_about_file_replaces_startup_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    fs::create_dir(&dir).expect("failed to create temp dir");
-    let file_path = dir.join("a.txt");
-    fs::write(&file_path, "alpha").expect("failed to write fixture");
+    with_global_test_state_lock(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "redox_explorer_about_file_replaces_startup_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock went backwards")
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let file_path = dir.join("a.txt");
+        fs::write(&file_path, "alpha").expect("failed to write fixture");
 
-    let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-    let placeholder_id = session.active_id();
-    let mut state = EditorState::new(session);
-    state.command_open_about();
-    let about_id = state.session.active_id();
-    assert!(state.about_popup().is_some());
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let placeholder_id = session.active_id();
+        let mut state = EditorState::new(session);
+        state.command_open_about();
+        let about_id = state.session.active_id();
+        assert!(state.about_popup().is_some());
 
-    state
-        .open_explorer_at_path(dir.clone())
-        .expect("failed to open explorer");
-    assert!(state.about_popup().is_none());
-    assert!(state.explorer_popup().is_some());
-    assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
-    assert!(state.explorer_background_is_placeholder_blank());
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        assert!(state.about_popup().is_none());
+        assert!(state.explorer_popup().is_some());
+        assert_ne!(state.explorer_background_buffer_id(), Some(about_id));
+        assert!(state.explorer_background_is_placeholder_blank());
 
-    let explorer_id = state.session.active_id();
-    let file_line = state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .position(|line| line == "a.txt")
-        .expect("file missing from explorer");
-    state
-        .views
-        .get_mut(&explorer_id)
-        .expect("missing explorer view")
-        .cursor
-        .cursor = Pos::new(file_line, 0);
+        let explorer_id = state.session.active_id();
+        let file_line = state
+            .session
+            .active_buffer()
+            .to_string()
+            .lines()
+            .position(|line| line == "a.txt")
+            .expect("file missing from explorer");
+        state
+            .views
+            .get_mut(&explorer_id)
+            .expect("missing explorer view")
+            .cursor
+            .cursor = Pos::new(file_line, 0);
 
-    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+        state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
 
-    assert!(state.session.buffer(placeholder_id).is_none());
-    assert!(state.session.buffer(explorer_id).is_none());
-    assert_eq!(state.session.summaries().len(), 2);
-    let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
-    assert_eq!(
-        state.session.active_meta().path.as_ref(),
-        Some(&expected_path)
-    );
+        assert!(state.session.buffer(placeholder_id).is_none());
+        assert!(state.session.buffer(explorer_id).is_none());
+        assert_eq!(state.session.summaries().len(), 2);
+        let expected_path = fs::canonicalize(&file_path).unwrap_or(file_path.clone());
+        assert_eq!(
+            state.session.active_meta().path.as_ref(),
+            Some(&expected_path)
+        );
 
-    run_command(&mut state, "ls");
-    let msg = state.status_msg.as_deref().expect("missing ls status");
-    assert!(!msg.contains("[No Name]"));
-    assert!(!msg.contains(" | "));
+        run_command(&mut state, "ls");
+        let msg = state.status_msg.as_deref().expect("missing ls status");
+        assert!(!msg.contains("[No Name]"));
+        assert!(!msg.contains(" | "));
 
-    let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir);
+    });
 }
 
 #[test]

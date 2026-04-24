@@ -188,7 +188,7 @@ fn line_and_char_index_conversion_clamps() {
 #[test]
 fn apply_edit_normalizes_reversed_range() {
     let mut b = TextBuffer::from_str("abcdef");
-    let cur = b.apply_edit(Edit::replace(4..2, "XY"));
+    let cur = b.apply_edit(Edit::replace(std::ops::Range { start: 4, end: 2 }, "XY"));
     assert_eq!(b.to_string(), "abXYef");
     assert_eq!(cur, Pos::new(0, 4));
 }

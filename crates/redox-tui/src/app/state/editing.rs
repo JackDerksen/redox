@@ -471,7 +471,11 @@ impl EditorState {
             EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
                 self.replace_active_visual_selection(replacement, viewport_width_cells, text_vh);
             }
-            EditorMode::Insert | EditorMode::Command | EditorMode::Search => {}
+            EditorMode::Insert
+            | EditorMode::Command
+            | EditorMode::Search
+            | EditorMode::Finder
+            | EditorMode::PinSelect => {}
         }
     }
 
@@ -488,7 +492,11 @@ impl EditorState {
             EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
                 self.toggle_case_active_visual_selection(viewport_width_cells, text_vh);
             }
-            EditorMode::Insert | EditorMode::Command | EditorMode::Search => {}
+            EditorMode::Insert
+            | EditorMode::Command
+            | EditorMode::Search
+            | EditorMode::Finder
+            | EditorMode::PinSelect => {}
         }
     }
 

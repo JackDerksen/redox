@@ -15,6 +15,8 @@ pub enum InputMode {
     Insert,
     Command,
     Search,
+    Finder,
+    PinSelect,
     Visual,
     VisualLine,
     VisualBlock,
@@ -70,6 +72,8 @@ pub enum InputAction {
     EnterSearch,
     /// Open explorer surface (`<leader>e`).
     OpenExplorer,
+    /// Open the file finder popup (`<leader><leader>`).
+    OpenFinder,
     /// Open item under cursor in active surface (`Enter` in normal mode).
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
@@ -159,6 +163,30 @@ pub enum InputAction {
     SearchBackspace,
     SearchEnter,
     SearchCancel,
+    /// Finder prompt editing actions.
+    FinderChar(char),
+    FinderBackspace,
+    FinderMoveNext,
+    FinderMovePrev,
+    FinderEnter,
+    FinderCancel,
+    FinderBeginPin,
+    /// Pin slot selector actions.
+    PinSelectorMoveNext,
+    PinSelectorMovePrev,
+    PinSelectorOpenSelected,
+    PinSelectorAssign,
+    PinSelectorReorderUp,
+    PinSelectorReorderDown,
+    PinSelectorDeleteSelected,
+    PinSelectorCancel,
+    AssignPinSlot {
+        slot: usize,
+    },
+    OpenPinnedSlot {
+        slot: usize,
+    },
+    QuickPinCurrentFile,
 
     /// Repeat the most recent cached search.
     RepeatSearch {
@@ -199,6 +227,7 @@ enum PrefixFallback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SequenceAction {
     OpenExplorer,
+    OpenFinder,
     YankSelectionSystem,
     PasteSystemClipboard,
     FileStart,
@@ -222,6 +251,11 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: " e",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::OpenExplorer),
+    },
+    SequenceBinding {
+        sequence: "  ",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::OpenFinder),
     },
     SequenceBinding {
         sequence: "g",
@@ -371,6 +405,8 @@ pub fn map_event_with_context(
                 InputMode::Insert => InputAction::SetMode(InputMode::Normal),
                 InputMode::Command => InputAction::CommandCancel,
                 InputMode::Search => InputAction::SearchCancel,
+                InputMode::Finder => InputAction::FinderCancel,
+                InputMode::PinSelect => InputAction::PinSelectorCancel,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::SetMode(InputMode::Normal)
                 }
@@ -384,6 +420,8 @@ pub fn map_event_with_context(
                 InputMode::Insert => InputAction::Backspace,
                 InputMode::Command => InputAction::CommandBackspace,
                 InputMode::Search => InputAction::SearchBackspace,
+                InputMode::Finder => InputAction::FinderBackspace,
+                InputMode::PinSelect => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -397,6 +435,8 @@ pub fn map_event_with_context(
                 InputMode::Insert => InputAction::Enter,
                 InputMode::Command => InputAction::CommandEnter,
                 InputMode::Search => InputAction::SearchEnter,
+                InputMode::Finder => InputAction::FinderEnter,
+                InputMode::PinSelect => InputAction::PinSelectorOpenSelected,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -410,6 +450,23 @@ pub fn map_event_with_context(
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
             InputMode::Search => InputAction::SearchChar(*c),
+            InputMode::Finder => InputAction::FinderChar(*c),
+            InputMode::PinSelect => {
+                state.reset_prefixes();
+                match c {
+                    'j' => InputAction::PinSelectorMoveNext,
+                    'k' => InputAction::PinSelectorMovePrev,
+                    'p' | 'P' => InputAction::PinSelectorAssign,
+                    'd' | 'D' => InputAction::PinSelectorDeleteSelected,
+                    _ => InputAction::None,
+                }
+            }
+            InputMode::Normal if matches!(c, '!' | '@' | '#') => {
+                state.reset_prefixes();
+                InputAction::OpenPinnedSlot {
+                    slot: pin_slot_from_key(KeyKind::Char(*c)).expect("legacy pin slot"),
+                }
+            }
             InputMode::Normal
             | InputMode::Visual
             | InputMode::VisualLine
@@ -467,7 +524,11 @@ fn modal_char_action(
                 InputMode::Visual => InputAction::SetMode(InputMode::Normal),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Visual),
                 InputMode::VisualBlock => InputAction::SetMode(InputMode::Visual),
-                InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
+                InputMode::Insert
+                | InputMode::Command
+                | InputMode::Search
+                | InputMode::Finder
+                | InputMode::PinSelect => InputAction::None,
             }
         }
         'V' => {
@@ -477,7 +538,11 @@ fn modal_char_action(
                 InputMode::Visual => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::VisualBlock => InputAction::SetMode(InputMode::VisualLine),
                 InputMode::VisualLine => InputAction::SetMode(InputMode::Normal),
-                InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
+                InputMode::Insert
+                | InputMode::Command
+                | InputMode::Search
+                | InputMode::Finder
+                | InputMode::PinSelect => InputAction::None,
             }
         }
         'y' if matches!(
@@ -983,7 +1048,11 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
         InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
             VISUAL_SEQUENCE_BINDINGS.iter()
         }
-        InputMode::Insert | InputMode::Command | InputMode::Search => [].iter(),
+        InputMode::Insert
+        | InputMode::Command
+        | InputMode::Search
+        | InputMode::Finder
+        | InputMode::PinSelect => [].iter(),
     })
 }
 
@@ -1037,6 +1106,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::OpenExplorer) => {
             state.reset_prefixes();
             InputAction::OpenExplorer
+        }
+        Some(SequenceAction::OpenFinder) => {
+            state.reset_prefixes();
+            InputAction::OpenFinder
         }
         Some(SequenceAction::YankSelectionSystem) => {
             state.reset_prefixes();
@@ -1100,7 +1173,7 @@ fn map_key_with_state(
                     count: 1,
                 },
 
-                KeyKind::Char(c) => InputAction::InsertChar(c),
+                KeyKind::Char(c) => InputAction::InsertChar(replacement_char_from_key(c, mods)),
 
                 _ => InputAction::None,
             };
@@ -1128,7 +1201,7 @@ fn map_key_with_state(
                 KeyKind::Up => InputAction::CommandHistoryPrev,
                 KeyKind::Down => InputAction::CommandHistoryNext,
                 KeyKind::Enter => InputAction::CommandEnter,
-                KeyKind::Char(c) => InputAction::CommandChar(c),
+                KeyKind::Char(c) => InputAction::CommandChar(replacement_char_from_key(c, mods)),
                 _ => InputAction::None,
             };
         }
@@ -1144,7 +1217,114 @@ fn map_key_with_state(
                 KeyKind::Backspace => InputAction::SearchBackspace,
                 KeyKind::Enter => InputAction::SearchEnter,
                 KeyKind::Tab => InputAction::SearchChar('\t'),
-                KeyKind::Char(c) => InputAction::SearchChar(c),
+                KeyKind::Char(c) => InputAction::SearchChar(replacement_char_from_key(c, mods)),
+                _ => InputAction::None,
+            };
+        }
+
+        InputMode::Finder => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::FinderCancel;
+            }
+
+            if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+                state.reset_prefixes();
+                return InputAction::FinderBeginPin;
+            }
+
+            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+                state.reset_prefixes();
+                return InputAction::FinderMoveNext;
+            }
+
+            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+                state.reset_prefixes();
+                return InputAction::FinderMovePrev;
+            }
+
+            if mods.ctrl && pin_slot_from_key(key).is_some() {
+                state.reset_prefixes();
+                return InputAction::OpenPinnedSlot {
+                    slot: pin_slot_from_key(key).expect("finder slot"),
+                };
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::FinderCancel,
+                KeyKind::Backspace => InputAction::FinderBackspace,
+                KeyKind::Enter => InputAction::FinderEnter,
+                KeyKind::Up => InputAction::FinderMovePrev,
+                KeyKind::Down => InputAction::FinderMoveNext,
+                KeyKind::Char(c) => InputAction::FinderChar(replacement_char_from_key(c, mods)),
+                _ => InputAction::None,
+            };
+        }
+
+        InputMode::PinSelect => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::PinSelectorCancel;
+            }
+
+            if mods == KeyModifiers::default()
+                && matches!(key, KeyKind::Char('p') | KeyKind::Char('P'))
+            {
+                state.reset_prefixes();
+                return InputAction::PinSelectorAssign;
+            }
+
+            if mods == KeyModifiers::default()
+                && matches!(key, KeyKind::Char('d') | KeyKind::Char('D'))
+            {
+                state.reset_prefixes();
+                return InputAction::PinSelectorDeleteSelected;
+            }
+
+            if mods.ctrl && pin_slot_from_key(key).is_some() {
+                state.reset_prefixes();
+                return InputAction::AssignPinSlot {
+                    slot: pin_slot_from_key(key).expect("pin selector slot"),
+                };
+            }
+
+            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+                state.reset_prefixes();
+                return InputAction::PinSelectorMoveNext;
+            }
+
+            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+                state.reset_prefixes();
+                return InputAction::PinSelectorMovePrev;
+            }
+
+            if mods.shift && matches!(key, KeyKind::Char('j') | KeyKind::Char('J')) {
+                state.reset_prefixes();
+                return InputAction::PinSelectorReorderDown;
+            }
+
+            if mods.shift && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+                state.reset_prefixes();
+                return InputAction::PinSelectorReorderUp;
+            }
+
+            if mods.shift && key == KeyKind::Enter {
+                state.reset_prefixes();
+                return InputAction::PinSelectorAssign;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::PinSelectorCancel,
+                KeyKind::Enter => InputAction::PinSelectorOpenSelected,
+                KeyKind::Backspace => InputAction::None,
+                KeyKind::Up => InputAction::PinSelectorMovePrev,
+                KeyKind::Down => InputAction::PinSelectorMoveNext,
+                KeyKind::Char('j') | KeyKind::Char('J') if !mods.shift => {
+                    InputAction::PinSelectorMoveNext
+                }
+                KeyKind::Char('k') | KeyKind::Char('K') if !mods.shift => {
+                    InputAction::PinSelectorMovePrev
+                }
                 _ => InputAction::None,
             };
         }
@@ -1236,6 +1416,11 @@ fn map_key_with_state(
         return InputAction::ViewportUpCenter;
     }
 
+    if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+        state.reset_prefixes();
+        return InputAction::QuickPinCurrentFile;
+    }
+
     if matches!(
         mode,
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -1273,7 +1458,18 @@ fn map_key_with_state(
                 InputAction::SetMode(InputMode::VisualBlock)
             }
             InputMode::VisualBlock => InputAction::SetMode(InputMode::Normal),
-            InputMode::Insert | InputMode::Command | InputMode::Search => InputAction::None,
+            InputMode::Insert
+            | InputMode::Command
+            | InputMode::Search
+            | InputMode::Finder
+            | InputMode::PinSelect => InputAction::None,
+        };
+    }
+
+    if mods.ctrl && pin_slot_from_key(key).is_some() {
+        state.reset_prefixes();
+        return InputAction::OpenPinnedSlot {
+            slot: pin_slot_from_key(key).expect("global pin slot"),
         };
     }
 
@@ -1397,7 +1593,12 @@ fn map_key_with_state(
             motion: Motion::Right,
             count: state.take_count_or_1(),
         },
-        KeyKind::Char(c) => modal_char_action(state, mode, confirm_explorer_delete, c),
+        KeyKind::Char(c) => modal_char_action(
+            state,
+            mode,
+            confirm_explorer_delete,
+            replacement_char_from_key(c, mods),
+        ),
         _ => {
             state.reset_prefixes();
             InputAction::None
@@ -1406,10 +1607,45 @@ fn map_key_with_state(
 }
 
 fn replacement_char_from_key(c: char, mods: KeyModifiers) -> char {
-    if mods.shift && c.is_ascii_lowercase() {
-        c.to_ascii_uppercase()
-    } else {
-        c
+    if !mods.shift {
+        return c;
+    }
+
+    match c {
+        'a'..='z' => c.to_ascii_uppercase(),
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        '`' => '~',
+        '\\' => '|',
+        _ => c,
+    }
+}
+
+fn pin_slot_from_key(key: KeyKind) -> Option<usize> {
+    match key {
+        KeyKind::Char('1') | KeyKind::Char('!') => Some(0),
+        KeyKind::Char('2') | KeyKind::Char('@') => Some(1),
+        KeyKind::Char('3') | KeyKind::Char('#') => Some(2),
+        KeyKind::Char('4') | KeyKind::Char('$') => Some(3),
+        KeyKind::Char('5') | KeyKind::Char('%') => Some(4),
+        _ => None,
     }
 }
 
@@ -1425,10 +1661,325 @@ mod tests {
     }
 
     #[test]
+    fn leader_leader_opens_finder() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        assert_eq!(action, InputAction::OpenFinder);
+    }
+
+    #[test]
     fn normal_mode_character_colon_enters_command() {
         let mut state = InputState::new();
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(':'));
         assert_eq!(action, InputAction::EnterCommand);
+    }
+
+    #[test]
+    fn normal_mode_shift_colon_key_event_enters_command() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char(':'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::EnterCommand);
+    }
+
+    #[test]
+    fn normal_mode_shift_semicolon_key_event_enters_command() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char(';'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::EnterCommand);
+    }
+
+    #[test]
+    fn finder_mode_ctrl_n_and_ctrl_p_navigate_results() {
+        let mut state = InputState::new();
+        let next = map_event_with_state(
+            &mut state,
+            InputMode::Finder,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('n'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(next, InputAction::FinderMoveNext);
+
+        let prev = map_event_with_state(
+            &mut state,
+            InputMode::Finder,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('p'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(prev, InputAction::FinderMovePrev);
+    }
+
+    #[test]
+    fn finder_mode_ctrl_c_cancels() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Finder,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::FinderCancel);
+    }
+
+    #[test]
+    fn ctrl_shift_p_triggers_expected_pin_actions() {
+        let mut state = InputState::new();
+        let quick_pin = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('P'),
+                mods: KeyModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: false,
+                    super_key: false,
+                },
+            }),
+        );
+        assert_eq!(quick_pin, InputAction::QuickPinCurrentFile);
+
+        let finder_pin = map_event_with_state(
+            &mut state,
+            InputMode::Finder,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('P'),
+                mods: KeyModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: false,
+                    super_key: false,
+                },
+            }),
+        );
+        assert_eq!(finder_pin, InputAction::FinderBeginPin);
+    }
+
+    #[test]
+    fn pin_selector_ctrl_digit_assigns_slot() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('3'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::AssignPinSlot { slot: 2 });
+    }
+
+    #[test]
+    fn pin_selector_ctrl_c_cancels() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::PinSelectorCancel);
+    }
+
+    #[test]
+    fn pin_selector_j_k_navigate_slots() {
+        let mut state = InputState::new();
+
+        let next = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('j'));
+        assert_eq!(next, InputAction::PinSelectorMoveNext);
+
+        let prev = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('k'));
+        assert_eq!(prev, InputAction::PinSelectorMovePrev);
+    }
+
+    #[test]
+    fn pin_selector_shift_j_k_manage_slots() {
+        let mut state = InputState::new();
+
+        let down = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('J'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(down, InputAction::PinSelectorReorderDown);
+
+        let up = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('K'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(up, InputAction::PinSelectorReorderUp);
+
+        let assign = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Enter,
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(assign, InputAction::PinSelectorAssign);
+    }
+
+    #[test]
+    fn pin_selector_d_deletes_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('d'));
+        assert_eq!(action, InputAction::PinSelectorDeleteSelected);
+    }
+
+    #[test]
+    fn pin_selector_enter_opens_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Enter,
+                mods: KeyModifiers::default(),
+            }),
+        );
+        assert_eq!(action, InputAction::PinSelectorOpenSelected);
+    }
+
+    #[test]
+    fn pin_selector_plain_enter_event_opens_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Enter);
+        assert_eq!(action, InputAction::PinSelectorOpenSelected);
+    }
+
+    #[test]
+    fn pin_selector_key_event_d_deletes_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('d'),
+                mods: KeyModifiers::default(),
+            }),
+        );
+        assert_eq!(action, InputAction::PinSelectorDeleteSelected);
+    }
+
+    #[test]
+    fn pin_selector_p_assigns_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('p'));
+        assert_eq!(action, InputAction::PinSelectorAssign);
+    }
+
+    #[test]
+    fn pin_selector_key_event_p_assigns_selected_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::PinSelect,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('p'),
+                mods: KeyModifiers::default(),
+            }),
+        );
+        assert_eq!(action, InputAction::PinSelectorAssign);
+    }
+
+    #[test]
+    fn normal_mode_ctrl_digit_opens_pinned_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('2'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 1 });
+    }
+
+    #[test]
+    fn normal_mode_ctrl_shift_symbol_opens_pinned_slot() {
+        let mut state = InputState::new();
+        let ctrl_shift = KeyModifiers {
+            ctrl: true,
+            shift: true,
+            alt: false,
+            super_key: false,
+        };
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('!'),
+                mods: ctrl_shift,
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 0 });
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('$'),
+                mods: ctrl_shift,
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 3 });
+
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('%'),
+                mods: ctrl_shift,
+            }),
+        );
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 4 });
+    }
+
+    #[test]
+    fn normal_mode_legacy_symbol_event_opens_pinned_slot() {
+        let mut state = InputState::new();
+
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('#'));
+        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 2 });
     }
 
     #[test]
@@ -1607,7 +2158,7 @@ mod tests {
             &mut state,
             InputMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('d'),
+                key: KeyKind::Char('D'),
                 mods: KeyModifiers::shift(),
             }),
         );
@@ -1638,7 +2189,7 @@ mod tests {
             &mut state,
             InputMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('d'),
+                key: KeyKind::Char('D'),
                 mods: KeyModifiers::shift(),
             }),
         );
@@ -1671,7 +2222,7 @@ mod tests {
             &mut state,
             InputMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('d'),
+                key: KeyKind::Char('D'),
                 mods: KeyModifiers::shift(),
             }),
         );
@@ -1682,8 +2233,84 @@ mod tests {
     fn normal_mode_pending_replace_accepts_shifted_symbols() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('$'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
         assert_eq!(action, InputAction::ReplaceChar('$'));
+    }
+
+    #[test]
+    fn normal_mode_pending_replace_accepts_shifted_number_base_key() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('4'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::ReplaceChar('$'));
+    }
+
+    #[test]
+    fn normal_mode_shift_number_key_event_maps_to_shifted_motion_symbol() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('$'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::LineEnd,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_shift_number_base_key_event_maps_to_shifted_motion_symbol() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('4'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(
+            action,
+            InputAction::Motion {
+                motion: Motion::LineEnd,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn normal_mode_shift_backtick_key_event_maps_to_tilde_action() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('`'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::ToggleCase { count: 1 });
     }
 
     #[test]
@@ -1974,6 +2601,34 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::InsertChar('\t'));
+    }
+
+    #[test]
+    fn insert_mode_shifted_symbol_key_inserts_shifted_character() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('-'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::InsertChar('_'));
+    }
+
+    #[test]
+    fn command_mode_shifted_symbol_key_types_shifted_character() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Command,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('-'),
+                mods: KeyModifiers::shift(),
+            }),
+        );
+        assert_eq!(action, InputAction::CommandChar('_'));
     }
 
     #[test]

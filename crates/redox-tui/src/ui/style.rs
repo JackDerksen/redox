@@ -387,6 +387,57 @@ impl Default for CommandLineStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct FinderStyle {
+    pub width_percent: u16,
+    pub height_percent: u16,
+    pub min_width: u16,
+    pub min_height: u16,
+    pub border: ColorPair,
+    pub title: ColorPair,
+    pub text: ColorPair,
+    pub prompt: ColorPair,
+    pub query_title: ColorPair,
+    pub dim: ColorPair,
+    pub match_highlight: ColorPair,
+    pub selected: ColorPair,
+    pub pinned_bg: ColorPair,
+    pub pinned_marker: ColorPair,
+    pub hotkey: ColorPair,
+    pub preview_title: ColorPair,
+    pub preview_path: ColorPair,
+}
+
+impl FinderStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 78,
+            height_percent: 72,
+            min_width: 52,
+            min_height: 14,
+            border: ColorPair::new(theme.light_gray, theme.bg),
+            title: ColorPair::new(theme.light_blue, theme.bg),
+            text: ColorPair::new(theme.white, theme.bg),
+            prompt: ColorPair::new(theme.light_gray, theme.bg),
+            query_title: ColorPair::new(theme.light_blue, theme.bg),
+            dim: ColorPair::new(theme.light_gray, theme.bg),
+            match_highlight: ColorPair::new(theme.orange, theme.bg),
+            selected: ColorPair::new(theme.white, theme.black),
+            pinned_bg: ColorPair::new(theme.white, theme.dark_gray),
+            pinned_marker: ColorPair::new(theme.light_blue, theme.dark_gray),
+            hotkey: ColorPair::new(theme.light_gray, theme.dark_gray),
+            preview_title: ColorPair::new(theme.light_blue, theme.bg),
+            preview_path: ColorPair::new(theme.light_gray, theme.bg),
+        }
+    }
+}
+
+impl Default for FinderStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct PerfStyle {
     pub width_percent: u16,
     pub height_percent: u16,
@@ -570,6 +621,7 @@ pub struct UiStyle {
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
     pub explorer: ExplorerStyle,
+    pub finder: FinderStyle,
     pub perf: PerfStyle,
     pub syntax: SyntaxStyle,
 }
@@ -584,6 +636,7 @@ impl Default for UiStyle {
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
+            finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
@@ -640,6 +693,7 @@ impl UiStyle {
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
+            finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
