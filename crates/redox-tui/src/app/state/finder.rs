@@ -293,26 +293,7 @@ impl PinnedFilesState {
         let storage_path = pinned_files_storage_path();
         let mut slots = vec![None; MAX_PINNED_FILES];
         if let Ok(contents) = fs::read_to_string(&storage_path) {
-            for (slot, raw_line) in contents.lines().take(MAX_PINNED_FILES).enumerate() {
-                let line = raw_line.trim();
-                if line.is_empty() || line == "-" {
-                    continue;
-                }
-
-                let path = PathBuf::from(line);
-                if !path.is_absolute() {
-                    continue;
-                }
-                let canonical = fs::canonicalize(&path).unwrap_or(path);
-                if slots
-                    .iter()
-                    .flatten()
-                    .any(|existing| existing == &canonical)
-                {
-                    continue;
-                }
-                slots[slot] = Some(canonical);
-            }
+            slots = parse_pinned_files(&contents);
         }
 
         Self {
@@ -394,16 +375,62 @@ impl PinnedFilesState {
             fs::create_dir_all(parent)?;
         }
 
-        let mut output = String::new();
-        for path in &self.slots {
-            if let Some(path) = path {
-                output.push_str(&path.display().to_string());
-            } else {
-                output.push('-');
-            }
-            output.push('\n');
+        let output = self
+            .slots
+            .iter()
+            .take(MAX_PINNED_FILES)
+            .map(|path| path.as_ref().map(|path| path.display().to_string()))
+            .collect::<Vec<Option<String>>>();
+        let output = serde_json::to_vec(&output)?;
+        let temp_path = self.storage_path.with_extension("tmp");
+        fs::write(&temp_path, output)?;
+        fs::rename(temp_path, &self.storage_path)
+    }
+}
+
+fn parse_pinned_files(contents: &str) -> Vec<Option<PathBuf>> {
+    serde_json::from_str::<Vec<Option<String>>>(contents)
+        .map(|entries| parse_json_pinned_files(entries))
+        .unwrap_or_else(|_| parse_legacy_pinned_files(contents))
+}
+
+fn parse_json_pinned_files(entries: Vec<Option<String>>) -> Vec<Option<PathBuf>> {
+    let mut slots = vec![None; MAX_PINNED_FILES];
+    for (slot, path) in entries.into_iter().take(MAX_PINNED_FILES).enumerate() {
+        let Some(path) = path else {
+            continue;
+        };
+        store_pinned_path(&mut slots, slot, &path);
+    }
+    slots
+}
+
+fn parse_legacy_pinned_files(contents: &str) -> Vec<Option<PathBuf>> {
+    let mut slots = vec![None; MAX_PINNED_FILES];
+    for (slot, line) in contents.lines().take(MAX_PINNED_FILES).enumerate() {
+        if line.is_empty() || line == "-" {
+            continue;
         }
-        fs::write(&self.storage_path, output)
+        store_pinned_path(&mut slots, slot, line);
+    }
+    slots
+}
+
+fn store_pinned_path(slots: &mut [Option<PathBuf>], slot: usize, path: &str) {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return;
+    }
+    let canonical = fs::canonicalize(&path).unwrap_or(path);
+    if slots
+        .iter()
+        .flatten()
+        .any(|existing| existing == &canonical)
+    {
+        return;
+    }
+    if let Some(slot) = slots.get_mut(slot) {
+        *slot = Some(canonical);
     }
 }
 

@@ -155,6 +155,93 @@ fn quick_pin_current_file_opens_selector_before_persisting() {
 }
 
 #[test]
+fn pinned_files_save_as_json_array_atomically() {
+    with_isolated_launch_env("pinned_files_save_json", |root| {
+        let file_path = root.join("line\nbreak.txt");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::AssignPinSlot { slot: 2 }, 80, 24);
+
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        let saved = fs::read_to_string(&config_file).expect("failed to read pin file");
+        let slots: Vec<Option<String>> =
+            serde_json::from_str(&saved).expect("pin file should be JSON");
+        assert_eq!(slots.len(), 5);
+        assert_eq!(slots[0], None);
+        assert_eq!(slots[1], None);
+        assert_eq!(slots[2], Some(canonical.display().to_string()));
+        assert!(!config_file.with_extension("tmp").exists());
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to reopen file");
+        let reloaded = EditorState::new(session);
+        assert_eq!(
+            reloaded.pin_slots_for_test(),
+            vec![None, None, Some(canonical), None, None]
+        );
+    });
+}
+
+#[test]
+fn pinned_files_load_legacy_format_without_trimming_paths() {
+    with_isolated_launch_env("pinned_files_legacy_trailing_space", |root| {
+        let file_path = root.join("trail   ");
+        fs::write(&file_path, "alpha\n").expect("failed to write file");
+        let canonical = fs::canonicalize(&file_path).expect("canonical path");
+
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        fs::create_dir_all(config_file.parent().expect("pin config dir"))
+            .expect("failed to create config dir");
+        fs::write(&config_file, format!("-\n{}\n", file_path.display()))
+            .expect("failed to write legacy pin file");
+
+        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
+        let state = EditorState::new(session);
+
+        assert_eq!(
+            state.pin_slots_for_test(),
+            vec![None, Some(canonical), None, None, None]
+        );
+    });
+}
+
+#[test]
+fn pinned_files_load_json_before_legacy_format() {
+    with_isolated_launch_env("pinned_files_load_json", |root| {
+        let first_path = root.join("first.txt");
+        let extra_path = root.join("extra.txt");
+        fs::write(&first_path, "first\n").expect("failed to write first file");
+        fs::write(&extra_path, "extra\n").expect("failed to write extra file");
+        let canonical = fs::canonicalize(&first_path).expect("canonical path");
+
+        let config_file = root.join("config").join("redox").join("pinned_files.txt");
+        fs::create_dir_all(config_file.parent().expect("pin config dir"))
+            .expect("failed to create config dir");
+        let saved = serde_json::json!([
+            null,
+            first_path.display().to_string(),
+            "-",
+            "relative.txt",
+            first_path.display().to_string(),
+            extra_path.display().to_string()
+        ]);
+        fs::write(&config_file, saved.to_string()).expect("failed to write JSON pin file");
+
+        let session =
+            EditorSession::open_initial_file(&first_path).expect("failed to open session");
+        let state = EditorState::new(session);
+
+        assert_eq!(
+            state.pin_slots_for_test(),
+            vec![None, Some(canonical), None, None, None]
+        );
+    });
+}
+
+#[test]
 fn finder_does_not_open_while_about_popup_is_active() {
     let session = EditorSession::open_initial_unnamed().expect("failed to open session");
     let mut state = EditorState::new(session);
