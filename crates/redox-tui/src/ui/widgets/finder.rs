@@ -152,7 +152,7 @@ pub fn draw_finder_popup(
     let mut query_view = popup_window_view(window, query_layout);
     let right_footer = finder_right_footer(popup, style);
     let input_col = draw_query_row(&mut query_view, popup, style, &right_footer)?;
-    let right_w = right_footer.width();
+    let right_w = visible_right_footer_width(&right_footer, layout.query.inner_w);
     let input_w = layout
         .query
         .inner_w
@@ -553,8 +553,8 @@ fn draw_query_row(
 ) -> minui::Result<u16> {
     let prompt_col = 1u16.min(view.width.saturating_sub(1));
     view.write_str_colored(0, prompt_col, "❯", style.finder.prompt)?;
-    let right_w = right_footer.width();
-    if right_w < view.width {
+    let right_w = visible_right_footer_width(right_footer, view.width);
+    if right_w > 0 {
         let footer_col = view.width.saturating_sub(right_w);
         view.write_str_colored(0, footer_col, &right_footer.text, right_footer.text_colors)?;
         if let Some(indicator) = &right_footer.indicator {
@@ -583,6 +583,11 @@ fn draw_query_row(
     let clipped = finder_input_view(&popup.query, input_w);
     view.write_str_colored(0, input_col, &clipped, style.command_line.text)?;
     Ok(input_col)
+}
+
+fn visible_right_footer_width(right_footer: &FinderRightFooter, available_w: u16) -> u16 {
+    let right_w = right_footer.width();
+    if right_w < available_w { right_w } else { 0 }
 }
 
 fn draw_highlighted_text(
@@ -705,7 +710,8 @@ mod tests {
     use super::{
         FinderFrameLayout, PIN_SELECTOR_HORIZONTAL_PADDING, PINBOARD_MIN_WIDTH, QUERY_GAP_ROWS,
         compute_finder_popup_layout, compute_pin_selector_inner_width_from_labels,
-        finder_file_scroll_position, finder_right_footer, text_width, visible_entry_rows,
+        finder_file_scroll_position, finder_input_cursor_offset, finder_input_view,
+        finder_right_footer, text_width, visible_entry_rows, visible_right_footer_width,
     };
     use crate::app::FinderPopup;
     use crate::ui::UiStyle;
@@ -797,6 +803,40 @@ mod tests {
 
         assert!(footer.indicator.is_some());
         assert_eq!(footer.width(), text_width("84/84") as u16 + 3);
+    }
+
+    #[test]
+    fn finder_footer_does_not_reserve_width_when_it_cannot_fit() {
+        let popup = FinderPopup {
+            entries: Vec::new(),
+            query: "abcdef".to_string(),
+            selected: 0,
+            result_count: 84,
+            total_count: 84,
+            preview: None,
+        };
+        let footer = finder_right_footer(&popup, UiStyle::default());
+        let prompt_col = 1u16;
+        let input_col = prompt_col + 2;
+        let query_w = footer.width();
+        let right_w = visible_right_footer_width(&footer, query_w);
+        let input_w = query_w
+            .saturating_sub(right_w)
+            .saturating_sub(input_col.saturating_add(1))
+            .max(1) as usize;
+        let incorrectly_reserved_input_w = query_w
+            .saturating_sub(footer.width())
+            .saturating_sub(input_col.saturating_add(1))
+            .max(1) as usize;
+
+        assert_eq!(right_w, 0);
+        assert!(input_w > incorrectly_reserved_input_w);
+        assert_eq!(finder_input_view(&popup.query, input_w), "cdef");
+        assert_eq!(
+            finder_input_view(&popup.query, incorrectly_reserved_input_w),
+            "f"
+        );
+        assert_eq!(finder_input_cursor_offset(&popup.query, input_w), 4);
     }
 
     #[test]
