@@ -117,9 +117,13 @@ pub fn path_match_score(label: &str, matched: &FuzzyMatch, query: &FuzzyQuery) -
         path_first_match: matched.first_match,
         match_span: matched.match_span,
         gap_count: matched.gap_count,
-        depth: label.matches('/').count(),
+        depth: path_depth(label),
         len: label.len(),
     }
+}
+
+fn path_depth(label: &str) -> usize {
+    Path::new(label).components().count().saturating_sub(1)
 }
 
 struct FilenameMatchStats {
@@ -277,10 +281,11 @@ fn contiguous_match_range(label: &str, token: &str) -> Option<Range<usize>> {
 }
 
 fn file_name_byte_offset(label: &str) -> usize {
-    label
-        .rsplit_once('/')
-        .map(|(parent, _)| parent.len() + 1)
-        .unwrap_or(0)
+    let Some(file_name) = Path::new(label).file_name().and_then(|name| name.to_str()) else {
+        return 0;
+    };
+
+    label.rfind(file_name).unwrap_or(0)
 }
 
 fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
@@ -351,6 +356,19 @@ mod tests {
         let start = label.rfind("state").expect("leaf state occurrence");
 
         assert_eq!(matched.highlights, vec![start..start + "state".len()]);
+    }
+
+    #[test]
+    fn path_helpers_use_path_components() {
+        assert_eq!(path_depth("src/main.rs"), 1);
+        assert_eq!(file_name_byte_offset("src/main.rs"), "src/".len());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_helpers_use_windows_path_components() {
+        assert_eq!(path_depth(r"src\main.rs"), 1);
+        assert_eq!(file_name_byte_offset(r"src\main.rs"), r"src\".len());
     }
 
     #[test]
