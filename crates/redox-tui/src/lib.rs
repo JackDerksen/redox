@@ -1531,6 +1531,7 @@ pub fn run() -> minui::Result<()> {
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
         state.poll_analysis_results();
+        state.poll_finder_results();
         state.expire_status_message(Instant::now());
 
         if state.rain_is_active() {

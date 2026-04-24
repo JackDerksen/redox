@@ -4,6 +4,8 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use ignore::WalkBuilder;
 use redox_core::{
@@ -14,6 +16,8 @@ use super::{EditorMode, EditorState};
 
 const MAX_PINNED_FILES: usize = 5;
 const PREVIEW_MAX_BYTES: usize = 32 * 1024;
+const FINDER_INDEX_BATCH_SIZE: usize = 128;
+const MAX_FINDER_INDEX_BATCHES_PER_POLL: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct FinderPopup {
@@ -63,8 +67,13 @@ pub(super) struct FinderState {
     preview: Option<FinderPreviewCache>,
 }
 
+#[derive(Debug)]
+pub(super) struct FinderIndexWorker {
+    results: Receiver<FinderIndexMessage>,
+}
+
 #[derive(Debug, Clone)]
-struct FinderFileCandidate {
+pub(super) struct FinderFileCandidate {
     path: PathBuf,
     label: String,
 }
@@ -101,6 +110,11 @@ enum FinderCombinedKind {
 struct FinderPreviewCache {
     path: PathBuf,
     preview: FinderPreview,
+}
+
+enum FinderIndexMessage {
+    Batch(Vec<FinderFileCandidate>),
+    Done,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +218,34 @@ impl FinderState {
         self.refresh_preview();
     }
 
+    fn add_file_candidates(
+        &mut self,
+        candidates: Vec<FinderFileCandidate>,
+        pinned_files: &[PinnedFileEntry],
+    ) {
+        if candidates.is_empty() {
+            return;
+        }
+
+        self.all_files.extend(candidates);
+        self.all_files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        self.all_files
+            .dedup_by(|left, right| left.path == right.path);
+        self.refresh_results(pinned_files, None);
+    }
+
+    fn replace_file_candidates(
+        &mut self,
+        mut candidates: Vec<FinderFileCandidate>,
+        pinned_files: &[PinnedFileEntry],
+    ) {
+        candidates.sort_by(|left, right| left.path.cmp(&right.path));
+        candidates.dedup_by(|left, right| left.path == right.path);
+        self.all_files = candidates;
+        self.refresh_results(pinned_files, None);
+    }
+
     fn rebuild_combined_entries(
         &mut self,
         pinned_files: &[PinnedFileEntry],
@@ -285,6 +327,57 @@ impl FinderState {
             path: path.clone(),
             preview: load_preview(&path, &self.launch_dir),
         });
+    }
+}
+
+impl FinderIndexWorker {
+    fn spawn(root: PathBuf) -> Self {
+        let (result_tx, result_rx) = mpsc::channel::<FinderIndexMessage>();
+        thread::Builder::new()
+            .name("redox-finder-index".to_string())
+            .spawn(move || {
+                let mut batch = Vec::with_capacity(FINDER_INDEX_BATCH_SIZE);
+                let walker = WalkBuilder::new(&root)
+                    .hidden(true)
+                    .git_ignore(true)
+                    .git_global(true)
+                    .git_exclude(true)
+                    .require_git(false)
+                    .build();
+
+                for entry in walker.filter_map(Result::ok) {
+                    let path = entry.into_path();
+                    if !path.is_file() {
+                        continue;
+                    }
+
+                    batch.push(FinderFileCandidate {
+                        label: display_path_for_popup(&path, &root),
+                        path,
+                    });
+
+                    if batch.len() >= FINDER_INDEX_BATCH_SIZE {
+                        if result_tx
+                            .send(FinderIndexMessage::Batch(std::mem::take(&mut batch)))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                if !batch.is_empty() && result_tx.send(FinderIndexMessage::Batch(batch)).is_err() {
+                    return;
+                }
+                let _ = result_tx.send(FinderIndexMessage::Done);
+            })
+            .expect("failed to spawn finder index worker");
+
+        Self { results: result_rx }
+    }
+
+    fn try_recv(&self) -> Option<FinderIndexMessage> {
+        self.results.try_recv().ok()
     }
 }
 
@@ -474,9 +567,19 @@ impl EditorState {
         }
 
         let launch_dir = self.session.launch_dir().to_path_buf();
-        let files = collect_files(&launch_dir);
         let pinned_files = self.pinned_files.occupied_entries();
-        self.finder = Some(FinderState::new(launch_dir, files, &pinned_files));
+        let cached_files = self
+            .finder_index_cache
+            .get(&launch_dir)
+            .cloned()
+            .unwrap_or_default();
+        self.finder = Some(FinderState::new(
+            launch_dir.clone(),
+            cached_files,
+            &pinned_files,
+        ));
+        self.finder_index_files.clear();
+        self.finder_index_worker = Some(FinderIndexWorker::spawn(launch_dir));
         self.pin_selector = None;
         self.mode = EditorMode::Finder;
         self.clear_status();
@@ -485,9 +588,49 @@ impl EditorState {
 
     pub(super) fn close_finder(&mut self) {
         self.finder = None;
+        self.finder_index_worker = None;
+        self.finder_index_files.clear();
         self.mode = EditorMode::Normal;
         self.clear_status();
         self.input.reset_prefixes();
+    }
+
+    pub fn poll_finder_results(&mut self) {
+        let Some(worker) = self.finder_index_worker.take() else {
+            return;
+        };
+
+        let pinned = self.pinned_files.occupied_entries();
+        let mut keep_worker = true;
+        for _ in 0..MAX_FINDER_INDEX_BATCHES_PER_POLL {
+            let Some(message) = worker.try_recv() else {
+                break;
+            };
+
+            match message {
+                FinderIndexMessage::Batch(candidates) => {
+                    self.finder_index_files.extend(candidates.iter().cloned());
+                    if let Some(finder) = self.finder.as_mut() {
+                        finder.add_file_candidates(candidates, &pinned);
+                    }
+                }
+                FinderIndexMessage::Done => {
+                    let fresh_files = std::mem::take(&mut self.finder_index_files);
+                    let launch_dir = self.session.launch_dir().to_path_buf();
+                    self.finder_index_cache
+                        .insert(launch_dir, fresh_files.clone());
+                    if let Some(finder) = self.finder.as_mut() {
+                        finder.replace_file_candidates(fresh_files, &pinned);
+                    }
+                    keep_worker = false;
+                    break;
+                }
+            }
+        }
+
+        if keep_worker && self.finder.is_some() {
+            self.finder_index_worker = Some(worker);
+        }
     }
 
     pub(super) fn finder_type_char(&mut self, ch: char) {
@@ -702,6 +845,8 @@ impl EditorState {
             return;
         };
         self.finder = None;
+        self.finder_index_worker = None;
+        self.finder_index_files.clear();
         self.mode = EditorMode::Normal;
         if is_pinned {
             self.open_pinned_path_in_editor(path);
@@ -718,6 +863,8 @@ impl EditorState {
 
         self.clear_active_visual_anchor();
         self.finder = None;
+        self.finder_index_worker = None;
+        self.finder_index_files.clear();
         self.pin_selector = None;
         self.mode = EditorMode::Normal;
         self.open_pinned_path_in_editor(path);
@@ -811,27 +958,6 @@ fn pinned_files_storage_path() -> PathBuf {
         .join(".config")
         .join("redox")
         .join("pinned_files.txt")
-}
-
-fn collect_files(root: &Path) -> Vec<FinderFileCandidate> {
-    let mut files = WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .require_git(false)
-        .build()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.into_path();
-            path.is_file().then(|| FinderFileCandidate {
-                label: display_path_for_popup(&path, root),
-                path,
-            })
-        })
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    files
 }
 
 fn filter_file_result(

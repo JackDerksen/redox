@@ -23,8 +23,8 @@ mod finder;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
-use finder::{FinderState, PinSelectorState, PinnedFilesState};
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
@@ -192,6 +192,9 @@ pub struct EditorState {
     about: Option<AboutState>,
     explorer: Option<ExplorerState>,
     finder: Option<FinderState>,
+    finder_index_worker: Option<FinderIndexWorker>,
+    finder_index_files: Vec<finder::FinderFileCandidate>,
+    finder_index_cache: HashMap<PathBuf, Vec<finder::FinderFileCandidate>>,
     pin_selector: Option<PinSelectorState>,
     pinned_files: PinnedFilesState,
     pub mode: EditorMode,
@@ -236,6 +239,9 @@ impl EditorState {
             about: None,
             explorer: None,
             finder: None,
+            finder_index_worker: None,
+            finder_index_files: Vec::new(),
+            finder_index_cache: HashMap::new(),
             pin_selector: None,
             pinned_files: PinnedFilesState::load(),
             mode: EditorMode::Normal,

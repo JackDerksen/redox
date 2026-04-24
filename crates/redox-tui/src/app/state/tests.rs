@@ -70,6 +70,38 @@ fn wait_for_rust_syntax_cache(state: &mut EditorState, id: redox_core::BufferId)
     );
 }
 
+fn wait_for_finder_popup(
+    state: &mut EditorState,
+    predicate: impl Fn(&FinderPopup) -> bool,
+) -> FinderPopup {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        state.poll_finder_results();
+        if let Some(popup) = state.finder_popup()
+            && predicate(&popup)
+        {
+            return popup;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let popup = state.finder_popup();
+    panic!("finder popup did not reach expected state before deadline; popup={popup:?}");
+}
+
+fn wait_for_finder_index_idle(state: &mut EditorState) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        state.poll_finder_results();
+        if state.finder_index_worker.is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    panic!("finder index worker did not finish before deadline");
+}
+
 fn expire_status_after_timeout(state: &mut EditorState) {
     state.expire_status_message(Instant::now() + Duration::from_secs(10));
 }
@@ -827,7 +859,7 @@ fn finder_shows_pins_and_filters_files() {
         for ch in "sma".chars() {
             state.apply_input(InputAction::FinderChar(ch), 80, 24);
         }
-        let popup = state.finder_popup().expect("finder popup after filter");
+        let popup = wait_for_finder_popup(&mut state, |popup| popup.result_count == 1);
         assert_eq!(popup.result_count, 1);
         assert_eq!(popup.selected, popup.entries.len().saturating_sub(1));
         assert!(
@@ -835,6 +867,47 @@ fn finder_shows_pins_and_filters_files() {
                 .entries
                 .iter()
                 .any(|entry| entry.label.contains("src/main.rs"))
+        );
+    });
+}
+
+#[test]
+fn finder_reopens_from_cache_and_refreshes_stale_paths() {
+    with_isolated_launch_env("finder_reopens_from_cache", |root| {
+        let keep_path = root.join("keep.rs");
+        let stale_path = root.join("stale.rs");
+        fs::write(&keep_path, "keep\n").expect("failed to write kept file");
+        fs::write(&stale_path, "stale\n").expect("failed to write stale file");
+
+        let session = EditorSession::open_initial_file(&keep_path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        wait_for_finder_index_idle(&mut state);
+        let popup = state.finder_popup().expect("finder popup");
+        assert_eq!(popup.result_count, 2);
+
+        state.apply_input(InputAction::FinderCancel, 80, 24);
+        fs::remove_file(&stale_path).expect("failed to remove stale file");
+
+        state.apply_input(InputAction::OpenFinder, 80, 24);
+        let cached_popup = state.finder_popup().expect("cached finder popup");
+        assert_eq!(cached_popup.result_count, 2);
+        assert!(
+            cached_popup
+                .entries
+                .iter()
+                .any(|entry| entry.label == "stale.rs")
+        );
+
+        wait_for_finder_index_idle(&mut state);
+        let refreshed_popup = state.finder_popup().expect("refreshed finder popup");
+        assert_eq!(refreshed_popup.result_count, 1);
+        assert!(
+            refreshed_popup
+                .entries
+                .iter()
+                .all(|entry| entry.label != "stale.rs")
         );
     });
 }
