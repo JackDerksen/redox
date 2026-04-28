@@ -990,7 +990,7 @@ fn command_history_skips_consecutive_duplicates() {
 }
 
 #[test]
-fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
+fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_str("{ alpha }");
     let after = TextBuffer::from_str("plain text");
@@ -1022,6 +1022,13 @@ fn invalidate_render_caches_hides_stale_delimiters_until_worker_result() {
     assert!(view.delimiter_pair_cache.has_stale_analysis());
     assert!(!view.delimiter_pair_cache.has_fresh_analysis());
     assert!(view.delimiter_pair_cache.get().is_none());
+    assert_eq!(
+        view.delimiter_pair_cache
+            .get_for_display()
+            .expect("display analysis")
+            .len(),
+        1
+    );
     assert!(
         view.syntax_highlighter
             .has_stale_cache_for(SyntaxLanguage::Rust)

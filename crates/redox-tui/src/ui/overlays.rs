@@ -59,12 +59,17 @@ pub(crate) struct DelimiterPairCache {
 }
 
 impl DelimiterPairCache {
+    #[cfg(test)]
     pub(crate) fn get(&self) -> Option<&DelimiterAnalysis> {
         if self.has_fresh_analysis() {
             self.analysis.as_ref()
         } else {
             None
         }
+    }
+
+    pub(crate) fn get_for_display(&self) -> Option<&DelimiterAnalysis> {
+        self.analysis.as_ref()
     }
 
     pub(crate) fn has_fresh_analysis(&self) -> bool {

@@ -243,7 +243,7 @@ fn draw_buffer_view(
             );
             let syntax_time = syntax_start.elapsed();
             let overlay_start = Instant::now();
-            let delimiter_analysis = view.delimiter_pair_cache.get();
+            let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
             let delimiter_highlights = delimiter_analysis
                 .map(|analysis| {
                     active_delimiter_highlights(
@@ -627,7 +627,7 @@ fn draw_buffer_snapshot_for_id(
             snapshot.first_line,
             snapshot.lines.len(),
         );
-        let delimiter_analysis = view.delimiter_pair_cache.get();
+        let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
         let delimiter_highlights = delimiter_analysis
             .map(|analysis| {
                 active_delimiter_highlights(
