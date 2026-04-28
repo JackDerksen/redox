@@ -550,7 +550,16 @@ pub(crate) fn smart_newline_insert(
         return Some((insert, cursor));
     }
 
-    let indent = desired_indent_for_line_source(&virtual_source, language, line + 1)?;
+    let mut indent = desired_indent_for_line_source(&virtual_source, language, line + 1)?;
+    if right.is_empty() && line + 1 < buffer.len_lines() {
+        let next_text = buffer.line_string(line + 1);
+        let next_trimmed = next_text.trim_start();
+        if starts_with_closing_delimiter(next_trimmed) || starts_with_html_closing(next_trimmed) {
+            let surrounding_indent =
+                max_indent(&inner_indent, &floored_indent(leading_indent(&next_text)));
+            indent = max_indent(&indent, &surrounding_indent);
+        }
+    }
     Some((
         format!("\n{indent}"),
         Pos::new(line + 1, indent.chars().count()),
@@ -785,6 +794,14 @@ fn indent_width(indent: &str) -> usize {
         }
     }
     col
+}
+
+fn max_indent(left: &str, right: &str) -> String {
+    if indent_width(left) >= indent_width(right) {
+        left.to_string()
+    } else {
+        right.to_string()
+    }
 }
 
 fn remove_one_indent_level(indent: &mut String) {
