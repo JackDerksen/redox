@@ -5281,6 +5281,7 @@ fn normal_mode_shift_p_pastes_private_register_before_cursor() {
     state.apply_input(InputAction::PastePrivateRegisterBefore, 80, 24);
 
     assert_eq!(state.session.active_buffer().to_string(), "abac\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
     let _ = fs::remove_file(path);
 }
 

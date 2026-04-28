@@ -241,7 +241,7 @@ impl TextBuffer {
     /// Paste text before the given cursor.
     ///
     /// When `linewise` is true, insertion happens at the start of the current line
-    /// and the returned cursor stays at that insertion point.
+    /// and the returned cursor moves to the end of inserted text.
     /// When `linewise` is false, insertion happens at the cursor and the returned
     /// cursor is at the end of inserted text.
     pub fn paste_before(&mut self, cursor: Pos, text: &str, linewise: bool) -> Pos {
@@ -253,14 +253,18 @@ impl TextBuffer {
         };
 
         let end_pos = self.insert(insert_pos, text);
-        if linewise { insert_pos } else { end_pos }
+        if linewise {
+            linewise_paste_cursor(end_pos)
+        } else {
+            end_pos
+        }
     }
 
     /// Paste text after the given cursor.
     ///
     /// When `linewise` is true, insertion happens at the beginning of the next
     /// logical line (clamped at the buffer boundary), and the returned cursor
-    /// stays at the insertion point.
+    /// moves to the end of inserted text.
     /// When `linewise` is false, insertion happens after the cursor char on the
     /// current line (or at line end when already at EOL), and the returned cursor
     /// is at the end of inserted text.
@@ -281,7 +285,11 @@ impl TextBuffer {
         };
 
         let end_pos = self.insert(insert_pos, text);
-        if linewise { insert_pos } else { end_pos }
+        if linewise {
+            linewise_paste_cursor(end_pos)
+        } else {
+            end_pos
+        }
     }
 
     /// Move a contiguous line range up by one line.
@@ -498,4 +506,8 @@ impl TextBuffer {
         }
         entries
     }
+}
+
+fn linewise_paste_cursor(end_pos: Pos) -> Pos {
+    Pos::new(end_pos.line.saturating_sub(1), 0)
 }

@@ -715,7 +715,7 @@ fn paste_before_charwise_inserts_at_cursor_and_advances() {
 }
 
 #[test]
-fn paste_before_linewise_inserts_at_line_start_and_keeps_cursor() {
+fn paste_before_linewise_inserts_at_line_start_and_advances() {
     let mut b = TextBuffer::from_str("one\ntwo\n");
     let new_cursor = b.paste_before(Pos::new(1, 2), "zero\n", true);
 
@@ -736,7 +736,7 @@ fn paste_after_charwise_inserts_after_cursor_and_clamps_at_eol() {
 }
 
 #[test]
-fn paste_after_linewise_inserts_at_next_line_start_and_keeps_cursor() {
+fn paste_after_linewise_inserts_at_next_line_start_and_advances() {
     let mut b = TextBuffer::from_str("one\ntwo\n");
     let new_cursor = b.paste_after(Pos::new(0, 1), "x\n", true);
 
