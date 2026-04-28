@@ -1,4 +1,4 @@
-use redox_core::{Pos, Selection, motion::Motion};
+use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
@@ -427,8 +427,7 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
-                    let s = c.to_string();
-                    self.insert_text_at_cursor(&s, viewport_width_cells, text_vh, true);
+                    self.insert_char_at_cursor(c, viewport_width_cells, text_vh);
                 }
             }
 
@@ -444,8 +443,13 @@ impl EditorState {
 
                     {
                         let buffer = self.session.active_buffer_mut();
-                        let sel = buffer.backspace(sel);
-                        view.cursor.cursor = sel.cursor;
+                        if let Some(new_cursor) = delete_auto_pair_with_backspace(buffer, view.cursor.cursor)
+                        {
+                            view.cursor.cursor = new_cursor;
+                        } else {
+                            let sel = buffer.backspace(sel);
+                            view.cursor.cursor = sel.cursor;
+                        }
                         view.cursor
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
@@ -745,6 +749,51 @@ impl EditorState {
         let _ = self.session.recompute_active_dirty();
     }
 
+    fn insert_char_at_cursor(
+        &mut self,
+        ch: char,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        let active_id = self.session.active_id();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let behaviour = {
+            let buffer = self.session.active_buffer();
+            classify_insert_char(buffer, cursor, ch)
+        };
+
+        match behaviour {
+            InsertCharBehaviour::Plain => {
+                let text = ch.to_string();
+                self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
+            }
+            InsertCharBehaviour::MoveRight => {
+                let view = self.views.entry(active_id).or_default();
+                let buffer = self.session.active_buffer();
+                view.cursor.cursor = buffer.clamp_pos(Pos::new(cursor.line, cursor.col + 1));
+                view.cursor
+                    .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            }
+            InsertCharBehaviour::InsertPair(close) => {
+                let before = self.capture_active_insert_coalesced_snapshot();
+                let view = self.views.entry(active_id).or_default();
+
+                {
+                    let buffer = self.session.active_buffer_mut();
+                    let insert = [ch, close].iter().collect::<String>();
+                    let _ = buffer.insert(view.cursor.cursor, &insert);
+                    view.cursor.cursor = Pos::new(cursor.line, cursor.col + 1);
+                    view.cursor
+                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                }
+
+                self.invalidate_active_render_caches();
+                let _ = self.record_active_undo_if_changed(before);
+                let _ = self.session.recompute_active_dirty();
+            }
+        }
+    }
+
     fn scroll_viewport_and_center_cursor(&mut self, down: bool, text_vh: usize) {
         if text_vh == 0 {
             return;
@@ -807,6 +856,100 @@ impl EditorState {
         let view = self.views.entry(active_id).or_default();
         view.cursor.clamp_for_normal_mode(buffer);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InsertCharBehaviour {
+    Plain,
+    MoveRight,
+    InsertPair(char),
+}
+
+fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCharBehaviour {
+    if ch == '\t' {
+        return buffer
+            .char_at(cursor)
+            .filter(|current| is_auto_pair_closer(*current))
+            .map(|_| InsertCharBehaviour::MoveRight)
+            .unwrap_or(InsertCharBehaviour::Plain);
+    }
+
+    if buffer.char_at(cursor) == Some(ch) && is_auto_pair_closer(ch) {
+        return InsertCharBehaviour::MoveRight;
+    }
+
+    match ch {
+        '(' => InsertCharBehaviour::InsertPair(')'),
+        '[' => InsertCharBehaviour::InsertPair(']'),
+        '{' => InsertCharBehaviour::InsertPair('}'),
+        '"' | '`' => should_auto_pair_symmetric_delimiter(buffer, cursor, ch)
+            .then_some(InsertCharBehaviour::InsertPair(ch))
+            .unwrap_or(InsertCharBehaviour::Plain),
+        '\'' => should_auto_pair_single_quote(buffer, cursor)
+            .then_some(InsertCharBehaviour::InsertPair('\''))
+            .unwrap_or(InsertCharBehaviour::Plain),
+        _ => InsertCharBehaviour::Plain,
+    }
+}
+
+fn should_auto_pair_symmetric_delimiter(buffer: &TextBuffer, cursor: Pos, ch: char) -> bool {
+    if ch != '`' && buffer.char_before(cursor) == Some('\\') {
+        return false;
+    }
+
+    buffer
+        .char_at(cursor)
+        .is_none_or(is_auto_pair_boundary)
+}
+
+fn should_auto_pair_single_quote(buffer: &TextBuffer, cursor: Pos) -> bool {
+    if buffer.char_before(cursor).is_some_and(is_word_like_for_single_quote) {
+        return false;
+    }
+
+    buffer
+        .char_at(cursor)
+        .is_none_or(|ch| is_auto_pair_boundary(ch) && !is_word_like_for_single_quote(ch))
+}
+
+fn is_auto_pair_boundary(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            ')' | ']' | '}' | ',' | '.' | ';' | ':' | '!' | '?' | '>' | '/'
+        )
+}
+
+fn is_word_like_for_single_quote(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn is_auto_pair_closer(ch: char) -> bool {
+    matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
+fn matching_auto_pair_closer(ch: char) -> Option<char> {
+    match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+fn delete_auto_pair_with_backspace(buffer: &mut TextBuffer, cursor: Pos) -> Option<Pos> {
+    let opener = buffer.char_before(cursor)?;
+    let closer = buffer.char_at(cursor)?;
+    if matching_auto_pair_closer(opener) != Some(closer) {
+        return None;
+    }
+
+    let start = Pos::new(cursor.line, cursor.col.saturating_sub(1));
+    let end = Pos::new(cursor.line, cursor.col + 1);
+    Some(buffer.delete_range(start, end))
 }
 
 fn is_char_search_motion(motion: Motion) -> bool {

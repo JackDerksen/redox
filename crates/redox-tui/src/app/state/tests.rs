@@ -2202,6 +2202,81 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
 }
 
 #[test]
+fn insert_mode_auto_pairs_parentheses() {
+    let path = temp_file_path("insert_mode_auto_pairs_parentheses");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('('), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "()");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_tab_advances_out_of_auto_pair_closer() {
+    let path = temp_file_path("insert_mode_tab_out");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('('), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "()");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_typing_existing_quote_advances_cursor() {
+    let path = temp_file_path("insert_mode_skip_existing_quote");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('"'), 80, 24);
+    state.apply_input(InputAction::InsertChar('"'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "\"\"");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_backspace_removes_auto_paired_closer_after_opener() {
+    let path = temp_file_path("insert_mode_backspace_pair_cleanup");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('('), 80, 24);
+    state.apply_input(InputAction::Backspace, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_backspace_on_closer_does_not_remove_opener() {
+    let path = temp_file_path("insert_mode_backspace_closer_only");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('('), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+    state.apply_input(InputAction::Backspace, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "(");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn normal_mode_cursor_stops_on_last_character_of_non_empty_line() {
     let path = temp_file_path("normal_mode_last_char");
     let mut state = state_with_text(path.clone(), "abc\n");
