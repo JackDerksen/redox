@@ -1,6 +1,6 @@
 [package]
 name = "redox-tui"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 description = "TUI frontend runtime for redox-editor"
 license = "MIT"
@@ -14,7 +14,7 @@ name = "redox"
 path = "src/main.rs"
 
 [dependencies]
-redox-core = { version = "0.5.2", path = "../redox-core" }
+redox-core = { version = "0.5.3", path = "../redox-core" }
 minui = { version = "0.7.2", features = ["clipboard"] }
 anyhow = { workspace = true }
 serde_json = "1.0"
