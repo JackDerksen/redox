@@ -370,7 +370,7 @@ impl CommandLineStyle {
         Self {
             width_percent: 65,
             min_width: 24,
-            top_margin_rows: 2,
+            top_margin_rows: 6,
             inner_height_rows: 1,
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.red, theme.bg),
