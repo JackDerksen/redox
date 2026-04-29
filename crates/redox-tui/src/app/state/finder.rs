@@ -463,7 +463,45 @@ impl PinnedFilesState {
         self.slots.get_mut(slot).and_then(Option::take)
     }
 
-    fn save(&self) -> std::io::Result<()> {
+    pub(super) fn remap_paths(&mut self, renamed_paths: &[(PathBuf, PathBuf)]) -> bool {
+        let mut changed = false;
+        for slot in &mut self.slots {
+            let Some(path) = slot.as_mut() else {
+                continue;
+            };
+
+            let mut remapped = path.clone();
+            for (old_path, new_path) in renamed_paths {
+                if remapped == *old_path {
+                    remapped = new_path.clone();
+                    changed = true;
+                    continue;
+                }
+
+                if let Ok(relative) = remapped.strip_prefix(old_path) {
+                    remapped = new_path.join(relative);
+                    changed = true;
+                }
+            }
+
+            *path = fs::canonicalize(&remapped).unwrap_or(remapped);
+        }
+
+        let mut seen = HashSet::new();
+        for slot in &mut self.slots {
+            let Some(path) = slot.as_ref() else {
+                continue;
+            };
+            if !seen.insert(path.clone()) {
+                *slot = None;
+                changed = true;
+            }
+        }
+
+        changed
+    }
+
+    pub(super) fn save(&self) -> std::io::Result<()> {
         if let Some(parent) = self.storage_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -918,9 +956,19 @@ impl EditorState {
     }
 
     fn current_work_context_directory(&self) -> Option<PathBuf> {
-        self.current_active_file_path()
-            .as_deref()
-            .map(|path| path.parent().unwrap_or(path).to_path_buf())
+        self.transient_origin_dir
+            .clone()
+            .or_else(|| {
+                self.transient_origin_buffer_id
+                    .and_then(|buffer_id| self.session.meta(buffer_id))
+                    .and_then(|meta| meta.path.as_ref())
+                    .map(|path| path.parent().unwrap_or(path.as_path()).to_path_buf())
+            })
+            .or_else(|| {
+                self.current_active_file_path()
+                    .as_deref()
+                    .map(|path| path.parent().unwrap_or(path).to_path_buf())
+            })
             .or_else(|| {
                 self.explorer
                     .as_ref()

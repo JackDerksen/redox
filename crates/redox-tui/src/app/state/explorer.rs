@@ -543,6 +543,7 @@ impl EditorState {
         }
 
         self.sync_session_after_explorer_write(&planned_write.changes);
+        let pin_sync_error = self.sync_pinned_files_after_explorer_write(&planned_write.changes);
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,
@@ -593,7 +594,12 @@ impl EditorState {
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
-        self.set_status(format_explorer_write_summary(&planned_write.changes));
+        let status = format_explorer_write_summary(&planned_write.changes);
+        if let Some(err) = pin_sync_error {
+            self.set_status(format!("{status}; pin save failed: {err}"));
+        } else {
+            self.set_status(status);
+        }
         true
     }
 
@@ -636,6 +642,18 @@ impl EditorState {
             explorer.return_to_buffer_id = replacement_id;
         }
         let _ = self.session.activate(explorer_id);
+    }
+
+    fn sync_pinned_files_after_explorer_write(
+        &mut self,
+        changes: &AppliedExplorerChanges,
+    ) -> Option<std::io::Error> {
+        let renamed_paths = changes.renamed_paths();
+        if renamed_paths.is_empty() || !self.pinned_files.remap_paths(&renamed_paths) {
+            return None;
+        }
+
+        self.pinned_files.save().err()
     }
 }
 

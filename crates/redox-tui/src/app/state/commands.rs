@@ -160,6 +160,8 @@ impl EditorState {
         }
 
         let path = PathBuf::from(path_arg);
+        self.transient_origin_buffer_id = None;
+        self.transient_origin_dir = None;
         let previous_id = self.session.active_id();
         let close_previous_placeholder = self.is_empty_unnamed_startup_buffer(previous_id);
         match self.session.open_file(path) {
@@ -185,6 +187,8 @@ impl EditorState {
         }
 
         if let Some(id) = self.session.switch_next_mru() {
+            self.transient_origin_buffer_id = None;
+            self.transient_origin_dir = None;
             let _ = self.views.entry(id).or_default();
             self.ensure_buffer_analysis(id);
             self.clear_status();
@@ -199,6 +203,8 @@ impl EditorState {
         }
 
         if let Some(id) = self.session.switch_prev_mru() {
+            self.transient_origin_buffer_id = None;
+            self.transient_origin_dir = None;
             let _ = self.views.entry(id).or_default();
             self.ensure_buffer_analysis(id);
             self.clear_status();

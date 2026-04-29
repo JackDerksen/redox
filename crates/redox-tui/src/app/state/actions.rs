@@ -113,8 +113,6 @@ impl EditorState {
 
             InputAction::EnterInsert(kind) => {
                 self.clear_active_visual_anchor();
-                self.transient_origin_buffer_id = None;
-                self.transient_origin_dir = None;
                 self.mode = EditorMode::Insert;
                 self.clear_status();
                 self.input.reset_prefixes();
