@@ -41,8 +41,8 @@ pub struct FollowConfig {
 impl Default for FollowConfig {
     fn default() -> Self {
         Self {
-            top_margin_rows: 8,
-            bottom_margin_rows: 8,
+            top_margin_rows: 5,
+            bottom_margin_rows: 5,
             horizontal_follow: true,
         }
     }
