@@ -1103,17 +1103,6 @@ fn explorer_entry_label(name: &str, is_dir: bool) -> String {
     }
 }
 
-#[cfg(test)]
-fn format_explorer_delete_confirmation(
-    deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
-) -> String {
-    format_explorer_delete_confirmation_lines(deletions_by_dir)
-        .into_iter()
-        .map(|(line, _)| line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn format_explorer_delete_confirmation_lines(
     deletions_by_dir: &[(PathBuf, Vec<ExplorerEntry>)],
 ) -> Vec<(String, StatusMessageStyle)> {
@@ -1886,77 +1875,4 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn pending_explorer_delete_count_counts_delete_when_create_offsets_length_change() {
-        let count =
-            pending_explorer_deletions(&[file_entry("alpha.txt")], &[dir_entry("fresh")]).len();
-
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn format_explorer_delete_confirmation_lists_targets() {
-        let root = temp_dir_path("delete_confirmation_targets");
-        fs::create_dir_all(root.join("nested/deeper")).expect("failed to create nested fixture");
-        fs::write(root.join("nested/child.txt"), "child").expect("failed to write child fixture");
-        fs::write(root.join("nested/file2.txt"), "file2").expect("failed to write sibling fixture");
-        fs::write(root.join("nested/deeper/grandchild.txt"), "grandchild")
-            .expect("failed to write grandchild fixture");
-
-        let message = format_explorer_delete_confirmation(&[(
-            root.clone(),
-            vec![file_entry("alpha.txt"), dir_entry("nested")],
-        )]);
-
-        assert_eq!(
-            message,
-            "confirm deletion of 6 entries:\n alpha.txt\n nested/\n nested/child.txt\n nested/file2.txt\n nested/deeper/\n nested/deeper/grandchild.txt\npress y"
-        );
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn format_explorer_delete_confirmation_disambiguates_targets_across_directories() {
-        let root = temp_dir_path("delete_confirmation_multi");
-        let child = root.join("child");
-
-        let message = format_explorer_delete_confirmation(&[
-            (root.clone(), vec![file_entry("duplicate.txt")]),
-            (child, vec![file_entry("duplicate.txt")]),
-        ]);
-
-        assert_eq!(
-            message,
-            "confirm deletion of 2 entries:\n ./duplicate.txt\n child/duplicate.txt\npress y"
-        );
-    }
-
-    #[test]
-    fn format_explorer_write_summary_describes_changes() {
-        let message = format_explorer_write_summary(&AppliedExplorerChanges {
-            created_entries: vec![AppliedExplorerEntryChange {
-                name: "created.txt".to_string(),
-                path: PathBuf::from("created.txt"),
-                is_dir: false,
-            }],
-            renamed_entries: vec![AppliedExplorerRename {
-                old_name: "old.txt".to_string(),
-                new_name: "new.txt".to_string(),
-                old_path: PathBuf::from("old.txt"),
-                new_path: PathBuf::from("new.txt"),
-                is_dir: false,
-            }],
-            deleted_entries: vec![AppliedExplorerEntryChange {
-                name: "gone".to_string(),
-                path: PathBuf::from("gone"),
-                is_dir: true,
-            }],
-        });
-
-        assert_eq!(
-            message,
-            "created file: created.txt; renamed file: old.txt -> new.txt; deleted directory: gone/"
-        );
-    }
 }

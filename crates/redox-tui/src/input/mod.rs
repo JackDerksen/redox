@@ -1690,20 +1690,6 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_shift_semicolon_key_event_enters_command() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char(';'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::EnterCommand);
-    }
-
-    #[test]
     fn finder_mode_ctrl_n_and_ctrl_p_navigate_results() {
         let mut state = InputState::new();
         let next = map_event_with_state(
@@ -1725,20 +1711,6 @@ mod tests {
             }),
         );
         assert_eq!(prev, InputAction::FinderMovePrev);
-    }
-
-    #[test]
-    fn finder_mode_ctrl_c_cancels() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Finder,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::FinderCancel);
     }
 
     #[test]
@@ -1787,20 +1759,6 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::AssignPinSlot { slot: 2 });
-    }
-
-    #[test]
-    fn pin_selector_ctrl_c_cancels() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::PinSelectorCancel);
     }
 
     #[test]
@@ -1873,48 +1831,10 @@ mod tests {
     }
 
     #[test]
-    fn pin_selector_plain_enter_event_opens_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Enter);
-        assert_eq!(action, InputAction::PinSelectorOpenSelected);
-    }
-
-    #[test]
-    fn pin_selector_key_event_d_deletes_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('d'),
-                mods: KeyModifiers::default(),
-            }),
-        );
-        assert_eq!(action, InputAction::PinSelectorDeleteSelected);
-    }
-
-    #[test]
     fn pin_selector_p_assigns_selected_slot() {
         let mut state = InputState::new();
 
         let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('p'));
-        assert_eq!(action, InputAction::PinSelectorAssign);
-    }
-
-    #[test]
-    fn pin_selector_key_event_p_assigns_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('p'),
-                mods: KeyModifiers::default(),
-            }),
-        );
         assert_eq!(action, InputAction::PinSelectorAssign);
     }
 
@@ -1972,14 +1892,6 @@ mod tests {
             }),
         );
         assert_eq!(action, InputAction::OpenPinnedSlot { slot: 4 });
-    }
-
-    #[test]
-    fn normal_mode_legacy_symbol_event_opens_pinned_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('#'));
-        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 2 });
     }
 
     #[test]

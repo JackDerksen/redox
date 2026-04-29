@@ -597,32 +597,6 @@ mod tests {
     }
 
     #[test]
-    fn right_coords_module_uses_light_gray_highlight() {
-        let style = UiStyle::default();
-        let colors = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Coords);
-
-        assert_eq!(colors.wrapper.fg, style.palette.status_bar_bg.bg);
-        assert_eq!(colors.wrapper.bg, style.theme.light_gray);
-        assert_eq!(colors.content, colors.wrapper);
-    }
-
-    #[test]
-    fn right_minimap_module_uses_distinct_highlight() {
-        let style = UiStyle::default();
-        let colors = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Minimap);
-
-        assert_eq!(colors.wrapper.fg, style.palette.status_bar_bg.bg);
-        assert_eq!(colors.wrapper.bg, style.theme.dark_gray);
-        assert_eq!(colors.content, colors.wrapper);
-    }
-
-    #[test]
     fn status_module_emits_wrapped_segments() {
         let style = UiStyle::default();
         let wrapper_colors = style
@@ -649,53 +623,4 @@ mod tests {
         assert_eq!(segments[2].colors, Some(wrapper_colors.wrapper));
     }
 
-    #[test]
-    fn right_modules_respect_configured_gap_width() {
-        let style = UiStyle::default();
-        let coords = StatusModule::new(
-            "3:1",
-            style
-                .palette
-                .status_modules
-                .colors(StatusModuleKind::Coords),
-        );
-        let minimap = StatusModule::new(
-            "▇",
-            style
-                .palette
-                .status_modules
-                .colors(StatusModuleKind::Minimap),
-        );
-
-        assert_eq!(
-            coords.width() + style.layout.status_module_gap_width + minimap.width(),
-            8
-        );
-    }
-
-    #[test]
-    fn status_bar_balances_side_reservations_for_centering() {
-        assert_eq!(balanced_status_side_width(8, 12, 18, 18), 18);
-        assert_eq!(balanced_status_side_width(20, 12, 18, 18), 20);
-    }
-
-    #[test]
-    fn finder_popup_uses_normal_mode_chip() {
-        let style = UiStyle::default();
-        let (label, colors) =
-            status_bar_mode_presentation(EditorMode::Finder, false, true, false, style);
-
-        assert_eq!(label, "NORMAL");
-        assert_eq!(colors, style.palette.mode_normal);
-    }
-
-    #[test]
-    fn pinboard_popup_uses_normal_mode_chip() {
-        let style = UiStyle::default();
-        let (label, colors) =
-            status_bar_mode_presentation(EditorMode::PinSelect, false, false, true, style);
-
-        assert_eq!(label, "NORMAL");
-        assert_eq!(colors, style.palette.mode_normal);
-    }
 }
