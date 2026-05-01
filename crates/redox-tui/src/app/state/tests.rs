@@ -560,10 +560,110 @@ fn explorer_stays_in_previous_context_after_opening_pinned_file() {
             let popup = state.explorer_popup().expect("explorer popup");
             assert_eq!(
                 popup.dir_path,
-                fs::canonicalize(&left_dir).expect("left dir canonical")
+                fs::canonicalize(&root).expect("root canonical")
             );
         },
     );
+}
+
+#[test]
+fn explorer_stays_in_previous_context_after_saving_pinned_file() {
+    with_isolated_launch_env(
+        "explorer_stays_in_previous_context_after_pinned_save",
+        |root| {
+            let left_dir = root.join("left");
+            let right_dir = root.join("right");
+            fs::create_dir_all(&left_dir).expect("failed to create left dir");
+            fs::create_dir_all(&right_dir).expect("failed to create right dir");
+
+            let left_file = left_dir.join("left.txt");
+            let pinned_file = right_dir.join("pinned.txt");
+            fs::write(&left_file, "left\n").expect("failed to write left file");
+            fs::write(&pinned_file, "pinned  \n").expect("failed to write pinned file");
+
+            let session =
+                EditorSession::open_initial_file(&left_file).expect("failed to open session");
+            let mut state = EditorState::new(session);
+
+            let _ = state
+                .session
+                .open_file(&pinned_file)
+                .expect("failed to switch to pinned file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+            let _ = state
+                .session
+                .open_file(&left_file)
+                .expect("failed to return to left file");
+            state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+            run_command(&mut state, "w");
+
+            state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+            let popup = state.explorer_popup().expect("explorer popup");
+            assert_eq!(
+                popup.dir_path,
+                fs::canonicalize(&root).expect("root canonical")
+            );
+            assert_eq!(
+                fs::read_to_string(&pinned_file).expect("failed to read pinned file"),
+                "pinned\n"
+            );
+        },
+    );
+}
+
+#[test]
+fn switching_between_pinned_files_keeps_original_explorer_context() {
+    with_isolated_launch_env("switch_between_pinned_files_keeps_origin", |root| {
+        let left_dir = root.join("left");
+        let right_dir = root.join("right");
+        let other_dir = root.join("other");
+        fs::create_dir_all(&left_dir).expect("failed to create left dir");
+        fs::create_dir_all(&right_dir).expect("failed to create right dir");
+        fs::create_dir_all(&other_dir).expect("failed to create other dir");
+
+        let left_file = left_dir.join("left.txt");
+        let first_pin = right_dir.join("first.txt");
+        let second_pin = other_dir.join("second.txt");
+        fs::write(&left_file, "left\n").expect("failed to write left file");
+        fs::write(&first_pin, "first\n").expect("failed to write first pin");
+        fs::write(&second_pin, "second\n").expect("failed to write second pin");
+
+        let session =
+            EditorSession::open_initial_file(&left_file).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        let _ = state
+            .session
+            .open_file(&first_pin)
+            .expect("failed to switch to first pin");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&second_pin)
+            .expect("failed to switch to second pin");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorMoveNext, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&left_file)
+            .expect("failed to return to left file");
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 1 }, 80, 24);
+        state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+        let popup = state.explorer_popup().expect("explorer popup");
+        assert_eq!(
+            popup.dir_path,
+            fs::canonicalize(&root).expect("root canonical")
+        );
+    });
 }
 
 #[test]
