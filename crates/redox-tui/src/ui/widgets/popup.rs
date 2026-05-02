@@ -82,6 +82,7 @@ pub fn draw_popup_frame_at(
         window.write_str_colored(y, x + 2, &title_text, chrome.title)?;
     }
 
+    //if inner_w > 0 && inner_h > 0 && chrome.fill.bg != minui::Color::Transparent {
     if inner_w > 0 && inner_h > 0 {
         let blank_row = " ".repeat(inner_w as usize);
         for row in 0..inner_h {

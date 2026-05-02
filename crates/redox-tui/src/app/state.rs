@@ -20,11 +20,15 @@ mod analysis;
 use analysis::AnalysisWorker;
 mod explorer;
 mod finder;
+mod lsp;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
+pub use lsp::{
+    DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup, LspEntryStatusKind, LspMarketplacePopup,
+};
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
@@ -115,6 +119,8 @@ pub enum EditorMode {
     Search,
     Finder,
     PinSelect,
+    LspMarketplace,
+    DiagnosticsList,
     Visual,
     VisualLine,
     VisualBlock,
@@ -124,7 +130,12 @@ impl EditorMode {
     pub fn has_popup_overlay(self) -> bool {
         matches!(
             self,
-            EditorMode::Command | EditorMode::Search | EditorMode::Finder | EditorMode::PinSelect
+            EditorMode::Command
+                | EditorMode::Search
+                | EditorMode::Finder
+                | EditorMode::PinSelect
+                | EditorMode::LspMarketplace
+                | EditorMode::DiagnosticsList
         )
     }
 
@@ -136,6 +147,8 @@ impl EditorMode {
             EditorMode::Search => InputMode::Search,
             EditorMode::Finder => InputMode::Finder,
             EditorMode::PinSelect => InputMode::PinSelect,
+            EditorMode::LspMarketplace => InputMode::LspMarketplace,
+            EditorMode::DiagnosticsList => InputMode::DiagnosticsList,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -203,6 +216,7 @@ pub struct EditorState {
     finder_index_cache: HashMap<PathBuf, Vec<finder::FinderFileCandidate>>,
     pin_selector: Option<PinSelectorState>,
     pinned_files: PinnedFilesState,
+    lsp: lsp::LspState,
     pub mode: EditorMode,
     pub input: InputState,
     pub command_line: String,
@@ -250,6 +264,7 @@ impl EditorState {
             finder_index_cache: HashMap::new(),
             pin_selector: None,
             pinned_files: PinnedFilesState::load(),
+            lsp: lsp::LspState::default(),
             mode: EditorMode::Normal,
             input: InputState::new(),
             command_line: String::new(),
@@ -274,7 +289,9 @@ impl EditorState {
             perf_visible: false,
             perf_stats: None,
         };
+        let mut state = state;
         state.request_analysis(active, 0);
+        state.initialise_lsp_state();
         state
     }
 
@@ -289,6 +306,13 @@ impl EditorState {
         self.status_msg = Some(lines.join("\n"));
         self.status_msg_line_styles = styles;
         self.status_msg_expires_at = None;
+    }
+
+    pub fn set_status_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
+        self.status_msg = Some(lines.join("\n"));
+        self.status_msg_line_styles = styles;
+        self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
     pub fn clear_status(&mut self) {
@@ -439,7 +463,9 @@ impl EditorState {
             | EditorMode::Command
             | EditorMode::Search
             | EditorMode::Finder
-            | EditorMode::PinSelect => return None,
+            | EditorMode::PinSelect
+            | EditorMode::LspMarketplace => return None,
+            EditorMode::DiagnosticsList => return None,
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }

@@ -422,13 +422,24 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
+    let diagnostics_module = diagnostic_summary_module(state, module_theme);
+    let diagnostics_width = diagnostics_module
+        .as_ref()
+        .map(StatusModule::width)
+        .unwrap_or(0);
     let dirty_width = if state.active_dirty() { 1 } else { 0 };
-    let left_text_width = mode_width.saturating_add(dirty_width);
+    let left_text_width = mode_width
+        .saturating_add(diagnostics_width)
+        .saturating_add(dirty_width);
 
     let center_text = if state.finder_popup().is_some() {
         " finder ".to_string()
     } else if state.pin_selector_popup().is_some() {
         " pinboard ".to_string()
+    } else if state.lsp_marketplace_popup().is_some() {
+        " lsp ".to_string()
+    } else if state.diagnostics_popup().is_some() {
+        " diagnostics ".to_string()
     } else if state.explorer_popup().is_some() {
         " explorer ".to_string()
     } else {
@@ -488,24 +499,29 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_color(mode_colors)
                 .with_align(Align::Left)
                 .with_min_width(mode_width),
-        )
-        .add_segment(if state.active_dirty() {
-            Segment::new("+")
-                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
-                .with_min_width(1)
-        } else {
-            Segment::spacer(0)
-        })
-        .add_segment(Segment::spacer(left_padding_width))
-        .add_segment(
-            Segment::new(center_text)
-                .with_color(style.palette.status_bar_bg)
-                .with_align(Align::Center),
-        )
-        .add_segment(Segment::spacer(right_padding_width))
-        .add_module(coords_module)
-        .add_segment(Segment::spacer(style.layout.status_module_gap_width))
-        .add_module(minimap_module);
+        );
+    let status_bar = if let Some(module) = diagnostics_module {
+        status_bar.add_module(module)
+    } else {
+        status_bar
+    }
+    .add_segment(if state.active_dirty() {
+        Segment::new("+")
+            .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+            .with_min_width(1)
+    } else {
+        Segment::spacer(0)
+    })
+    .add_segment(Segment::spacer(left_padding_width))
+    .add_segment(
+        Segment::new(center_text)
+            .with_color(style.palette.status_bar_bg)
+            .with_align(Align::Center),
+    )
+    .add_segment(Segment::spacer(right_padding_width))
+    .add_module(coords_module)
+    .add_segment(Segment::spacer(style.layout.status_module_gap_width))
+    .add_module(minimap_module);
 
     status_bar
 }
@@ -532,10 +548,41 @@ fn status_bar_mode_presentation(
         EditorMode::Search => ("SEARCH", style.palette.mode_command),
         EditorMode::Finder => ("FINDER", style.palette.mode_command),
         EditorMode::PinSelect => ("PINBOARD", style.palette.mode_command),
+        EditorMode::LspMarketplace => ("LSP", style.palette.mode_command),
+        EditorMode::DiagnosticsList => ("DIAGNOSTICS", style.palette.mode_command),
         EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
         EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
         EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
     }
+}
+
+fn diagnostic_summary_module(
+    state: &EditorState,
+    module_theme: crate::ui::style::StatusModuleTheme,
+) -> Option<StatusModule> {
+    let summary = state.active_diagnostic_summary();
+    if summary.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if summary.errors > 0 {
+        parts.push(format!("×{}", summary.errors));
+    }
+    if summary.warnings > 0 {
+        parts.push(format!("▲{}", summary.warnings));
+    }
+    if summary.information > 0 {
+        parts.push(format!("•{}", summary.information));
+    }
+    if summary.hints > 0 {
+        parts.push(format!("◌{}", summary.hints));
+    }
+
+    Some(StatusModule::new(
+        parts.join(" "),
+        module_theme.colors(StatusModuleKind::Diagnostics),
+    ))
 }
 
 #[cfg(test)]
@@ -622,5 +669,4 @@ mod tests {
         assert_eq!(segments[2].text, STATUS_MODULE_EDGE_RIGHT);
         assert_eq!(segments[2].colors, Some(wrapper_colors.wrapper));
     }
-
 }

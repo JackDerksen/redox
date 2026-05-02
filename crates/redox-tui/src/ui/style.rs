@@ -2,6 +2,8 @@
 
 use minui::{Color, ColorPair};
 
+use crate::app::DiagnosticSeverity;
+
 pub const STATUS_BAR_HEIGHT_ROWS: usize = 1;
 pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
 
@@ -202,12 +204,14 @@ impl StatusModuleColors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusModuleKind {
     Coords,
+    Diagnostics,
     Minimap,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusModuleTheme {
     pub coords: StatusModuleColors,
+    pub diagnostics: StatusModuleColors,
     pub minimap: StatusModuleColors,
 }
 
@@ -215,6 +219,7 @@ impl StatusModuleTheme {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+            diagnostics: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
             minimap: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
         }
     }
@@ -222,6 +227,7 @@ impl StatusModuleTheme {
     pub fn colors(self, kind: StatusModuleKind) -> StatusModuleColors {
         match kind {
             StatusModuleKind::Coords => self.coords,
+            StatusModuleKind::Diagnostics => self.diagnostics,
             StatusModuleKind::Minimap => self.minimap,
         }
     }
@@ -383,6 +389,70 @@ impl CommandLineStyle {
 impl Default for CommandLineStyle {
     fn default() -> Self {
         Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticInlineStyle {
+    pub error: ColorPair,
+    pub warning: ColorPair,
+    pub information: ColorPair,
+    pub hint: ColorPair,
+}
+
+impl DiagnosticInlineStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            error: ColorPair::new(
+                theme.light_red,
+                Color::Rgb {
+                    // dim red background
+                    r: 49,
+                    g: 38,
+                    b: 43,
+                },
+            ),
+            warning: ColorPair::new(
+                theme.light_orange,
+                Color::Rgb {
+                    // dim orange background
+                    r: 49,
+                    g: 43,
+                    b: 42,
+                },
+            ),
+            information: ColorPair::new(
+                theme.light_gray,
+                Color::Rgb {
+                    // dim gray background
+                    r: 35,
+                    g: 34,
+                    b: 38,
+                },
+            ),
+            hint: ColorPair::new(
+                theme.light_blue,
+                Color::Rgb {
+                    // dim blue background
+                    r: 39,
+                    g: 45,
+                    b: 49,
+                },
+            ),
+        }
+    }
+
+    pub fn colors(self, severity: DiagnosticSeverity) -> ColorPair {
+        match severity {
+            DiagnosticSeverity::Error => self.error,
+            DiagnosticSeverity::Warning => self.warning,
+            DiagnosticSeverity::Information => self.information,
+            DiagnosticSeverity::Hint => self.hint,
+        }
+    }
+
+    pub fn background(self, severity: DiagnosticSeverity) -> Color {
+        self.colors(severity).bg
     }
 }
 
@@ -620,6 +690,7 @@ pub struct UiStyle {
     pub layout: Layout,
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
+    pub diagnostic_inline: DiagnosticInlineStyle,
     pub explorer: ExplorerStyle,
     pub finder: FinderStyle,
     pub perf: PerfStyle,
@@ -635,6 +706,7 @@ impl Default for UiStyle {
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
+            diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
@@ -692,6 +764,7 @@ impl UiStyle {
             layout: self.layout,
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
+            diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),

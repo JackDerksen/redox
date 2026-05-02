@@ -33,9 +33,10 @@ use ui::syntax::{
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view, draw_finder_popup, draw_perf_popup_view, draw_pin_selector_popup,
-    draw_status_toast, explorer_popup_inner_size, language_for_path, perf_popup_layout,
-    perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
+    draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
+    draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
+    explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
+    snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -62,6 +63,8 @@ fn draw_buffer_view(
             | app::EditorMode::Search
             | app::EditorMode::Finder
             | app::EditorMode::PinSelect
+            | app::EditorMode::LspMarketplace
+            | app::EditorMode::DiagnosticsList
     ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
@@ -128,6 +131,64 @@ fn draw_buffer_view(
             inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
         draw_about_popup_view(state, style, window, popup)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
+    if let Some(popup) = state.lsp_marketplace_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_lsp_marketplace_popup(&popup, style, window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
+    if let Some(popup) = state.diagnostics_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_diagnostics_popup(&popup, style, window)?;
         hide_cursor(window);
         return Ok(());
     }
@@ -200,6 +261,7 @@ fn draw_buffer_view(
     let overlay_start = Instant::now();
     let search_highlights =
         state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
+    let diagnostic_lines = state.active_diagnostic_lines(snapshot.first_line, snapshot.lines.len());
     perf.overlays += overlay_start.elapsed();
 
     draw_relative_line_numbers(
@@ -285,6 +347,7 @@ fn draw_buffer_view(
                 &delimiter_highlights,
                 &active_scope_guides,
                 &search_highlights,
+                &diagnostic_lines,
                 visual_selection,
                 one_shot_highlight,
                 syntax_language.is_none(),
@@ -338,6 +401,9 @@ fn draw_buffer_view(
     }
 
     let toast_layout = draw_status_toast(state, style, window)?;
+    if toast_layout.is_none() {
+        let _ = draw_lsp_loading_toast(state, style, window)?;
+    }
 
     if let Some(cursor) = cursor_spec {
         let cursor_hidden_by_perf = perf_popup_layout
@@ -352,6 +418,41 @@ fn draw_buffer_view(
     }
 
     Ok(())
+}
+
+fn draw_lsp_loading_toast(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<Option<ui::widgets::popup::PopupLayout>> {
+    let Some(message) = state.active_lsp_loading_toast(Instant::now()) else {
+        return Ok(None);
+    };
+    let (term_w, term_h) = window.get_size();
+    let width = (cell_width(&message, TabPolicy::Fixed(4)) as u16)
+        .saturating_add(2)
+        .min(term_w.saturating_sub(2));
+    if width <= 2 || term_h <= 2 {
+        return Ok(None);
+    }
+    let popup_w = width.saturating_add(2);
+    let x = term_w.saturating_sub(popup_w.saturating_add(1));
+    let layout = ui::widgets::popup::draw_popup_frame_at(
+        window,
+        x,
+        0,
+        width,
+        1,
+        "",
+        ui::widgets::popup::PopupChrome {
+            border: style.command_line.border,
+            title: style.command_line.title,
+            fill: style.command_line.text,
+        },
+    )?;
+    let mut view = ui::widgets::popup::popup_window_view(window, layout);
+    view.write_str_colored(0, 1, &message, style.command_line.text)?;
+    Ok(Some(layout))
 }
 
 fn draw_gutter_padding(
@@ -666,6 +767,7 @@ fn draw_buffer_snapshot_for_id(
         draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
 
         let search_highlights = BTreeMap::new();
+        let diagnostic_lines = BTreeMap::new();
         draw_snapshot_lines(
             window,
             buffer,
@@ -679,6 +781,7 @@ fn draw_buffer_snapshot_for_id(
             &delimiter_highlights,
             &active_scope_guides,
             &search_highlights,
+            &diagnostic_lines,
             None,
             None,
             syntax_language.is_none(),
@@ -702,6 +805,7 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     lexical_fallback_enabled: bool,
@@ -725,9 +829,21 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let diagnostic_line = diagnostic_lines.get(&line_idx);
         let has_search_highlights = search_highlights
             .get(&line_idx)
             .is_some_and(|ranges| !ranges.is_empty());
+        let diagnostic_cells = diagnostic_line.map(|diagnostic| {
+            selected_visible_cells(
+                &source_line,
+                scroll_x,
+                text_w,
+                diagnostic.start_col,
+                diagnostic
+                    .end_col
+                    .max(diagnostic.start_col.saturating_add(1)),
+            )
+        });
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
@@ -738,6 +854,7 @@ fn draw_snapshot_lines(
         if transient_selection.is_none()
             && !has_search_highlights
             && syntax_line_spans.is_none_or(|spans| spans.is_empty())
+            && diagnostic_line.is_none()
             && highlighted_chars.is_empty()
             && visible_indent_guides.is_empty()
             && visible_line.is_ascii()
@@ -752,6 +869,18 @@ fn draw_snapshot_lines(
                 default_colors,
                 color_column,
             )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
             continue;
         }
 
@@ -777,12 +906,26 @@ fn draw_snapshot_lines(
                     sel_range.end,
                 );
                 let highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
-                    vec![
+                    let mut layers = vec![
                         (selected_cells.as_slice(), selection_bg),
                         (search_cells.as_slice(), style.theme.selection_bg),
-                    ]
+                    ];
+                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                        layers.push((
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ));
+                    }
+                    layers
                 } else {
-                    vec![(selected_cells.as_slice(), selection_bg)]
+                    let mut layers = vec![(selected_cells.as_slice(), selection_bg)];
+                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                        layers.push((
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ));
+                    }
+                    layers
                 };
                 draw_line_with_highlights(
                     window,
@@ -817,10 +960,32 @@ fn draw_snapshot_lines(
                     highlighted_chars,
                     style,
                 )?;
+                if let Some(diagnostic) = diagnostic_line {
+                    draw_inline_diagnostic(
+                        window,
+                        row as u16,
+                        content_x,
+                        &source_line,
+                        scroll_x,
+                        text_w,
+                        style,
+                        diagnostic,
+                    )?;
+                }
                 continue;
             }
             if highlight_empty_line {
-                let highlight_layers = [(&[][..], selection_bg)];
+                let highlight_layers = if let Some(diagnostic) = diagnostic_line {
+                    vec![
+                        (&[][..], selection_bg),
+                        (
+                            &[][..],
+                            style.diagnostic_inline.background(diagnostic.severity),
+                        ),
+                    ]
+                } else {
+                    vec![(&[][..], selection_bg)]
+                };
                 draw_line_with_highlights(
                     window,
                     row as u16,
@@ -835,6 +1000,18 @@ fn draw_snapshot_lines(
                     &highlight_layers,
                     true,
                 )?;
+                if let Some(diagnostic) = diagnostic_line {
+                    draw_inline_diagnostic(
+                        window,
+                        row as u16,
+                        content_x,
+                        &source_line,
+                        scroll_x,
+                        text_w,
+                        style,
+                        diagnostic,
+                    )?;
+                }
                 continue;
             }
         }
@@ -842,7 +1019,18 @@ fn draw_snapshot_lines(
         if let Some(search_cells) = search_cells.as_ref()
             && search_cells.iter().any(|selected| *selected)
         {
-            let highlight_layers = [(search_cells.as_slice(), style.theme.selection_bg)];
+            let highlight_layers =
+                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                    vec![
+                        (search_cells.as_slice(), style.theme.selection_bg),
+                        (
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ),
+                    ]
+                } else {
+                    vec![(search_cells.as_slice(), style.theme.selection_bg)]
+                };
             draw_line_with_highlights(
                 window,
                 row as u16,
@@ -876,24 +1064,57 @@ fn draw_snapshot_lines(
                 highlighted_chars,
                 style,
             )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
             continue;
         }
 
         if let Some(spans) = syntax_line_spans
             && !spans.is_empty()
         {
-            draw_line_with_syntax(
-                window,
-                row as u16,
-                content_x,
-                &source_line,
-                scroll_x,
-                text_w,
-                default_colors,
-                color_column,
-                style,
-                spans,
-            )?;
+            if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                let highlight_layers = [(
+                    diagnostic.0.as_slice(),
+                    style.diagnostic_inline.background(diagnostic.1.severity),
+                )];
+                draw_line_with_highlights(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    default_colors,
+                    color_column,
+                    style,
+                    Some(spans),
+                    &highlight_layers,
+                    false,
+                )?;
+            } else {
+                draw_line_with_syntax(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    default_colors,
+                    color_column,
+                    style,
+                    spans,
+                )?;
+            }
             draw_indent_guides(
                 window,
                 row as u16,
@@ -913,19 +1134,52 @@ fn draw_snapshot_lines(
                 highlighted_chars,
                 style,
             )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
             continue;
         }
 
-        draw_plain_line(
-            window,
-            row as u16,
-            content_x,
-            &source_line,
-            scroll_x,
-            text_w,
-            default_colors,
-            color_column,
-        )?;
+        if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+            let highlight_layers = [(
+                diagnostic.0.as_slice(),
+                style.diagnostic_inline.background(diagnostic.1.severity),
+            )];
+            draw_line_with_highlights(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                color_column,
+                style,
+                None,
+                &highlight_layers,
+                false,
+            )?;
+        } else {
+            draw_plain_line(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                color_column,
+            )?;
+        }
         draw_indent_guides(
             window,
             row as u16,
@@ -945,6 +1199,18 @@ fn draw_snapshot_lines(
             highlighted_chars,
             style,
         )?;
+        if let Some(diagnostic) = diagnostic_line {
+            draw_inline_diagnostic(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                style,
+                diagnostic,
+            )?;
+        }
     }
 
     Ok(())
@@ -963,6 +1229,71 @@ fn selected_visible_cells(
         width_cells,
         &[sel_start_char..sel_end_char_exclusive],
     )
+}
+
+fn draw_inline_diagnostic(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+    diagnostic: &app::DiagnosticLine,
+) -> minui::Result<()> {
+    if text_w == 0 {
+        return Ok(());
+    }
+
+    let line_width = visible_content_cell_width(source_line, scroll_x, text_w);
+    let start_cell = line_width.saturating_add(5);
+    if start_cell >= text_w {
+        return Ok(());
+    }
+
+    let available = text_w.saturating_sub(start_cell);
+    let inline_text = ui::widgets::popup::clip_text_to_cells(&diagnostic.inline_text, available);
+    if inline_text.is_empty() {
+        return Ok(());
+    }
+
+    let colors = style.diagnostic_inline.colors(diagnostic.severity);
+
+    window.write_str_colored(
+        row,
+        content_x.saturating_add(start_cell as u16),
+        &inline_text,
+        colors,
+    )
+}
+
+fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usize) -> usize {
+    if max_cells == 0 || source_line.is_empty() {
+        return 0;
+    }
+
+    let mut consumed_cells = 0usize;
+    let mut visible_cells = 0usize;
+
+    for grapheme in source_line.graphemes(true) {
+        let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
+        if consumed_cells.saturating_add(grapheme_width) <= scroll_x {
+            consumed_cells = consumed_cells.saturating_add(grapheme_width);
+            continue;
+        }
+
+        let remaining_cells = max_cells.saturating_sub(visible_cells);
+        if remaining_cells == 0 {
+            break;
+        }
+
+        visible_cells = visible_cells.saturating_add(grapheme_width.min(remaining_cells));
+        if visible_cells >= max_cells {
+            break;
+        }
+    }
+
+    visible_cells
 }
 
 fn highlighted_visible_cells(
@@ -1337,6 +1668,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             None,
             None,
             false,
@@ -1534,6 +1866,7 @@ pub fn run() -> minui::Result<()> {
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
         state.poll_analysis_results();
+        state.poll_lsp();
         state.poll_finder_results();
         state.expire_status_message(Instant::now());
 

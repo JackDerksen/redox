@@ -17,6 +17,8 @@ pub enum InputMode {
     Search,
     Finder,
     PinSelect,
+    LspMarketplace,
+    DiagnosticsList,
     Visual,
     VisualLine,
     VisualBlock,
@@ -74,6 +76,8 @@ pub enum InputAction {
     OpenExplorer,
     /// Open the file finder popup (`<leader><leader>`).
     OpenFinder,
+    ToggleDiagnosticsList,
+    GotoDefinition,
     /// Open item under cursor in active surface (`Enter` in normal mode).
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
@@ -180,6 +184,15 @@ pub enum InputAction {
     PinSelectorReorderDown,
     PinSelectorDeleteSelected,
     PinSelectorCancel,
+    LspMarketplaceMoveNext,
+    LspMarketplaceMovePrev,
+    LspMarketplaceInstallSelected,
+    LspMarketplaceUninstallSelected,
+    LspMarketplaceCancel,
+    DiagnosticsListMoveNext,
+    DiagnosticsListMovePrev,
+    DiagnosticsListOpenSelected,
+    DiagnosticsListCancel,
     AssignPinSlot {
         slot: usize,
     },
@@ -228,6 +241,8 @@ enum PrefixFallback {
 enum SequenceAction {
     OpenExplorer,
     OpenFinder,
+    ToggleDiagnosticsList,
+    GotoDefinition,
     YankSelectionSystem,
     PasteSystemClipboard,
     FileStart,
@@ -253,6 +268,11 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         action: Some(SequenceAction::OpenExplorer),
     },
     SequenceBinding {
+        sequence: " x",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::ToggleDiagnosticsList),
+    },
+    SequenceBinding {
         sequence: "  ",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::OpenFinder),
@@ -266,6 +286,11 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: "gg",
         fallback: PrefixFallback::RetryCurrent,
         action: Some(SequenceAction::FileStart),
+    },
+    SequenceBinding {
+        sequence: "gd",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::GotoDefinition),
     },
 ];
 
@@ -407,6 +432,8 @@ pub fn map_event_with_context(
                 InputMode::Search => InputAction::SearchCancel,
                 InputMode::Finder => InputAction::FinderCancel,
                 InputMode::PinSelect => InputAction::PinSelectorCancel,
+                InputMode::LspMarketplace => InputAction::LspMarketplaceCancel,
+                InputMode::DiagnosticsList => InputAction::DiagnosticsListCancel,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::SetMode(InputMode::Normal)
                 }
@@ -422,6 +449,8 @@ pub fn map_event_with_context(
                 InputMode::Search => InputAction::SearchBackspace,
                 InputMode::Finder => InputAction::FinderBackspace,
                 InputMode::PinSelect => InputAction::None,
+                InputMode::LspMarketplace => InputAction::None,
+                InputMode::DiagnosticsList => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -437,6 +466,8 @@ pub fn map_event_with_context(
                 InputMode::Search => InputAction::SearchEnter,
                 InputMode::Finder => InputAction::FinderEnter,
                 InputMode::PinSelect => InputAction::PinSelectorOpenSelected,
+                InputMode::LspMarketplace => InputAction::None,
+                InputMode::DiagnosticsList => InputAction::DiagnosticsListOpenSelected,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -461,6 +492,25 @@ pub fn map_event_with_context(
                     _ => InputAction::None,
                 }
             }
+            InputMode::LspMarketplace => {
+                state.reset_prefixes();
+                match c {
+                    'j' => InputAction::LspMarketplaceMoveNext,
+                    'k' => InputAction::LspMarketplaceMovePrev,
+                    'i' | 'I' => InputAction::LspMarketplaceInstallSelected,
+                    'u' | 'U' => InputAction::LspMarketplaceUninstallSelected,
+                    _ => InputAction::None,
+                }
+            }
+            InputMode::DiagnosticsList => {
+                state.reset_prefixes();
+                match c {
+                    'j' => InputAction::DiagnosticsListMoveNext,
+                    'k' => InputAction::DiagnosticsListMovePrev,
+                    _ => InputAction::None,
+                }
+            }
+            // TODO: See if I can remove this safely. Pretty sure it's just a legacy fallback
             InputMode::Normal if matches!(c, '!' | '@' | '#') => {
                 state.reset_prefixes();
                 InputAction::OpenPinnedSlot {
@@ -528,7 +578,9 @@ fn modal_char_action(
                 | InputMode::Command
                 | InputMode::Search
                 | InputMode::Finder
-                | InputMode::PinSelect => InputAction::None,
+                | InputMode::PinSelect
+                | InputMode::LspMarketplace => InputAction::None,
+                InputMode::DiagnosticsList => InputAction::None,
             }
         }
         'V' => {
@@ -542,7 +594,9 @@ fn modal_char_action(
                 | InputMode::Command
                 | InputMode::Search
                 | InputMode::Finder
-                | InputMode::PinSelect => InputAction::None,
+                | InputMode::PinSelect
+                | InputMode::LspMarketplace => InputAction::None,
+                InputMode::DiagnosticsList => InputAction::None,
             }
         }
         'y' if matches!(
@@ -1052,7 +1106,9 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
         | InputMode::Command
         | InputMode::Search
         | InputMode::Finder
-        | InputMode::PinSelect => [].iter(),
+        | InputMode::PinSelect
+        | InputMode::LspMarketplace
+        | InputMode::DiagnosticsList => [].iter(),
     })
 }
 
@@ -1110,6 +1166,14 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::OpenFinder) => {
             state.reset_prefixes();
             InputAction::OpenFinder
+        }
+        Some(SequenceAction::ToggleDiagnosticsList) => {
+            state.reset_prefixes();
+            InputAction::ToggleDiagnosticsList
+        }
+        Some(SequenceAction::GotoDefinition) => {
+            state.reset_prefixes();
+            InputAction::GotoDefinition
         }
         Some(SequenceAction::YankSelectionSystem) => {
             state.reset_prefixes();
@@ -1329,6 +1393,46 @@ fn map_key_with_state(
             };
         }
 
+        InputMode::LspMarketplace => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::LspMarketplaceCancel;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::LspMarketplaceCancel,
+                KeyKind::Enter => InputAction::None,
+                KeyKind::Up => InputAction::LspMarketplaceMovePrev,
+                KeyKind::Down => InputAction::LspMarketplaceMoveNext,
+                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::LspMarketplaceMoveNext,
+                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::LspMarketplaceMovePrev,
+                KeyKind::Char('i') | KeyKind::Char('I') => {
+                    InputAction::LspMarketplaceInstallSelected
+                }
+                KeyKind::Char('u') | KeyKind::Char('U') => {
+                    InputAction::LspMarketplaceUninstallSelected
+                }
+                _ => InputAction::None,
+            };
+        }
+
+        InputMode::DiagnosticsList => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::DiagnosticsListCancel;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::DiagnosticsListCancel,
+                KeyKind::Enter => InputAction::DiagnosticsListOpenSelected,
+                KeyKind::Up => InputAction::DiagnosticsListMovePrev,
+                KeyKind::Down => InputAction::DiagnosticsListMoveNext,
+                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::DiagnosticsListMoveNext,
+                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::DiagnosticsListMovePrev,
+                _ => InputAction::None,
+            };
+        }
+
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {}
     }
 
@@ -1462,7 +1566,9 @@ fn map_key_with_state(
             | InputMode::Command
             | InputMode::Search
             | InputMode::Finder
-            | InputMode::PinSelect => InputAction::None,
+            | InputMode::PinSelect
+            | InputMode::LspMarketplace
+            | InputMode::DiagnosticsList => InputAction::None,
         };
     }
 
@@ -3018,7 +3124,7 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
 
-        assert_eq!(action, InputAction::None);
+        assert_eq!(action, InputAction::ToggleDiagnosticsList);
         let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
         assert_eq!(
             next,
@@ -3027,6 +3133,22 @@ mod tests {
                 count: 1,
             }
         );
+    }
+
+    #[test]
+    fn normal_mode_leader_x_toggles_diagnostics_list() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
+        assert_eq!(action, InputAction::ToggleDiagnosticsList);
+    }
+
+    #[test]
+    fn normal_mode_gd_triggers_goto_definition() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
+        assert_eq!(action, InputAction::GotoDefinition);
     }
 
     #[test]

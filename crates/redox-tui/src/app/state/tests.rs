@@ -631,8 +631,7 @@ fn switching_between_pinned_files_keeps_original_explorer_context() {
         fs::write(&first_pin, "first\n").expect("failed to write first pin");
         fs::write(&second_pin, "second\n").expect("failed to write second pin");
 
-        let session =
-            EditorSession::open_initial_file(&left_file).expect("failed to open session");
+        let session = EditorSession::open_initial_file(&left_file).expect("failed to open session");
         let mut state = EditorState::new(session);
 
         let _ = state

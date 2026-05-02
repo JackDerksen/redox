@@ -85,6 +85,9 @@ impl EditorState {
             "perf" => {
                 self.command_toggle_perf();
             }
+            "lsp" => {
+                self.command_lsp(arg);
+            }
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
             }
@@ -236,6 +239,15 @@ impl EditorState {
         self.set_status(msg);
     }
 
+    pub(super) fn command_lsp(&mut self, arg: &str) {
+        match arg {
+            "list" => self.open_lsp_marketplace(),
+            "status" => self.command_lsp_status(),
+            "" => self.set_status("usage: lsp list|status"),
+            other => self.set_status(format!("unknown lsp command: {other}")),
+        }
+    }
+
     pub(super) fn write_current_file(&mut self) -> bool {
         if self.explorer_is_active() {
             return self.write_explorer_directory();
@@ -260,9 +272,16 @@ impl EditorState {
             let _ = self.session.recompute_active_dirty();
         }
 
+        self.sync_active_lsp_before_save();
+
         match self.session.save_active() {
             Ok(()) => {
-                self.set_status("written");
+                match self.notify_active_lsp_did_save() {
+                    Ok(()) => self.set_status("written"),
+                    Err(error) => {
+                        self.set_status(format!("written (LSP save sync failed: {error})"))
+                    }
+                }
                 true
             }
             Err(e) => {

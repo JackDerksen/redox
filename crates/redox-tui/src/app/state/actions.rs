@@ -76,6 +76,8 @@ impl EditorState {
                     InputMode::Search => EditorMode::Search,
                     InputMode::Finder => EditorMode::Finder,
                     InputMode::PinSelect => EditorMode::PinSelect,
+                    InputMode::LspMarketplace => EditorMode::LspMarketplace,
+                    InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
                     InputMode::VisualBlock => EditorMode::VisualBlock,
@@ -226,6 +228,18 @@ impl EditorState {
                 }
             }
 
+            InputAction::ToggleDiagnosticsList => {
+                if self.mode == EditorMode::Normal || self.mode == EditorMode::DiagnosticsList {
+                    self.toggle_diagnostics_popup();
+                }
+            }
+
+            InputAction::GotoDefinition => {
+                if self.mode == EditorMode::Normal {
+                    self.goto_definition();
+                }
+            }
+
             InputAction::SearchCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
@@ -339,6 +353,60 @@ impl EditorState {
                 }
             }
 
+            InputAction::LspMarketplaceMoveNext => {
+                if self.mode == EditorMode::LspMarketplace {
+                    self.lsp_marketplace_move(1);
+                }
+            }
+
+            InputAction::LspMarketplaceMovePrev => {
+                if self.mode == EditorMode::LspMarketplace {
+                    self.lsp_marketplace_move(-1);
+                }
+            }
+
+            InputAction::LspMarketplaceInstallSelected => {
+                if self.mode == EditorMode::LspMarketplace {
+                    self.install_selected_lsp();
+                }
+            }
+
+            InputAction::LspMarketplaceUninstallSelected => {
+                if self.mode == EditorMode::LspMarketplace {
+                    self.uninstall_selected_lsp();
+                }
+            }
+
+            InputAction::LspMarketplaceCancel => {
+                if self.mode == EditorMode::LspMarketplace {
+                    self.close_lsp_marketplace();
+                }
+            }
+
+            InputAction::DiagnosticsListMoveNext => {
+                if self.mode == EditorMode::DiagnosticsList {
+                    self.diagnostics_popup_move(1);
+                }
+            }
+
+            InputAction::DiagnosticsListMovePrev => {
+                if self.mode == EditorMode::DiagnosticsList {
+                    self.diagnostics_popup_move(-1);
+                }
+            }
+
+            InputAction::DiagnosticsListOpenSelected => {
+                if self.mode == EditorMode::DiagnosticsList {
+                    self.jump_to_selected_diagnostic();
+                }
+            }
+
+            InputAction::DiagnosticsListCancel => {
+                if self.mode == EditorMode::DiagnosticsList {
+                    self.close_diagnostics_popup();
+                }
+            }
+
             InputAction::AssignPinSlot { slot } => {
                 if self.mode == EditorMode::PinSelect {
                     self.assign_pin_slot(slot);
@@ -356,6 +424,8 @@ impl EditorState {
                         | EditorMode::Search
                         | EditorMode::Finder
                         | EditorMode::PinSelect
+                        | EditorMode::LspMarketplace
+                        | EditorMode::DiagnosticsList
                 ) {
                     self.begin_pin_selection_for_current_buffer();
                 }
@@ -441,7 +511,8 @@ impl EditorState {
 
                     {
                         let buffer = self.session.active_buffer_mut();
-                        if let Some(new_cursor) = delete_auto_pair_with_backspace(buffer, view.cursor.cursor)
+                        if let Some(new_cursor) =
+                            delete_auto_pair_with_backspace(buffer, view.cursor.cursor)
                         {
                             view.cursor.cursor = new_cursor;
                         } else {
@@ -503,6 +574,8 @@ impl EditorState {
                 | EditorMode::Search
                 | EditorMode::Finder
                 | EditorMode::PinSelect
+                | EditorMode::LspMarketplace
+                | EditorMode::DiagnosticsList
                 | EditorMode::Visual
                 | EditorMode::VisualLine
                 | EditorMode::VisualBlock => {}
@@ -747,12 +820,7 @@ impl EditorState {
         let _ = self.session.recompute_active_dirty();
     }
 
-    fn insert_char_at_cursor(
-        &mut self,
-        ch: char,
-        viewport_width_cells: usize,
-        text_vh: usize,
-    ) {
+    fn insert_char_at_cursor(&mut self, ch: char, viewport_width_cells: usize, text_vh: usize) {
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let behaviour = {
@@ -895,13 +963,14 @@ fn should_auto_pair_symmetric_delimiter(buffer: &TextBuffer, cursor: Pos, ch: ch
         return false;
     }
 
-    buffer
-        .char_at(cursor)
-        .is_none_or(is_auto_pair_boundary)
+    buffer.char_at(cursor).is_none_or(is_auto_pair_boundary)
 }
 
 fn should_auto_pair_single_quote(buffer: &TextBuffer, cursor: Pos) -> bool {
-    if buffer.char_before(cursor).is_some_and(is_word_like_for_single_quote) {
+    if buffer
+        .char_before(cursor)
+        .is_some_and(is_word_like_for_single_quote)
+    {
         return false;
     }
 
