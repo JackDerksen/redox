@@ -619,7 +619,7 @@ impl SyntaxStyle {
             number: ColorPair::new(theme.purple, bg),
             boolean: ColorPair::new(theme.purple, bg),
             float: ColorPair::new(theme.light_purple, bg),
-            comment: ColorPair::new(theme.light_gray, bg),
+            comment: ColorPair::new(theme.dark_gray, bg),
             constant: ColorPair::new(theme.purple, bg),
             constant_builtin: ColorPair::new(theme.purple, bg),
             constant_macro: ColorPair::new(theme.yellow, bg),
