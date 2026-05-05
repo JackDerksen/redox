@@ -8,7 +8,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, Pos};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
 
@@ -16,12 +15,27 @@ use super::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::language_for_path;
 use crate::ui::syntax::SyntaxLanguage;
 
+mod completion;
+use completion::*;
+mod diagnostics;
+use diagnostics::*;
+pub use diagnostics::{DiagnosticLine, DiagnosticSeverity, DiagnosticSummary};
+mod types;
+use types::*;
+pub use types::{
+    CompletionEntry, CompletionPopup, CompletionPreview, DiagnosticsPopup, DiagnosticsPopupEntry,
+    LspEntryStatusKind, LspMarketplacePopup,
+};
+
 const INSTALLED_LSPS_FILE: &str = "installed_lsps.json";
 const INITIALIZE_REQUEST_ID: i64 = 1;
 const FIRST_DYNAMIC_REQUEST_ID: i64 = 2;
 const LSP_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DIAGNOSTICS_POPUP_VISIBLE_ROWS: usize = 12;
+const COMPLETION_POPUP_VISIBLE_ROWS: usize = 8;
 const LSP_CHANGE_DEBOUNCE: Duration = Duration::from_millis(175);
+const COMPLETION_AUTO_TRIGGER_DEBOUNCE: Duration = Duration::from_millis(90);
+const COMPLETION_TRIGGER_CHARACTER_DEBOUNCE: Duration = Duration::from_millis(15);
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 // Provider grouping should be fine
@@ -420,194 +434,6 @@ impl MarketplaceSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DiagnosticSeverity {
-    Error,
-    Warning,
-    Information,
-    Hint,
-}
-
-impl DiagnosticSeverity {
-    fn from_lsp(value: u64) -> Self {
-        match value {
-            1 => Self::Error,
-            2 => Self::Warning,
-            3 => Self::Information,
-            _ => Self::Hint,
-        }
-    }
-
-    pub fn sort_rank(self) -> u8 {
-        match self {
-            Self::Error => 0,
-            Self::Warning => 1,
-            Self::Information => 2,
-            Self::Hint => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Diagnostic {
-    pub severity: DiagnosticSeverity,
-    pub message: String,
-    pub line: usize,
-    pub start_col: usize,
-    pub end_col: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DiagnosticSummary {
-    pub errors: usize,
-    pub warnings: usize,
-    pub information: usize,
-    pub hints: usize,
-}
-
-impl DiagnosticSummary {
-    pub fn is_empty(self) -> bool {
-        self.errors == 0 && self.warnings == 0 && self.information == 0 && self.hints == 0
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticLine {
-    pub severity: DiagnosticSeverity,
-    pub start_col: usize,
-    pub end_col: usize,
-    pub inline_text: String,
-    message_count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct LspMarketplacePopup {
-    pub entries: Vec<LspMarketplaceEntry>,
-    pub selected: usize,
-    pub scroll: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct LspMarketplaceEntry {
-    item_id: MarketplaceItemId,
-    pub language_label: String,
-    pub tool_label: String,
-    pub installed: bool,
-    pub action_label: String,
-    pub status_label: String,
-    pub status_kind: LspEntryStatusKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LspEntryStatusKind {
-    Ready,
-    Pending,
-    Missing,
-    Informational,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticsPopup {
-    pub entries: Vec<DiagnosticsPopupEntry>,
-    pub selected: usize,
-    pub scroll: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticsPopupEntry {
-    pub severity: DiagnosticSeverity,
-    pub line: usize,
-    pub col: usize,
-    pub summary: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone)]
-struct DefinitionTarget {
-    uri: String,
-    range: IncomingRange,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct WorkspaceKey {
-    provider_id: ProviderId,
-    root: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct StoredDiagnostic {
-    severity: DiagnosticSeverity,
-    message: String,
-    start_line: usize,
-    end_line: usize,
-    start_utf16: u32, // Positions are UTF-16 based!!
-    end_utf16: u32,
-}
-
-impl StoredDiagnostic {
-    fn to_display(&self, buffer: &redox_core::TextBuffer) -> Diagnostic {
-        let line = self.start_line.min(buffer.len_lines().saturating_sub(1));
-        let end_line = self.end_line.min(buffer.len_lines().saturating_sub(1));
-        let start_col = utf16_code_unit_to_char_col(&buffer.line_string(line), self.start_utf16);
-        let end_col = if line == end_line {
-            utf16_code_unit_to_char_col(&buffer.line_string(line), self.end_utf16)
-        } else {
-            buffer.line_len_chars(line)
-        };
-
-        Diagnostic {
-            severity: self.severity,
-            message: self.message.clone(),
-            line,
-            start_col,
-            end_col: end_col.max(start_col.saturating_add(1)),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct StoredDiagnostics {
-    source: DiagnosticSource,
-    items: Vec<StoredDiagnostic>,
-}
-
-#[derive(Debug, Clone)]
-struct DeferredDiagnostics {
-    uri: String,
-    version: Option<i32>,
-    source: DiagnosticSource,
-    items: Vec<StoredDiagnostic>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum DiagnosticSource {
-    Lsp(WorkspaceKey),
-    Lint(LintSource),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct LintSource {
-    kind: LintRunnerKind,
-    root: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum LintRunnerKind {
-    Clippy,
-    GolangciLint,
-    Ruff,
-}
-
-impl LintRunnerKind {
-    fn executable(self) -> &'static str {
-        match self {
-            Self::Clippy => "cargo-clippy",
-            Self::GolangciLint => "golangci-lint",
-            Self::Ruff => "ruff",
-        }
-    }
-}
-
 struct PendingLintRun {
     source: LintSource,
     uri: String,
@@ -646,6 +472,10 @@ pub(super) struct LspState {
     tool_availability: HashMap<MarketplaceItemId, bool>,
     marketplace: Option<LspMarketplaceState>,
     diagnostics_popup: Option<DiagnosticsPopupState>,
+    completion: Option<CompletionState>,
+    auto_completion: Option<AutoCompletionRequest>,
+    active_snippet: Option<ActiveSnippet>,
+    recent_completions: HashMap<String, u32>,
     clients: HashMap<WorkspaceKey, ManagedClient>,
     documents: HashMap<BufferId, ManagedDocument>,
     diagnostics: HashMap<String, Vec<StoredDiagnostics>>,
@@ -746,6 +576,7 @@ struct RequestKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingRequest {
     GotoDefinition,
+    Completion { requested_at: Pos },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -894,6 +725,11 @@ impl LspSession {
                         "publishDiagnostics": {
                             "relatedInformation": true,
                             "versionSupport": true
+                        },
+                        "completion": {
+                            "completionItem": {
+                                "snippetSupport": true
+                            }
                         }
                     }
                 },
@@ -1031,12 +867,89 @@ impl LspSession {
         Ok(request_id)
     }
 
+    fn send_completion(&mut self, path: &Path, line: usize, character: u32) -> io::Result<i64> {
+        let uri = file_uri(path)?;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {
+                    "uri": uri
+                },
+                "position": {
+                    "line": line,
+                    "character": character
+                },
+                "context": {
+                    "triggerKind": 1
+                }
+            }
+        });
+        write_lsp_message(&mut self.stdin, &message)?;
+        Ok(request_id)
+    }
+
     fn try_recv(&self) -> Option<SessionEvent> {
         self.events.try_recv().ok()
     }
 }
 
 impl EditorState {
+    pub fn completion_popup(&self) -> Option<CompletionPopup> {
+        let state = self.lsp.completion.as_ref()?;
+        if state.items.is_empty() {
+            return None;
+        }
+        let max_selected = state.items.len().saturating_sub(1);
+        let selected = state.selected.min(max_selected);
+        let scroll = selected.saturating_sub(COMPLETION_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        Some(CompletionPopup {
+            entries: state
+                .items
+                .iter()
+                .map(|item| CompletionEntry {
+                    kind: item.kind.clone(),
+                    keyword: item.label.clone(),
+                    type_label: completion_type_label(item),
+                    extra: completion_extra_label(item),
+                    documentation: item.documentation.clone(),
+                })
+                .collect(),
+            selected,
+            scroll,
+        })
+    }
+
+    pub fn completion_preview(&self) -> Option<CompletionPreview> {
+        let state = self.lsp.completion.as_ref()?;
+        if state.items.is_empty() || self.active_cursor_pos() != state.requested_at {
+            return None;
+        }
+        let item = state.items.get(state.selected)?;
+        let buffer = self.session.buffer(self.session.active_id())?;
+        let cursor = self.active_cursor_pos();
+        let suffix = line_after_cursor_completion_preview_suffix(buffer, cursor)?;
+        let edit = completion_edit_for_buffer(item, buffer, state.requested_at);
+        let insert = completion_snippet_expansion(item, &edit.insert)
+            .map(|expansion| expansion.text)
+            .unwrap_or_else(|| edit.insert.clone());
+        let prefix = completion_prefix(buffer, cursor);
+        let preview = insert
+            .strip_prefix(&prefix)
+            .unwrap_or(&insert)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        (!preview.is_empty()).then_some(CompletionPreview {
+            text: preview,
+            suffix,
+        })
+    }
+
     pub fn diagnostics_popup(&self) -> Option<DiagnosticsPopup> {
         let state = self.lsp.diagnostics_popup.as_ref()?;
         let entries = self.current_diagnostic_popup_entries();
@@ -1242,6 +1155,7 @@ impl EditorState {
         self.ensure_active_lsp_client();
         let _ = self.sync_active_lsp_document_debounced(now);
         self.cancel_timed_out_lsp_requests(now);
+        self.trigger_due_auto_completion(now);
         self.flush_deferred_diagnostics();
 
         let mut terminated = Vec::new();
@@ -1296,6 +1210,11 @@ impl EditorState {
 
                         if let Some(target) = self.take_definition_response(&workspace, &message) {
                             self.jump_to_definition_target(target);
+                            continue;
+                        }
+
+                        if self.take_completion_response(&workspace, &message) {
+                            continue;
                         }
                     }
                     SessionEvent::Terminated => {
@@ -1329,6 +1248,7 @@ impl EditorState {
         if self.explorer_is_active() || self.about_popup().is_some() {
             return;
         }
+        self.close_completion();
         self.refresh_lsp_tool_availability();
         self.lsp.marketplace = Some(LspMarketplaceState {
             selected: 0,
@@ -1352,6 +1272,7 @@ impl EditorState {
         if self.explorer_is_active() || self.about_popup().is_some() {
             return;
         }
+        self.close_completion();
         let entries = self.current_diagnostic_popup_entries();
         if entries.is_empty() {
             self.set_status("no diagnostics in current file");
@@ -1956,6 +1877,10 @@ impl EditorState {
             self.send_lsp_cancel_request(&key);
             match kind {
                 PendingRequest::GotoDefinition => self.set_status("definition lookup timed out"),
+                PendingRequest::Completion { .. } => {
+                    self.close_completion();
+                    self.set_status("completion request timed out");
+                }
             }
         }
     }
@@ -2018,6 +1943,626 @@ impl EditorState {
                 self.set_status(format!("definition request failed: {error}"));
             }
         }
+    }
+
+    pub(super) fn trigger_completion(&mut self) {
+        self.request_completion(true);
+    }
+
+    pub(super) fn queue_auto_completion_after_insert(&mut self, inserted: char) {
+        if !should_auto_trigger_completion(inserted) {
+            self.lsp.auto_completion = None;
+            return;
+        }
+        self.lsp.auto_completion = Some(AutoCompletionRequest {
+            requested_at: self.active_cursor_pos(),
+            due_at: Instant::now() + completion_auto_trigger_delay(inserted),
+        });
+    }
+
+    pub(super) fn completion_survives_insert(&self, inserted: char) -> bool {
+        should_auto_trigger_completion(inserted)
+    }
+
+    pub(super) fn snippet_jump_next(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        let active_id = self.session.active_id();
+        let cursor_char = {
+            let cursor = self
+                .views
+                .get(&active_id)
+                .map(|view| view.cursor.cursor)
+                .unwrap_or(Pos::new(0, 0));
+            let buffer = self.session.active_buffer();
+            buffer.pos_to_char(cursor)
+        };
+        let Some(snippet) = self.lsp.active_snippet.as_mut() else {
+            return false;
+        };
+        if snippet.buffer_id != active_id {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+        let Some(placeholder) = snippet.placeholders.get(snippet.current).cloned() else {
+            self.lsp.active_snippet = None;
+            return false;
+        };
+        if cursor_char < placeholder.start_char || cursor_char > placeholder.end_char {
+            self.lsp.active_snippet = None;
+            self.invalidate_active_render_caches();
+            return false;
+        }
+        let next_tabstop = snippet
+            .placeholders
+            .iter()
+            .filter_map(|next| (next.tabstop > placeholder.tabstop).then_some(next.tabstop))
+            .min();
+        let Some(next_tabstop) = next_tabstop else {
+            let end_char = snippet.final_char.unwrap_or(placeholder.end_char);
+            self.lsp.active_snippet = None;
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            view.cursor.cursor = buffer.char_to_pos(end_char.min(buffer.len_chars()));
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            self.invalidate_active_render_caches();
+            return true;
+        };
+        let next_placeholder = snippet
+            .placeholders
+            .iter()
+            .position(|next| next.tabstop == next_tabstop)
+            .expect("next tabstop should have a placeholder");
+
+        snippet.current = next_placeholder;
+        snippet.selected = true;
+        let start_char = snippet.placeholders[snippet.current].start_char;
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.cursor.cursor = buffer.char_to_pos(start_char.min(buffer.len_chars()));
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        self.invalidate_active_render_caches();
+        true
+    }
+
+    pub(super) fn replace_active_snippet_selection_text(
+        &mut self,
+        text: &str,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        self.replace_active_snippet_selection_text_with_cursor_offset(
+            text,
+            text.chars().count(),
+            viewport_width_cells,
+            text_vh,
+        )
+    }
+
+    pub(super) fn replace_active_snippet_selection_text_with_cursor_offset(
+        &mut self,
+        text: &str,
+        cursor_offset: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        let active_id = self.session.active_id();
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return false;
+        };
+        if snippet.buffer_id != active_id {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+        if !snippet.selected {
+            return false;
+        }
+        let Some(placeholder) = snippet.placeholders.get(snippet.current).cloned() else {
+            self.lsp.active_snippet = None;
+            return false;
+        };
+        let tabstop = placeholder.tabstop;
+
+        let edits = snippet
+            .placeholders
+            .iter()
+            .filter(|other| other.tabstop == tabstop)
+            .map(|other| (other.start_char, other.end_char, text.to_string()))
+            .collect::<Vec<_>>();
+        let before = self.capture_active_insert_coalesced_snapshot();
+        {
+            let buffer = self.session.active_buffer_mut();
+            apply_snippet_edits(buffer, &edits);
+        }
+        self.update_active_snippet_after_edits(&edits);
+        self.mark_active_snippet_tabstop_filled(tabstop);
+        if let Some(snippet) = self.lsp.active_snippet.as_mut() {
+            snippet.selected = false;
+        }
+        {
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            let cursor_char = self
+                .lsp
+                .active_snippet
+                .as_ref()
+                .and_then(|snippet| snippet.placeholders.get(snippet.current))
+                .map(|placeholder| {
+                    placeholder
+                        .start_char
+                        .saturating_add(cursor_offset.min(text.chars().count()))
+                })
+                .unwrap_or(placeholder.start_char.saturating_add(text.chars().count()));
+            view.cursor.cursor = buffer.char_to_pos(cursor_char.min(buffer.len_chars()));
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+        true
+    }
+
+    pub(super) fn mirror_active_snippet_insert_after_cursor_insert(
+        &mut self,
+        at_char: usize,
+        text: &str,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        let active_id = self.session.active_id();
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return false;
+        };
+        if snippet.buffer_id != active_id {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+        let Some(placeholder) = snippet.placeholders.get(snippet.current).cloned() else {
+            self.lsp.active_snippet = None;
+            return false;
+        };
+        if at_char < placeholder.start_char || at_char > placeholder.end_char {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+        let relative_offset = at_char.saturating_sub(placeholder.start_char);
+        let tabstop = placeholder.tabstop;
+
+        let current_edit = (at_char, at_char, text.to_string());
+        self.update_active_snippet_after_edits(std::slice::from_ref(&current_edit));
+        self.mark_active_snippet_tabstop_filled(tabstop);
+
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return false;
+        };
+        let edits = snippet
+            .placeholders
+            .iter()
+            .enumerate()
+            .filter(|(idx, other)| *idx != snippet.current && other.tabstop == tabstop)
+            .map(|(_, other)| {
+                let at = other.start_char.saturating_add(
+                    relative_offset.min(other.end_char.saturating_sub(other.start_char)),
+                );
+                (at, at, text.to_string())
+            })
+            .collect::<Vec<_>>();
+        let mirrored = !edits.is_empty();
+        if !edits.is_empty() {
+            let buffer = self.session.active_buffer_mut();
+            apply_snippet_edits(buffer, &edits);
+        }
+        self.update_active_snippet_after_edits(&edits);
+        self.mark_active_snippet_tabstop_filled(tabstop);
+        if let Some(snippet) = self.lsp.active_snippet.as_mut() {
+            snippet.selected = false;
+        }
+        {
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            let cursor_char =
+                transform_snippet_char(at_char.saturating_add(text.chars().count()), &edits);
+            view.cursor.cursor = buffer.char_to_pos(cursor_char.min(buffer.len_chars()));
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+        if mirrored {
+            self.invalidate_active_render_caches();
+        }
+        mirrored
+    }
+
+    pub(super) fn mirror_active_snippet_delete_after_cursor_delete(
+        &mut self,
+        deleted_start_char: usize,
+        deleted_end_char: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        if deleted_start_char >= deleted_end_char {
+            return false;
+        }
+        let active_id = self.session.active_id();
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return false;
+        };
+        if snippet.buffer_id != active_id {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+        let Some(placeholder) = snippet.placeholders.get(snippet.current).cloned() else {
+            self.lsp.active_snippet = None;
+            return false;
+        };
+        if deleted_start_char < placeholder.start_char || deleted_end_char > placeholder.end_char {
+            self.lsp.active_snippet = None;
+            return false;
+        }
+
+        let deleted_chars = deleted_end_char.saturating_sub(deleted_start_char);
+        let relative_offset = deleted_start_char.saturating_sub(placeholder.start_char);
+        let tabstop = placeholder.tabstop;
+        let current_edit = (deleted_start_char, deleted_end_char, String::new());
+        self.update_active_snippet_after_edits(std::slice::from_ref(&current_edit));
+        self.mark_active_snippet_tabstop_filled(tabstop);
+
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return false;
+        };
+        let edits = snippet
+            .placeholders
+            .iter()
+            .enumerate()
+            .filter(|(idx, other)| *idx != snippet.current && other.tabstop == tabstop)
+            .filter_map(|(_, other)| {
+                let start = other.start_char.saturating_add(
+                    relative_offset.min(other.end_char.saturating_sub(other.start_char)),
+                );
+                let end = start.saturating_add(deleted_chars).min(other.end_char);
+                (start < end).then_some((start, end, String::new()))
+            })
+            .collect::<Vec<_>>();
+        let mirrored = !edits.is_empty();
+        if mirrored {
+            let buffer = self.session.active_buffer_mut();
+            apply_snippet_edits(buffer, &edits);
+        }
+        self.update_active_snippet_after_edits(&edits);
+        self.mark_active_snippet_tabstop_filled(tabstop);
+        if let Some(snippet) = self.lsp.active_snippet.as_mut() {
+            snippet.selected = false;
+        }
+        {
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+            let cursor_char = buffer.pos_to_char(view.cursor.cursor);
+            view.cursor.cursor = buffer.char_to_pos(transform_snippet_char(cursor_char, &edits));
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+        if mirrored {
+            self.invalidate_active_render_caches();
+        }
+        mirrored
+    }
+
+    pub fn active_snippet_placeholder_ranges(
+        &self,
+        first_line: usize,
+        line_count: usize,
+    ) -> BTreeMap<usize, Vec<std::ops::Range<usize>>> {
+        let mut ranges = BTreeMap::new();
+        let Some(snippet) = self.lsp.active_snippet.as_ref() else {
+            return ranges;
+        };
+        if snippet.buffer_id != self.session.active_id() {
+            return ranges;
+        }
+        let Some(buffer) = self.session.buffer(snippet.buffer_id) else {
+            return ranges;
+        };
+        let last_line = first_line.saturating_add(line_count);
+        for placeholder in &snippet.placeholders {
+            if placeholder.filled || placeholder.start_char == placeholder.end_char {
+                continue;
+            }
+            let start = buffer.char_to_pos(placeholder.start_char.min(buffer.len_chars()));
+            let end = buffer.char_to_pos(placeholder.end_char.min(buffer.len_chars()));
+            if start.line != end.line || start.line < first_line || start.line >= last_line {
+                continue;
+            }
+            ranges
+                .entry(start.line)
+                .or_insert_with(Vec::new)
+                .push(start.col..end.col);
+        }
+        ranges
+    }
+
+    fn mark_active_snippet_tabstop_filled(&mut self, tabstop: usize) {
+        let Some(snippet) = self.lsp.active_snippet.as_mut() else {
+            return;
+        };
+        for placeholder in snippet
+            .placeholders
+            .iter_mut()
+            .filter(|placeholder| placeholder.tabstop == tabstop)
+        {
+            placeholder.filled = true;
+        }
+    }
+
+    fn update_active_snippet_after_edits(&mut self, edits: &[(usize, usize, String)]) {
+        let Some(snippet) = self.lsp.active_snippet.as_mut() else {
+            return;
+        };
+        let current_tabstop = snippet
+            .placeholders
+            .get(snippet.current)
+            .map(|placeholder| placeholder.tabstop);
+        for placeholder in &mut snippet.placeholders {
+            if let Some((edit_idx, (_, _, text))) =
+                edits.iter().enumerate().find(|(_, (start, end, _))| {
+                    placeholder.start_char == *start && placeholder.end_char == *end
+                })
+            {
+                let start_char =
+                    transform_snippet_char_left_skipping(placeholder.start_char, edits, edit_idx);
+                placeholder.start_char = start_char;
+                placeholder.end_char = start_char.saturating_add(text.chars().count());
+                continue;
+            }
+            placeholder.start_char = transform_snippet_char_left(placeholder.start_char, edits);
+            placeholder.end_char = transform_snippet_char_right(placeholder.end_char, edits);
+        }
+        if let Some(final_char) = snippet.final_char.as_mut() {
+            *final_char = transform_snippet_char_right(*final_char, edits);
+        }
+        if let Some(tabstop) = current_tabstop
+            && snippet
+                .placeholders
+                .get(snippet.current)
+                .is_none_or(|placeholder| placeholder.tabstop != tabstop)
+        {
+            if let Some(idx) = snippet
+                .placeholders
+                .iter()
+                .position(|placeholder| placeholder.tabstop == tabstop)
+            {
+                snippet.current = idx;
+            }
+        }
+    }
+
+    fn trigger_due_auto_completion(&mut self, now: Instant) {
+        let Some(request) = self.lsp.auto_completion else {
+            return;
+        };
+        if now < request.due_at {
+            return;
+        }
+        self.lsp.auto_completion = None;
+        if self.mode != EditorMode::Insert || self.active_cursor_pos() != request.requested_at {
+            return;
+        }
+        self.request_completion(false);
+    }
+
+    fn request_completion(&mut self, manual: bool) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        self.ensure_active_lsp_client();
+        let _ = self.sync_active_lsp_document();
+
+        let active_id = self.session.active_id();
+        let Some(document) = self.lsp.documents.get(&active_id).cloned() else {
+            if manual {
+                self.set_status("no LSP document for current buffer");
+            }
+            return;
+        };
+        let cursor = self.active_cursor_pos();
+        let Some(buffer) = self.session.buffer(active_id) else {
+            if manual {
+                self.set_status("active buffer unavailable");
+            }
+            return;
+        };
+        let line = cursor.line.min(buffer.len_lines().saturating_sub(1));
+        let character = char_col_to_utf16(&buffer.line_string(line), cursor.col);
+
+        let pending = self
+            .lsp
+            .pending_requests
+            .iter()
+            .filter_map(|(key, request)| {
+                (key.workspace == document.workspace
+                    && matches!(request.kind, PendingRequest::Completion { .. }))
+                .then_some(key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in pending {
+            self.lsp.pending_requests.remove(&key);
+            self.send_lsp_cancel_request(&key);
+        }
+
+        let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
+            if manual {
+                self.set_status("no LSP client for current buffer");
+            }
+            return;
+        };
+        if !client.session.initialized {
+            if manual {
+                self.set_status("LSP still loading");
+            }
+            return;
+        }
+        match client
+            .session
+            .send_completion(&document.path, line, character)
+        {
+            Ok(id) => {
+                self.lsp.pending_requests.insert(
+                    RequestKey {
+                        workspace: document.workspace,
+                        id,
+                    },
+                    PendingClientRequest {
+                        kind: PendingRequest::Completion {
+                            requested_at: cursor,
+                        },
+                        started_at: Instant::now(),
+                    },
+                );
+                if manual {
+                    self.set_status("loading completions...");
+                }
+            }
+            Err(error) => {
+                if manual {
+                    self.set_status(format!("completion request failed: {error}"));
+                }
+            }
+        }
+    }
+
+    pub(super) fn completion_move(&mut self, delta: isize) -> bool {
+        let Some(completion) = self.lsp.completion.as_mut() else {
+            return false;
+        };
+        if completion.items.is_empty() {
+            return false;
+        }
+        let max_index = completion.items.len().saturating_sub(1) as isize;
+        completion.selected = (completion.selected as isize + delta).clamp(0, max_index) as usize;
+        true
+    }
+
+    pub(super) fn close_completion(&mut self) -> bool {
+        self.lsp.auto_completion = None;
+        let had_completion = self.lsp.completion.take().is_some();
+        had_completion
+    }
+
+    pub(super) fn close_active_snippet(&mut self) -> bool {
+        self.lsp.active_snippet.take().is_some()
+    }
+
+    pub(super) fn accept_completion(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> bool {
+        let Some(state) = self.lsp.completion.take() else {
+            return false;
+        };
+        let Some(item) = state.items.get(state.selected).cloned() else {
+            return false;
+        };
+        self.remember_completion_accept(&item);
+        let active_id = self.session.active_id();
+        let Some(buffer) = self.session.buffer(active_id) else {
+            return false;
+        };
+        let edit = completion_edit_for_buffer(&item, buffer, state.requested_at);
+        let snippet_expansion = completion_snippet_expansion(&item, &edit.insert);
+        let preserve_active_snippet_edit = snippet_expansion
+            .is_none()
+            .then(|| self.active_snippet_completion_edit(buffer, active_id, &edit))
+            .flatten();
+        let insert = snippet_expansion
+            .as_ref()
+            .map(|expansion| expansion.text.clone())
+            .unwrap_or_else(|| edit.insert.clone());
+
+        let before = self.capture_active_insert_coalesced_snapshot();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            let start = buffer.clamp_pos(edit.start);
+            let end = buffer.clamp_pos(edit.end);
+            let _ = buffer.delete_range(start, end);
+            let inserted_end = buffer.insert(start, &insert);
+            let start_char = buffer.pos_to_char(start);
+            if let Some(expansion) = snippet_expansion {
+                self.lsp.active_snippet =
+                    active_snippet_from_expansion(active_id, start_char, &expansion);
+                view.cursor.cursor = self
+                    .lsp
+                    .active_snippet
+                    .as_ref()
+                    .and_then(|snippet| snippet.placeholders.first())
+                    .map(|placeholder| buffer.char_to_pos(placeholder.start_char))
+                    .or_else(|| {
+                        expansion
+                            .cursor_offset
+                            .map(|offset| buffer.char_to_pos(start_char.saturating_add(offset)))
+                    })
+                    .unwrap_or(inserted_end);
+            } else {
+                if preserve_active_snippet_edit.is_none() {
+                    self.lsp.active_snippet = None;
+                }
+                view.cursor.cursor = inserted_end;
+            }
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+        if let Some((tabstop, start_char, end_char)) = preserve_active_snippet_edit {
+            self.update_active_snippet_after_edits(&[(start_char, end_char, insert)]);
+            self.mark_active_snippet_tabstop_filled(tabstop);
+            if let Some(snippet) = self.lsp.active_snippet.as_mut() {
+                snippet.selected = false;
+            }
+        }
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+        true
+    }
+
+    fn active_snippet_completion_edit(
+        &self,
+        buffer: &redox_core::TextBuffer,
+        active_id: BufferId,
+        edit: &CompletionEdit,
+    ) -> Option<(usize, usize, usize)> {
+        let snippet = self.lsp.active_snippet.as_ref()?;
+        if snippet.buffer_id != active_id {
+            return None;
+        }
+        let placeholder = snippet.placeholders.get(snippet.current)?;
+        let start_char = buffer.pos_to_char(edit.start);
+        let end_char = buffer.pos_to_char(edit.end);
+        (start_char >= placeholder.start_char && end_char <= placeholder.end_char).then_some((
+            placeholder.tabstop,
+            start_char,
+            end_char,
+        ))
+    }
+
+    fn remember_completion_accept(&mut self, item: &CompletionCandidate) {
+        let key = item
+            .filter_text
+            .as_deref()
+            .unwrap_or(&item.label)
+            .to_ascii_lowercase();
+        let next = self
+            .lsp
+            .recent_completions
+            .get(&key)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(25);
+        self.lsp.recent_completions.insert(key, next);
     }
 
     pub(super) fn notify_active_lsp_did_save(&mut self) -> io::Result<()> {
@@ -2267,10 +2812,19 @@ impl EditorState {
         message: &Value,
     ) -> Option<DefinitionTarget> {
         let id = message.get("id")?.as_i64()?;
-        let request = self.lsp.pending_requests.remove(&RequestKey {
+        let key = RequestKey {
             workspace: workspace.clone(),
             id,
-        })?;
+        };
+        if !self
+            .lsp
+            .pending_requests
+            .get(&key)
+            .is_some_and(|request| request.kind == PendingRequest::GotoDefinition)
+        {
+            return None;
+        }
+        let request = self.lsp.pending_requests.remove(&key)?;
         match request.kind {
             PendingRequest::GotoDefinition => {
                 if let Some(error) = message.get("error") {
@@ -2287,7 +2841,60 @@ impl EditorState {
                 }
                 target
             }
+            PendingRequest::Completion { .. } => None,
         }
+    }
+
+    fn take_completion_response(&mut self, workspace: &WorkspaceKey, message: &Value) -> bool {
+        let Some(id) = message.get("id").and_then(Value::as_i64) else {
+            return false;
+        };
+        let key = RequestKey {
+            workspace: workspace.clone(),
+            id,
+        };
+        let Some(request) = self.lsp.pending_requests.get(&key).copied() else {
+            return false;
+        };
+        let PendingRequest::Completion { requested_at } = request.kind else {
+            return false;
+        };
+        self.lsp.pending_requests.remove(&key);
+
+        if let Some(error) = message.get("error") {
+            let detail = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown LSP error");
+            self.set_status(format!("completion failed: {detail}"));
+            return true;
+        }
+
+        let mut items = parse_completion_response(message);
+        if let Some(buffer) = self.session.buffer(self.session.active_id()) {
+            let prefix = completion_prefix(buffer, requested_at);
+            let context = completion_context(buffer, requested_at);
+            items = filter_and_sort_completion_items(
+                items,
+                &prefix,
+                &context,
+                &self.lsp.recent_completions,
+            );
+        }
+        /*
+        if items.is_empty() {
+            self.lsp.completion = None;
+            self.set_status("no completions");
+            return true;
+        }
+        */
+        self.lsp.completion = Some(CompletionState {
+            selected: 0,
+            requested_at,
+            items,
+        });
+        self.clear_status();
+        true
     }
 
     fn jump_to_definition_target(&mut self, target: DefinitionTarget) {
@@ -2601,172 +3208,6 @@ impl EditorState {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct PublishDiagnosticsParams {
-    uri: String,
-    version: Option<i32>,
-    diagnostics: Vec<IncomingDiagnostic>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IncomingDiagnostic {
-    range: IncomingRange,
-    severity: Option<u64>,
-    message: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct IncomingRange {
-    start: IncomingPosition,
-    end: IncomingPosition,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct IncomingPosition {
-    line: u64,
-    character: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct IncomingLocation {
-    uri: String,
-    range: IncomingRange,
-}
-
-#[derive(Debug, Deserialize)]
-struct IncomingLocationLink {
-    #[serde(rename = "targetUri")]
-    target_uri: String,
-    #[serde(rename = "targetSelectionRange")]
-    target_selection_range: IncomingRange,
-}
-
-fn configuration_response(message: &Value) -> Value {
-    let item_count = message
-        .get("params")
-        .and_then(|params| params.get("items"))
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    Value::Array(vec![Value::Null; item_count])
-}
-
-fn workspace_folders_response(workspace: &WorkspaceKey) -> Value {
-    let Ok(uri) = file_uri(&workspace.root) else {
-        return Value::Null;
-    };
-    let name = workspace
-        .root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace");
-    json!([
-        {
-            "uri": uri,
-            "name": name
-        }
-    ])
-}
-
-#[derive(Debug, Deserialize)]
-struct CargoCompilerMessage {
-    reason: String,
-    message: Option<RustcDiagnosticMessage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RustcDiagnosticMessage {
-    level: String,
-    message: String,
-    spans: Vec<RustcDiagnosticSpan>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RustcDiagnosticSpan {
-    file_name: String,
-    line_start: usize,
-    line_end: usize,
-    column_start: usize,
-    column_end: usize,
-    is_primary: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct GolangciLintReport {
-    #[serde(default, rename = "Issues")]
-    issues: Vec<GolangciLintIssue>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GolangciLintIssue {
-    #[serde(default, rename = "FromLinter")]
-    from_linter: String,
-    #[serde(rename = "Text")]
-    text: String,
-    #[serde(default, rename = "Severity")]
-    severity: Option<String>,
-    #[serde(rename = "Pos")]
-    pos: GolangciLintPosition,
-}
-
-#[derive(Debug, Deserialize)]
-struct GolangciLintPosition {
-    #[serde(rename = "Filename")]
-    filename: String,
-    #[serde(rename = "Line")]
-    line: usize,
-    #[serde(rename = "Column")]
-    column: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct RuffDiagnostic {
-    filename: String,
-    message: String,
-    code: Option<String>,
-    location: RuffPosition,
-    end_location: RuffPosition,
-}
-
-#[derive(Debug, Deserialize)]
-struct RuffPosition {
-    row: usize,
-    column: usize,
-}
-
-fn parse_publish_diagnostics(
-    message: &Value,
-) -> Option<(String, Option<i32>, Vec<StoredDiagnostic>)> {
-    let method = message.get("method")?.as_str()?;
-    if method != "textDocument/publishDiagnostics" {
-        return None;
-    }
-
-    let params =
-        serde_json::from_value::<PublishDiagnosticsParams>(message.get("params")?.clone()).ok()?;
-    let diagnostics = params
-        .diagnostics
-        .into_iter()
-        .filter_map(parse_diagnostic)
-        .collect();
-    Some((params.uri, params.version, diagnostics))
-}
-
-fn parse_diagnostic(diagnostic: IncomingDiagnostic) -> Option<StoredDiagnostic> {
-    let severity = diagnostic
-        .severity
-        .map(DiagnosticSeverity::from_lsp)
-        .unwrap_or(DiagnosticSeverity::Warning);
-    Some(StoredDiagnostic {
-        severity,
-        message: diagnostic.message,
-        start_line: usize::try_from(diagnostic.range.start.line).ok()?,
-        end_line: usize::try_from(diagnostic.range.end.line).ok()?,
-        start_utf16: u32::try_from(diagnostic.range.start.character).ok()?,
-        end_utf16: u32::try_from(diagnostic.range.end.character).ok()?,
-    })
-}
-
 fn parse_definition_response(message: &Value) -> Option<DefinitionTarget> {
     let result = message.get("result")?;
     if result.is_null() {
@@ -2793,15 +3234,6 @@ fn parse_definition_target_value(value: &Value) -> Option<DefinitionTarget> {
     Some(DefinitionTarget {
         uri: link.target_uri,
         range: link.target_selection_range,
-    })
-}
-
-fn should_suppress_lint_diagnostics<'a>(
-    entries: impl IntoIterator<Item = (&'a DiagnosticSource, &'a StoredDiagnostic)>,
-) -> bool {
-    entries.into_iter().any(|(source, diagnostic)| {
-        !matches!(source, DiagnosticSource::Lint(_))
-            && diagnostic.severity == DiagnosticSeverity::Error
     })
 }
 
@@ -3062,30 +3494,6 @@ fn is_initialize_response(message: &Value) -> bool {
         .get("id")
         .and_then(Value::as_i64)
         .is_some_and(|id| id == INITIALIZE_REQUEST_ID)
-}
-
-fn clip_diagnostic_message(message: &str) -> String {
-    const MAX_INLINE_CHARS: usize = 64;
-    let clipped = diagnostic_summary_line(message);
-    if clipped.chars().count() <= MAX_INLINE_CHARS {
-        clipped
-    } else {
-        let mut out = clipped
-            .chars()
-            .take(MAX_INLINE_CHARS.saturating_sub(1))
-            .collect::<String>();
-        out.push('…');
-        out
-    }
-}
-
-fn diagnostic_summary_line(message: &str) -> String {
-    message
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_else(|| message.trim())
-        .to_string()
 }
 
 fn utf16_code_unit_to_char_col(line: &str, utf16_col: u32) -> usize {
@@ -3705,6 +4113,108 @@ fn clippy_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn apply_snippet_edits(buffer: &mut redox_core::TextBuffer, edits: &[(usize, usize, String)]) {
+    let mut ordered = edits.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    for (start_char, end_char, text) in ordered {
+        let start = buffer.char_to_pos((*start_char).min(buffer.len_chars()));
+        let end = buffer.char_to_pos((*end_char).min(buffer.len_chars()));
+        let _ = buffer.delete_range(start, end);
+        let _ = buffer.insert(start, text);
+    }
+}
+
+fn transform_snippet_char(pos: usize, edits: &[(usize, usize, String)]) -> usize {
+    let mut transformed = pos;
+    let mut ordered = edits.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(start, _, _)| *start);
+    for (start, end, text) in ordered {
+        let replacement_len = text.chars().count();
+        if transformed <= *start {
+            continue;
+        }
+        if transformed >= *end {
+            if replacement_len >= end.saturating_sub(*start) {
+                transformed =
+                    transformed.saturating_add(replacement_len - end.saturating_sub(*start));
+            } else {
+                transformed =
+                    transformed.saturating_sub(end.saturating_sub(*start) - replacement_len);
+            }
+        } else {
+            transformed = start.saturating_add(replacement_len);
+        }
+    }
+    transformed
+}
+
+fn transform_snippet_char_left(pos: usize, edits: &[(usize, usize, String)]) -> usize {
+    transform_snippet_char_left_with_skip(pos, edits, None)
+}
+
+fn transform_snippet_char_left_skipping(
+    pos: usize,
+    edits: &[(usize, usize, String)],
+    skip_idx: usize,
+) -> usize {
+    transform_snippet_char_left_with_skip(pos, edits, Some(skip_idx))
+}
+
+fn transform_snippet_char_left_with_skip(
+    pos: usize,
+    edits: &[(usize, usize, String)],
+    skip_idx: Option<usize>,
+) -> usize {
+    let mut transformed = pos;
+    let mut ordered = edits.iter().enumerate().collect::<Vec<_>>();
+    ordered.sort_by_key(|(_, (start, _, _))| *start);
+    for (idx, (start, end, text)) in ordered {
+        if skip_idx == Some(idx) {
+            continue;
+        }
+        let replacement_len = text.chars().count();
+        let replaced_len = end.saturating_sub(*start);
+        if transformed < *start || transformed == *start {
+            continue;
+        }
+        if transformed >= *end {
+            transformed = shift_snippet_char(transformed, replacement_len, replaced_len);
+        } else {
+            transformed = start.saturating_add(replacement_len);
+        }
+    }
+    transformed
+}
+
+fn transform_snippet_char_right(pos: usize, edits: &[(usize, usize, String)]) -> usize {
+    let mut transformed = pos;
+    let mut ordered = edits.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(start, _, _)| *start);
+    for (start, end, text) in ordered {
+        let replacement_len = text.chars().count();
+        let replaced_len = end.saturating_sub(*start);
+        if transformed < *start {
+            continue;
+        }
+        if *start == *end && transformed == *start {
+            transformed = transformed.saturating_add(replacement_len);
+        } else if transformed >= *end {
+            transformed = shift_snippet_char(transformed, replacement_len, replaced_len);
+        } else {
+            transformed = start.saturating_add(replacement_len);
+        }
+    }
+    transformed
+}
+
+fn shift_snippet_char(pos: usize, replacement_len: usize, replaced_len: usize) -> usize {
+    if replacement_len >= replaced_len {
+        pos.saturating_add(replacement_len - replaced_len)
+    } else {
+        pos.saturating_sub(replaced_len - replacement_len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3778,6 +4288,527 @@ mod tests {
         assert_eq!(uri, "file:///tmp/example.rs");
         assert_eq!(version, Some(7));
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn publish_diagnostics_strips_empty_see_details_marker() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///tmp/example.rs",
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 1 }
+                        },
+                        "message": "borrowed value does not live long enough (see details)"
+                    }
+                ]
+            }
+        });
+
+        let (_, _, diagnostics) =
+            parse_publish_diagnostics(&message).expect("diagnostics should parse");
+        assert_eq!(
+            diagnostics[0].message,
+            "borrowed value does not live long enough"
+        );
+    }
+
+    #[test]
+    fn publish_diagnostics_preserves_related_details() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///tmp/example.rs",
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 1 }
+                        },
+                        "message": "type mismatch (see details)",
+                        "relatedInformation": [
+                            {
+                                "location": {
+                                    "uri": "file:///tmp/example.rs",
+                                    "range": {
+                                        "start": { "line": 2, "character": 4 },
+                                        "end": { "line": 2, "character": 8 }
+                                    }
+                                },
+                                "message": "expected `usize` here"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let (_, _, diagnostics) =
+            parse_publish_diagnostics(&message).expect("diagnostics should parse");
+        assert_eq!(
+            diagnostics[0].message,
+            "type mismatch\n\nDetails:\n- expected `usize` here"
+        );
+    }
+
+    #[test]
+    fn completion_response_parses_array_and_snippet_items() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": [
+                {
+                    "label": "println!",
+                    "kind": 3,
+                    "insertText": "println!(\"${1:value}\");$0",
+                    "insertTextFormat": 2
+                }
+            ]
+        });
+
+        let completions = parse_completion_response(&message);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].label, "println!");
+        assert_eq!(completions[0].kind.as_deref(), Some("function"));
+        assert_eq!(completions[0].insert_text_format, InsertTextFormat::Snippet);
+    }
+
+    #[test]
+    fn completion_response_uses_list_item_defaults() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {
+                "isIncomplete": false,
+                "itemDefaults": {
+                    "insertTextFormat": 2,
+                    "editRange": {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 7 }
+                    }
+                },
+                "items": [
+                    {
+                        "label": "Ok",
+                        "insertText": "Ok(${1:value})"
+                    }
+                ]
+            }
+        });
+
+        let completions = parse_completion_response(&message);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].insert_text_format, InsertTextFormat::Snippet);
+        let edit = completions[0]
+            .text_edit
+            .as_ref()
+            .expect("default edit range should be applied");
+        assert_eq!(edit.range.start.line, 1);
+        assert_eq!(edit.range.end.character, 7);
+    }
+
+    #[test]
+    fn function_completion_synthesizes_placeholders_from_signature() {
+        let item = CompletionCandidate {
+            label: "DoThing".to_string(),
+            detail: Some("func DoThing(ctx context.Context, name string) error".to_string()),
+            label_detail: None,
+            label_description: None,
+            documentation: None,
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            insert_text: "DoThing()".to_string(),
+            insert_text_format: InsertTextFormat::PlainText,
+            text_edit: None,
+        };
+
+        let expansion = completion_snippet_expansion(&item, &item.insert_text)
+            .expect("function signature should produce snippet placeholders");
+
+        assert_eq!(expansion.text, "DoThing(ctx, name)");
+        assert_eq!(expansion.placeholders.len(), 2);
+        assert_eq!(expansion.placeholders[0].start, 8);
+        assert_eq!(expansion.placeholders[0].end, 11);
+        assert_eq!(expansion.placeholders[1].start, 13);
+        assert_eq!(expansion.placeholders[1].end, 17);
+    }
+
+    #[test]
+    fn function_completion_enriches_cursor_only_snippet_from_signature() {
+        let item = CompletionCandidate {
+            label: "DoThing".to_string(),
+            detail: Some("func DoThing(ctx context.Context) error".to_string()),
+            label_detail: None,
+            label_description: None,
+            documentation: None,
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            insert_text: "DoThing($0)".to_string(),
+            insert_text_format: InsertTextFormat::Snippet,
+            text_edit: None,
+        };
+
+        let expansion = completion_snippet_expansion(&item, &item.insert_text)
+            .expect("cursor-only call snippet should be enriched");
+
+        assert_eq!(expansion.text, "DoThing(ctx)");
+        assert_eq!(expansion.placeholders.len(), 1);
+        assert_eq!(expansion.placeholders[0].start, 8);
+        assert_eq!(expansion.placeholders[0].end, 11);
+    }
+
+    #[test]
+    fn function_completion_enriches_empty_snippet_placeholders_from_signature() {
+        let item = CompletionCandidate {
+            label: "DoThing".to_string(),
+            detail: Some("func DoThing(ctx context.Context, name string) error".to_string()),
+            label_detail: None,
+            label_description: None,
+            documentation: None,
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            insert_text: "DoThing(${1:}, ${2:})".to_string(),
+            insert_text_format: InsertTextFormat::Snippet,
+            text_edit: None,
+        };
+
+        let expansion = completion_snippet_expansion(&item, &item.insert_text)
+            .expect("empty snippet placeholders should be enriched");
+
+        assert_eq!(expansion.text, "DoThing(ctx, name)");
+        assert_eq!(expansion.placeholders.len(), 2);
+        assert_eq!(expansion.placeholders[0].start, 8);
+        assert_eq!(expansion.placeholders[0].end, 11);
+        assert_eq!(expansion.placeholders[1].start, 13);
+        assert_eq!(expansion.placeholders[1].end, 17);
+    }
+
+    #[test]
+    fn function_completion_synthesizes_placeholders_from_label_signature() {
+        let item = CompletionCandidate {
+            label: "DoThing(ctx context.Context, name string)".to_string(),
+            detail: None,
+            label_detail: None,
+            label_description: None,
+            documentation: None,
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            insert_text: "DoThing".to_string(),
+            insert_text_format: InsertTextFormat::PlainText,
+            text_edit: None,
+        };
+
+        let expansion = completion_snippet_expansion(&item, &item.insert_text)
+            .expect("label signature should produce snippet placeholders");
+
+        assert_eq!(expansion.text, "DoThing(ctx, name)");
+        assert_eq!(expansion.placeholders.len(), 2);
+        assert_eq!(expansion.placeholders[0].start, 8);
+        assert_eq!(expansion.placeholders[0].end, 11);
+        assert_eq!(expansion.placeholders[1].start, 13);
+        assert_eq!(expansion.placeholders[1].end, 17);
+    }
+
+    #[test]
+    fn snippets_expand_placeholders_and_preserve_first_cursor_target() {
+        let expansion = expand_lsp_snippet("fn ${1:name}(${2:arg}) {\n\t$0\n}");
+
+        assert_eq!(expansion.text, "fn name(arg) {\n\t\n}");
+        assert_eq!(expansion.cursor_offset, Some(16));
+        assert_eq!(expansion.placeholders.len(), 2);
+        assert_eq!(expansion.placeholders[0].tabstop, 1);
+        assert_eq!(expansion.placeholders[0].start, 3);
+        assert_eq!(expansion.placeholders[0].end, 7);
+    }
+
+    #[test]
+    fn snippet_selection_collapses_after_first_replacement() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("call(arg, arg)");
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 5,
+                    end_char: 8,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 10,
+                    end_char: 13,
+                    filled: false,
+                },
+            ],
+            current: 0,
+            selected: true,
+            final_char: Some(14),
+        });
+
+        assert!(state.replace_active_snippet_selection_text("f", 80, 24));
+        assert!(
+            !state
+                .lsp
+                .active_snippet
+                .as_ref()
+                .expect("snippet should remain active")
+                .selected
+        );
+
+        for ch in ['o', 'o'] {
+            let text = ch.to_string();
+            let insert_at_char = state
+                .session
+                .active_buffer()
+                .pos_to_char(state.views.get(&buffer_id).unwrap().cursor.cursor);
+            let cursor = state.views.get(&buffer_id).unwrap().cursor.cursor;
+            let new_cursor = state.session.active_buffer_mut().insert(cursor, &text);
+            state.views.get_mut(&buffer_id).unwrap().cursor.cursor = new_cursor;
+            let _ = state.mirror_active_snippet_insert_after_cursor_insert(
+                insert_at_char,
+                &text,
+                80,
+                24,
+            );
+        }
+
+        assert_eq!(state.session.active_buffer().to_string(), "call(foo, foo)");
+        assert!(state.active_snippet_placeholder_ranges(0, 1).is_empty());
+    }
+
+    #[test]
+    fn snippet_tab_skips_mirrored_placeholders() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("foo, foo, bar");
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 0,
+                    end_char: 3,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 5,
+                    end_char: 8,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 2,
+                    start_char: 10,
+                    end_char: 13,
+                    filled: false,
+                },
+            ],
+            current: 0,
+            selected: true,
+            final_char: Some(13),
+        });
+
+        assert!(state.snippet_jump_next(80, 24));
+
+        let snippet = state
+            .lsp
+            .active_snippet
+            .as_ref()
+            .expect("snippet should remain active");
+        assert_eq!(snippet.current, 2);
+        assert_eq!(
+            state.views.get(&buffer_id).unwrap().cursor.cursor,
+            redox_core::Pos::new(0, 10)
+        );
+    }
+
+    #[test]
+    fn snippet_tab_repeats_after_placeholder_edits() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("one, two, three");
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 0,
+                    end_char: 3,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 2,
+                    start_char: 5,
+                    end_char: 8,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 3,
+                    start_char: 10,
+                    end_char: 15,
+                    filled: false,
+                },
+            ],
+            current: 0,
+            selected: true,
+            final_char: Some(15),
+        });
+
+        assert!(state.replace_active_snippet_selection_text("alpha", 80, 24));
+        assert!(state.snippet_jump_next(80, 24));
+        assert!(state.replace_active_snippet_selection_text("beta", 80, 24));
+        assert!(state.snippet_jump_next(80, 24));
+
+        let snippet = state
+            .lsp
+            .active_snippet
+            .as_ref()
+            .expect("snippet should remain active");
+        assert_eq!(snippet.placeholders[snippet.current].tabstop, 3);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "alpha, beta, three"
+        );
+        assert!(
+            !state
+                .active_snippet_placeholder_ranges(0, 1)
+                .get(&0)
+                .expect("placeholder ranges should remain visible")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn snippet_backspace_updates_mirrored_placeholders() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("call(arg, arg)");
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 5,
+                    end_char: 8,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 1,
+                    start_char: 10,
+                    end_char: 13,
+                    filled: false,
+                },
+                ActiveSnippetPlaceholder {
+                    tabstop: 2,
+                    start_char: 14,
+                    end_char: 14,
+                    filled: false,
+                },
+            ],
+            current: 0,
+            selected: true,
+            final_char: Some(14),
+        });
+
+        assert!(state.replace_active_snippet_selection_text("foo", 80, 24));
+        let cursor = state.views.get(&buffer_id).unwrap().cursor.cursor;
+        let deleted_end = state.session.active_buffer().pos_to_char(cursor);
+        let deleted_start = deleted_end.saturating_sub(1);
+        let new_cursor = state
+            .session
+            .active_buffer_mut()
+            .backspace(redox_core::Selection::empty(cursor))
+            .cursor;
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = new_cursor;
+
+        assert!(state.mirror_active_snippet_delete_after_cursor_delete(
+            deleted_start,
+            deleted_end,
+            80,
+            24
+        ));
+
+        assert_eq!(state.session.active_buffer().to_string(), "call(fo, fo)");
+        assert!(state.snippet_jump_next(80, 24));
+        let snippet = state
+            .lsp
+            .active_snippet
+            .as_ref()
+            .expect("snippet should remain active");
+        assert_eq!(snippet.placeholders[snippet.current].tabstop, 2);
+    }
+
+    #[test]
+    fn leaving_insert_mode_closes_active_snippet() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        state.mode = EditorMode::Insert;
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![ActiveSnippetPlaceholder {
+                tabstop: 1,
+                start_char: 0,
+                end_char: 0,
+                filled: false,
+            }],
+            current: 0,
+            selected: true,
+            final_char: Some(0),
+        });
+
+        state.apply_input(
+            crate::input::InputAction::SetMode(crate::input::InputMode::Normal),
+            80,
+            24,
+        );
+
+        assert!(state.lsp.active_snippet.is_none());
+    }
+
+    #[test]
+    fn snippet_tab_clears_snippet_after_cursor_moves_away() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("foo bar");
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 7);
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders: vec![ActiveSnippetPlaceholder {
+                tabstop: 1,
+                start_char: 0,
+                end_char: 3,
+                filled: false,
+            }],
+            current: 0,
+            selected: false,
+            final_char: Some(3),
+        });
+
+        assert!(!state.snippet_jump_next(80, 24));
+        assert!(state.lsp.active_snippet.is_none());
     }
 
     #[test]

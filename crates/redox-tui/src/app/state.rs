@@ -27,7 +27,8 @@ use explorer::ExplorerState;
 use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
 pub use lsp::{
-    DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup, LspEntryStatusKind, LspMarketplacePopup,
+    CompletionEntry, CompletionPopup, DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup,
+    LspEntryStatusKind, LspMarketplacePopup,
 };
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};

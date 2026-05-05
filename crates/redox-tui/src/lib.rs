@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession};
 
+use minui::KeybindAction;
 use minui::input::Clipboard;
 use minui::prelude::{
     input::{Event, KeyKind},
@@ -32,8 +33,8 @@ use ui::syntax::{
 };
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
+    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup, draw_completion_popup,
+    draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
     explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
     snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
@@ -262,6 +263,8 @@ fn draw_buffer_view(
     let search_highlights =
         state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
     let diagnostic_lines = state.active_diagnostic_lines(snapshot.first_line, snapshot.lines.len());
+    let snippet_placeholders =
+        state.active_snippet_placeholder_ranges(snapshot.first_line, snapshot.lines.len());
     perf.overlays += overlay_start.elapsed();
 
     draw_relative_line_numbers(
@@ -347,6 +350,7 @@ fn draw_buffer_view(
                 &delimiter_highlights,
                 &active_scope_guides,
                 &search_highlights,
+                &snippet_placeholders,
                 &diagnostic_lines,
                 visual_selection,
                 one_shot_highlight,
@@ -392,6 +396,62 @@ fn draw_buffer_view(
         draw_finder_popup(&popup, style, window)?;
     } else if let Some(popup) = state.pin_selector_popup() {
         draw_pin_selector_popup(&popup, style, window)?;
+    } else if let Some(popup) = state.completion_popup() {
+        if spec.visible {
+            let cursor_x = spec.x.saturating_add(content_x);
+            if let Some(preview) = state.completion_preview() {
+                let preview_width =
+                    clipped_cell_width(&preview.text, vw.saturating_sub(cursor_x) as usize);
+                let inline_diagnostic = diagnostic_lines.get(&active_cursor_line);
+                let source_line = inline_diagnostic.map(|_| {
+                    state
+                        .session
+                        .active_buffer()
+                        .line_string(active_cursor_line)
+                });
+                if let Some(source_line) = source_line.as_deref() {
+                    clear_inline_diagnostic(
+                        window,
+                        spec.y,
+                        content_x,
+                        source_line,
+                        scroll_x,
+                        text_w as usize,
+                        background_style,
+                    )?;
+                }
+                draw_completion_preview(
+                    window,
+                    style,
+                    cursor_x,
+                    spec.y,
+                    vw.saturating_sub(cursor_x),
+                    &preview.text,
+                    &preview.suffix,
+                )?;
+                if let Some((diagnostic, source_line)) =
+                    inline_diagnostic.zip(source_line.as_deref())
+                {
+                    draw_inline_diagnostic_shifted(
+                        window,
+                        spec.y,
+                        content_x,
+                        source_line,
+                        scroll_x,
+                        text_w as usize,
+                        background_style,
+                        diagnostic,
+                        preview_width,
+                    )?;
+                }
+            }
+            draw_completion_popup(&popup, style, window, cursor_x, spec.y, text_h)?;
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: cursor_x,
+                y: spec.y,
+                visible: true,
+            });
+        }
     } else if spec.visible {
         cursor_spec = Some(minui::window::CursorSpec {
             x: spec.x.saturating_add(content_x),
@@ -781,6 +841,7 @@ fn draw_buffer_snapshot_for_id(
             &delimiter_highlights,
             &active_scope_guides,
             &search_highlights,
+            &BTreeMap::new(),
             &diagnostic_lines,
             None,
             None,
@@ -805,6 +866,7 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
@@ -830,6 +892,10 @@ fn draw_snapshot_lines(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let diagnostic_line = diagnostic_lines.get(&line_idx);
+        let snippet_ranges = snippet_placeholders
+            .get(&line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let has_search_highlights = search_highlights
             .get(&line_idx)
             .is_some_and(|ranges| !ranges.is_empty());
@@ -855,6 +921,7 @@ fn draw_snapshot_lines(
             && !has_search_highlights
             && syntax_line_spans.is_none_or(|spans| spans.is_empty())
             && diagnostic_line.is_none()
+            && snippet_ranges.is_empty()
             && highlighted_chars.is_empty()
             && visible_indent_guides.is_empty()
             && visible_line.is_ascii()
@@ -958,6 +1025,16 @@ fn draw_snapshot_lines(
                     scroll_x,
                     text_w,
                     highlighted_chars,
+                    style,
+                )?;
+                draw_snippet_placeholders(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    snippet_ranges,
                     style,
                 )?;
                 if let Some(diagnostic) = diagnostic_line {
@@ -1064,6 +1141,16 @@ fn draw_snapshot_lines(
                 highlighted_chars,
                 style,
             )?;
+            draw_snippet_placeholders(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                snippet_ranges,
+                style,
+            )?;
             if let Some(diagnostic) = diagnostic_line {
                 draw_inline_diagnostic(
                     window,
@@ -1132,6 +1219,16 @@ fn draw_snapshot_lines(
                 scroll_x,
                 text_w,
                 highlighted_chars,
+                style,
+            )?;
+            draw_snippet_placeholders(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                snippet_ranges,
                 style,
             )?;
             if let Some(diagnostic) = diagnostic_line {
@@ -1231,6 +1328,70 @@ fn selected_visible_cells(
     )
 }
 
+fn draw_snippet_placeholders(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    ranges: &[std::ops::Range<usize>],
+    style: UiStyle,
+) -> minui::Result<()> {
+    if ranges.is_empty() || text_w == 0 {
+        return Ok(());
+    }
+
+    let visible_end = scroll_x.saturating_add(text_w);
+    let color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let mut cell = 0usize;
+    let mut char_col = 0usize;
+    for grapheme in source_line.graphemes(true) {
+        let width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
+        let start_cell = cell;
+        let end_cell = cell.saturating_add(width);
+        let start_col = char_col;
+        let end_col = char_col.saturating_add(grapheme.chars().count());
+        cell = end_cell;
+        char_col = end_col;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell >= visible_end {
+            break;
+        }
+        if start_cell < scroll_x || end_cell > visible_end {
+            continue;
+        }
+        if !ranges
+            .iter()
+            .any(|range| start_col < range.end && end_col > range.start)
+        {
+            continue;
+        }
+
+        let visible_x = start_cell.saturating_sub(scroll_x);
+        if grapheme == "\t" {
+            let spaces = " ".repeat(width.max(1));
+            window.write_str_colored(
+                row,
+                content_x.saturating_add(visible_x as u16),
+                &spaces,
+                color,
+            )?;
+        } else {
+            window.write_str_colored(
+                row,
+                content_x.saturating_add(visible_x as u16),
+                grapheme,
+                color,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn draw_inline_diagnostic(
     window: &mut dyn Window,
     row: u16,
@@ -1241,16 +1402,63 @@ fn draw_inline_diagnostic(
     style: UiStyle,
     diagnostic: &app::DiagnosticLine,
 ) -> minui::Result<()> {
+    draw_inline_diagnostic_shifted(
+        window,
+        row,
+        content_x,
+        source_line,
+        scroll_x,
+        text_w,
+        style,
+        diagnostic,
+        0,
+    )
+}
+
+fn clear_inline_diagnostic(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+) -> minui::Result<()> {
     if text_w == 0 {
         return Ok(());
     }
 
-    let line_width = visible_content_cell_width(source_line, scroll_x, text_w);
-    let start_cell = line_width.saturating_add(5);
-    if start_cell >= text_w {
+    let Some(start_cell) = inline_diagnostic_start_cell(source_line, scroll_x, text_w, 0) else {
+        return Ok(());
+    };
+    let blank = " ".repeat(text_w.saturating_sub(start_cell));
+    window.write_str_colored(
+        row,
+        content_x.saturating_add(start_cell as u16),
+        &blank,
+        ColorPair::new(style.theme.white, style.theme.bg),
+    )
+}
+
+fn draw_inline_diagnostic_shifted(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+    diagnostic: &app::DiagnosticLine,
+    shift_cells: usize,
+) -> minui::Result<()> {
+    if text_w == 0 {
         return Ok(());
     }
 
+    let Some(start_cell) = inline_diagnostic_start_cell(source_line, scroll_x, text_w, shift_cells)
+    else {
+        return Ok(());
+    };
     let available = text_w.saturating_sub(start_cell);
     let inline_text = ui::widgets::popup::clip_text_to_cells(&diagnostic.inline_text, available);
     if inline_text.is_empty() {
@@ -1265,6 +1473,17 @@ fn draw_inline_diagnostic(
         &inline_text,
         colors,
     )
+}
+
+fn inline_diagnostic_start_cell(
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    shift_cells: usize,
+) -> Option<usize> {
+    let line_width = visible_content_cell_width(source_line, scroll_x, text_w);
+    let start_cell = line_width.saturating_add(shift_cells).saturating_add(5);
+    (start_cell < text_w).then_some(start_cell)
 }
 
 fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usize) -> usize {
@@ -1294,6 +1513,18 @@ fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usi
     }
 
     visible_cells
+}
+
+fn clipped_cell_width(text: &str, max_cells: usize) -> usize {
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize;
+        if width.saturating_add(ch_width) > max_cells {
+            break;
+        }
+        width = width.saturating_add(ch_width);
+    }
+    width
 }
 
 fn highlighted_visible_cells(
@@ -1669,6 +1900,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             None,
             None,
             false,
@@ -1831,6 +2063,16 @@ pub fn run() -> minui::Result<()> {
     }
 
     let mut window = TerminalWindow::new()?;
+    let completion_keybind = KeybindAction::Custom("trigger-completion".to_string());
+    if window
+        .keyboard_mut()
+        .add_keybind("ctrl-shift-k", completion_keybind.clone())
+        .is_err()
+    {
+        let _ = window
+            .keyboard_mut()
+            .add_keybind("ctrl+shift+k", completion_keybind);
+    }
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
     let style = UiStyle::default();

@@ -3,6 +3,7 @@
 //! This module translates raw MinUI events into mode-aware editor actions.
 //! It also tracks count prefixes and a small command tree for multi-key motions.
 
+use minui::KeybindAction;
 use minui::prelude::input::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
 use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec, motion::Motion};
 
@@ -78,6 +79,12 @@ pub enum InputAction {
     OpenFinder,
     ToggleDiagnosticsList,
     GotoDefinition,
+    TriggerCompletion,
+    CompletionMoveNext,
+    CompletionMovePrev,
+    CompletionAccept,
+    CompletionCancel,
+    SnippetNext,
     /// Open item under cursor in active surface (`Enter` in normal mode).
     SurfaceOpenSelected,
     /// Navigate to parent in active surface (`-` in normal mode).
@@ -475,9 +482,22 @@ pub fn map_event_with_context(
             }
         }
 
+        Event::Keybind(KeybindAction::Custom(action)) if action == "trigger-completion" => {
+            state.reset_prefixes();
+            if mode == InputMode::Insert {
+                InputAction::TriggerCompletion
+            } else {
+                InputAction::None
+            }
+        }
+
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
 
         Event::Character(c) => match mode {
+            InputMode::Insert if *c == '\0' => {
+                state.reset_prefixes();
+                InputAction::None
+            }
             InputMode::Insert => InputAction::InsertChar(*c),
             InputMode::Command => InputAction::CommandChar(*c),
             InputMode::Search => InputAction::SearchChar(*c),
@@ -1213,12 +1233,32 @@ fn map_key_with_state(
                 state.reset_prefixes();
                 return InputAction::SetMode(InputMode::Normal);
             }
+            if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+                state.reset_prefixes();
+                return InputAction::TriggerCompletion;
+            }
+            if mods.ctrl && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+                state.reset_prefixes();
+                return InputAction::None;
+            }
+            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+                state.reset_prefixes();
+                return InputAction::CompletionMoveNext;
+            }
+            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+                state.reset_prefixes();
+                return InputAction::CompletionMovePrev;
+            }
+            if mods.ctrl && matches!(key, KeyKind::Char('e') | KeyKind::Char('E')) {
+                state.reset_prefixes();
+                return InputAction::CompletionCancel;
+            }
 
             return match key {
                 KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
                 KeyKind::Backspace => InputAction::Backspace,
-                KeyKind::Enter => InputAction::Enter,
-                KeyKind::Tab => InputAction::InsertChar('\t'),
+                KeyKind::Enter => InputAction::CompletionAccept,
+                KeyKind::Tab => InputAction::SnippetNext,
 
                 KeyKind::Up => InputAction::Motion {
                     motion: Motion::Up,
@@ -2608,7 +2648,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_mode_tab_key_inserts_tab_char() {
+    fn insert_mode_tab_key_advances_snippet() {
         let mut state = InputState::new();
         let action = map_event_with_state(
             &mut state,
@@ -2618,7 +2658,72 @@ mod tests {
                 mods: KeyModifiers::none(),
             }),
         );
-        assert_eq!(action, InputAction::InsertChar('\t'));
+        assert_eq!(action, InputAction::SnippetNext);
+    }
+
+    #[test]
+    fn insert_mode_nul_character_is_ignored() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Insert, &Event::Character('\0'));
+        assert_eq!(action, InputAction::None);
+    }
+
+    #[test]
+    fn insert_mode_ctrl_shift_k_key_triggers_completion() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('k'),
+                mods: KeyModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: false,
+                    super_key: false,
+                },
+            }),
+        );
+        assert_eq!(action, InputAction::TriggerCompletion);
+    }
+
+    #[test]
+    fn insert_mode_ctrl_k_key_does_not_trigger_completion() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('k'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::None);
+    }
+
+    #[test]
+    fn insert_mode_completion_keybind_triggers_completion() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::Keybind(KeybindAction::Custom("trigger-completion".to_string())),
+        );
+        assert_eq!(action, InputAction::TriggerCompletion);
+    }
+
+    #[test]
+    fn insert_mode_ctrl_e_cancels_completion() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::Insert,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('e'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(action, InputAction::CompletionCancel);
     }
 
     #[test]

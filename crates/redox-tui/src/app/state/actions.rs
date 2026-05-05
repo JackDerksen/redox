@@ -28,6 +28,17 @@ impl EditorState {
 
         match action {
             InputAction::Motion { motion, count } => {
+                if self.mode == EditorMode::Insert {
+                    let handled_completion = match motion {
+                        Motion::Down => self.completion_move(count as isize),
+                        Motion::Up => self.completion_move(-(count as isize)),
+                        _ => false,
+                    };
+                    if handled_completion {
+                        return;
+                    }
+                }
+
                 if !is_char_search_motion(motion) {
                     self.clear_search_highlights();
                 }
@@ -60,6 +71,10 @@ impl EditorState {
                 let prev_mode = self.mode;
                 let leaving_insert_to_normal =
                     prev_mode == EditorMode::Insert && mode == InputMode::Normal;
+                if prev_mode == EditorMode::Insert && mode != InputMode::Insert {
+                    self.close_completion();
+                    self.close_active_snippet();
+                }
                 let entering_visual = matches!(
                     mode,
                     InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -167,6 +182,7 @@ impl EditorState {
             }
 
             InputAction::EnterCommand => {
+                self.close_completion();
                 self.clear_active_visual_anchor();
                 self.mode = EditorMode::Command;
                 self.command_line.clear();
@@ -224,12 +240,14 @@ impl EditorState {
 
             InputAction::OpenFinder => {
                 if self.mode == EditorMode::Normal {
+                    self.close_completion();
                     self.open_finder();
                 }
             }
 
             InputAction::ToggleDiagnosticsList => {
                 if self.mode == EditorMode::Normal || self.mode == EditorMode::DiagnosticsList {
+                    self.close_completion();
                     self.toggle_diagnostics_popup();
                 }
             }
@@ -237,6 +255,60 @@ impl EditorState {
             InputAction::GotoDefinition => {
                 if self.mode == EditorMode::Normal {
                     self.goto_definition();
+                }
+            }
+
+            InputAction::TriggerCompletion => {
+                if self.mode == EditorMode::Insert {
+                    self.trigger_completion();
+                }
+            }
+
+            InputAction::CompletionMoveNext => {
+                if self.mode == EditorMode::Insert {
+                    let _ = self.completion_move(1);
+                }
+            }
+
+            InputAction::CompletionMovePrev => {
+                if self.mode == EditorMode::Insert {
+                    let _ = self.completion_move(-1);
+                }
+            }
+
+            InputAction::CompletionAccept => {
+                if self.mode == EditorMode::Insert {
+                    if !self.accept_completion(viewport_width_cells, text_vh) {
+                        self.apply_input(
+                            InputAction::Enter,
+                            viewport_width_cells,
+                            viewport_height_rows,
+                        );
+                    }
+                }
+            }
+
+            InputAction::CompletionCancel => {
+                if self.mode == EditorMode::Insert {
+                    if !self.close_completion() {
+                        self.apply_input(
+                            InputAction::SetMode(InputMode::Normal),
+                            viewport_width_cells,
+                            viewport_height_rows,
+                        );
+                    }
+                }
+            }
+
+            InputAction::SnippetNext => {
+                if self.mode == EditorMode::Insert
+                    && !self.snippet_jump_next(viewport_width_cells, text_vh)
+                {
+                    self.apply_input(
+                        InputAction::InsertChar('\t'),
+                        viewport_width_cells,
+                        viewport_height_rows,
+                    );
                 }
             }
 
@@ -433,6 +505,7 @@ impl EditorState {
 
             InputAction::OpenExplorer => {
                 if self.mode == EditorMode::Normal {
+                    self.close_completion();
                     self.command_open_explorer();
                 }
             }
@@ -504,10 +577,28 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
+                    self.close_completion();
                     let before = self.capture_active_insert_coalesced_snapshot();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
+                    let snippet_delete = {
+                        let buffer = self.session.active_buffer();
+                        let cursor_char = buffer.pos_to_char(view.cursor.cursor);
+                        if buffer
+                            .char_before(view.cursor.cursor)
+                            .and_then(matching_auto_pair_closer)
+                            .is_some_and(|closer| {
+                                Some(closer) == buffer.char_at(view.cursor.cursor)
+                            })
+                        {
+                            cursor_char
+                                .checked_sub(1)
+                                .map(|start| (start, cursor_char.saturating_add(1)))
+                        } else {
+                            cursor_char.checked_sub(1).map(|start| (start, cursor_char))
+                        }
+                    };
 
                     {
                         let buffer = self.session.active_buffer_mut();
@@ -523,6 +614,14 @@ impl EditorState {
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                     }
 
+                    if let Some((start_char, end_char)) = snippet_delete {
+                        let _ = self.mirror_active_snippet_delete_after_cursor_delete(
+                            start_char,
+                            end_char,
+                            viewport_width_cells,
+                            text_vh,
+                        );
+                    }
                     self.invalidate_active_render_caches();
                     let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
@@ -534,6 +633,7 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
+                    self.close_completion();
                     let before = self.capture_active_insert_coalesced_snapshot();
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
@@ -567,6 +667,7 @@ impl EditorState {
                     if !self.ensure_active_fully_loaded_for_edit_or_save() {
                         return;
                     }
+                    self.close_completion();
                     let coalesce = self.mode == EditorMode::Insert;
                     self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
                 }
@@ -798,6 +899,11 @@ impl EditorState {
         if text.is_empty() {
             return;
         }
+        if coalesce_insert_mode
+            && self.replace_active_snippet_selection_text(text, viewport_width_cells, text_vh)
+        {
+            return;
+        }
 
         let before = if coalesce_insert_mode {
             self.capture_active_insert_coalesced_snapshot()
@@ -806,6 +912,10 @@ impl EditorState {
         };
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
+        let insert_at_char = {
+            let buffer = self.session.active_buffer();
+            buffer.pos_to_char(view.cursor.cursor)
+        };
 
         {
             let buffer = self.session.active_buffer_mut();
@@ -816,11 +926,34 @@ impl EditorState {
         }
 
         self.invalidate_active_render_caches();
+        if coalesce_insert_mode {
+            let _ = self.mirror_active_snippet_insert_after_cursor_insert(
+                insert_at_char,
+                text,
+                viewport_width_cells,
+                text_vh,
+            );
+        }
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
     }
 
     fn insert_char_at_cursor(&mut self, ch: char, viewport_width_cells: usize, text_vh: usize) {
+        if !self.completion_survives_insert(ch) {
+            self.close_completion();
+        }
+        if let Some(close) = matching_auto_pair_closer(ch) {
+            let text = [ch, close].iter().collect::<String>();
+            if self.replace_active_snippet_selection_text_with_cursor_offset(
+                &text,
+                1,
+                viewport_width_cells,
+                text_vh,
+            ) {
+                self.queue_auto_completion_after_insert(ch);
+                return;
+            }
+        }
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let behaviour = {
@@ -832,6 +965,7 @@ impl EditorState {
             InsertCharBehaviour::Plain => {
                 let text = ch.to_string();
                 self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
+                self.queue_auto_completion_after_insert(ch);
             }
             InsertCharBehaviour::MoveRight => {
                 let view = self.views.entry(active_id).or_default();
@@ -843,10 +977,14 @@ impl EditorState {
             InsertCharBehaviour::InsertPair(close) => {
                 let before = self.capture_active_insert_coalesced_snapshot();
                 let view = self.views.entry(active_id).or_default();
+                let insert_at_char = {
+                    let buffer = self.session.active_buffer();
+                    buffer.pos_to_char(view.cursor.cursor)
+                };
+                let insert = [ch, close].iter().collect::<String>();
 
                 {
                     let buffer = self.session.active_buffer_mut();
-                    let insert = [ch, close].iter().collect::<String>();
                     let _ = buffer.insert(view.cursor.cursor, &insert);
                     view.cursor.cursor = Pos::new(cursor.line, cursor.col + 1);
                     view.cursor
@@ -854,8 +992,23 @@ impl EditorState {
                 }
 
                 self.invalidate_active_render_caches();
+                let cursor_between_pair = self.views.entry(active_id).or_default().cursor.cursor;
+                let _ = self.mirror_active_snippet_insert_after_cursor_insert(
+                    insert_at_char,
+                    &insert,
+                    viewport_width_cells,
+                    text_vh,
+                );
+                {
+                    let view = self.views.entry(active_id).or_default();
+                    let buffer = self.session.active_buffer();
+                    view.cursor.cursor = buffer.clamp_pos(cursor_between_pair);
+                    view.cursor
+                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                }
                 let _ = self.record_active_undo_if_changed(before);
                 let _ = self.session.recompute_active_dirty();
+                self.queue_auto_completion_after_insert(ch);
             }
         }
     }

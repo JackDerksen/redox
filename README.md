@@ -141,6 +141,7 @@ Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 | `<space>e` | Toggle the file explorer. |
 | `<space>x` | Toggle the diagnostics list for the current file. |
 | `gd` | Go to symbol definition using the active LSP. |
+| `ctrl+shift+k` | Request LSP completions in insert mode. |
 | `Enter` | Open the selected explorer/finder entry. |
 | `-` | Navigate to the parent directory in the explorer. |
 | `ctrl+shift+p` | Open the pinboard for the current file or selected finder entry. |
@@ -176,6 +177,17 @@ Redox can start installed language servers for supported file types and display 
 
 Open the language tools marketplace with `:lsp list`.
 
+Completion controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| Typing code | Request completions automatically after a short pause. |
+| `ctrl+shift+k` | Request completions in insert mode. |
+| `ctrl+n` / `ctrl+p` or `Down` / `Up` | Move through completion results. |
+| `Enter` | Accept the selected completion or snippet. |
+| `ctrl+e` | Close completions. |
+| `Escape` | Leave insert mode. |
+
 Marketplace controls:
 
 | Keys | Behaviour |
@@ -199,7 +211,8 @@ Other language tool commands:
 | Command / keys | Behaviour |
 | -------------- | --------- |
 | `:lsp status` | Show the detected language, LSP, and linter for the current file. |
-| `gd` | Go to definition. Older in-flight definition requests are cancelled when a newer one is sent. |
+| `gd` | Go to symbol definition. |
+| Typing code or `ctrl+shift+k` | Request completions. |
 
 ### Editing and motion
 
@@ -303,9 +316,8 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Basic local search (`/`, `f`, `F`)
 - [x] Performance popup for frame timing
 - [x] Toast/status popups for longer messages
-- [x] LSP diagnostics, go-to-definition, and language tool management
+- [x] LSP diagnostics, go-to-definition, completion, snippets, and language tool management
 - [ ] Undo tree UI with stored history
-- [ ] LSP completion and snippets
 - [ ] LSP symbol renaming
 - [ ] LSP document formatting
 - [ ] LSP code actions and quick fixes

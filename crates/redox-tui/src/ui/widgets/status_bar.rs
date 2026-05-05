@@ -548,8 +548,9 @@ fn status_bar_mode_presentation(
         EditorMode::Search => ("SEARCH", style.palette.mode_command),
         EditorMode::Finder => ("FINDER", style.palette.mode_command),
         EditorMode::PinSelect => ("PINBOARD", style.palette.mode_command),
-        EditorMode::LspMarketplace => ("LSP", style.palette.mode_command),
-        EditorMode::DiagnosticsList => ("DIAGNOSTICS", style.palette.mode_command),
+        EditorMode::LspMarketplace | EditorMode::DiagnosticsList => {
+            ("NORMAL", style.palette.mode_normal)
+        }
         EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
         EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
         EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
@@ -570,13 +571,13 @@ fn diagnostic_summary_module(
         parts.push(format!("×{}", summary.errors));
     }
     if summary.warnings > 0 {
-        parts.push(format!("▲{}", summary.warnings));
+        parts.push(format!("△{}", summary.warnings));
     }
     if summary.information > 0 {
         parts.push(format!("•{}", summary.information));
     }
     if summary.hints > 0 {
-        parts.push(format!("◌{}", summary.hints));
+        parts.push(format!("⚬{}", summary.hints));
     }
 
     Some(StatusModule::new(
