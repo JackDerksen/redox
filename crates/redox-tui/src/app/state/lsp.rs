@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 use url::Url;
 
 use super::{EditorMode, EditorState, StatusMessageStyle};
+use crate::ui::build_symbol_info_display_lines;
 use crate::ui::language_for_path;
+use crate::ui::symbol_info_content_width_limit;
 use crate::ui::syntax::SyntaxLanguage;
 
 mod completion;
@@ -21,10 +23,11 @@ mod diagnostics;
 use diagnostics::*;
 pub use diagnostics::{DiagnosticLine, DiagnosticSeverity, DiagnosticSummary};
 mod types;
-use types::*;
+use self::types::{DefinitionTarget, LspMarketplaceEntry, WorkspaceKey};
 pub use types::{
     CompletionEntry, CompletionPopup, CompletionPreview, DiagnosticsPopup, DiagnosticsPopupEntry,
-    LspEntryStatusKind, LspMarketplacePopup,
+    LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
+    SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
 };
 
 const INSTALLED_LSPS_FILE: &str = "installed_lsps.json";
@@ -33,6 +36,7 @@ const FIRST_DYNAMIC_REQUEST_ID: i64 = 2;
 const LSP_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DIAGNOSTICS_POPUP_VISIBLE_ROWS: usize = 12;
 const COMPLETION_POPUP_VISIBLE_ROWS: usize = 8;
+const SYMBOL_INFO_MAX_HEIGHT: usize = 12;
 const LSP_CHANGE_DEBOUNCE: Duration = Duration::from_millis(175);
 const COMPLETION_AUTO_TRIGGER_DEBOUNCE: Duration = Duration::from_millis(90);
 const COMPLETION_TRIGGER_CHARACTER_DEBOUNCE: Duration = Duration::from_millis(15);
@@ -475,6 +479,7 @@ pub(super) struct LspState {
     completion: Option<CompletionState>,
     auto_completion: Option<AutoCompletionRequest>,
     active_snippet: Option<ActiveSnippet>,
+    symbol_info: Option<SymbolInfoState>,
     recent_completions: HashMap<String, u32>,
     clients: HashMap<WorkspaceKey, ManagedClient>,
     documents: HashMap<BufferId, ManagedDocument>,
@@ -510,6 +515,16 @@ struct LspMarketplaceState {
 #[derive(Debug, Clone)]
 struct DiagnosticsPopupState {
     selected: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolInfoState {
+    requested_at: Pos,
+    blocks: Vec<SymbolInfoBlock>,
+    cached_width: Option<usize>,
+    display_lines: Vec<SymbolInfoDisplayLine>,
+    scroll: usize,
+    return_mode: EditorMode,
 }
 
 #[derive(Debug, Clone)]
@@ -576,7 +591,29 @@ struct RequestKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingRequest {
     GotoDefinition,
-    Completion { requested_at: Pos },
+    SymbolInfo {
+        requested_at: Pos,
+        return_mode: EditorMode,
+    },
+    Completion {
+        requested_at: Pos,
+    },
+}
+
+fn pending_request_same_family(left: PendingRequest, right: PendingRequest) -> bool {
+    matches!(
+        (left, right),
+        (
+            PendingRequest::GotoDefinition,
+            PendingRequest::GotoDefinition
+        ) | (
+            PendingRequest::SymbolInfo { .. },
+            PendingRequest::SymbolInfo { .. }
+        ) | (
+            PendingRequest::Completion { .. },
+            PendingRequest::Completion { .. }
+        )
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -726,6 +763,9 @@ impl LspSession {
                             "relatedInformation": true,
                             "versionSupport": true
                         },
+                        "hover": {
+                            "contentFormat": ["markdown", "plaintext"]
+                        },
                         "completion": {
                             "completionItem": {
                                 "snippetSupport": true
@@ -867,6 +907,28 @@ impl LspSession {
         Ok(request_id)
     }
 
+    fn send_hover(&mut self, path: &Path, line: usize, character: u32) -> io::Result<i64> {
+        let uri = file_uri(path)?;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {
+                    "uri": uri
+                },
+                "position": {
+                    "line": line,
+                    "character": character
+                }
+            }
+        });
+        write_lsp_message(&mut self.stdin, &message)?;
+        Ok(request_id)
+    }
+
     fn send_completion(&mut self, path: &Path, line: usize, character: u32) -> io::Result<i64> {
         let uri = file_uri(path)?;
         let request_id = self.next_request_id;
@@ -947,6 +1009,25 @@ impl EditorState {
         (!preview.is_empty()).then_some(CompletionPreview {
             text: preview,
             suffix,
+        })
+    }
+
+    pub fn symbol_info_popup(&mut self, term_w: u16) -> Option<SymbolInfoPopup<'_>> {
+        let width = symbol_info_content_width_limit(term_w);
+        self.ensure_symbol_info_layout(width);
+        let state = self.lsp.symbol_info.as_ref()?;
+        if self.active_cursor_pos() != state.requested_at || state.blocks.is_empty() {
+            return None;
+        }
+        let inner_h = state
+            .display_lines
+            .len()
+            .clamp(1, SYMBOL_INFO_MAX_HEIGHT as usize);
+        let max_scroll = state.display_lines.len().saturating_sub(inner_h);
+        Some(SymbolInfoPopup {
+            title: "Symbol info",
+            display_lines: &state.display_lines,
+            scroll: state.scroll.min(max_scroll),
         })
     }
 
@@ -1213,6 +1294,10 @@ impl EditorState {
                             continue;
                         }
 
+                        if self.take_symbol_info_response(&workspace, &message) {
+                            continue;
+                        }
+
                         if self.take_completion_response(&workspace, &message) {
                             continue;
                         }
@@ -1287,6 +1372,14 @@ impl EditorState {
             self.mode = EditorMode::Normal;
         }
         self.lsp.diagnostics_popup = None;
+    }
+
+    pub(super) fn close_symbol_info_popup(&mut self) {
+        let _ = self.close_symbol_info();
+    }
+
+    pub(super) fn symbol_info_popup_move(&mut self, delta: isize) {
+        let _ = self.symbol_info_move(delta);
     }
 
     pub(super) fn diagnostics_popup_move(&mut self, delta: isize) {
@@ -1850,7 +1943,8 @@ impl EditorState {
             .pending_requests
             .iter()
             .filter_map(|(key, request)| {
-                (key.workspace == *workspace && request.kind == kind).then_some(key.clone())
+                (key.workspace == *workspace && pending_request_same_family(request.kind, kind))
+                    .then_some(key.clone())
             })
             .collect::<Vec<_>>();
         for key in doomed {
@@ -1877,6 +1971,10 @@ impl EditorState {
             self.send_lsp_cancel_request(&key);
             match kind {
                 PendingRequest::GotoDefinition => self.set_status("definition lookup timed out"),
+                PendingRequest::SymbolInfo { .. } => {
+                    self.clear_symbol_info();
+                    self.set_status("symbol info request timed out");
+                }
                 PendingRequest::Completion { .. } => {
                     self.close_completion();
                     self.set_status("completion request timed out");
@@ -1941,6 +2039,65 @@ impl EditorState {
             }
             Err(error) => {
                 self.set_status(format!("definition request failed: {error}"));
+            }
+        }
+    }
+
+    pub(super) fn trigger_symbol_info(&mut self) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        self.close_completion();
+        self.clear_symbol_info();
+        let _ = self.sync_active_lsp_document();
+
+        let active_id = self.session.active_id();
+        let Some(document) = self.lsp.documents.get(&active_id).cloned() else {
+            self.set_status("no LSP document for current buffer");
+            return;
+        };
+        let cursor = self.active_cursor_pos();
+        let Some(buffer) = self.session.buffer(active_id) else {
+            self.set_status("active buffer unavailable");
+            return;
+        };
+        let line = cursor.line.min(buffer.len_lines().saturating_sub(1));
+        let character = char_col_to_utf16(&buffer.line_string(line), cursor.col);
+        let return_mode = self.mode;
+        self.cancel_pending_lsp_requests(
+            &document.workspace,
+            PendingRequest::SymbolInfo {
+                requested_at: cursor,
+                return_mode,
+            },
+        );
+        let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
+            self.set_status("no LSP client for current buffer");
+            return;
+        };
+        if !client.session.initialized {
+            self.set_status("LSP still loading");
+            return;
+        }
+        match client.session.send_hover(&document.path, line, character) {
+            Ok(id) => {
+                self.lsp.pending_requests.insert(
+                    RequestKey {
+                        workspace: document.workspace,
+                        id,
+                    },
+                    PendingClientRequest {
+                        kind: PendingRequest::SymbolInfo {
+                            requested_at: cursor,
+                            return_mode,
+                        },
+                        started_at: Instant::now(),
+                    },
+                );
+                self.set_status("loading symbol info...");
+            }
+            Err(error) => {
+                self.set_status(format!("symbol info request failed: {error}"));
             }
         }
     }
@@ -2445,10 +2602,56 @@ impl EditorState {
         true
     }
 
+    pub(super) fn symbol_info_move(&mut self, delta: isize) -> bool {
+        let Some(symbol_info) = self.lsp.symbol_info.as_mut() else {
+            return false;
+        };
+        symbol_info.scroll = symbol_info.scroll.saturating_add_signed(delta);
+        true
+    }
+
+    fn ensure_symbol_info_layout(&mut self, width: usize) {
+        let Some(symbol_info) = self.lsp.symbol_info.as_mut() else {
+            return;
+        };
+        if symbol_info.cached_width == Some(width) {
+            return;
+        }
+        symbol_info.display_lines = build_symbol_info_display_lines(&symbol_info.blocks, width);
+        symbol_info.cached_width = Some(width);
+    }
+
+    pub(crate) fn clamp_symbol_info_scroll(&mut self, term_w: u16) {
+        let width = symbol_info_content_width_limit(term_w);
+        self.ensure_symbol_info_layout(width);
+        if let Some(symbol_info) = self.lsp.symbol_info.as_mut() {
+            let inner_h = symbol_info
+                .display_lines
+                .len()
+                .clamp(1, SYMBOL_INFO_MAX_HEIGHT);
+            let max_scroll = symbol_info.display_lines.len().saturating_sub(inner_h);
+            symbol_info.scroll = symbol_info.scroll.min(max_scroll);
+        }
+    }
+
     pub(super) fn close_completion(&mut self) -> bool {
         self.lsp.auto_completion = None;
         let had_completion = self.lsp.completion.take().is_some();
         had_completion
+    }
+
+    pub(super) fn close_symbol_info(&mut self) -> bool {
+        let Some(symbol_info) = self.lsp.symbol_info.take() else {
+            return false;
+        };
+        if self.mode == EditorMode::SymbolInfo {
+            self.mode = symbol_info.return_mode;
+        }
+        true
+    }
+
+    pub(super) fn clear_symbol_info(&mut self) -> bool {
+        self.lsp.symbol_info.take().is_some()
     }
 
     pub(super) fn close_active_snippet(&mut self) -> bool {
@@ -2841,8 +3044,57 @@ impl EditorState {
                 }
                 target
             }
-            PendingRequest::Completion { .. } => None,
+            PendingRequest::SymbolInfo { .. } | PendingRequest::Completion { .. } => None,
         }
+    }
+
+    fn take_symbol_info_response(&mut self, workspace: &WorkspaceKey, message: &Value) -> bool {
+        let Some(id) = message.get("id").and_then(Value::as_i64) else {
+            return false;
+        };
+        let key = RequestKey {
+            workspace: workspace.clone(),
+            id,
+        };
+        let Some(request) = self.lsp.pending_requests.get(&key).copied() else {
+            return false;
+        };
+        let PendingRequest::SymbolInfo {
+            requested_at,
+            return_mode,
+        } = request.kind
+        else {
+            return false;
+        };
+        self.lsp.pending_requests.remove(&key);
+
+        if let Some(error) = message.get("error") {
+            let detail = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown LSP error");
+            self.set_status(format!("symbol info failed: {detail}"));
+            return true;
+        }
+
+        let blocks = parse_hover_response(message);
+        if blocks.is_empty() {
+            self.clear_symbol_info();
+            self.set_status("no symbol info");
+            return true;
+        }
+
+        self.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at,
+            blocks,
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll: 0,
+            return_mode,
+        });
+        self.mode = EditorMode::SymbolInfo;
+        self.clear_status();
+        true
     }
 
     fn take_completion_response(&mut self, workspace: &WorkspaceKey, message: &Value) -> bool {
@@ -3221,6 +3473,131 @@ fn parse_definition_response(message: &Value) -> Option<DefinitionTarget> {
     }
 
     parse_definition_target_value(result)
+}
+
+fn parse_hover_response(message: &Value) -> Vec<SymbolInfoBlock> {
+    let Some(result) = message.get("result") else {
+        return Vec::new();
+    };
+    if result.is_null() {
+        return Vec::new();
+    }
+    let Some(contents) = result.get("contents") else {
+        return Vec::new();
+    };
+    normalise_hover_blocks(hover_contents_blocks(contents))
+}
+
+fn hover_contents_blocks(value: &Value) -> Vec<SymbolInfoBlock> {
+    if let Some(text) = value.as_str() {
+        return vec![SymbolInfoBlock {
+            kind: SymbolInfoKind::Markdown,
+            text: text.to_string(),
+        }];
+    }
+    if let Some(array) = value.as_array() {
+        return array.iter().flat_map(hover_contents_blocks).collect();
+    }
+    if let Some(kind) = value.get("kind").and_then(Value::as_str) {
+        let text = value
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let kind = match kind {
+            "markdown" => SymbolInfoKind::Markdown,
+            _ => SymbolInfoKind::PlainText,
+        };
+        return vec![SymbolInfoBlock { kind, text }];
+    }
+    if value.get("language").is_some() || value.get("value").is_some() {
+        return vec![hover_marked_string_block(value)];
+    }
+    Vec::new()
+}
+
+fn hover_marked_string_block(value: &Value) -> SymbolInfoBlock {
+    let language = value
+        .get("language")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    if let Some(text) = value.as_str() {
+        return SymbolInfoBlock {
+            kind: SymbolInfoKind::Markdown,
+            text: text.to_string(),
+        };
+    }
+    let text = value
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    SymbolInfoBlock {
+        kind: SymbolInfoKind::Code { language },
+        text,
+    }
+}
+
+fn normalise_hover_blocks(blocks: Vec<SymbolInfoBlock>) -> Vec<SymbolInfoBlock> {
+    blocks
+        .into_iter()
+        .filter_map(|block| {
+            let SymbolInfoBlock { kind, text } = block;
+            let text = match &kind {
+                SymbolInfoKind::Code { .. } => {
+                    trim_blank_edges(&trim_trailing_whitespace_lines(&text))
+                }
+                SymbolInfoKind::Markdown | SymbolInfoKind::PlainText => {
+                    collapse_blank_lines(&trim_trailing_whitespace_lines(&text))
+                }
+            };
+            (!text.is_empty()).then_some(SymbolInfoBlock { kind, text })
+        })
+        .collect()
+}
+
+fn trim_trailing_whitespace_lines(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn trim_blank_edges(text: &str) -> String {
+    text.lines()
+        .skip_while(|line| line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .skip_while(|line| line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collapse_blank_lines(text: &str) -> String {
+    let mut lines = Vec::new();
+    let mut last_was_blank = true;
+
+    for line in text.lines() {
+        let is_blank = line.trim().is_empty();
+        if is_blank {
+            if !last_was_blank {
+                lines.push(String::new());
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+        last_was_blank = is_blank;
+    }
+
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+
+    lines.join("\n")
 }
 
 fn parse_definition_target_value(value: &Value) -> Option<DefinitionTarget> {
@@ -4218,6 +4595,7 @@ fn shift_snippet_char(pos: usize, replacement_len: usize, replaced_len: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redox_core::EditorSession;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4865,6 +5243,167 @@ mod tests {
         assert_eq!(target.uri, "file:///tmp/example.rs");
         assert_eq!(target.range.start.line, 4);
         assert_eq!(target.range.start.character, 2);
+    }
+
+    #[test]
+    fn parse_hover_response_preserves_code_blocks_and_markdown() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {
+                "contents": [
+                    {
+                        "language": "rust",
+                        "value": "pub fn hover() -> bool"
+                    },
+                    {
+                        "kind": "markdown",
+                        "value": "Returns `true` when hover is available.\n\n- Fast"
+                    }
+                ]
+            }
+        });
+
+        let blocks = parse_hover_response(&message);
+        assert_eq!(
+            blocks,
+            vec![
+                SymbolInfoBlock {
+                    kind: SymbolInfoKind::Code {
+                        language: Some("rust".to_string()),
+                    },
+                    text: "pub fn hover() -> bool".to_string(),
+                },
+                SymbolInfoBlock {
+                    kind: SymbolInfoKind::Markdown,
+                    text: "Returns `true` when hover is available.\n\n- Fast".to_string(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_hover_response_keeps_plaintext_paragraphs() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "result": {
+                "contents": {
+                    "kind": "plaintext",
+                    "value": "Line one\n\n  Line two  \n"
+                }
+            }
+        });
+
+        let blocks = parse_hover_response(&message);
+        assert_eq!(
+            blocks,
+            vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::PlainText,
+                text: "Line one\n\n  Line two".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_hover_response_collapses_repeated_blank_lines() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "result": {
+                "contents": {
+                    "kind": "markdown",
+                    "value": "Title\n\n\n\nBody\n\n\n- item"
+                }
+            }
+        });
+
+        let blocks = parse_hover_response(&message);
+        assert_eq!(
+            blocks,
+            vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::Markdown,
+                text: "Title\n\nBody\n\n- item".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn close_symbol_info_restores_previous_mode() {
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
+        let mut state = EditorState::new(session);
+        state.mode = EditorMode::SymbolInfo;
+        state.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at: Pos::new(0, 0),
+            blocks: vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::PlainText,
+                text: "hello".to_string(),
+            }],
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll: 2,
+            return_mode: EditorMode::Insert,
+        });
+
+        assert!(state.close_symbol_info());
+        assert_eq!(state.mode, EditorMode::Insert);
+        assert!(state.lsp.symbol_info.is_none());
+    }
+
+    #[test]
+    fn symbol_info_move_scrolls_by_delta() {
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
+        let mut state = EditorState::new(session);
+        state.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at: Pos::new(0, 0),
+            blocks: vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::PlainText,
+                text: "hello".to_string(),
+            }],
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll: 1,
+            return_mode: EditorMode::Normal,
+        });
+
+        assert!(state.symbol_info_move(3));
+        assert_eq!(
+            state.lsp.symbol_info.as_ref().map(|info| info.scroll),
+            Some(4)
+        );
+
+        assert!(state.symbol_info_move(-10));
+        assert_eq!(
+            state.lsp.symbol_info.as_ref().map(|info| info.scroll),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn clamp_symbol_info_scroll_trims_overscroll_to_visible_bottom() {
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
+        let mut state = EditorState::new(session);
+        state.mode = EditorMode::SymbolInfo;
+        state.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at: Pos::new(0, 0),
+            blocks: vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::PlainText,
+                text: (0..20)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            }],
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll: 99,
+            return_mode: EditorMode::Normal,
+        });
+
+        state.clamp_symbol_info_scroll(80);
+        assert_eq!(
+            state.lsp.symbol_info.as_ref().map(|info| info.scroll),
+            Some(8)
+        );
     }
 
     #[test]

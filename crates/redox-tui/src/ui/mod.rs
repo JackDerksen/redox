@@ -25,10 +25,10 @@ pub use syntax::{SyntaxHighlighter, language_for_path};
 
 // Re-export common widgets for convenience.
 pub use widgets::{
-    about_popup_inner_size, build_editor_status_bar, draw_about_popup_view,
-    draw_command_line_popup, draw_completion_popup, draw_completion_preview,
+    about_popup_inner_size, build_editor_status_bar, build_symbol_info_display_lines,
+    draw_about_popup_view, draw_command_line_popup, draw_completion_popup, draw_completion_preview,
     draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
-    explorer_popup_inner_size, perf_popup_layout, perf_popup_occludes_cursor,
-    status_toast_occludes_cursor,
+    draw_symbol_info_popup, explorer_popup_inner_size, perf_popup_layout,
+    perf_popup_occludes_cursor, status_toast_occludes_cursor, symbol_info_content_width_limit,
 };

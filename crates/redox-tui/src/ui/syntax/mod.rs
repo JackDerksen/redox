@@ -504,6 +504,39 @@ pub fn language_for_path(path: Option<&Path>) -> Option<SyntaxLanguage> {
     config_language_for_path(path)
 }
 
+pub fn language_for_name(name: &str) -> Option<SyntaxLanguage> {
+    let normalised = name.trim().to_ascii_lowercase();
+    match normalised.as_str() {
+        "c" => Some(SyntaxLanguage::C),
+        "cpp" | "c++" | "cc" | "cxx" => Some(SyntaxLanguage::Cpp),
+        "css" => Some(SyntaxLanguage::Css),
+        "go" | "golang" => Some(SyntaxLanguage::Go),
+        "html" => Some(SyntaxLanguage::Html),
+        "javascript" | "js" | "jsx" | "mjs" | "cjs" => Some(SyntaxLanguage::JavaScript),
+        "json" | "jsonc" => Some(SyntaxLanguage::Json),
+        "lua" => Some(SyntaxLanguage::Lua),
+        "markdown" | "md" => Some(SyntaxLanguage::Markdown),
+        "python" | "py" => Some(SyntaxLanguage::Python),
+        "rust" | "rs" => Some(SyntaxLanguage::Rust),
+        "toml" => Some(SyntaxLanguage::Toml),
+        "typescript" | "ts" => Some(SyntaxLanguage::TypeScript),
+        "tsx" | "typescriptreact" => Some(SyntaxLanguage::Tsx),
+        "yaml" | "yml" => Some(SyntaxLanguage::Yaml),
+        _ => None,
+    }
+}
+
+pub fn line_spans_for_source(
+    source: &str,
+    language: Option<SyntaxLanguage>,
+) -> Option<Vec<Vec<LineSyntaxSpan>>> {
+    let language = language?;
+    let config = language_config_for(language)?;
+    let mut engine = QuerySyntaxEngine::new(config)?;
+    let (spans, _) = engine.parse_line_spans(source)?;
+    Some(spans)
+}
+
 pub fn scope_guides_enabled(language: Option<SyntaxLanguage>) -> bool {
     !matches!(language, Some(SyntaxLanguage::Markdown))
 }

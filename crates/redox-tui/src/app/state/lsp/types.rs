@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::{DiagnosticSeverity, IncomingRange, MarketplaceItemId, ProviderId};
+use crate::ui::syntax::{LineSyntaxSpan, SyntaxLanguage};
 
 #[derive(Debug, Clone)]
 pub struct LspMarketplacePopup {
@@ -64,6 +65,40 @@ pub struct CompletionEntry {
 pub struct CompletionPreview {
     pub text: String,
     pub suffix: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolInfoPopup<'a> {
+    pub title: &'a str,
+    pub display_lines: &'a [SymbolInfoDisplayLine],
+    pub scroll: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolInfoDisplayLine {
+    pub text: String,
+    pub kind: SymbolInfoDisplayKind,
+    pub spans: Vec<LineSyntaxSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolInfoDisplayKind {
+    PlainText,
+    Markdown,
+    Code { language: Option<SyntaxLanguage> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolInfoBlock {
+    pub kind: SymbolInfoKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolInfoKind {
+    PlainText,
+    Markdown,
+    Code { language: Option<String> },
 }
 
 #[derive(Debug, Clone)]

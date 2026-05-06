@@ -28,7 +28,8 @@ use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState}
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
 pub use lsp::{
     CompletionEntry, CompletionPopup, DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup,
-    LspEntryStatusKind, LspMarketplacePopup,
+    LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
+    SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
 };
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
@@ -122,6 +123,7 @@ pub enum EditorMode {
     PinSelect,
     LspMarketplace,
     DiagnosticsList,
+    SymbolInfo,
     Visual,
     VisualLine,
     VisualBlock,
@@ -137,6 +139,7 @@ impl EditorMode {
                 | EditorMode::PinSelect
                 | EditorMode::LspMarketplace
                 | EditorMode::DiagnosticsList
+                | EditorMode::SymbolInfo
         )
     }
 
@@ -150,6 +153,7 @@ impl EditorMode {
             EditorMode::PinSelect => InputMode::PinSelect,
             EditorMode::LspMarketplace => InputMode::LspMarketplace,
             EditorMode::DiagnosticsList => InputMode::DiagnosticsList,
+            EditorMode::SymbolInfo => InputMode::SymbolInfo,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -466,7 +470,7 @@ impl EditorState {
             | EditorMode::Finder
             | EditorMode::PinSelect
             | EditorMode::LspMarketplace => return None,
-            EditorMode::DiagnosticsList => return None,
+            EditorMode::DiagnosticsList | EditorMode::SymbolInfo => return None,
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }

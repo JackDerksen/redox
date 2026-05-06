@@ -75,6 +75,9 @@ impl EditorState {
                     self.close_completion();
                     self.close_active_snippet();
                 }
+                if prev_mode == EditorMode::SymbolInfo && mode != InputMode::SymbolInfo {
+                    self.clear_symbol_info();
+                }
                 let entering_visual = matches!(
                     mode,
                     InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -93,6 +96,7 @@ impl EditorState {
                     InputMode::PinSelect => EditorMode::PinSelect,
                     InputMode::LspMarketplace => EditorMode::LspMarketplace,
                     InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
+                    InputMode::SymbolInfo => EditorMode::SymbolInfo,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
                     InputMode::VisualBlock => EditorMode::VisualBlock,
@@ -258,6 +262,12 @@ impl EditorState {
                 }
             }
 
+            InputAction::TriggerSymbolInfo => {
+                if matches!(self.mode, EditorMode::Normal | EditorMode::Insert) {
+                    self.trigger_symbol_info();
+                }
+            }
+
             InputAction::TriggerCompletion => {
                 if self.mode == EditorMode::Insert {
                     self.trigger_completion();
@@ -297,6 +307,24 @@ impl EditorState {
                             viewport_height_rows,
                         );
                     }
+                }
+            }
+
+            InputAction::SymbolInfoMoveNext => {
+                if self.mode == EditorMode::SymbolInfo {
+                    self.symbol_info_popup_move(1);
+                }
+            }
+
+            InputAction::SymbolInfoMovePrev => {
+                if self.mode == EditorMode::SymbolInfo {
+                    self.symbol_info_popup_move(-1);
+                }
+            }
+
+            InputAction::SymbolInfoCancel => {
+                if self.mode == EditorMode::SymbolInfo {
+                    self.close_symbol_info_popup();
                 }
             }
 
@@ -498,6 +526,7 @@ impl EditorState {
                         | EditorMode::PinSelect
                         | EditorMode::LspMarketplace
                         | EditorMode::DiagnosticsList
+                        | EditorMode::SymbolInfo
                 ) {
                     self.begin_pin_selection_for_current_buffer();
                 }
@@ -676,6 +705,7 @@ impl EditorState {
                 | EditorMode::Finder
                 | EditorMode::PinSelect
                 | EditorMode::LspMarketplace
+                | EditorMode::SymbolInfo
                 | EditorMode::DiagnosticsList
                 | EditorMode::Visual
                 | EditorMode::VisualLine

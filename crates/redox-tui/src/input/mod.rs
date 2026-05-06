@@ -20,6 +20,7 @@ pub enum InputMode {
     PinSelect,
     LspMarketplace,
     DiagnosticsList,
+    SymbolInfo,
     Visual,
     VisualLine,
     VisualBlock,
@@ -79,6 +80,7 @@ pub enum InputAction {
     OpenFinder,
     ToggleDiagnosticsList,
     GotoDefinition,
+    TriggerSymbolInfo,
     TriggerCompletion,
     CompletionMoveNext,
     CompletionMovePrev,
@@ -200,6 +202,9 @@ pub enum InputAction {
     DiagnosticsListMovePrev,
     DiagnosticsListOpenSelected,
     DiagnosticsListCancel,
+    SymbolInfoMoveNext,
+    SymbolInfoMovePrev,
+    SymbolInfoCancel,
     AssignPinSlot {
         slot: usize,
     },
@@ -434,13 +439,14 @@ pub fn map_event_with_context(
         Event::Escape => {
             state.reset_prefixes();
             match mode {
-                InputMode::Insert => InputAction::SetMode(InputMode::Normal),
+                InputMode::Insert => InputAction::CompletionCancel,
                 InputMode::Command => InputAction::CommandCancel,
                 InputMode::Search => InputAction::SearchCancel,
                 InputMode::Finder => InputAction::FinderCancel,
                 InputMode::PinSelect => InputAction::PinSelectorCancel,
                 InputMode::LspMarketplace => InputAction::LspMarketplaceCancel,
                 InputMode::DiagnosticsList => InputAction::DiagnosticsListCancel,
+                InputMode::SymbolInfo => InputAction::SymbolInfoCancel,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::SetMode(InputMode::Normal)
                 }
@@ -458,6 +464,7 @@ pub fn map_event_with_context(
                 InputMode::PinSelect => InputAction::None,
                 InputMode::LspMarketplace => InputAction::None,
                 InputMode::DiagnosticsList => InputAction::None,
+                InputMode::SymbolInfo => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -475,6 +482,7 @@ pub fn map_event_with_context(
                 InputMode::PinSelect => InputAction::PinSelectorOpenSelected,
                 InputMode::LspMarketplace => InputAction::None,
                 InputMode::DiagnosticsList => InputAction::DiagnosticsListOpenSelected,
+                InputMode::SymbolInfo => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
                 }
@@ -486,6 +494,15 @@ pub fn map_event_with_context(
             state.reset_prefixes();
             if mode == InputMode::Insert {
                 InputAction::TriggerCompletion
+            } else {
+                InputAction::None
+            }
+        }
+
+        Event::Keybind(KeybindAction::Custom(action)) if action == "trigger-symbol-info" => {
+            state.reset_prefixes();
+            if matches!(mode, InputMode::Insert | InputMode::Normal) {
+                InputAction::TriggerSymbolInfo
             } else {
                 InputAction::None
             }
@@ -530,11 +547,12 @@ pub fn map_event_with_context(
                     _ => InputAction::None,
                 }
             }
-            // TODO: See if I can remove this safely. Pretty sure it's just a legacy fallback
-            InputMode::Normal if matches!(c, '!' | '@' | '#') => {
+            InputMode::SymbolInfo => {
                 state.reset_prefixes();
-                InputAction::OpenPinnedSlot {
-                    slot: pin_slot_from_key(KeyKind::Char(*c)).expect("legacy pin slot"),
+                match c {
+                    'j' => InputAction::SymbolInfoMoveNext,
+                    'k' => InputAction::SymbolInfoMovePrev,
+                    _ => InputAction::None,
                 }
             }
             InputMode::Normal
@@ -599,8 +617,9 @@ fn modal_char_action(
                 | InputMode::Search
                 | InputMode::Finder
                 | InputMode::PinSelect
-                | InputMode::LspMarketplace => InputAction::None,
-                InputMode::DiagnosticsList => InputAction::None,
+                | InputMode::LspMarketplace
+                | InputMode::DiagnosticsList
+                | InputMode::SymbolInfo => InputAction::None,
             }
         }
         'V' => {
@@ -615,8 +634,9 @@ fn modal_char_action(
                 | InputMode::Search
                 | InputMode::Finder
                 | InputMode::PinSelect
-                | InputMode::LspMarketplace => InputAction::None,
-                InputMode::DiagnosticsList => InputAction::None,
+                | InputMode::LspMarketplace
+                | InputMode::DiagnosticsList
+                | InputMode::SymbolInfo => InputAction::None,
             }
         }
         'y' if matches!(
@@ -1128,7 +1148,8 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
         | InputMode::Finder
         | InputMode::PinSelect
         | InputMode::LspMarketplace
-        | InputMode::DiagnosticsList => [].iter(),
+        | InputMode::DiagnosticsList
+        | InputMode::SymbolInfo => [].iter(),
     })
 }
 
@@ -1231,7 +1252,11 @@ fn map_key_with_state(
         InputMode::Insert => {
             if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
                 state.reset_prefixes();
-                return InputAction::SetMode(InputMode::Normal);
+                return InputAction::CompletionCancel;
+            }
+            if mods.ctrl && matches!(key, KeyKind::Char('i') | KeyKind::Char('I')) {
+                state.reset_prefixes();
+                return InputAction::TriggerSymbolInfo;
             }
             if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
                 state.reset_prefixes();
@@ -1255,9 +1280,10 @@ fn map_key_with_state(
             }
 
             return match key {
-                KeyKind::Escape => InputAction::SetMode(InputMode::Normal),
+                KeyKind::Escape => InputAction::CompletionCancel,
                 KeyKind::Backspace => InputAction::Backspace,
                 KeyKind::Enter => InputAction::CompletionAccept,
+                KeyKind::Tab if mods.ctrl => InputAction::TriggerSymbolInfo,
                 KeyKind::Tab => InputAction::SnippetNext,
 
                 KeyKind::Up => InputAction::Motion {
@@ -1279,6 +1305,22 @@ fn map_key_with_state(
 
                 KeyKind::Char(c) => InputAction::InsertChar(replacement_char_from_key(c, mods)),
 
+                _ => InputAction::None,
+            };
+        }
+
+        InputMode::SymbolInfo => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::SymbolInfoCancel;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::SymbolInfoCancel,
+                KeyKind::Up => InputAction::SymbolInfoMovePrev,
+                KeyKind::Down => InputAction::SymbolInfoMoveNext,
+                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::SymbolInfoMoveNext,
+                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::SymbolInfoMovePrev,
                 _ => InputAction::None,
             };
         }
@@ -1595,6 +1637,14 @@ fn map_key_with_state(
         return InputAction::SetMode(InputMode::Normal);
     }
 
+    if mode == InputMode::Normal
+        && mods.ctrl
+        && matches!(key, KeyKind::Char('i') | KeyKind::Char('I'))
+    {
+        state.reset_prefixes();
+        return InputAction::TriggerSymbolInfo;
+    }
+
     if mods.ctrl && matches!(key, KeyKind::Char('v') | KeyKind::Char('V')) {
         state.reset_prefixes();
         return match mode {
@@ -1608,7 +1658,8 @@ fn map_key_with_state(
             | InputMode::Finder
             | InputMode::PinSelect
             | InputMode::LspMarketplace
-            | InputMode::DiagnosticsList => InputAction::None,
+            | InputMode::DiagnosticsList
+            | InputMode::SymbolInfo => InputAction::None,
         };
     }
 
@@ -2755,7 +2806,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_mode_ctrl_c_returns_to_normal() {
+    fn insert_mode_ctrl_c_cancels_completion_first() {
         let mut state = InputState::new();
         let action = map_event_with_state(
             &mut state,
@@ -2765,7 +2816,31 @@ mod tests {
                 mods: KeyModifiers::ctrl(),
             }),
         );
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
+        assert_eq!(action, InputAction::CompletionCancel);
+    }
+
+    #[test]
+    fn symbol_info_mode_escape_cancels_popup() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::SymbolInfo, &Event::Escape);
+        assert_eq!(action, InputAction::SymbolInfoCancel);
+    }
+
+    #[test]
+    fn symbol_info_mode_j_and_arrows_scroll() {
+        let mut state = InputState::new();
+        let down = map_event_with_state(&mut state, InputMode::SymbolInfo, &Event::Character('j'));
+        assert_eq!(down, InputAction::SymbolInfoMoveNext);
+
+        let up = map_event_with_state(
+            &mut state,
+            InputMode::SymbolInfo,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Up,
+                mods: KeyModifiers::default(),
+            }),
+        );
+        assert_eq!(up, InputAction::SymbolInfoMovePrev);
     }
 
     #[test]

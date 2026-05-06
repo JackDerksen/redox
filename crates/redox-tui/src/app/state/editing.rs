@@ -477,6 +477,7 @@ impl EditorState {
             | EditorMode::Finder
             | EditorMode::PinSelect
             | EditorMode::LspMarketplace
+            | EditorMode::SymbolInfo
             | EditorMode::DiagnosticsList => {}
         }
     }
@@ -500,6 +501,7 @@ impl EditorState {
             | EditorMode::Finder
             | EditorMode::PinSelect
             | EditorMode::LspMarketplace
+            | EditorMode::SymbolInfo
             | EditorMode::DiagnosticsList => {}
         }
     }

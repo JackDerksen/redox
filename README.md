@@ -182,6 +182,7 @@ Completion controls:
 | Keys | Behaviour |
 | ---- | --------- |
 | Typing code | Request completions automatically after a short pause. |
+| `ctrl+i` | Show type, signature, or documentation for the symbol under the cursor. |
 | `ctrl+shift+k` | Request completions in insert mode. |
 | `ctrl+n` / `ctrl+p` or `Down` / `Up` | Move through completion results. |
 | `Enter` | Accept the selected completion or snippet. |
@@ -212,6 +213,7 @@ Other language tool commands:
 | -------------- | --------- |
 | `:lsp status` | Show the detected language, LSP, and linter for the current file. |
 | `gd` | Go to symbol definition. |
+| `ctrl+i` | Show symbol info. |
 | Typing code or `ctrl+shift+k` | Request completions. |
 
 ### Editing and motion

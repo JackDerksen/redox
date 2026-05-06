@@ -36,8 +36,8 @@ use ui::{
     build_editor_status_bar, draw_about_popup_view, draw_command_line_popup, draw_completion_popup,
     draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
-    explorer_popup_inner_size, language_for_path, perf_popup_layout, perf_popup_occludes_cursor,
-    snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
+    draw_symbol_info_popup, explorer_popup_inner_size, language_for_path, perf_popup_layout,
+    perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -66,6 +66,7 @@ fn draw_buffer_view(
             | app::EditorMode::PinSelect
             | app::EditorMode::LspMarketplace
             | app::EditorMode::DiagnosticsList
+            | app::EditorMode::SymbolInfo
     ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
@@ -453,11 +454,25 @@ fn draw_buffer_view(
             });
         }
     } else if spec.visible {
-        cursor_spec = Some(minui::window::CursorSpec {
-            x: spec.x.saturating_add(content_x),
-            y: spec.y,
-            visible: true,
-        });
+        let cursor_x = spec.x.saturating_add(content_x);
+        if state.symbol_info_popup(vw).is_some() {
+            state.clamp_symbol_info_scroll(vw);
+            let popup = state
+                .symbol_info_popup(vw)
+                .expect("symbol info popup should still exist after clamping");
+            draw_symbol_info_popup(&popup, style, window, cursor_x, spec.y)?;
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: cursor_x,
+                y: spec.y,
+                visible: true,
+            });
+        } else {
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: spec.x.saturating_add(content_x),
+                y: spec.y,
+                visible: true,
+            });
+        }
     }
 
     let toast_layout = draw_status_toast(state, style, window)?;
@@ -2063,6 +2078,16 @@ pub fn run() -> minui::Result<()> {
     }
 
     let mut window = TerminalWindow::new()?;
+    let symbol_info_keybind = KeybindAction::Custom("trigger-symbol-info".to_string());
+    if window
+        .keyboard_mut()
+        .add_keybind("ctrl-i", symbol_info_keybind.clone())
+        .is_err()
+    {
+        let _ = window
+            .keyboard_mut()
+            .add_keybind("ctrl+i", symbol_info_keybind);
+    }
     let completion_keybind = KeybindAction::Custom("trigger-completion".to_string());
     if window
         .keyboard_mut()
