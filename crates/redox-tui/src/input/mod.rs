@@ -2778,6 +2778,13 @@ mod tests {
     }
 
     #[test]
+    fn insert_mode_escape_cancels_completion_first() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(&mut state, InputMode::Insert, &Event::Escape);
+        assert_eq!(action, InputAction::CompletionCancel);
+    }
+
+    #[test]
     fn insert_mode_shifted_symbol_key_inserts_shifted_character() {
         let mut state = InputState::new();
         let action = map_event_with_state(

@@ -300,7 +300,9 @@ impl EditorState {
 
             InputAction::CompletionCancel => {
                 if self.mode == EditorMode::Insert {
-                    if !self.close_completion() {
+                    let had_visible_completion = self.has_visible_completion_popup();
+                    let _ = self.close_completion();
+                    if !had_visible_completion {
                         self.apply_input(
                             InputAction::SetMode(InputMode::Normal),
                             viewport_width_cells,

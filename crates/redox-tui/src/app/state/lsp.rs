@@ -985,6 +985,10 @@ impl EditorState {
         })
     }
 
+    pub(super) fn has_visible_completion_popup(&self) -> bool {
+        self.completion_popup().is_some()
+    }
+
     pub fn completion_preview(&self) -> Option<CompletionPreview> {
         let state = self.lsp.completion.as_ref()?;
         if state.items.is_empty() || self.active_cursor_pos() != state.requested_at {
@@ -5162,6 +5166,47 @@ mod tests {
         );
 
         assert!(state.lsp.active_snippet.is_none());
+    }
+
+    #[test]
+    fn completion_cancel_only_stays_in_insert_for_visible_popup() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        state.mode = EditorMode::Insert;
+        state.lsp.completion = Some(CompletionState {
+            selected: 0,
+            requested_at: redox_core::Pos::new(0, 0),
+            items: vec![CompletionCandidate {
+                label: "print".to_string(),
+                detail: None,
+                label_detail: None,
+                label_description: None,
+                documentation: None,
+                kind: Some("function".to_string()),
+                filter_text: None,
+                sort_text: None,
+                insert_text: "print".to_string(),
+                insert_text_format: InsertTextFormat::PlainText,
+                text_edit: None,
+            }],
+        });
+
+        state.apply_input(crate::input::InputAction::CompletionCancel, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::Insert);
+        assert!(state.lsp.completion.is_none());
+
+        state.lsp.completion = Some(CompletionState {
+            selected: 0,
+            requested_at: redox_core::Pos::new(0, 0),
+            items: Vec::new(),
+        });
+
+        state.apply_input(crate::input::InputAction::CompletionCancel, 80, 24);
+
+        assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.lsp.completion.is_none());
     }
 
     #[test]
