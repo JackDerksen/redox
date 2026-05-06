@@ -542,6 +542,7 @@ impl EditorState {
 
         self.sync_session_after_explorer_write(&planned_write.changes);
         let pin_sync_error = self.sync_pinned_files_after_explorer_write(&planned_write.changes);
+        self.mark_git_repo_statuses_stale();
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,

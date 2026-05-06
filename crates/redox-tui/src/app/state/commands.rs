@@ -276,6 +276,7 @@ impl EditorState {
 
         match self.session.save_active() {
             Ok(()) => {
+                self.mark_git_repo_statuses_stale();
                 match self.notify_active_lsp_did_save() {
                     Ok(()) => self.set_status("written"),
                     Err(error) => {

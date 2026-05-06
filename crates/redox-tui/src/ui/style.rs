@@ -2,7 +2,7 @@
 
 use minui::{Color, ColorPair};
 
-use crate::app::DiagnosticSeverity;
+use crate::app::{DiagnosticSeverity, GitFileStatusKind, GitGutterKind};
 
 pub const STATUS_BAR_HEIGHT_ROWS: usize = 1;
 pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
@@ -230,6 +230,50 @@ impl StatusModuleTheme {
             StatusModuleKind::Diagnostics => self.diagnostics,
             StatusModuleKind::Minimap => self.minimap,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GitStyle {
+    pub added: ColorPair,
+    pub modified: ColorPair,
+    pub conflict: ColorPair,
+    pub removed: ColorPair,
+    pub diff_module: StatusModuleColors,
+}
+
+impl GitStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            added: ColorPair::new(theme.green, theme.bg),
+            modified: ColorPair::new(theme.yellow, theme.bg),
+            conflict: ColorPair::new(theme.orange, theme.bg),
+            removed: ColorPair::new(theme.red, theme.bg),
+            diff_module: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+        }
+    }
+
+    pub fn file_status(self, status: GitFileStatusKind) -> ColorPair {
+        match status {
+            GitFileStatusKind::Added => self.added,
+            GitFileStatusKind::Modified => self.modified,
+            GitFileStatusKind::Conflict => self.conflict,
+            GitFileStatusKind::Removed => self.removed,
+        }
+    }
+
+    pub fn gutter_marker(self, kind: GitGutterKind) -> (&'static str, ColorPair) {
+        match kind {
+            GitGutterKind::Added => ("▍", self.added),
+            GitGutterKind::Modified => ("▍", self.modified),
+            GitGutterKind::Removed => ("▶", self.removed),
+        }
+    }
+}
+
+impl Default for GitStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
     }
 }
 
@@ -684,6 +728,7 @@ impl Default for SyntaxStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
+    pub git: GitStyle,
     pub palette: Palette,
     pub layout: Layout,
     pub about: AboutStyle,
@@ -700,6 +745,7 @@ impl Default for UiStyle {
         let theme = BaseTheme::default();
         Self {
             theme,
+            git: GitStyle::from_theme(theme),
             palette: Palette::from_theme(theme),
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
@@ -783,6 +829,7 @@ impl UiStyle {
         let theme = self.theme.dimmed();
         Self {
             theme,
+            git: GitStyle::from_theme(theme),
             palette: Palette::from_theme(theme),
             layout: self.layout,
             about: AboutStyle::from_theme(theme),

@@ -81,6 +81,7 @@ fn draw_buffer_view(
     let load_start = Instant::now();
     state.pump_active_loading(text_h as usize);
     perf.load += load_start.elapsed();
+    state.refresh_active_git_diff();
 
     if let Some(popup) = state.explorer_popup() {
         if let Some(background_id) = state.explorer_background_buffer_id()
@@ -197,7 +198,8 @@ fn draw_buffer_view(
 
     let active_cursor_line = state.active_cursor_pos().line;
     let total_lines = state.session.active_buffer().len_lines().max(1);
-    let gutter_w = line_number_gutter_width(total_lines);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
     let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
     let text_w = vw.saturating_sub(content_x);
     state.set_viewport_size(
@@ -212,6 +214,7 @@ fn draw_buffer_view(
             background_style,
             gutter_w,
             text_h,
+            show_git_marker_column,
             animation.first_line(),
             active_cursor_line,
             total_lines,
@@ -222,6 +225,8 @@ fn draw_buffer_view(
             gutter_w,
             text_h,
             GUTTER_CONTENT_PADDING,
+            animation.first_line(),
+            state.active_git_diff(),
         )?;
         animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
 
@@ -273,6 +278,7 @@ fn draw_buffer_view(
         background_style,
         gutter_w,
         text_h,
+        show_git_marker_column,
         snapshot.first_line,
         active_cursor_line,
         total_lines,
@@ -283,6 +289,8 @@ fn draw_buffer_view(
         gutter_w,
         text_h,
         GUTTER_CONTENT_PADDING,
+        snapshot.first_line,
+        state.active_git_diff(),
     )?;
 
     let (syntax_time, overlay_time, lines_time) =
@@ -536,23 +544,38 @@ fn draw_gutter_padding(
     gutter_w: u16,
     text_h: u16,
     padding_w: u16,
+    first_line: usize,
+    git_diff: Option<&app::GitDiffSnapshot>,
 ) -> minui::Result<()> {
-    if padding_w == 0 || text_h == 0 {
+    if text_h == 0 {
         return Ok(());
     }
 
     let pad = " ".repeat(padding_w as usize);
     let color = ColorPair::new(style.theme.bg, style.theme.bg);
     for row in 0..text_h {
-        window.write_str_colored(row, gutter_w, &pad, color)?;
+        if padding_w > 0 {
+            window.write_str_colored(row, gutter_w, &pad, color)?;
+        }
+        let line_idx = first_line.saturating_add(row as usize);
+        let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) else {
+            continue;
+        };
+        let (glyph, colors) = style.git.gutter_marker(kind);
+        window.write_str_colored(row, 0, glyph, colors)?;
     }
     Ok(())
 }
 
-fn line_number_gutter_width(total_lines: usize) -> u16 {
+fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
+    git_diff.is_some_and(|diff| !diff.stats.is_empty())
+}
+
+fn line_number_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
     let digits = total_lines.max(1).ilog10() as u16 + 1;
-    // digits + separator column
-    digits.saturating_add(1)
+    let git_marker_width = u16::from(show_git_marker_column);
+    // optional git marker column + digits + separator column
+    digits.saturating_add(git_marker_width).saturating_add(1)
 }
 
 fn draw_relative_line_numbers(
@@ -560,6 +583,7 @@ fn draw_relative_line_numbers(
     style: UiStyle,
     gutter_w: u16,
     text_h: u16,
+    show_git_marker_column: bool,
     first_line: usize,
     cursor_line: usize,
     total_lines: usize,
@@ -569,7 +593,8 @@ fn draw_relative_line_numbers(
     }
 
     let sep_x = gutter_w.saturating_sub(1);
-    let number_w = gutter_w.saturating_sub(1) as usize;
+    let marker_offset = u16::from(show_git_marker_column);
+    let number_w = gutter_w.saturating_sub(marker_offset).saturating_sub(1) as usize;
     let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
     let current_color = ColorPair::new(style.theme.white, style.theme.bg);
 
@@ -606,7 +631,7 @@ fn draw_relative_line_numbers(
         };
 
         if number_w > 0 {
-            window.write_str_colored(row, 0, &text, color)?;
+            window.write_str_colored(row, marker_offset, &text, color)?;
         }
 
         window.write_str_colored(row, sep_x, "▕", color)?;
@@ -767,6 +792,9 @@ fn draw_buffer_snapshot_for_id(
     colors: ColorPair,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
+    state.refresh_git_diff_for_buffer(buffer_id);
+    let git_diff = state.git_diff_for_buffer(buffer_id).cloned();
+    let show_git_marker_column = git_marker_column_visible(git_diff.as_ref());
     let syntax_language = state
         .session
         .meta(buffer_id)
@@ -774,7 +802,7 @@ fn draw_buffer_snapshot_for_id(
     let Some(result) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
         let cursor = view.cursor.cursor;
         let total_lines = buffer.len_lines().max(1);
-        let gutter_w = line_number_gutter_width(total_lines);
+        let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
         let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
         let text_w = width.saturating_sub(content_x);
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
@@ -835,11 +863,20 @@ fn draw_buffer_snapshot_for_id(
             style,
             gutter_w,
             height,
+            show_git_marker_column,
             snapshot.first_line,
             view.cursor.cursor.line,
             total_lines,
         )?;
-        draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
+        draw_gutter_padding(
+            window,
+            style,
+            gutter_w,
+            height,
+            GUTTER_CONTENT_PADDING,
+            snapshot.first_line,
+            git_diff.as_ref(),
+        )?;
 
         let search_highlights = BTreeMap::new();
         let diagnostic_lines = BTreeMap::new();

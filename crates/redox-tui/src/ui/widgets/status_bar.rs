@@ -422,6 +422,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
+    let git_module = git_diff_module(state, style);
+    let git_module_width = git_module.as_ref().map(StatusModule::width).unwrap_or(0);
     let diagnostics_module = diagnostic_summary_module(state, module_theme);
     let diagnostics_width = diagnostics_module
         .as_ref()
@@ -429,6 +431,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .unwrap_or(0);
     let dirty_width = if state.active_dirty() { 1 } else { 0 };
     let left_text_width = mode_width
+        .saturating_add(git_module_width)
         .saturating_add(diagnostics_width)
         .saturating_add(dirty_width);
 
@@ -500,30 +503,53 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_align(Align::Left)
                 .with_min_width(mode_width),
         );
+    let status_bar = if let Some(module) = git_module {
+        status_bar.add_module(module)
+    } else {
+        status_bar
+    };
     let status_bar = if let Some(module) = diagnostics_module {
         status_bar.add_module(module)
     } else {
         status_bar
-    }
-    .add_segment(if state.active_dirty() {
-        Segment::new("+")
-            .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
-            .with_min_width(1)
-    } else {
-        Segment::spacer(0)
-    })
-    .add_segment(Segment::spacer(left_padding_width))
-    .add_segment(
-        Segment::new(center_text)
-            .with_color(style.palette.status_bar_bg)
-            .with_align(Align::Center),
-    )
-    .add_segment(Segment::spacer(right_padding_width))
-    .add_module(coords_module)
-    .add_segment(Segment::spacer(style.layout.status_module_gap_width))
-    .add_module(minimap_module);
+    };
+    let status_bar = status_bar
+        .add_segment(if state.active_dirty() {
+            Segment::new("+")
+                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+                .with_min_width(1)
+        } else {
+            Segment::spacer(0)
+        })
+        .add_segment(Segment::spacer(left_padding_width))
+        .add_segment(
+            Segment::new(center_text)
+                .with_color(style.palette.status_bar_bg)
+                .with_align(Align::Center),
+        )
+        .add_segment(Segment::spacer(right_padding_width))
+        .add_module(coords_module)
+        .add_segment(Segment::spacer(style.layout.status_module_gap_width))
+        .add_module(minimap_module);
 
     status_bar
+}
+
+fn git_diff_module(state: &EditorState, style: UiStyle) -> Option<StatusModule> {
+    let Some(diff) = state.active_git_diff() else {
+        return None;
+    };
+    if diff.stats.is_empty() {
+        return None;
+    }
+
+    Some(StatusModule::new(
+        format!(
+            "+{} ~{} -{}",
+            diff.stats.added, diff.stats.modified, diff.stats.removed
+        ),
+        style.git.diff_module,
+    ))
 }
 
 fn status_bar_mode_presentation(

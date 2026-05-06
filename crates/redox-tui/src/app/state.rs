@@ -20,12 +20,14 @@ mod analysis;
 use analysis::AnalysisWorker;
 mod explorer;
 mod finder;
+mod git;
 mod lsp;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
+pub use git::{GitDiffSnapshot, GitFileStatusKind, GitGutterKind};
 pub use lsp::{
     CompletionEntry, CompletionPopup, DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup,
     LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
@@ -243,6 +245,7 @@ pub struct EditorState {
     transient_origin_buffer_id: Option<BufferId>,
     transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
+    git: git::GitState,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
 }
@@ -291,6 +294,7 @@ impl EditorState {
             transient_origin_buffer_id: None,
             transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
+            git: git::GitState::default(),
             perf_visible: false,
             perf_stats: None,
         };
@@ -439,6 +443,18 @@ impl EditorState {
         &self.session.active_meta().display_name
     }
 
+    pub fn active_git_diff(&self) -> Option<&GitDiffSnapshot> {
+        self.git.diff_for(self.session.active_id())
+    }
+
+    pub fn git_diff_for_buffer(&self, buffer_id: BufferId) -> Option<&GitDiffSnapshot> {
+        self.git.diff_for(buffer_id)
+    }
+
+    pub fn git_status_for_path(&self, path: &std::path::Path) -> Option<GitFileStatusKind> {
+        self.git.status_for_path(path)
+    }
+
     pub fn active_cursor_pos(&self) -> Pos {
         let id = self.session.active_id();
         self.views
@@ -548,6 +564,7 @@ impl EditorState {
             view.invalidate_render_caches();
             view.analysis_version
         };
+        self.git.mark_stale(active_id);
         self.request_analysis(active_id, version);
         if let Some(search) = self.search_state.as_mut()
             && search.buffer_id == active_id
@@ -598,6 +615,23 @@ impl EditorState {
         while let Some(result) = self.analysis_worker.try_recv() {
             self.apply_analysis_result(result);
         }
+    }
+
+    pub fn refresh_active_git_diff(&mut self) {
+        let active_id = self.session.active_id();
+        self.refresh_git_diff_for_buffer(active_id);
+    }
+
+    pub fn refresh_git_diff_for_buffer(&mut self, buffer_id: BufferId) {
+        self.git.refresh_for_buffer(&self.session, buffer_id);
+    }
+
+    pub fn refresh_git_repo_status_for_dir(&mut self, dir: &std::path::Path) {
+        self.git.refresh_repo_status_for_dir(dir);
+    }
+
+    pub fn mark_git_repo_statuses_stale(&mut self) {
+        self.git.mark_all_repo_statuses_stale();
     }
 
     fn apply_analysis_result(&mut self, result: analysis::AnalysisResult) {
