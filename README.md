@@ -1,16 +1,16 @@
 <p align="center">
-	<img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
+    <img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
 </p>
 
 <h1 align="center">
-	A terminal-based text editor, built with MinUI
+    A terminal-based text editor, built with MinUI
 </h1>
 
 <p align="center">
-	Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
-	<br><br>
-	<strong>PLEASE NOTE</strong>: This editor is in no way associated with
-	<a href="https://www.redox-os.org/">Redox OS</a>.
+    Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
+    <br><br>
+    <strong>PLEASE NOTE</strong>: This editor is in no way associated with
+    <a href="https://www.redox-os.org/">Redox OS</a>.
 </p>
 
 <p align="center">
