@@ -14,8 +14,9 @@ use url::Url;
 use super::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::build_symbol_info_display_lines;
 use crate::ui::language_for_path;
+use crate::ui::style::SyntaxRole;
 use crate::ui::symbol_info_content_width_limit;
-use crate::ui::syntax::SyntaxLanguage;
+use crate::ui::syntax::{SyntaxLanguage, lexical_fallback_line_spans};
 
 mod completion;
 use completion::*;
@@ -597,6 +598,7 @@ enum PendingRequest {
     },
     Completion {
         requested_at: Pos,
+        manual: bool,
     },
 }
 
@@ -962,7 +964,7 @@ impl LspSession {
 impl EditorState {
     pub fn completion_popup(&self) -> Option<CompletionPopup> {
         let state = self.lsp.completion.as_ref()?;
-        if state.items.is_empty() {
+        if state.items.is_empty() || self.active_cursor_pos() != state.requested_at {
             return None;
         }
         let max_selected = state.items.len().saturating_sub(1);
@@ -2111,8 +2113,11 @@ impl EditorState {
     }
 
     pub(super) fn queue_auto_completion_after_insert(&mut self, inserted: char) {
-        if !should_auto_trigger_completion(inserted) {
+        if !should_auto_trigger_completion(inserted) || self.cursor_is_in_comment_for_completion() {
             self.lsp.auto_completion = None;
+            if self.cursor_is_in_comment_for_completion() {
+                self.close_completion();
+            }
             return;
         }
         self.lsp.auto_completion = Some(AutoCompletionRequest {
@@ -2515,6 +2520,11 @@ impl EditorState {
     }
 
     fn request_completion(&mut self, manual: bool) {
+        if !manual && self.cursor_is_in_comment_for_completion() {
+            self.close_completion();
+            self.lsp.auto_completion = None;
+            return;
+        }
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
@@ -2578,6 +2588,7 @@ impl EditorState {
                     PendingClientRequest {
                         kind: PendingRequest::Completion {
                             requested_at: cursor,
+                            manual,
                         },
                         started_at: Instant::now(),
                     },
@@ -3112,7 +3123,11 @@ impl EditorState {
         let Some(request) = self.lsp.pending_requests.get(&key).copied() else {
             return false;
         };
-        let PendingRequest::Completion { requested_at } = request.kind else {
+        let PendingRequest::Completion {
+            requested_at,
+            manual,
+        } = request.kind
+        else {
             return false;
         };
         self.lsp.pending_requests.remove(&key);
@@ -3137,6 +3152,12 @@ impl EditorState {
                 &self.lsp.recent_completions,
             );
         }
+        if self.active_cursor_pos() != requested_at
+            || (!manual && self.cursor_is_in_comment_for_completion())
+        {
+            self.clear_status();
+            return true;
+        }
         /*
         if items.is_empty() {
             self.lsp.completion = None;
@@ -3151,6 +3172,53 @@ impl EditorState {
         });
         self.clear_status();
         true
+    }
+
+    fn cursor_is_in_comment_for_completion(&self) -> bool {
+        matches!(
+            self.completion_context_syntax_role(),
+            Some(SyntaxRole::Comment)
+        )
+    }
+
+    fn completion_context_syntax_role(&self) -> Option<SyntaxRole> {
+        let active_id = self.session.active_id();
+        let buffer = self.session.buffer(active_id)?;
+        let view = self.views.get(&active_id)?;
+        let cursor = buffer.clamp_pos(view.cursor.cursor);
+        let line = cursor.line.min(buffer.len_lines().saturating_sub(1));
+        let line_text = buffer.line_string(line);
+        if line_text.is_empty() {
+            return None;
+        }
+
+        let probe_col = cursor.col.min(line_text.chars().count());
+        let probe_byte = if probe_col == 0 {
+            0
+        } else {
+            line_text
+                .char_indices()
+                .nth(probe_col.saturating_sub(1))
+                .map(|(idx, _)| idx)?
+        };
+        let language = language_for_path(
+            self.session
+                .meta(active_id)
+                .and_then(|meta| meta.path.as_deref()),
+        );
+
+        if let Some(spans) = view
+            .syntax_highlighter
+            .visible_line_spans_cached(language, line, 1)
+            .and_then(|visible| visible.get(0))
+        {
+            if let Some(role) = syntax_role_covering_byte(spans, probe_byte) {
+                return Some(role);
+            }
+        }
+
+        let fallback = lexical_fallback_line_spans(&line_text);
+        syntax_role_covering_byte(&fallback, probe_byte)
     }
 
     fn jump_to_definition_target(&mut self, target: DefinitionTarget) {
@@ -3929,6 +3997,17 @@ fn file_uri(path: &Path) -> io::Result<String> {
     Url::from_file_path(path)
         .map(Into::into)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path is not a valid file URI"))
+}
+
+fn syntax_role_covering_byte(
+    spans: &[crate::ui::syntax::LineSyntaxSpan],
+    byte: usize,
+) -> Option<SyntaxRole> {
+    spans
+        .iter()
+        .rev()
+        .find(|span| span.start_byte <= byte && byte < span.end_byte)
+        .map(|span| span.role)
 }
 
 fn file_path_from_uri(uri: &str) -> Option<PathBuf> {
@@ -5232,6 +5311,39 @@ mod tests {
 
         assert!(!state.snippet_jump_next(80, 24));
         assert!(state.lsp.active_snippet.is_none());
+    }
+
+    #[test]
+    fn typing_in_comment_disables_auto_completion_and_closes_popup() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("// comment");
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 10);
+        state.mode = EditorMode::Insert;
+        state.lsp.completion = Some(CompletionState {
+            selected: 0,
+            requested_at: redox_core::Pos::new(0, 10),
+            items: vec![CompletionCandidate {
+                label: "comment".to_string(),
+                detail: None,
+                label_detail: None,
+                label_description: None,
+                documentation: None,
+                kind: Some("text".to_string()),
+                filter_text: None,
+                sort_text: None,
+                insert_text: "comment".to_string(),
+                insert_text_format: InsertTextFormat::PlainText,
+                text_edit: None,
+            }],
+        });
+
+        state.queue_auto_completion_after_insert('a');
+
+        assert!(state.lsp.auto_completion.is_none());
+        assert!(state.lsp.completion.is_none());
     }
 
     #[test]
