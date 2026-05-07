@@ -5,7 +5,7 @@ mod languages;
 use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
-use redox_core::{Pos, TextBuffer};
+use redox_core::{Pos, SOFT_TAB, SOFT_TAB_WIDTH, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -573,7 +573,7 @@ pub(crate) fn smart_newline_insert(
     if delimiter_split(&virtual_source, &tree, line, right_trimmed) || quote_split {
         let split_indent = if quote_split {
             let mut indent = base_indent.clone();
-            indent.push('\t');
+            indent.push_str(SOFT_TAB);
             indent
         } else {
             inner_indent
@@ -662,7 +662,7 @@ fn desired_indent_for_line_source(
                 || starts_with_html_closing(next_text.trim_start()))
         {
             let mut indent = floored_indent(leading_indent(next_text));
-            indent.push('\t');
+            indent.push_str(SOFT_TAB);
             return Some(indent);
         }
         return Some(String::new());
@@ -705,7 +705,7 @@ fn indent_after_line(
     let text = lines.get(line).copied()?;
     let mut indent = floored_indent(leading_indent(text));
     if opens_line(source, tree, language, line) {
-        indent.push('\t');
+        indent.push_str(SOFT_TAB);
     }
     Some(indent)
 }
@@ -814,14 +814,14 @@ fn leading_indent(text: &str) -> &str {
 }
 
 fn floored_indent(indent: &str) -> String {
-    "\t".repeat(indent_width(indent) / 4)
+    SOFT_TAB.repeat(indent_width(indent) / SOFT_TAB_WIDTH)
 }
 
 fn indent_width(indent: &str) -> usize {
     let mut col = 0usize;
     for ch in indent.chars() {
         match ch {
-            '\t' => col += 4 - (col % 4),
+            '\t' => col += SOFT_TAB_WIDTH - (col % SOFT_TAB_WIDTH),
             ' ' => col += 1,
             _ => break,
         }
@@ -847,7 +847,7 @@ fn remove_one_indent_level(indent: &mut String) {
         .chars()
         .rev()
         .take_while(|ch| *ch == ' ')
-        .take(4)
+        .take(SOFT_TAB_WIDTH)
         .count();
     for _ in 0..remove {
         indent.pop();
@@ -906,10 +906,10 @@ fn markdown_indent_after_line(text: &str) -> Option<String> {
 
     if let Some(marker_len) = markdown_list_marker_len(rest) {
         continuation_width += marker_len;
-        return Some("\t".repeat(continuation_width / 4));
+        return Some(SOFT_TAB.repeat(continuation_width / SOFT_TAB_WIDTH));
     }
 
-    saw_block_quote.then(|| "\t".repeat(continuation_width / 4))
+    saw_block_quote.then(|| SOFT_TAB.repeat(continuation_width / SOFT_TAB_WIDTH))
 }
 
 fn markdown_list_marker_len(text: &str) -> Option<usize> {

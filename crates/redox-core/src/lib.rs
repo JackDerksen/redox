@@ -11,6 +11,9 @@
 //! - The UI may need **byte indices** for interoperability with external data,
 //!   but those are not used as the primary index type in this crate.
 
+pub const SOFT_TAB_WIDTH: usize = 4;
+pub const SOFT_TAB: &str = "    ";
+
 pub mod buffer;
 pub mod fuzzy;
 pub mod io;

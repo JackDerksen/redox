@@ -2204,6 +2204,35 @@ fn insert_mode_tab_advances_out_of_auto_pair_closer() {
 }
 
 #[test]
+fn insert_mode_tab_inserts_soft_tab_spaces() {
+    let path = temp_file_path("insert_mode_soft_tab");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "    ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_backspace_removes_full_soft_tab_indent() {
+    let path = temp_file_path("insert_mode_soft_tab_backspace");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+    state.apply_input(InputAction::Backspace, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_existing_quote_advances_cursor() {
     let path = temp_file_path("insert_mode_skip_existing_quote");
     let mut state = state_with_text(path.clone(), "");
@@ -5190,8 +5219,11 @@ fn insert_enter_uses_tree_sitter_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "fn main() {\n\t");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n    "
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5212,9 +5244,9 @@ fn insert_enter_splits_closing_delimiter_with_smart_indent() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n}"
+        "fn main() {\n    \n}"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5233,8 +5265,8 @@ fn insert_enter_splits_angle_delimiters_with_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "<\n\t\n>");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.session.active_buffer().to_string(), "<\n    \n>");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5255,9 +5287,9 @@ fn insert_enter_splits_quote_delimiters_with_smart_indent() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "let text = \"\n\t\n\";"
+        "let text = \"\n    \n\";"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5277,8 +5309,8 @@ fn insert_enter_splits_backtick_delimiters_with_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "`\n\t\n`");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.session.active_buffer().to_string(), "`\n    \n`");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5297,9 +5329,9 @@ fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     state.apply_input(InputAction::OpenLineBelow, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n}\n"
+        "fn main() {\n    \n}\n"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
 
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     state
@@ -5311,9 +5343,9 @@ fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     state.apply_input(InputAction::OpenLineAbove, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n\t\n}\n"
+        "fn main() {\n    \n    \n}\n"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(2, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(2, 4));
 
     let _ = fs::remove_file(path);
 }
@@ -5390,9 +5422,9 @@ fn smart_indent_floors_partial_tab_widths() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "\t  if ready {\n\t\t"
+        "\t  if ready {\n        "
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 8));
 
     let _ = fs::remove_file(path);
 }
@@ -5412,8 +5444,11 @@ fn markdown_list_indent_floors_to_full_tab_width() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "    - item\n\t");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "    - item\n    "
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
 
     let _ = fs::remove_file(path);
 }
@@ -5469,7 +5504,7 @@ fn visual_move_reindents_line_for_new_tree_sitter_scope() {
     state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\tcall();\n\tlet x = 1;\n}\n"
+        "fn main() {\n\tcall();\n    let x = 1;\n}\n"
     );
 
     state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
@@ -5563,7 +5598,10 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
     );
 
     state.apply_input(InputAction::IndentVisualSelection { count: 1 }, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "\tone\n\ttwo\n");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "    one\n    two\n"
+    );
 
     state.apply_input(InputAction::OutdentVisualSelection { count: 1 }, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "one\ntwo\n");

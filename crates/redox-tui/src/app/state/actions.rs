@@ -1,4 +1,4 @@
-use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
+use redox_core::{Pos, SOFT_TAB, SOFT_TAB_WIDTH, Selection, TextBuffer, motion::Motion};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
@@ -626,6 +626,10 @@ impl EditorState {
                             cursor_char
                                 .checked_sub(1)
                                 .map(|start| (start, cursor_char.saturating_add(1)))
+                        } else if let Some((start, end)) =
+                            soft_tab_backspace_range(buffer, view.cursor.cursor)
+                        {
+                            Some((buffer.pos_to_char(start), buffer.pos_to_char(end)))
                         } else {
                             cursor_char.checked_sub(1).map(|start| (start, cursor_char))
                         }
@@ -637,6 +641,10 @@ impl EditorState {
                             delete_auto_pair_with_backspace(buffer, view.cursor.cursor)
                         {
                             view.cursor.cursor = new_cursor;
+                        } else if let Some((start, end)) =
+                            soft_tab_backspace_range(buffer, view.cursor.cursor)
+                        {
+                            view.cursor.cursor = buffer.delete_range(start, end);
                         } else {
                             let sel = buffer.backspace(sel);
                             view.cursor.cursor = sel.cursor;
@@ -995,7 +1003,11 @@ impl EditorState {
 
         match behaviour {
             InsertCharBehaviour::Plain => {
-                let text = ch.to_string();
+                let text = if ch == '\t' {
+                    SOFT_TAB.to_string()
+                } else {
+                    ch.to_string()
+                };
                 self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
                 self.queue_auto_completion_after_insert(ch);
             }
@@ -1202,6 +1214,28 @@ fn delete_auto_pair_with_backspace(buffer: &mut TextBuffer, cursor: Pos) -> Opti
     let start = Pos::new(cursor.line, cursor.col.saturating_sub(1));
     let end = Pos::new(cursor.line, cursor.col + 1);
     Some(buffer.delete_range(start, end))
+}
+
+fn soft_tab_backspace_range(buffer: &TextBuffer, cursor: Pos) -> Option<(Pos, Pos)> {
+    if cursor.col == 0 {
+        return None;
+    }
+
+    let line = buffer.clamp_line(cursor.line);
+    let line_text = buffer.line_string(line);
+    let chars: Vec<char> = line_text.chars().collect();
+    if cursor.col > chars.len() || !chars[..cursor.col].iter().all(|ch| *ch == ' ') {
+        return None;
+    }
+
+    let spaces_left = cursor.col % SOFT_TAB_WIDTH;
+    let remove = if spaces_left == 0 {
+        SOFT_TAB_WIDTH
+    } else {
+        spaces_left
+    };
+
+    (cursor.col >= remove).then_some((Pos::new(line, cursor.col - remove), cursor))
 }
 
 fn is_char_search_motion(motion: Motion) -> bool {

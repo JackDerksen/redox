@@ -17,8 +17,9 @@
 //! - This widget draws at x=0 and computes y based on window height.
 
 use minui::widgets::Widget;
-use minui::{Color, ColorPair, Result, Window};
+use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
 use redox_core::BufferLoadPhase;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::style::{StatusModuleColors, StatusModuleKind};
@@ -462,7 +463,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     };
 
     let cursor = state.active_cursor_pos();
-    let total_lines = state.session.active_buffer().len_lines();
+    let buffer = state.session.active_buffer();
+    let total_lines = buffer.len_lines();
     let minimap_module_colors = module_theme.colors(StatusModuleKind::Minimap);
     let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
         cursor.line,
@@ -471,8 +473,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         style.palette.minimap_alt,
         minimap_module_colors.wrapper.bg,
     );
+    let visual_col = visual_column(buffer.line_string(cursor.line).as_str(), cursor.col);
     let coords_module = StatusModule::new(
-        format!("{}:{}", cursor.line + 1, cursor.col + 1),
+        format!("{}:{}", cursor.line + 1, visual_col + 1),
         module_theme.colors(StatusModuleKind::Coords),
     )
     .with_content_align(Align::Right);
@@ -533,6 +536,35 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .add_module(minimap_module);
 
     status_bar
+}
+
+fn visual_column(line: &str, char_col: usize) -> usize {
+    let graphemes: Vec<&str> = line.graphemes(true).collect();
+    let cursor_g = char_col_to_grapheme_index(&graphemes, char_col);
+    graphemes[..cursor_g.min(graphemes.len())]
+        .iter()
+        .map(|g| cell_width(*g, TabPolicy::Fixed(4)) as usize)
+        .sum()
+}
+
+fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {
+    if cursor_col_chars == 0 {
+        return 0;
+    }
+
+    let mut chars_seen = 0usize;
+    for (i, grapheme) in graphemes.iter().enumerate() {
+        let grapheme_chars = grapheme.chars().count();
+        if chars_seen + grapheme_chars > cursor_col_chars {
+            return i;
+        }
+        chars_seen += grapheme_chars;
+        if chars_seen == cursor_col_chars {
+            return i + 1;
+        }
+    }
+
+    graphemes.len()
 }
 
 fn git_diff_module(state: &EditorState, style: UiStyle) -> Option<StatusModule> {
