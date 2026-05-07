@@ -1,12 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use redox_core::Pos;
-use redox_core::Selection;
+use redox_core::{Pos, Selection, TextBuffer};
 
 use super::{EditorMode, EditorState};
+use crate::SOFT_TAB_WIDTH;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
-use crate::ui::syntax::smart_open_line_insert;
+use crate::ui::syntax::{SyntaxLanguage, smart_open_line_insert};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveFormatter {
+    CargoFmt,
+    Gofmt,
+    Ruff,
+}
 
 impl EditorState {
     pub(super) fn execute_command_line(&mut self) {
@@ -258,42 +266,93 @@ impl EditorState {
         }
 
         let before = self.capture_active_undo_snapshot();
-        let trimmed = self.trim_active_trailing_whitespace();
-        if trimmed {
-            let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
-            let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
-            let active_id = self.session.active_id();
-            let view = self.views.entry(active_id).or_default();
-            let buffer = self.session.active_buffer();
-            view.cursor
-                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-            self.invalidate_active_render_caches();
-            let _ = self.record_active_undo_if_changed(before);
-            let _ = self.session.recompute_active_dirty();
-        }
+        let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
+        let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
 
         self.sync_active_lsp_before_save();
 
-        match self.session.save_active() {
-            Ok(()) => {
-                self.mark_git_repo_statuses_stale();
-                match self.notify_active_lsp_did_save() {
-                    Ok(()) => self.set_status("written"),
-                    Err(error) => {
-                        self.set_status(format!("written (LSP save sync failed: {error})"))
-                    }
-                }
-                true
-            }
-            Err(e) => {
-                self.set_status(format!("write failed: {e}"));
-                false
-            }
+        if let Err(error) = self.session.save_active() {
+            self.set_status(format!("write failed: {error}"));
+            return false;
         }
+
+        let format_result =
+            self.format_active_file_after_save_if_available(viewport_width_cells, text_vh);
+        let changed_buffer = match format_result {
+            Ok(format_changed) => format_changed,
+            Err(error) => {
+                let _ = self.session.recompute_active_dirty();
+                self.mark_git_repo_statuses_stale();
+                self.set_status(format!("written (format failed: {error})"));
+                return true;
+            }
+        };
+
+        if changed_buffer {
+            let _ = self.record_active_undo_if_changed(before);
+        }
+        let _ = self.session.recompute_active_dirty();
+
+        self.mark_git_repo_statuses_stale();
+        match self.notify_active_lsp_did_save() {
+            Ok(()) => self.set_status("written"),
+            Err(error) => self.set_status(format!("written (LSP save sync failed: {error})")),
+        }
+        true
     }
 
-    fn trim_active_trailing_whitespace(&mut self) -> bool {
-        self.session.active_buffer_mut().trim_trailing_whitespace()
+    fn format_active_file_after_save_if_available(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> Result<bool, String> {
+        let path = self.session.active_meta().path.clone();
+        let buffer_text = self.session.active_buffer().to_string();
+        let mut formatted = buffer_text.clone();
+
+        if let Some(path) = path.as_deref()
+            && let Some(language) = language_for_path(Some(path))
+            && let Some(formatter) = formatter_for(language)
+            && formatter_available(formatter, path)
+        {
+            run_formatter(formatter, self.session.launch_dir(), path)?;
+            formatted = std::fs::read_to_string(path)
+                .map_err(|error| format!("failed to read formatter output: {error}"))?;
+        }
+
+        let normalized = apply_save_format_passes(&formatted);
+
+        if formatted == buffer_text && normalized == buffer_text {
+            return Ok(false);
+        }
+
+        self.replace_active_buffer_text(&normalized, viewport_width_cells, text_vh);
+        self.sync_active_lsp_before_save();
+        self.session
+            .save_active()
+            .map_err(|error| format!("failed to save formatted file: {error}"))?;
+        Ok(true)
+    }
+
+    fn replace_active_buffer_text(
+        &mut self,
+        text: &str,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        {
+            let buffer = self.session.active_buffer_mut();
+            *buffer = TextBuffer::from_str(text);
+        }
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.cursor.cursor = buffer.clamp_pos(view.cursor.cursor);
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        self.invalidate_active_render_caches();
+        let _ = self.session.recompute_active_dirty();
     }
 
     pub(super) fn open_line_and_enter_insert(
@@ -363,4 +422,147 @@ impl EditorState {
     pub(super) fn unsaved_changes_quit_message(&self) -> String {
         format!("{} (use :q! to quit)", self.unsaved_changes_message())
     }
+}
+
+fn formatter_for(language: SyntaxLanguage) -> Option<SaveFormatter> {
+    match language {
+        SyntaxLanguage::Rust => Some(SaveFormatter::CargoFmt),
+        SyntaxLanguage::Go => Some(SaveFormatter::Gofmt),
+        SyntaxLanguage::Python => Some(SaveFormatter::Ruff),
+        _ => None,
+    }
+}
+
+fn formatter_available(formatter: SaveFormatter, path: &Path) -> bool {
+    match formatter {
+        SaveFormatter::CargoFmt => {
+            cargo_workspace_root(path).is_some()
+                && executable_on_path("cargo")
+                && executable_on_path("rustfmt")
+        }
+        SaveFormatter::Gofmt => executable_on_path("gofmt"),
+        SaveFormatter::Ruff => executable_on_path("ruff"),
+    }
+}
+
+fn run_formatter(formatter: SaveFormatter, launch_dir: &Path, path: &Path) -> Result<(), String> {
+    match formatter {
+        SaveFormatter::CargoFmt => {
+            let workspace_root = cargo_workspace_root(path)
+                .ok_or_else(|| "cargo fmt unavailable outside a Cargo workspace".to_string())?;
+            run_command_status(
+                Command::new("cargo")
+                    .current_dir(workspace_root)
+                    .args(["fmt", "--"])
+                    .arg(path),
+                "cargo fmt",
+            )
+        }
+        SaveFormatter::Gofmt => run_command_status(
+            Command::new("gofmt")
+                .current_dir(launch_dir)
+                .args(["-w"])
+                .arg(path),
+            "gofmt",
+        ),
+        SaveFormatter::Ruff => {
+            run_command_status(
+                Command::new("ruff")
+                    .current_dir(launch_dir)
+                    .args(["check", "--fix", "--exit-zero"])
+                    .arg(path),
+                "ruff check --fix",
+            )?;
+            run_command_status(
+                Command::new("ruff")
+                    .current_dir(launch_dir)
+                    .args(["format"])
+                    .arg(path),
+                "ruff format",
+            )
+        }
+    }
+}
+
+fn cargo_workspace_root(path: &Path) -> Option<&Path> {
+    path.ancestors()
+        .find(|dir| dir.join("Cargo.toml").is_file())
+}
+
+fn run_command_status(command: &mut Command, label: &str) -> Result<(), String> {
+    let output = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+    Err(format!("{label} failed: {detail}"))
+}
+
+fn executable_on_path(executable: &str) -> bool {
+    if executable.contains(std::path::MAIN_SEPARATOR) {
+        return Path::new(executable).exists();
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+
+    std::env::split_paths(&paths).any(|dir| dir.join(executable).exists())
+}
+
+fn apply_save_format_passes(text: &str) -> String {
+    trim_trailing_whitespace_text(&expand_hard_tabs(text, SOFT_TAB_WIDTH))
+}
+
+fn expand_hard_tabs(text: &str, tab_width: usize) -> String {
+    let mut expanded = String::with_capacity(text.len());
+    let mut col = 0usize;
+
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let spaces = tab_width - (col % tab_width);
+                expanded.extend(std::iter::repeat_n(' ', spaces));
+                col += spaces;
+            }
+            '\n' => {
+                expanded.push('\n');
+                col = 0;
+            }
+            _ => {
+                expanded.push(ch);
+                col += 1;
+            }
+        }
+    }
+
+    expanded
+}
+
+fn trim_trailing_whitespace_text(text: &str) -> String {
+    let mut trimmed = String::with_capacity(text.len());
+
+    for line in text.split_inclusive('\n') {
+        let Some(content) = line.strip_suffix('\n') else {
+            trimmed.push_str(line.trim_end_matches([' ', '\t']));
+            continue;
+        };
+        trimmed.push_str(content.trim_end_matches([' ', '\t']));
+        trimmed.push('\n');
+    }
+
+    trimmed
 }

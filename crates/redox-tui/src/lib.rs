@@ -40,6 +40,9 @@ use ui::{
     perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
 
+pub(crate) const SOFT_TAB_WIDTH: usize = 4;
+pub(crate) const SOFT_TAB: &str = "    ";
+
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
 const TARGET_FRAME_RATE_HZ: u64 = 60;

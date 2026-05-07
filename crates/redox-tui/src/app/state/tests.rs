@@ -5,6 +5,7 @@ use redox_core::{
 };
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -146,6 +147,43 @@ fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindS
         Ok(value) => value,
         Err(err) => panic::resume_unwind(err),
     }
+}
+
+fn with_path_prefix<T>(dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = previous_path.as_ref() {
+        paths.extend(std::env::split_paths(existing));
+    }
+    let joined = std::env::join_paths(paths).expect("failed to join PATH");
+    unsafe {
+        std::env::set_var("PATH", &joined);
+    }
+
+    let result = panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    match previous_path {
+        Some(value) => unsafe {
+            std::env::set_var("PATH", value);
+        },
+        None => unsafe {
+            std::env::remove_var("PATH");
+        },
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(err) => panic::resume_unwind(err),
+    }
+}
+
+fn write_executable(path: &std::path::Path, script: &str) {
+    fs::write(path, script).expect("failed to write executable");
+    let mut permissions = fs::metadata(path)
+        .expect("failed to stat executable")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("failed to chmod executable");
 }
 
 #[test]
@@ -2592,6 +2630,159 @@ fn command_write_trims_trailing_whitespace_on_save() {
     );
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_softens_hard_tabs_without_external_formatter() {
+    let path = temp_file_path("write_softens_tabs");
+    let mut state = state_with_text(path.clone(), "alpha\tbeta\n\tgamma\n");
+
+    run_command(&mut state, "w");
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha   beta\n    gamma\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("failed to read saved file"),
+        "alpha   beta\n    gamma\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_formats_python_with_ruff_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_python", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        let ruff_path = bin_dir.join("ruff");
+        write_executable(
+            &ruff_path,
+            "#!/bin/sh
+if [ \"$1\" = \"check\" ]; then
+  exit 0
+fi
+if [ \"$1\" = \"format\" ]; then
+  cat <<'EOF' > \"$2\"
+def main():
+\tprint('hi')
+EOF
+  exit 0
+fi
+exit 1
+",
+        );
+
+        let path = root.join("example.py");
+        fs::write(&path, "def main():\n    print('hi')\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "def main():\n    print('hi')\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "def main():\n    print('hi')\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
+}
+
+#[test]
+fn command_write_formats_go_with_gofmt_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_go", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        let gofmt_path = bin_dir.join("gofmt");
+        write_executable(
+            &gofmt_path,
+            "#!/bin/sh
+cat <<'EOF' > \"$2\"
+package main
+
+func main() {
+\tprintln(\"hi\")
+}
+EOF
+",
+        );
+
+        let path = root.join("example.go");
+        fs::write(
+            &path,
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n",
+        )
+        .expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
+}
+
+#[test]
+fn command_write_formats_rust_with_cargo_fmt_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_rust", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        write_executable(&bin_dir.join("rustfmt"), "#!/bin/sh\nexit 0\n");
+        let cargo_path = bin_dir.join("cargo");
+        write_executable(
+            &cargo_path,
+            "#!/bin/sh
+if [ \"$1\" = \"fmt\" ]; then
+  file=\"$3\"
+  cat <<'EOF' > \"$file\"
+fn main() {
+\tprintln!(\"hi\");
+}
+EOF
+  exit 0
+fi
+exit 1
+",
+        );
+
+        let cargo_toml = root.join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            "[package]\nname = \"fmt-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("failed to write Cargo.toml");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("failed to create src dir");
+        let path = src_dir.join("main.rs");
+        fs::write(&path, "fn main() {\n    println!(\"hi\");\n}\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
 }
 
 #[test]

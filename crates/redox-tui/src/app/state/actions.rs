@@ -1,9 +1,10 @@
-use redox_core::{Pos, SOFT_TAB, SOFT_TAB_WIDTH, Selection, TextBuffer, motion::Motion};
+use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
 
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, InputMode, InsertKind};
 use crate::ui::syntax::smart_newline_insert;
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
+use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 impl EditorState {
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.

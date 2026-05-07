@@ -5,7 +5,7 @@ mod languages;
 use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
-use redox_core::{Pos, SOFT_TAB, SOFT_TAB_WIDTH, TextBuffer};
+use redox_core::{Pos, TextBuffer};
 use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -14,6 +14,7 @@ use self::languages::{
 };
 use super::style::{SyntaxRole, UiStyle};
 use crate::ui::helpers::apply_color_column;
+use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
