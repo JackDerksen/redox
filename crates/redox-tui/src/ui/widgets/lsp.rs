@@ -3,8 +3,9 @@ use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{
-    DiagnosticSeverity, DiagnosticsPopup, SymbolInfoBlock, SymbolInfoDisplayKind,
-    SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
+    CodeActionPopup, DiagnosticSeverity, DiagnosticsCodeActionsPane, DiagnosticsPopup,
+    DiagnosticsPopupFocus, SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoDisplayLine,
+    SymbolInfoKind, SymbolInfoPopup,
 };
 use crate::ui::UiStyle;
 use crate::ui::syntax::{
@@ -17,6 +18,7 @@ use crate::ui::widgets::popup::{
 };
 
 const DIAGNOSTICS_TITLE: &str = "Diagnostics";
+const CODE_ACTIONS_TITLE: &str = "Code Actions";
 const DIAGNOSTIC_VISIBLE_ROWS: usize = 12;
 const DIAGNOSTIC_DETAIL_MIN_HEIGHT: u16 = 8;
 const DIAGNOSTIC_DETAIL_MAX_ROWS: usize = 6;
@@ -632,13 +634,19 @@ pub fn draw_diagnostics_popup(
     let mut view = popup_window_view(window, layout);
     let summary = format!("{} diagnostics", popup.entries.len());
     let _ = draw_section_header(&mut view, 0, &summary, style.finder.query_title)?;
+    let diagnostics_active = popup.focus == DiagnosticsPopupFocus::Diagnostics;
 
-    let detail_rows = if view.height >= DIAGNOSTIC_DETAIL_MIN_HEIGHT {
+    let detail_rows = if popup.code_actions.is_some() {
+        0
+    } else if view.height >= DIAGNOSTIC_DETAIL_MIN_HEIGHT {
         ((view.height as usize) / 3).clamp(3, DIAGNOSTIC_DETAIL_MAX_ROWS)
     } else {
         0
     };
-    let reserved_rows = if detail_rows > 0 {
+    let split_reserved_rows = if popup.code_actions.is_some() { 6 } else { 0 };
+    let reserved_rows = if split_reserved_rows > 0 {
+        split_reserved_rows
+    } else if detail_rows > 0 {
         detail_rows.saturating_add(1)
     } else {
         0
@@ -673,16 +681,23 @@ pub fn draw_diagnostics_popup(
         let selected = idx == popup.selected;
         if selected {
             let fill = " ".repeat(view.width.saturating_sub(2) as usize);
-            view.write_str_colored(row, 1, &fill, style.finder.selected)?;
+            let highlight = if diagnostics_active {
+                style.finder.selected
+            } else {
+                style.finder.dim
+            };
+            view.write_str_colored(row, 1, &fill, highlight)?;
         }
 
-        let row_colors = selection_aware_color(style.finder.text, style.finder.selected, selected);
-        let dim_colors = selection_aware_color(style.finder.dim, style.finder.selected, selected);
-        let severity_colors = selection_aware_color(
-            severity_color(style, entry.severity),
-            style.finder.selected,
-            selected,
-        );
+        let highlight = if diagnostics_active {
+            style.finder.selected
+        } else {
+            style.finder.dim
+        };
+        let row_colors = selection_aware_color(style.finder.text, highlight, selected);
+        let dim_colors = selection_aware_color(style.finder.dim, highlight, selected);
+        let severity_colors =
+            selection_aware_color(severity_color(style, entry.severity), highlight, selected);
 
         let marker = if selected { "› " } else { "  " };
         let location = format!("{}:{}", entry.line + 1, entry.col + 1);
@@ -706,12 +721,37 @@ pub fn draw_diagnostics_popup(
         )?;
 
         let message_w = view.width.saturating_sub(prefix_w as u16).saturating_sub(3) as usize;
+        let action_hint = if selected && popup.code_actions.is_none() {
+            Some("[a]")
+        } else {
+            None
+        };
+        let action_hint_width = action_hint.map_or(0, |hint| text_width(hint) as u16);
+        let message_w = message_w.saturating_sub(action_hint_width as usize + 1);
         let message = clip_text_to_cells(&entry.summary, message_w);
         view.write_str_colored(row, prefix_w as u16 + 1, &message, row_colors)?;
+        if let Some(hint) = action_hint
+            && action_hint_width.saturating_add(2) < view.width
+        {
+            let hint_col = view
+                .width
+                .saturating_sub(action_hint_width.saturating_add(1));
+            view.write_str_colored(row, hint_col, hint, dim_colors)?;
+        }
     }
 
-    if detail_rows > 0 {
-        let separator_row = 1u16.saturating_add((end.saturating_sub(start)) as u16);
+    let separator_row = 1u16.saturating_add((end.saturating_sub(start)) as u16);
+    if let Some(code_actions) = popup.code_actions.as_ref() {
+        if separator_row < view.height {
+            draw_diagnostics_code_actions_split(
+                &mut view,
+                separator_row,
+                code_actions,
+                popup.focus == DiagnosticsPopupFocus::CodeActions,
+                style,
+            )?;
+        }
+    } else if detail_rows > 0 {
         if separator_row < view.height {
             let divider = "─".repeat(view.width as usize);
             view.write_str_colored(separator_row, 0, &divider, style.finder.dim)?;
@@ -748,6 +788,173 @@ pub fn draw_diagnostics_popup(
                     style.finder.text,
                 )?;
             }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn draw_code_actions_popup(
+    popup: &CodeActionPopup,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<()> {
+    let (term_w, term_h) = window.get_size();
+    let (inner_w, inner_h) = popup_inner_size(
+        term_w,
+        term_h,
+        style.finder.width_percent,
+        style.finder.height_percent,
+        style.finder.min_width,
+        style.finder.min_height,
+    );
+    let layout = draw_popup_frame(
+        window,
+        term_w,
+        term_h,
+        inner_w,
+        inner_h,
+        CODE_ACTIONS_TITLE,
+        PopupChrome {
+            border: style.finder.border,
+            title: style.finder.title,
+            fill: style.finder.text,
+        },
+    )?;
+    let mut view = popup_window_view(window, layout);
+    let summary = format!("{} actions", popup.entries.len());
+    let _ = draw_section_header(&mut view, 0, &summary, style.finder.query_title)?;
+
+    if view.height > 2 {
+        view.write_str_colored(
+            1,
+            1,
+            &clip_text_to_cells(&popup.title, view.width.saturating_sub(2) as usize),
+            style.finder.dim,
+        )?;
+    }
+
+    let list_start_row = if view.height > 2 { 2 } else { 1 };
+    draw_code_action_entries(
+        &mut view,
+        list_start_row,
+        popup.entries.as_slice(),
+        popup.selected,
+        popup.scroll,
+        true,
+        style,
+    )?;
+
+    Ok(())
+}
+
+fn draw_diagnostics_code_actions_split(
+    view: &mut WindowView<'_>,
+    separator_row: u16,
+    pane: &DiagnosticsCodeActionsPane,
+    active: bool,
+    style: UiStyle,
+) -> minui::Result<()> {
+    if separator_row >= view.height {
+        return Ok(());
+    }
+    let divider = "─".repeat(view.width as usize);
+    view.write_str_colored(separator_row, 0, &divider, style.finder.dim)?;
+    let title_row = separator_row.saturating_add(1);
+    if title_row >= view.height {
+        return Ok(());
+    }
+    let title_colors = if active {
+        style.finder.query_title
+    } else {
+        style.finder.dim
+    };
+    view.write_str_colored(
+        title_row,
+        1,
+        &clip_text_to_cells(&pane.title, view.width.saturating_sub(2) as usize),
+        title_colors,
+    )?;
+    if pane.loading {
+        let message_row = title_row.saturating_add(1);
+        if message_row < view.height {
+            view.write_str_colored(
+                message_row,
+                1,
+                &clip_text_to_cells(
+                    "Loading quick fixes...",
+                    view.width.saturating_sub(2) as usize,
+                ),
+                style.finder.dim,
+            )?;
+        }
+        return Ok(());
+    }
+    let list_start_row = title_row.saturating_add(1);
+    draw_code_action_entries(
+        view,
+        list_start_row,
+        pane.entries.as_slice(),
+        pane.selected,
+        pane.scroll,
+        active,
+        style,
+    )
+}
+
+fn draw_code_action_entries(
+    view: &mut WindowView<'_>,
+    list_start_row: u16,
+    entries: &[crate::app::state::CodeActionPopupEntry],
+    selected_index: usize,
+    scroll: usize,
+    active: bool,
+    style: UiStyle,
+) -> minui::Result<()> {
+    let list_capacity = view.height.saturating_sub(list_start_row).max(1).min(12) as usize;
+    let mut start = scroll.min(entries.len());
+    if selected_index < start {
+        start = selected_index;
+    }
+    if selected_index >= start.saturating_add(list_capacity) {
+        start = selected_index
+            .saturating_add(1)
+            .saturating_sub(list_capacity);
+    }
+    let end = (start + list_capacity).min(entries.len());
+    let highlight = if active {
+        style.finder.selected
+    } else {
+        style.finder.dim
+    };
+
+    for (visible_idx, entry) in entries[start..end].iter().enumerate() {
+        let row = list_start_row.saturating_add(visible_idx as u16);
+        if row >= view.height {
+            break;
+        }
+        let idx = start + visible_idx;
+        let selected = idx == selected_index;
+        if selected {
+            let fill = " ".repeat(view.width.saturating_sub(2) as usize);
+            view.write_str_colored(row, 1, &fill, highlight)?;
+        }
+
+        let row_colors = selection_aware_color(style.finder.text, highlight, selected);
+        let dim_colors = selection_aware_color(style.finder.dim, highlight, selected);
+        let marker = if selected { "› " } else { "  " };
+        let badge = if entry.preferred { "★ " } else { "" };
+        let title = format!("{badge}{}", entry.title);
+        let kind = entry.kind.as_deref().unwrap_or("action");
+        let kind_text = format!("[{kind}]");
+        let kind_width = text_width(&kind_text) as u16;
+        let kind_col = view.width.saturating_sub(kind_width.saturating_add(1));
+
+        view.write_str_colored(row, 1, marker, dim_colors)?;
+        let title_width = kind_col.saturating_sub(4) as usize;
+        view.write_str_colored(row, 3, &clip_text_to_cells(&title, title_width), row_colors)?;
+        if kind_col > 3 {
+            view.write_str_colored(row, kind_col, &kind_text, dim_colors)?;
         }
     }
 

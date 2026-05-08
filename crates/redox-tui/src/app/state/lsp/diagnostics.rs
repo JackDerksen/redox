@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{WorkspaceKey, file_uri, utf16_code_unit_to_char_col};
@@ -160,13 +160,13 @@ pub(super) struct IncomingDiagnosticRelatedInformation {
     pub(super) message: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct IncomingRange {
     pub(super) start: IncomingPosition,
     pub(super) end: IncomingPosition,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct IncomingPosition {
     pub(super) line: u64,
     pub(super) character: u64,

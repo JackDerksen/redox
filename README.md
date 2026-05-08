@@ -140,6 +140,7 @@ Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 | `<space><space>` | Open the fuzzy file finder for the launch directory. |
 | `<space>e` | Toggle the file explorer. |
 | `<space>x` | Toggle the diagnostics list for the current file. |
+| `<space>ca` | Show quick fixes for the diagnostic under the cursor. |
 | `gd` | Go to symbol definition using the active LSP. |
 | `ctrl+shift+k` | Request LSP completions in insert mode. |
 | `Enter` | Open the selected explorer/finder entry. |
@@ -205,7 +206,17 @@ Diagnostics controls:
 | `<space>x` | Toggle the diagnostics list for the current file. |
 | `j` / `k` or `Down` / `Up` | Move through diagnostics. |
 | `Enter` | Jump to the selected diagnostic. |
-| `Escape` / `ctrl+c` | Close the diagnostics list. |
+| `a` | Open quick fixes for the selected diagnostic in a lower split. |
+| `Escape` / `ctrl+c` | Close the lower quick-fix split, or close the diagnostics list when no split is open. |
+
+Code action controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `<space>ca` | Open quick fixes for the diagnostic under the cursor. |
+| `j` / `k` or `Down` / `Up` | Move through available actions. |
+| `Enter` | Apply the selected quick fix. |
+| `Escape` / `ctrl+c` | Close the quick-fix popup. |
 
 Other language tool commands:
 
@@ -322,7 +333,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [ ] Undo tree UI with stored history
 - [ ] LSP symbol renaming
 - [ ] LSP document formatting
-- [ ] LSP code actions and quick fixes
+- [x] LSP code actions and quick fixes
 - [ ] Basic git integration (diff stats)
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality

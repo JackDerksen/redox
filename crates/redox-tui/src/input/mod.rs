@@ -20,6 +20,7 @@ pub enum InputMode {
     PinSelect,
     LspMarketplace,
     DiagnosticsList,
+    CodeActions,
     SymbolInfo,
     Visual,
     VisualLine,
@@ -79,6 +80,7 @@ pub enum InputAction {
     /// Open the file finder popup (`<leader><leader>`).
     OpenFinder,
     ToggleDiagnosticsList,
+    TriggerCodeActions,
     GotoDefinition,
     TriggerSymbolInfo,
     TriggerCompletion,
@@ -202,6 +204,10 @@ pub enum InputAction {
     DiagnosticsListMovePrev,
     DiagnosticsListOpenSelected,
     DiagnosticsListCancel,
+    CodeActionsMoveNext,
+    CodeActionsMovePrev,
+    CodeActionsApplySelected,
+    CodeActionsCancel,
     SymbolInfoMoveNext,
     SymbolInfoMovePrev,
     SymbolInfoCancel,
@@ -254,6 +260,7 @@ enum SequenceAction {
     OpenExplorer,
     OpenFinder,
     ToggleDiagnosticsList,
+    TriggerCodeActions,
     GotoDefinition,
     YankSelectionSystem,
     PasteSystemClipboard,
@@ -278,6 +285,16 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: " e",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::OpenExplorer),
+    },
+    SequenceBinding {
+        sequence: " c",
+        fallback: PrefixFallback::Consume,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: " ca",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::TriggerCodeActions),
     },
     SequenceBinding {
         sequence: " x",
@@ -446,6 +463,7 @@ pub fn map_event_with_context(
                 InputMode::PinSelect => InputAction::PinSelectorCancel,
                 InputMode::LspMarketplace => InputAction::LspMarketplaceCancel,
                 InputMode::DiagnosticsList => InputAction::DiagnosticsListCancel,
+                InputMode::CodeActions => InputAction::CodeActionsCancel,
                 InputMode::SymbolInfo => InputAction::SymbolInfoCancel,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::SetMode(InputMode::Normal)
@@ -464,6 +482,7 @@ pub fn map_event_with_context(
                 InputMode::PinSelect => InputAction::None,
                 InputMode::LspMarketplace => InputAction::None,
                 InputMode::DiagnosticsList => InputAction::None,
+                InputMode::CodeActions => InputAction::None,
                 InputMode::SymbolInfo => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
@@ -482,6 +501,7 @@ pub fn map_event_with_context(
                 InputMode::PinSelect => InputAction::PinSelectorOpenSelected,
                 InputMode::LspMarketplace => InputAction::None,
                 InputMode::DiagnosticsList => InputAction::DiagnosticsListOpenSelected,
+                InputMode::CodeActions => InputAction::CodeActionsApplySelected,
                 InputMode::SymbolInfo => InputAction::None,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {
                     InputAction::None
@@ -544,6 +564,15 @@ pub fn map_event_with_context(
                 match c {
                     'j' => InputAction::DiagnosticsListMoveNext,
                     'k' => InputAction::DiagnosticsListMovePrev,
+                    'a' | 'A' => InputAction::TriggerCodeActions,
+                    _ => InputAction::None,
+                }
+            }
+            InputMode::CodeActions => {
+                state.reset_prefixes();
+                match c {
+                    'j' => InputAction::CodeActionsMoveNext,
+                    'k' => InputAction::CodeActionsMovePrev,
                     _ => InputAction::None,
                 }
             }
@@ -619,6 +648,7 @@ fn modal_char_action(
                 | InputMode::PinSelect
                 | InputMode::LspMarketplace
                 | InputMode::DiagnosticsList
+                | InputMode::CodeActions
                 | InputMode::SymbolInfo => InputAction::None,
             }
         }
@@ -636,6 +666,7 @@ fn modal_char_action(
                 | InputMode::PinSelect
                 | InputMode::LspMarketplace
                 | InputMode::DiagnosticsList
+                | InputMode::CodeActions
                 | InputMode::SymbolInfo => InputAction::None,
             }
         }
@@ -1149,6 +1180,7 @@ fn sequence_bindings_for_mode(mode: InputMode) -> impl Iterator<Item = &'static 
         | InputMode::PinSelect
         | InputMode::LspMarketplace
         | InputMode::DiagnosticsList
+        | InputMode::CodeActions
         | InputMode::SymbolInfo => [].iter(),
     })
 }
@@ -1211,6 +1243,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::ToggleDiagnosticsList) => {
             state.reset_prefixes();
             InputAction::ToggleDiagnosticsList
+        }
+        Some(SequenceAction::TriggerCodeActions) => {
+            state.reset_prefixes();
+            InputAction::TriggerCodeActions
         }
         Some(SequenceAction::GotoDefinition) => {
             state.reset_prefixes();
@@ -1321,6 +1357,23 @@ fn map_key_with_state(
                 KeyKind::Down => InputAction::SymbolInfoMoveNext,
                 KeyKind::Char('j') | KeyKind::Char('J') => InputAction::SymbolInfoMoveNext,
                 KeyKind::Char('k') | KeyKind::Char('K') => InputAction::SymbolInfoMovePrev,
+                _ => InputAction::None,
+            };
+        }
+
+        InputMode::CodeActions => {
+            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+                state.reset_prefixes();
+                return InputAction::CodeActionsCancel;
+            }
+
+            return match key {
+                KeyKind::Escape => InputAction::CodeActionsCancel,
+                KeyKind::Enter => InputAction::CodeActionsApplySelected,
+                KeyKind::Up => InputAction::CodeActionsMovePrev,
+                KeyKind::Down => InputAction::CodeActionsMoveNext,
+                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::CodeActionsMoveNext,
+                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::CodeActionsMovePrev,
                 _ => InputAction::None,
             };
         }
@@ -1506,6 +1559,7 @@ fn map_key_with_state(
 
             return match key {
                 KeyKind::Escape => InputAction::DiagnosticsListCancel,
+                KeyKind::Char('a') | KeyKind::Char('A') => InputAction::TriggerCodeActions,
                 KeyKind::Enter => InputAction::DiagnosticsListOpenSelected,
                 KeyKind::Up => InputAction::DiagnosticsListMovePrev,
                 KeyKind::Down => InputAction::DiagnosticsListMoveNext,
@@ -1659,6 +1713,7 @@ fn map_key_with_state(
             | InputMode::PinSelect
             | InputMode::LspMarketplace
             | InputMode::DiagnosticsList
+            | InputMode::CodeActions
             | InputMode::SymbolInfo => InputAction::None,
         };
     }
@@ -3328,6 +3383,37 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
         assert_eq!(action, InputAction::ToggleDiagnosticsList);
+    }
+
+    #[test]
+    fn normal_mode_leader_ca_triggers_code_actions() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('a'));
+        assert_eq!(action, InputAction::TriggerCodeActions);
+    }
+
+    #[test]
+    fn diagnostics_list_a_triggers_code_actions() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::DiagnosticsList,
+            &Event::Character('a'),
+        );
+        assert_eq!(action, InputAction::TriggerCodeActions);
+    }
+
+    #[test]
+    fn diagnostics_list_f_does_not_trigger_code_actions() {
+        let mut state = InputState::new();
+        let action = map_event_with_state(
+            &mut state,
+            InputMode::DiagnosticsList,
+            &Event::Character('f'),
+        );
+        assert_eq!(action, InputAction::None);
     }
 
     #[test]

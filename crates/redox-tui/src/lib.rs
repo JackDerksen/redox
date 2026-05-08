@@ -33,8 +33,9 @@ use ui::syntax::{
 };
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup, draw_completion_popup,
-    draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
+    build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
+    draw_command_line_popup, draw_completion_popup, draw_completion_preview,
+    draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
     draw_symbol_info_popup, explorer_popup_inner_size, language_for_path, perf_popup_layout,
     perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
@@ -69,6 +70,7 @@ fn draw_buffer_view(
             | app::EditorMode::PinSelect
             | app::EditorMode::LspMarketplace
             | app::EditorMode::DiagnosticsList
+            | app::EditorMode::CodeActions
             | app::EditorMode::SymbolInfo
     ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
@@ -195,6 +197,35 @@ fn draw_buffer_view(
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
         draw_diagnostics_popup(&popup, style, window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
+    if let Some(popup) = state.code_actions_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_code_actions_popup(&popup, style, window)?;
         hide_cursor(window);
         return Ok(());
     }

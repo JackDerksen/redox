@@ -34,15 +34,48 @@ pub struct DiagnosticsPopup {
     pub entries: Vec<DiagnosticsPopupEntry>,
     pub selected: usize,
     pub scroll: usize,
+    pub focus: DiagnosticsPopupFocus,
+    pub code_actions: Option<DiagnosticsCodeActionsPane>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticsPopupEntry {
     pub severity: DiagnosticSeverity,
     pub line: usize,
     pub col: usize,
+    pub end_col: usize,
     pub summary: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticsPopupFocus {
+    Diagnostics,
+    CodeActions,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticsCodeActionsPane {
+    pub title: String,
+    pub entries: Vec<CodeActionPopupEntry>,
+    pub selected: usize,
+    pub scroll: usize,
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeActionPopup {
+    pub title: String,
+    pub entries: Vec<CodeActionPopupEntry>,
+    pub selected: usize,
+    pub scroll: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeActionPopupEntry {
+    pub title: String,
+    pub kind: Option<String>,
+    pub preferred: bool,
 }
 
 #[derive(Debug, Clone)]

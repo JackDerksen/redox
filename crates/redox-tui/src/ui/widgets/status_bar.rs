@@ -609,6 +609,7 @@ fn status_bar_mode_presentation(
         EditorMode::LspMarketplace | EditorMode::DiagnosticsList => {
             ("NORMAL", style.palette.mode_normal)
         }
+        EditorMode::CodeActions => ("ACTIONS", style.palette.mode_normal),
         EditorMode::SymbolInfo => ("INFO", style.palette.mode_normal),
         EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
         EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),

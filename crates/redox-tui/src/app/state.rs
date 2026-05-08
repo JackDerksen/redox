@@ -29,7 +29,8 @@ use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState}
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
 pub use git::{GitDiffSnapshot, GitFileStatusKind, GitGutterKind};
 pub use lsp::{
-    CompletionEntry, CompletionPopup, DiagnosticLine, DiagnosticSeverity, DiagnosticsPopup,
+    CodeActionPopup, CodeActionPopupEntry, CompletionEntry, CompletionPopup, DiagnosticLine,
+    DiagnosticSeverity, DiagnosticsCodeActionsPane, DiagnosticsPopup, DiagnosticsPopupFocus,
     LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
     SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
 };
@@ -125,6 +126,7 @@ pub enum EditorMode {
     PinSelect,
     LspMarketplace,
     DiagnosticsList,
+    CodeActions,
     SymbolInfo,
     Visual,
     VisualLine,
@@ -141,6 +143,7 @@ impl EditorMode {
                 | EditorMode::PinSelect
                 | EditorMode::LspMarketplace
                 | EditorMode::DiagnosticsList
+                | EditorMode::CodeActions
                 | EditorMode::SymbolInfo
         )
     }
@@ -155,6 +158,7 @@ impl EditorMode {
             EditorMode::PinSelect => InputMode::PinSelect,
             EditorMode::LspMarketplace => InputMode::LspMarketplace,
             EditorMode::DiagnosticsList => InputMode::DiagnosticsList,
+            EditorMode::CodeActions => InputMode::CodeActions,
             EditorMode::SymbolInfo => InputMode::SymbolInfo,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
@@ -486,7 +490,9 @@ impl EditorState {
             | EditorMode::Finder
             | EditorMode::PinSelect
             | EditorMode::LspMarketplace => return None,
-            EditorMode::DiagnosticsList | EditorMode::SymbolInfo => return None,
+            EditorMode::DiagnosticsList | EditorMode::CodeActions | EditorMode::SymbolInfo => {
+                return None;
+            }
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }
@@ -559,18 +565,7 @@ impl EditorState {
 
     fn invalidate_active_render_caches(&mut self) {
         let active_id = self.session.active_id();
-        let version = {
-            let view = self.views.entry(active_id).or_default();
-            view.invalidate_render_caches();
-            view.analysis_version
-        };
-        self.git.mark_stale(active_id);
-        self.request_analysis(active_id, version);
-        if let Some(search) = self.search_state.as_mut()
-            && search.buffer_id == active_id
-        {
-            search.dirty = true;
-        }
+        self.invalidate_buffer_render_caches(active_id);
     }
 
     fn request_analysis(&self, buffer_id: BufferId, version: u64) {
@@ -609,6 +604,21 @@ impl EditorState {
             view.analysis_version
         };
         self.request_analysis(buffer_id, version);
+    }
+
+    fn invalidate_buffer_render_caches(&mut self, buffer_id: BufferId) {
+        let version = {
+            let view = self.views.entry(buffer_id).or_default();
+            view.invalidate_render_caches();
+            view.analysis_version
+        };
+        self.git.mark_stale(buffer_id);
+        self.request_analysis(buffer_id, version);
+        if let Some(search) = self.search_state.as_mut()
+            && search.buffer_id == buffer_id
+        {
+            search.dirty = true;
+        }
     }
 
     pub fn poll_analysis_results(&mut self) {

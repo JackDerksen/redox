@@ -97,6 +97,7 @@ impl EditorState {
                     InputMode::PinSelect => EditorMode::PinSelect,
                     InputMode::LspMarketplace => EditorMode::LspMarketplace,
                     InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
+                    InputMode::CodeActions => EditorMode::CodeActions,
                     InputMode::SymbolInfo => EditorMode::SymbolInfo,
                     InputMode::Visual => EditorMode::Visual,
                     InputMode::VisualLine => EditorMode::VisualLine,
@@ -260,6 +261,12 @@ impl EditorState {
             InputAction::GotoDefinition => {
                 if self.mode == EditorMode::Normal {
                     self.goto_definition();
+                }
+            }
+
+            InputAction::TriggerCodeActions => {
+                if matches!(self.mode, EditorMode::Normal | EditorMode::DiagnosticsList) {
+                    self.trigger_code_actions();
                 }
             }
 
@@ -500,13 +507,37 @@ impl EditorState {
 
             InputAction::DiagnosticsListOpenSelected => {
                 if self.mode == EditorMode::DiagnosticsList {
-                    self.jump_to_selected_diagnostic();
+                    self.diagnostics_popup_open_selected();
                 }
             }
 
             InputAction::DiagnosticsListCancel => {
                 if self.mode == EditorMode::DiagnosticsList {
-                    self.close_diagnostics_popup();
+                    self.diagnostics_popup_cancel();
+                }
+            }
+
+            InputAction::CodeActionsMoveNext => {
+                if self.mode == EditorMode::CodeActions {
+                    self.code_actions_popup_move(1);
+                }
+            }
+
+            InputAction::CodeActionsMovePrev => {
+                if self.mode == EditorMode::CodeActions {
+                    self.code_actions_popup_move(-1);
+                }
+            }
+
+            InputAction::CodeActionsApplySelected => {
+                if self.mode == EditorMode::CodeActions {
+                    self.apply_selected_code_action();
+                }
+            }
+
+            InputAction::CodeActionsCancel => {
+                if self.mode == EditorMode::CodeActions {
+                    self.close_code_actions_popup();
                 }
             }
 
@@ -529,6 +560,7 @@ impl EditorState {
                         | EditorMode::PinSelect
                         | EditorMode::LspMarketplace
                         | EditorMode::DiagnosticsList
+                        | EditorMode::CodeActions
                         | EditorMode::SymbolInfo
                 ) {
                     self.begin_pin_selection_for_current_buffer();
@@ -716,6 +748,7 @@ impl EditorState {
                 | EditorMode::Finder
                 | EditorMode::PinSelect
                 | EditorMode::LspMarketplace
+                | EditorMode::CodeActions
                 | EditorMode::SymbolInfo
                 | EditorMode::DiagnosticsList
                 | EditorMode::Visual

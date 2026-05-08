@@ -20,13 +20,16 @@ use crate::ui::syntax::{SyntaxLanguage, lexical_fallback_line_spans};
 
 mod completion;
 use completion::*;
+mod code_actions;
+use code_actions::*;
 mod diagnostics;
 use diagnostics::*;
 pub use diagnostics::{DiagnosticLine, DiagnosticSeverity, DiagnosticSummary};
 mod types;
 use self::types::{DefinitionTarget, LspMarketplaceEntry, WorkspaceKey};
 pub use types::{
-    CompletionEntry, CompletionPopup, CompletionPreview, DiagnosticsPopup, DiagnosticsPopupEntry,
+    CodeActionPopup, CodeActionPopupEntry, CompletionEntry, CompletionPopup, CompletionPreview,
+    DiagnosticsCodeActionsPane, DiagnosticsPopup, DiagnosticsPopupEntry, DiagnosticsPopupFocus,
     LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
     SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
 };
@@ -477,6 +480,7 @@ pub(super) struct LspState {
     tool_availability: HashMap<MarketplaceItemId, bool>,
     marketplace: Option<LspMarketplaceState>,
     diagnostics_popup: Option<DiagnosticsPopupState>,
+    code_actions_popup: Option<CodeActionsPopupState>,
     completion: Option<CompletionState>,
     auto_completion: Option<AutoCompletionRequest>,
     active_snippet: Option<ActiveSnippet>,
@@ -516,6 +520,10 @@ struct LspMarketplaceState {
 #[derive(Debug, Clone)]
 struct DiagnosticsPopupState {
     selected: usize,
+    code_actions: Option<CodeActionsPaneState>,
+    focus: DiagnosticsPopupFocus,
+    cached_code_actions: Option<CachedCodeActions>,
+    pending_code_actions: Option<PendingDiagnosticsCodeActions>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,9 +597,18 @@ struct RequestKey {
     id: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingRequest {
     GotoDefinition,
+    CodeActions {
+        requested_at: Pos,
+        return_mode: EditorMode,
+        title: String,
+        trigger: CodeActionRequestTrigger,
+    },
+    ExecuteCommand {
+        title: String,
+    },
     SymbolInfo {
         requested_at: Pos,
         return_mode: EditorMode,
@@ -602,12 +619,18 @@ enum PendingRequest {
     },
 }
 
-fn pending_request_same_family(left: PendingRequest, right: PendingRequest) -> bool {
+fn pending_request_same_family(left: &PendingRequest, right: &PendingRequest) -> bool {
     matches!(
         (left, right),
         (
             PendingRequest::GotoDefinition,
             PendingRequest::GotoDefinition
+        ) | (
+            PendingRequest::CodeActions { .. },
+            PendingRequest::CodeActions { .. }
+        ) | (
+            PendingRequest::ExecuteCommand { .. },
+            PendingRequest::ExecuteCommand { .. }
         ) | (
             PendingRequest::SymbolInfo { .. },
             PendingRequest::SymbolInfo { .. }
@@ -618,7 +641,7 @@ fn pending_request_same_family(left: PendingRequest, right: PendingRequest) -> b
     )
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PendingClientRequest {
     kind: PendingRequest,
     started_at: Instant,
@@ -760,6 +783,9 @@ impl LspSession {
                     }
                 ],
                 "capabilities": {
+                    "workspace": {
+                        "applyEdit": true
+                    },
                     "textDocument": {
                         "publishDiagnostics": {
                             "relatedInformation": true,
@@ -771,6 +797,21 @@ impl LspSession {
                         "completion": {
                             "completionItem": {
                                 "snippetSupport": true
+                            }
+                        },
+                        "codeAction": {
+                            "codeActionLiteralSupport": {
+                                "codeActionKind": {
+                                    "valueSet": [
+                                        "quickfix",
+                                        "refactor",
+                                        "refactor.extract",
+                                        "refactor.inline",
+                                        "refactor.rewrite",
+                                        "source",
+                                        "source.organizeImports"
+                                    ]
+                                }
                             }
                         }
                     }
@@ -956,6 +997,50 @@ impl LspSession {
         Ok(request_id)
     }
 
+    fn send_code_actions(
+        &mut self,
+        path: &Path,
+        range: &IncomingRange,
+        diagnostics: &[Value],
+    ) -> io::Result<i64> {
+        let uri = file_uri(path)?;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {
+                    "uri": uri
+                },
+                "range": range,
+                "context": {
+                    "diagnostics": diagnostics,
+                    "only": ["quickfix"]
+                }
+            }
+        });
+        write_lsp_message(&mut self.stdin, &message)?;
+        Ok(request_id)
+    }
+
+    fn send_execute_command(&mut self, command: &str, arguments: &[Value]) -> io::Result<i64> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "workspace/executeCommand",
+            "params": {
+                "command": command,
+                "arguments": arguments,
+            }
+        });
+        write_lsp_message(&mut self.stdin, &message)?;
+        Ok(request_id)
+    }
+
     fn try_recv(&self) -> Option<SessionEvent> {
         self.events.try_recv().ok()
     }
@@ -1044,6 +1129,36 @@ impl EditorState {
             entries,
             selected,
             scroll,
+            focus: state.focus,
+            code_actions: self.diagnostics_code_actions_pane(state),
+        })
+    }
+
+    fn diagnostics_code_actions_pane(
+        &self,
+        state: &DiagnosticsPopupState,
+    ) -> Option<DiagnosticsCodeActionsPane> {
+        let pane = state.code_actions.as_ref()?;
+        if pane.actions.is_empty() {
+            return None;
+        }
+        let max_selected = pane.actions.len().saturating_sub(1);
+        let selected = pane.selected.min(max_selected);
+        let scroll = selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        Some(DiagnosticsCodeActionsPane {
+            title: pane.title.clone(),
+            entries: pane
+                .actions
+                .iter()
+                .map(|action| CodeActionPopupEntry {
+                    title: action.title.clone(),
+                    kind: action.kind.clone(),
+                    preferred: action.preferred,
+                })
+                .collect(),
+            selected,
+            scroll,
+            loading: pane.loading,
         })
     }
 
@@ -1294,6 +1409,14 @@ impl EditorState {
                             continue;
                         }
 
+                        if self.take_code_action_response(&workspace, &message) {
+                            continue;
+                        }
+
+                        if self.take_execute_command_response(&workspace, &message) {
+                            continue;
+                        }
+
                         if self.take_symbol_info_response(&workspace, &message) {
                             continue;
                         }
@@ -1326,6 +1449,15 @@ impl EditorState {
             && self.current_diagnostic_popup_entries().is_empty()
         {
             self.close_diagnostics_popup();
+        }
+        if self.mode == EditorMode::CodeActions
+            && self
+                .lsp
+                .code_actions_popup
+                .as_ref()
+                .is_some_and(|popup| popup.actions.is_empty())
+        {
+            self.close_code_actions_popup();
         }
     }
 
@@ -1363,8 +1495,15 @@ impl EditorState {
             self.set_status("no diagnostics in current file");
             return;
         }
-        self.lsp.diagnostics_popup = Some(DiagnosticsPopupState { selected: 0 });
+        self.lsp.diagnostics_popup = Some(DiagnosticsPopupState {
+            selected: 0,
+            code_actions: None,
+            focus: DiagnosticsPopupFocus::Diagnostics,
+            cached_code_actions: None,
+            pending_code_actions: None,
+        });
         self.mode = EditorMode::DiagnosticsList;
+        self.prefetch_selected_diagnostic_code_actions();
     }
 
     pub(super) fn close_diagnostics_popup(&mut self) {
@@ -1383,6 +1522,10 @@ impl EditorState {
     }
 
     pub(super) fn diagnostics_popup_move(&mut self, delta: isize) {
+        if self.diagnostics_code_actions_are_focused() {
+            self.move_diagnostics_code_actions(delta);
+            return;
+        }
         let entries = self.current_diagnostic_popup_entries();
         if entries.is_empty() {
             return;
@@ -1392,6 +1535,7 @@ impl EditorState {
         };
         let max_index = entries.len().saturating_sub(1) as isize;
         state.selected = (state.selected as isize + delta).clamp(0, max_index) as usize;
+        self.prefetch_selected_diagnostic_code_actions();
     }
 
     pub(super) fn jump_to_selected_diagnostic(&mut self) {
@@ -1410,6 +1554,20 @@ impl EditorState {
             view.cursor.reconcile_after_edit(buffer, width, text_vh);
         });
         self.close_diagnostics_popup();
+    }
+
+    pub(super) fn diagnostics_popup_open_selected(&mut self) {
+        if self.diagnostics_code_actions_are_focused() {
+            self.apply_selected_code_action();
+        } else {
+            self.jump_to_selected_diagnostic();
+        }
+    }
+
+    pub(super) fn diagnostics_popup_cancel(&mut self) {
+        if !self.close_diagnostics_code_actions_pane() {
+            self.close_diagnostics_popup();
+        }
     }
 
     pub(super) fn lsp_marketplace_move(&mut self, delta: isize) {
@@ -1809,10 +1967,20 @@ impl EditorState {
                 severity: diagnostic.severity,
                 line: diagnostic.line,
                 col: diagnostic.start_col,
+                end_col: diagnostic.end_col,
                 summary: diagnostic_summary_line(&diagnostic.message),
                 message: diagnostic.message,
             })
             .collect()
+    }
+
+    fn diagnostic_entry_under_cursor(&self) -> Option<DiagnosticsPopupEntry> {
+        let cursor = self.active_cursor_pos();
+        self.current_diagnostic_popup_entries()
+            .into_iter()
+            .find(|entry| {
+                entry.line == cursor.line && cursor.col >= entry.col && cursor.col <= entry.end_col
+            })
     }
 
     fn active_stored_diagnostics(&self) -> Vec<(&DiagnosticSource, &StoredDiagnostic)> {
@@ -1943,7 +2111,7 @@ impl EditorState {
             .pending_requests
             .iter()
             .filter_map(|(key, request)| {
-                (key.workspace == *workspace && pending_request_same_family(request.kind, kind))
+                (key.workspace == *workspace && pending_request_same_family(&request.kind, &kind))
                     .then_some(key.clone())
             })
             .collect::<Vec<_>>();
@@ -1961,7 +2129,7 @@ impl EditorState {
             .iter()
             .filter_map(|(key, request)| {
                 (now.saturating_duration_since(request.started_at) >= LSP_REQUEST_TIMEOUT)
-                    .then_some((key.clone(), request.kind))
+                    .then_some((key.clone(), request.kind.clone()))
             })
             .collect::<Vec<_>>();
         for (key, kind) in timed_out {
@@ -1971,6 +2139,22 @@ impl EditorState {
             self.send_lsp_cancel_request(&key);
             match kind {
                 PendingRequest::GotoDefinition => self.set_status("definition lookup timed out"),
+                PendingRequest::CodeActions { trigger, .. } => {
+                    if let Some(state) = self.lsp.diagnostics_popup.as_mut() {
+                        state.pending_code_actions = None;
+                        if matches!(trigger, CodeActionRequestTrigger::Manual) {
+                            state.code_actions = None;
+                            state.focus = DiagnosticsPopupFocus::Diagnostics;
+                        }
+                    }
+                    if matches!(trigger, CodeActionRequestTrigger::Manual) {
+                        self.close_code_actions_popup();
+                        self.set_status("code action request timed out");
+                    }
+                }
+                PendingRequest::ExecuteCommand { .. } => {
+                    self.set_status("quick fix command timed out");
+                }
                 PendingRequest::SymbolInfo { .. } => {
                     self.clear_symbol_info();
                     self.set_status("symbol info request timed out");
@@ -3053,7 +3237,10 @@ impl EditorState {
                 }
                 target
             }
-            PendingRequest::SymbolInfo { .. } | PendingRequest::Completion { .. } => None,
+            PendingRequest::CodeActions { .. }
+            | PendingRequest::ExecuteCommand { .. }
+            | PendingRequest::SymbolInfo { .. }
+            | PendingRequest::Completion { .. } => None,
         }
     }
 
@@ -3065,7 +3252,7 @@ impl EditorState {
             workspace: workspace.clone(),
             id,
         };
-        let Some(request) = self.lsp.pending_requests.get(&key).copied() else {
+        let Some(request) = self.lsp.pending_requests.get(&key).cloned() else {
             return false;
         };
         let PendingRequest::SymbolInfo {
@@ -3114,7 +3301,7 @@ impl EditorState {
             workspace: workspace.clone(),
             id,
         };
-        let Some(request) = self.lsp.pending_requests.get(&key).copied() else {
+        let Some(request) = self.lsp.pending_requests.get(&key).cloned() else {
             return false;
         };
         let PendingRequest::Completion {
@@ -3510,23 +3697,46 @@ impl EditorState {
             return false;
         };
 
-        let Some(client) = self.lsp.clients.get_mut(workspace) else {
-            return true;
-        };
         let result = match method {
             "client/registerCapability" | "client/unregisterCapability" => Some(Value::Null),
             "workspace/configuration" => Some(configuration_response(message)),
             "workspace/workspaceFolders" => Some(workspace_folders_response(workspace)),
-            _ => {
-                let _ = client.session.send_method_not_found(id, method);
-                return true;
-            }
+            "workspace/applyEdit" => Some(self.workspace_apply_edit_response(message)),
+            _ => None,
         };
 
+        let Some(client) = self.lsp.clients.get_mut(workspace) else {
+            return true;
+        };
         if let Some(result) = result {
             let _ = client.session.send_response(id, result);
+        } else {
+            let _ = client.session.send_method_not_found(id, method);
         }
         true
+    }
+
+    fn workspace_apply_edit_response(&mut self, message: &Value) -> Value {
+        let Some(edit_value) = message.get("params").and_then(|params| params.get("edit")) else {
+            return json!({
+                "applied": false,
+                "failureReason": "missing edit payload",
+            });
+        };
+        let Some(edit) = parse_workspace_edit(edit_value) else {
+            return json!({
+                "applied": false,
+                "failureReason": "unsupported workspace edit",
+            });
+        };
+
+        match self.apply_workspace_edit(&edit) {
+            Ok(()) => json!({ "applied": true }),
+            Err(error) => json!({
+                "applied": false,
+                "failureReason": error.to_string(),
+            }),
+        }
     }
 
     fn marketplace_tool_available(&self, item: MarketplaceSpec) -> bool {
@@ -3561,6 +3771,121 @@ fn parse_definition_response(message: &Value) -> Option<DefinitionTarget> {
     }
 
     parse_definition_target_value(result)
+}
+
+fn parse_code_action_response(message: &Value) -> Vec<AvailableCodeAction> {
+    message
+        .get("result")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(parse_code_action_value)
+        .collect()
+}
+
+fn parse_code_action_value(value: &Value) -> Option<AvailableCodeAction> {
+    if value
+        .get("disabled")
+        .and_then(|disabled| disabled.get("reason"))
+        .is_some()
+    {
+        return None;
+    }
+
+    if value.get("title").is_some() && value.get("command").and_then(Value::as_str).is_some() {
+        let title = value.get("title")?.as_str()?.to_string();
+        let command = Some(LspCommand {
+            command: value.get("command")?.as_str()?.to_string(),
+            arguments: value
+                .get("arguments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        });
+        return Some(AvailableCodeAction {
+            title,
+            kind: Some("quickfix".to_string()),
+            preferred: false,
+            edit: None,
+            command,
+        });
+    }
+
+    let title = value.get("title")?.as_str()?.to_string();
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let preferred = value
+        .get("isPreferred")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let edit = value.get("edit").and_then(parse_workspace_edit);
+    let command = value.get("command").and_then(parse_lsp_command);
+    Some(AvailableCodeAction {
+        title,
+        kind,
+        preferred,
+        edit,
+        command,
+    })
+}
+
+fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
+    let mut document_edits = Vec::new();
+
+    if let Some(changes) = value.get("changes").and_then(Value::as_object) {
+        for (uri, edits) in changes {
+            let edits = edits
+                .as_array()?
+                .iter()
+                .filter_map(parse_text_edit)
+                .collect::<Vec<_>>();
+            if !edits.is_empty() {
+                document_edits.push(DocumentEdit {
+                    uri: uri.clone(),
+                    edits,
+                });
+            }
+        }
+    }
+
+    if let Some(changes) = value.get("documentChanges").and_then(Value::as_array) {
+        for entry in changes {
+            let Some(text_document) = entry.get("textDocument") else {
+                continue;
+            };
+            let uri = text_document.get("uri")?.as_str()?.to_string();
+            let edits = entry
+                .get("edits")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(parse_text_edit)
+                .collect::<Vec<_>>();
+            if !edits.is_empty() {
+                document_edits.push(DocumentEdit { uri, edits });
+            }
+        }
+    }
+
+    (!document_edits.is_empty()).then_some(WorkspaceEdit { document_edits })
+}
+
+fn parse_text_edit(value: &Value) -> Option<TextEdit> {
+    let range = serde_json::from_value::<IncomingRange>(value.get("range")?.clone()).ok()?;
+    let new_text = value.get("newText")?.as_str()?.to_string();
+    Some(TextEdit { range, new_text })
+}
+
+fn parse_lsp_command(value: &Value) -> Option<LspCommand> {
+    Some(LspCommand {
+        command: value.get("command")?.as_str()?.to_string(),
+        arguments: value
+            .get("arguments")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    })
 }
 
 fn parse_hover_response(message: &Value) -> Vec<SymbolInfoBlock> {
@@ -3978,6 +4303,42 @@ fn char_col_to_utf16(line: &str, char_col: usize) -> u32 {
     line.chars()
         .take(char_col)
         .fold(0u32, |acc, ch| acc.saturating_add(ch.len_utf16() as u32))
+}
+
+fn compare_edit_ranges_desc(left: &IncomingRange, right: &IncomingRange) -> std::cmp::Ordering {
+    (
+        right.start.line,
+        right.start.character,
+        right.end.line,
+        right.end.character,
+    )
+        .cmp(&(
+            left.start.line,
+            left.start.character,
+            left.end.line,
+            left.end.character,
+        ))
+}
+
+fn buffer_positions_for_range(
+    buffer: &redox_core::TextBuffer,
+    range: &IncomingRange,
+) -> Option<(Pos, Pos)> {
+    let start_line = usize::try_from(range.start.line).ok()?;
+    let end_line = usize::try_from(range.end.line).ok()?;
+    if start_line >= buffer.len_lines() || end_line >= buffer.len_lines() {
+        return None;
+    }
+    let start_col = utf16_code_unit_to_char_col(
+        &buffer.line_string(start_line),
+        range.start.character as u32,
+    );
+    let end_col =
+        utf16_code_unit_to_char_col(&buffer.line_string(end_line), range.end.character as u32);
+    Some((
+        buffer.clamp_pos(Pos::new(start_line, start_col)),
+        buffer.clamp_pos(Pos::new(end_line, end_col)),
+    ))
 }
 
 fn write_lsp_message(stdin: &mut ChildStdin, message: &Value) -> io::Result<()> {
@@ -5531,6 +5892,83 @@ mod tests {
                 text: "Title\n\nBody\n\n- item".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn code_action_response_parses_literals_and_commands() {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "result": [
+                {
+                    "title": "Import `std::fmt::Debug`",
+                    "kind": "quickfix",
+                    "isPreferred": true,
+                    "edit": {
+                        "changes": {
+                            "file:///tmp/example.rs": [
+                                {
+                                    "range": {
+                                        "start": { "line": 0, "character": 0 },
+                                        "end": { "line": 0, "character": 0 }
+                                    },
+                                    "newText": "use std::fmt::Debug;\\n"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "title": "Run command",
+                    "command": "example.command",
+                    "arguments": ["value"]
+                },
+                {
+                    "title": "Disabled",
+                    "kind": "quickfix",
+                    "disabled": { "reason": "nope" }
+                }
+            ]
+        });
+
+        let actions = parse_code_action_response(&message);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].title, "Import `std::fmt::Debug`");
+        assert!(actions[0].preferred);
+        assert!(actions[0].edit.is_some());
+        assert_eq!(
+            actions[1]
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("example.command")
+        );
+    }
+
+    #[test]
+    fn workspace_edit_parser_supports_document_changes() {
+        let edit = parse_workspace_edit(&json!({
+            "documentChanges": [
+                {
+                    "textDocument": { "uri": "file:///tmp/example.rs", "version": 1 },
+                    "edits": [
+                        {
+                            "range": {
+                                "start": { "line": 1, "character": 2 },
+                                "end": { "line": 1, "character": 5 }
+                            },
+                            "newText": "value"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("workspace edit should parse");
+
+        assert_eq!(edit.document_edits.len(), 1);
+        assert_eq!(edit.document_edits[0].uri, "file:///tmp/example.rs");
+        assert_eq!(edit.document_edits[0].edits.len(), 1);
+        assert_eq!(edit.document_edits[0].edits[0].new_text, "value");
     }
 
     #[test]
