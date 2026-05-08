@@ -1379,6 +1379,16 @@ fn draw_snapshot_lines(
                 color_column,
             )?;
         }
+        draw_snippet_placeholders(
+            window,
+            row as u16,
+            content_x,
+            &source_line,
+            scroll_x,
+            text_w,
+            snippet_ranges,
+            style,
+        )?;
         draw_indent_guides(
             window,
             row as u16,

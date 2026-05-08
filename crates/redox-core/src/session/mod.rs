@@ -388,20 +388,8 @@ impl EditorSession {
     /// the last clean snapshot (opened-from-disk or last successful save).
     pub fn recompute_active_dirty(&mut self) -> bool {
         let id = self.active_id();
-        let rec = self
-            .buffers
-            .get_mut(&id)
-            .expect("active buffer must exist in session map");
-
-        let current_len = rec.buffer.len_chars();
-        if current_len != rec.clean_len_chars {
-            rec.meta.dirty = true;
-            return true;
-        }
-
-        let current = content_fingerprint(&rec.buffer);
-        rec.meta.dirty = current != rec.clean_fingerprint;
-        rec.meta.dirty
+        self.recompute_buffer_dirty(id)
+            .expect("active buffer must exist in session map")
     }
 
     /// Record the active buffer's current contents as the clean snapshot.
@@ -729,6 +717,13 @@ impl EditorSession {
 
     pub fn recompute_buffer_dirty(&mut self, id: BufferId) -> Option<bool> {
         let rec = self.buffers.get_mut(&id)?;
+
+        if !matches!(
+            rec.load_status.phase,
+            BufferLoadPhase::NotLoading | BufferLoadPhase::Complete
+        ) {
+            return Some(rec.meta.dirty);
+        }
 
         let current_len = rec.buffer.len_chars();
         if current_len != rec.clean_len_chars {
@@ -1307,6 +1302,8 @@ mod tests {
 
         let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
         let _ = session.poll_loading(128 * 1024);
+        assert!(!session.active_meta().dirty);
+        assert!(!session.recompute_active_dirty());
         assert!(!session.active_meta().dirty);
 
         let id = session.active_id();
