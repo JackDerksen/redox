@@ -29,7 +29,7 @@ use ui::overlays::{
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
-    scope_guides_enabled, syntax_color_for_range,
+    merge_line_spans_for_display, scope_guides_enabled, syntax_color_for_range,
 };
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
@@ -313,11 +313,16 @@ fn draw_buffer_view(
                         )
                 })
                 .flatten();
-            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
-                syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
-            );
+            let use_lexical_fallback = syntax_language.is_none()
+                || syntax_language
+                    .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+            let syntax_spans = view
+                .syntax_highlighter
+                .visible_line_spans_for_display_cached(
+                    syntax_language,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                );
             let syntax_time = syntax_start.elapsed();
             let overlay_start = Instant::now();
             let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
@@ -366,7 +371,7 @@ fn draw_buffer_view(
                 &diagnostic_lines,
                 visual_selection,
                 one_shot_highlight,
-                syntax_language.is_none(),
+                use_lexical_fallback,
             )?;
             let lines_time = lines_start.elapsed();
             Ok::<_, minui::Error>((syntax_time, overlay_time, lines_time))
@@ -829,11 +834,16 @@ fn draw_buffer_snapshot_for_id(
                     )
             })
             .flatten();
-        let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
-            syntax_language,
-            snapshot.first_line,
-            snapshot.lines.len(),
-        );
+        let use_lexical_fallback = syntax_language.is_none()
+            || syntax_language
+                .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+        let syntax_spans = view
+            .syntax_highlighter
+            .visible_line_spans_for_display_cached(
+                syntax_language,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
         let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
         let delimiter_highlights = delimiter_analysis
             .map(|analysis| {
@@ -900,7 +910,7 @@ fn draw_buffer_snapshot_for_id(
             &diagnostic_lines,
             None,
             None,
-            syntax_language.is_none(),
+            use_lexical_fallback,
         )
     }) else {
         return Ok(());
@@ -935,8 +945,14 @@ fn draw_snapshot_lines(
         let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(&source_line))
             .filter(|spans| !spans.is_empty());
-        let syntax_line_spans = syntax_spans
-            .and_then(|rows| rows.get(row))
+        let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
+        let merged_line_spans = match (syntax_line_spans, fallback_line_spans.as_deref()) {
+            (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(syntax, fallback)),
+            _ => None,
+        };
+        let syntax_line_spans = merged_line_spans
+            .as_deref()
+            .or(syntax_line_spans)
             .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)

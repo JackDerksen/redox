@@ -963,10 +963,7 @@ impl LspSession {
 
 impl EditorState {
     pub fn completion_popup(&self) -> Option<CompletionPopup> {
-        let state = self.lsp.completion.as_ref()?;
-        if state.items.is_empty() || self.active_cursor_pos() != state.requested_at {
-            return None;
-        }
+        let state = self.visible_completion_state()?;
         let max_selected = state.items.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
         let scroll = selected.saturating_sub(COMPLETION_POPUP_VISIBLE_ROWS.saturating_sub(1));
@@ -988,14 +985,11 @@ impl EditorState {
     }
 
     pub(super) fn has_visible_completion_popup(&self) -> bool {
-        self.completion_popup().is_some()
+        self.visible_completion_state().is_some()
     }
 
     pub fn completion_preview(&self) -> Option<CompletionPreview> {
-        let state = self.lsp.completion.as_ref()?;
-        if state.items.is_empty() || self.active_cursor_pos() != state.requested_at {
-            return None;
-        }
+        let state = self.visible_completion_state()?;
         let item = state.items.get(state.selected)?;
         let buffer = self.session.buffer(self.session.active_id())?;
         let cursor = self.active_cursor_pos();
@@ -3181,6 +3175,28 @@ impl EditorState {
         )
     }
 
+    fn visible_completion_state(&self) -> Option<&CompletionState> {
+        let state = self.lsp.completion.as_ref()?;
+        if state.items.is_empty() || !self.completion_matches_active_cursor(state.requested_at) {
+            return None;
+        }
+        Some(state)
+    }
+
+    fn completion_matches_active_cursor(&self, requested_at: Pos) -> bool {
+        let cursor = self.active_cursor_pos();
+        if cursor == requested_at {
+            return true;
+        }
+        let Some(buffer) = self.session.buffer(self.session.active_id()) else {
+            return false;
+        };
+        if cursor.line != requested_at.line || cursor.col < requested_at.col {
+            return false;
+        }
+        completion_prefix_start(buffer, cursor) == completion_prefix_start(buffer, requested_at)
+    }
+
     fn completion_context_syntax_role(&self) -> Option<SyntaxRole> {
         let active_id = self.session.active_id();
         let buffer = self.session.buffer(active_id)?;
@@ -5286,6 +5302,38 @@ mod tests {
 
         assert_eq!(state.mode, EditorMode::Normal);
         assert!(state.lsp.completion.is_none());
+    }
+
+    #[test]
+    fn completion_popup_visibility_tracks_current_prefix() {
+        let session = redox_core::EditorSession::open_initial_unnamed()
+            .expect("failed to open unnamed session");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("prin");
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 4);
+        state.lsp.completion = Some(CompletionState {
+            selected: 0,
+            requested_at: redox_core::Pos::new(0, 3),
+            items: vec![CompletionCandidate {
+                label: "println".to_string(),
+                detail: None,
+                label_detail: None,
+                label_description: None,
+                documentation: None,
+                kind: Some("function".to_string()),
+                filter_text: None,
+                sort_text: None,
+                insert_text: "println".to_string(),
+                insert_text_format: InsertTextFormat::PlainText,
+                text_edit: None,
+            }],
+        });
+
+        assert!(state.completion_popup().is_some());
+
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 0);
+        assert!(state.completion_popup().is_none());
     }
 
     #[test]

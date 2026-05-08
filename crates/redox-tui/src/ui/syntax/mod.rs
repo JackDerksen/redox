@@ -309,6 +309,24 @@ impl SyntaxHighlighter {
         })
     }
 
+    pub fn visible_line_spans_for_display_cached(
+        &self,
+        language: Option<SyntaxLanguage>,
+        first_line: usize,
+        line_count: usize,
+    ) -> Option<VisibleLineSyntaxSpans<'_>> {
+        let language = language?;
+        let cache = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.language == language)?;
+        Some(VisibleLineSyntaxSpans {
+            line_spans: &cache.line_spans,
+            first_line,
+            line_count,
+        })
+    }
+
     pub(crate) fn has_cache_for(&self, language: SyntaxLanguage) -> bool {
         !self.cache_stale
             && self
@@ -323,7 +341,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache_stale
             && self
@@ -1187,6 +1204,54 @@ pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
     spans
 }
 
+// Fix for syntax highlighting colour flicker
+pub fn merge_line_spans_for_display(
+    base: &[LineSyntaxSpan],
+    fallback: &[LineSyntaxSpan],
+) -> Vec<LineSyntaxSpan> {
+    if base.is_empty() {
+        return fallback.to_vec();
+    }
+    if fallback.is_empty() {
+        return base.to_vec();
+    }
+
+    let mut merged = base.to_vec();
+    for fallback_span in fallback {
+        let mut cursor = fallback_span.start_byte;
+        for span in base {
+            if span.start_byte >= fallback_span.end_byte {
+                break;
+            }
+            if span.end_byte <= cursor {
+                continue;
+            }
+            if span.start_byte > cursor {
+                merged.push(LineSyntaxSpan {
+                    start_byte: cursor,
+                    end_byte: span.start_byte.min(fallback_span.end_byte),
+                    role: fallback_span.role,
+                    priority: fallback_span.priority,
+                });
+            }
+            cursor = cursor.max(span.end_byte);
+            if cursor >= fallback_span.end_byte {
+                break;
+            }
+        }
+        if cursor < fallback_span.end_byte {
+            merged.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: fallback_span.end_byte,
+                role: fallback_span.role,
+                priority: fallback_span.priority,
+            });
+        }
+    }
+    merged.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
+    merged
+}
+
 fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
     match bytes.get(cursor..cursor.saturating_add(2)) {
         Some(b"//" | b"--") => Some(bytes.len()),
@@ -2033,6 +2098,55 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn stale_visible_line_spans_for_display_reuse_previous_cache() {
+        let buffer = TextBuffer::from_str("// note\n");
+        let mut highlighter = SyntaxHighlighter::default();
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
+
+        highlighter.mark_cache_stale();
+
+        let spans = highlighter
+            .visible_line_spans_for_display_cached(Some(SyntaxLanguage::Rust), 0, 1)
+            .expect("stale display cache should still be available");
+        assert!(
+            spans[0]
+                .iter()
+                .any(|span| span.role == SyntaxRole::Comment && span.start_byte == 0)
+        );
+    }
+
+    #[test]
+    fn merge_line_spans_for_display_only_fills_uncovered_gaps() {
+        let merged = super::merge_line_spans_for_display(
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 5,
+                role: SyntaxRole::Keyword,
+                priority: 20,
+            }],
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 10,
+                role: SyntaxRole::Comment,
+                priority: 10,
+            }],
+        );
+
+        assert!(merged.iter().any(|span| span.role == SyntaxRole::Keyword
+            && span.start_byte == 0
+            && span.end_byte == 5));
+        assert!(merged.iter().any(|span| span.role == SyntaxRole::Comment
+            && span.start_byte == 5
+            && span.end_byte == 10));
+        assert!(!merged.iter().any(|span| span.role == SyntaxRole::Comment
+            && span.start_byte == 0
+            && span.end_byte == 10));
     }
 
     #[test]
