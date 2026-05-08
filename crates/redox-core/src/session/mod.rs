@@ -727,6 +727,20 @@ impl EditorSession {
         self.buffers.get(&id).map(|rec| &rec.meta)
     }
 
+    pub fn recompute_buffer_dirty(&mut self, id: BufferId) -> Option<bool> {
+        let rec = self.buffers.get_mut(&id)?;
+
+        let current_len = rec.buffer.len_chars();
+        if current_len != rec.clean_len_chars {
+            rec.meta.dirty = true;
+            return Some(true);
+        }
+
+        let current = content_fingerprint(&rec.buffer);
+        rec.meta.dirty = current != rec.clean_fingerprint;
+        Some(rec.meta.dirty)
+    }
+
     fn load_step_for(&mut self, id: BufferId, max_bytes: usize) -> Result<usize> {
         let rec = match self.buffers.get_mut(&id) {
             Some(rec) => rec,
