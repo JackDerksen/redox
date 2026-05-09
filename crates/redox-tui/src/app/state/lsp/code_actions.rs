@@ -589,37 +589,57 @@ impl EditorState {
         let text_vh = viewport_height_rows.saturating_sub(crate::ui::STATUS_BAR_HEIGHT_ROWS);
         let mut touched_buffers = Vec::new();
 
-        for document_edit in &edit.document_edits {
-            let Some(path) = file_path_from_uri(&document_edit.uri) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "workspace edit target is not a local file",
-                ));
-            };
-            let buffer_id = self.session.open_file(&path).map_err(io::Error::other)?;
-            self.ensure_buffer_analysis(buffer_id);
-            self.ensure_active_lsp_client();
-            self.session
-                .ensure_buffer_fully_loaded(buffer_id)
-                .map_err(io::Error::other)?;
-
-            let mut edits = document_edit.edits.clone();
-            edits.sort_by(|left, right| compare_edit_ranges_desc(&left.range, &right.range));
-
-            for edit in edits {
-                let Some(buffer) = self.session.buffer_mut(buffer_id) else {
-                    continue;
-                };
-                let Some((start, end)) = buffer_positions_for_range(buffer, &edit.range) else {
+        let planned_edits = (|| {
+            let mut planned_edits = Vec::new();
+            for document_edit in &edit.document_edits {
+                let Some(path) = file_path_from_uri(&document_edit.uri) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "workspace edit range is out of bounds",
+                        "workspace edit target is not a local file",
                     ));
                 };
-                let _ = buffer.delete_range(start, end);
-                let _ = buffer.insert(start, &edit.new_text);
-            }
+                let buffer_id = self.session.open_file(&path).map_err(io::Error::other)?;
+                self.ensure_buffer_analysis(buffer_id);
+                self.ensure_active_lsp_client();
+                self.session
+                    .ensure_buffer_fully_loaded(buffer_id)
+                    .map_err(io::Error::other)?;
+                let Some(buffer) = self.session.buffer(buffer_id) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "workspace edit target buffer was not loaded",
+                    ));
+                };
 
+                let mut edits = document_edit.edits.clone();
+                edits.sort_by(|left, right| compare_edit_ranges_desc(&left.range, &right.range));
+                let mut buffer_edits = Vec::new();
+                for edit in &edits {
+                    let Some((start, end)) = buffer_positions_for_range(buffer, &edit.range) else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "workspace edit range is out of bounds",
+                        ));
+                    };
+                    buffer_edits.push((start, end, edit.new_text.clone()));
+                }
+
+                planned_edits.push((buffer_id, buffer_edits));
+            }
+            Ok(planned_edits)
+        })();
+
+        let _ = self.session.activate(original_active);
+        let planned_edits = planned_edits?;
+
+        for (buffer_id, edits) in planned_edits {
+            let Some(buffer) = self.session.buffer_mut(buffer_id) else {
+                continue;
+            };
+            for (start, end, new_text) in edits {
+                let _ = buffer.delete_range(start, end);
+                let _ = buffer.insert(start, &new_text);
+            }
             let _ = self.session.recompute_buffer_dirty(buffer_id);
             self.invalidate_buffer_render_caches(buffer_id);
             let _ = self.with_buffer_view_mut(buffer_id, |buffer, view| {
