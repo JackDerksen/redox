@@ -13,6 +13,7 @@ const COMPLETION_MAX_WIDTH: u16 = 96;
 const COMPLETION_SELECTOR_GAP: usize = 1;
 const COMPLETION_TRAILING_PADDING: usize = 1;
 const COMPLETION_COLUMN_GAP: usize = 4;
+const COMPLETION_MIN_KEYWORD_WIDTH: usize = 8;
 
 pub fn draw_completion_popup(
     popup: &CompletionPopup,
@@ -150,8 +151,7 @@ fn completion_layout(
 
     let has_type = type_width > 0;
     let has_extra = extra_width > 0;
-    let gaps = usize::from(has_type) * COMPLETION_COLUMN_GAP
-        + usize::from(has_extra) * COMPLETION_COLUMN_GAP;
+    let gaps = completion_metadata_gaps(type_width, extra_width);
     let content_width = 1
         + COMPLETION_SELECTOR_GAP
         + keyword_width
@@ -172,11 +172,8 @@ fn completion_layout(
         .max(min_width.min(term_w) as usize) as u16;
 
     let inner_available = width.saturating_sub(2) as usize;
-    let fixed =
-        1 + COMPLETION_SELECTOR_GAP + gaps + type_width + extra_width + COMPLETION_TRAILING_PADDING;
-    let keyword_width = keyword_width
-        .min(inner_available.saturating_sub(fixed))
-        .max(8);
+    let (keyword_width, type_width, extra_width) =
+        fit_completion_columns(inner_available, keyword_width, type_width, extra_width);
 
     CompletionLayout {
         width,
@@ -184,6 +181,64 @@ fn completion_layout(
         type_width,
         extra_width,
     }
+}
+
+fn fit_completion_columns(
+    inner_available: usize,
+    keyword_width: usize,
+    type_width: usize,
+    extra_width: usize,
+) -> (usize, usize, usize) {
+    let mut type_width = type_width;
+    let mut extra_width = extra_width;
+
+    loop {
+        let base = 1 + COMPLETION_SELECTOR_GAP + COMPLETION_TRAILING_PADDING;
+        let gaps = completion_metadata_gaps(type_width, extra_width);
+        let metadata_budget =
+            inner_available.saturating_sub(base + gaps + COMPLETION_MIN_KEYWORD_WIDTH);
+        if type_width + extra_width <= metadata_budget {
+            break;
+        }
+
+        if extra_width > 0 {
+            let extra_budget = metadata_budget.saturating_sub(type_width);
+            if extra_budget > 0 {
+                extra_width = extra_width.min(extra_budget);
+                break;
+            } else {
+                extra_width = 0;
+            }
+        } else if type_width > 0 {
+            type_width = type_width.min(metadata_budget);
+            if type_width == 0 {
+                break;
+            }
+            break;
+        } else {
+            break;
+        }
+    }
+
+    let fixed = completion_fixed_width(type_width, extra_width);
+    let keyword_width = keyword_width
+        .min(inner_available.saturating_sub(fixed))
+        .max(COMPLETION_MIN_KEYWORD_WIDTH);
+
+    (keyword_width, type_width, extra_width)
+}
+
+fn completion_fixed_width(type_width: usize, extra_width: usize) -> usize {
+    1 + COMPLETION_SELECTOR_GAP
+        + completion_metadata_gaps(type_width, extra_width)
+        + type_width
+        + extra_width
+        + COMPLETION_TRAILING_PADDING
+}
+
+fn completion_metadata_gaps(type_width: usize, extra_width: usize) -> usize {
+    usize::from(type_width > 0) * COMPLETION_COLUMN_GAP
+        + usize::from(extra_width > 0) * COMPLETION_COLUMN_GAP
 }
 
 fn popup_visible_len(popup: &CompletionPopup) -> usize {
@@ -269,12 +324,16 @@ fn draw_entries(
         window.write_str_colored(row, keyword_x, &keyword, keyword_style)?;
 
         let type_x = keyword_x + layout.keyword_width as u16 + COMPLETION_COLUMN_GAP as u16;
-        if let Some(type_label) = &entry.type_label {
+        if layout.type_width > 0
+            && let Some(type_label) = &entry.type_label
+        {
             let text = clip_text_to_cells(type_label, layout.type_width);
             window.write_str_colored(row, type_x, &text, type_style)?;
         }
 
-        if let Some(extra) = &entry.extra {
+        if layout.extra_width > 0
+            && let Some(extra) = &entry.extra
+        {
             let extra = clip_text_to_cells(extra, layout.extra_width);
             let extra_x = x + width
                 .saturating_sub(1 + COMPLETION_TRAILING_PADDING as u16 + layout.extra_width as u16);
@@ -388,4 +447,36 @@ fn text_width(text: &str) -> usize {
     text.chars()
         .map(|ch| cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize)
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn popup_with_metadata() -> CompletionPopup {
+        CompletionPopup {
+            entries: vec![CompletionEntry {
+                kind: Some("function".to_string()),
+                keyword: "very_long_completion_keyword".to_string(),
+                type_label: Some("ExtremelyLongCompletionTypeName".to_string()),
+                extra: Some("very_long_extra".to_string()),
+                documentation: None,
+            }],
+            selected: 0,
+            scroll: 0,
+        }
+    }
+
+    #[test]
+    fn completion_layout_drops_extra_before_overlapping_metadata_columns() {
+        let layout = completion_layout(&popup_with_metadata(), 1, COMPLETION_MIN_METADATA_WIDTH);
+        let inner_available = layout.width.saturating_sub(2) as usize;
+        let used =
+            layout.keyword_width + completion_fixed_width(layout.type_width, layout.extra_width);
+
+        assert_eq!(layout.keyword_width, COMPLETION_MIN_KEYWORD_WIDTH);
+        assert!(layout.type_width > 0);
+        assert_eq!(layout.extra_width, 0);
+        assert!(used <= inner_available);
+    }
 }
