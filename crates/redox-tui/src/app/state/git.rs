@@ -118,18 +118,18 @@ impl GitState {
     }
 
     pub fn status_for_path(&self, path: &Path) -> Option<GitFileStatusKind> {
-        for (repo_root, entry) in &self.repo_status_cache {
-            if !path.starts_with(repo_root) {
-                continue;
-            }
-            if let Some(status) = entry.file_statuses.get(path).copied() {
-                return Some(status);
-            }
-            if let Some(status) = entry.directory_statuses.get(path).copied() {
-                return Some(status);
-            }
-        }
-        None
+        let entry = self
+            .repo_status_cache
+            .iter()
+            .filter(|(repo_root, _)| path.starts_with(repo_root))
+            .max_by_key(|(repo_root, _)| repo_root.components().count())
+            .map(|(_, entry)| entry)?;
+
+        entry
+            .file_statuses
+            .get(path)
+            .copied()
+            .or_else(|| entry.directory_statuses.get(path).copied())
     }
 
     pub fn refresh_repo_status_for_dir(&mut self, dir: &Path) {
