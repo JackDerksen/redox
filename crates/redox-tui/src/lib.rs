@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use redox_core::{BufferId, EditorSession};
 
+use minui::KeybindAction;
 use minui::input::Clipboard;
 use minui::prelude::{
     input::{Event, KeyKind},
@@ -28,15 +29,20 @@ use ui::overlays::{
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
-    scope_guides_enabled, syntax_color_for_range,
+    merge_line_spans_for_display, scope_guides_enabled, syntax_color_for_range,
 };
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
-    build_editor_status_bar, draw_about_popup_view, draw_command_line_popup,
-    draw_explorer_popup_view, draw_finder_popup, draw_perf_popup_view, draw_pin_selector_popup,
-    draw_status_toast, explorer_popup_inner_size, language_for_path, perf_popup_layout,
+    build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
+    draw_command_line_popup, draw_completion_popup, draw_completion_preview,
+    draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
+    draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
+    draw_symbol_info_popup, explorer_popup_inner_size, language_for_path, perf_popup_layout,
     perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
 };
+
+pub(crate) const SOFT_TAB_WIDTH: usize = 4;
+pub(crate) const SOFT_TAB: &str = "    ";
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
@@ -62,6 +68,10 @@ fn draw_buffer_view(
             | app::EditorMode::Search
             | app::EditorMode::Finder
             | app::EditorMode::PinSelect
+            | app::EditorMode::LspMarketplace
+            | app::EditorMode::DiagnosticsList
+            | app::EditorMode::CodeActions
+            | app::EditorMode::SymbolInfo
     ) || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
@@ -76,6 +86,7 @@ fn draw_buffer_view(
     let load_start = Instant::now();
     state.pump_active_loading(text_h as usize);
     perf.load += load_start.elapsed();
+    state.refresh_active_git_diff();
 
     if let Some(popup) = state.explorer_popup() {
         if let Some(background_id) = state.explorer_background_buffer_id()
@@ -132,9 +143,97 @@ fn draw_buffer_view(
         return Ok(());
     }
 
+    if let Some(popup) = state.lsp_marketplace_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_lsp_marketplace_popup(&popup, style, window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
+    if let Some(popup) = state.diagnostics_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_diagnostics_popup(&popup, style, window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
+    if let Some(popup) = state.code_actions_popup() {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            editor_text,
+            window,
+        )?;
+        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
+            vw,
+            vh,
+            style.finder.width_percent,
+            style.finder.height_percent,
+            style.finder.min_width,
+            style.finder.min_height,
+        );
+        state.set_viewport_size(
+            inner_w as usize,
+            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        draw_code_actions_popup(&popup, style, window)?;
+        hide_cursor(window);
+        return Ok(());
+    }
+
     let active_cursor_line = state.active_cursor_pos().line;
     let total_lines = state.session.active_buffer().len_lines().max(1);
-    let gutter_w = line_number_gutter_width(total_lines);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
     let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
     let text_w = vw.saturating_sub(content_x);
     state.set_viewport_size(
@@ -149,6 +248,7 @@ fn draw_buffer_view(
             background_style,
             gutter_w,
             text_h,
+            show_git_marker_column,
             animation.first_line(),
             active_cursor_line,
             total_lines,
@@ -159,6 +259,8 @@ fn draw_buffer_view(
             gutter_w,
             text_h,
             GUTTER_CONTENT_PADDING,
+            animation.first_line(),
+            state.active_git_diff(),
         )?;
         animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
 
@@ -200,6 +302,9 @@ fn draw_buffer_view(
     let overlay_start = Instant::now();
     let search_highlights =
         state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
+    let diagnostic_lines = state.active_diagnostic_lines(snapshot.first_line, snapshot.lines.len());
+    let snippet_placeholders =
+        state.active_snippet_placeholder_ranges(snapshot.first_line, snapshot.lines.len());
     perf.overlays += overlay_start.elapsed();
 
     draw_relative_line_numbers(
@@ -207,6 +312,7 @@ fn draw_buffer_view(
         background_style,
         gutter_w,
         text_h,
+        show_git_marker_column,
         snapshot.first_line,
         active_cursor_line,
         total_lines,
@@ -217,6 +323,8 @@ fn draw_buffer_view(
         gutter_w,
         text_h,
         GUTTER_CONTENT_PADDING,
+        snapshot.first_line,
+        state.active_git_diff(),
     )?;
 
     let (syntax_time, overlay_time, lines_time) =
@@ -236,11 +344,16 @@ fn draw_buffer_view(
                         )
                 })
                 .flatten();
-            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
-                syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
-            );
+            let use_lexical_fallback = syntax_language.is_none()
+                || syntax_language
+                    .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+            let syntax_spans = view
+                .syntax_highlighter
+                .visible_line_spans_for_display_cached(
+                    syntax_language,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                );
             let syntax_time = syntax_start.elapsed();
             let overlay_start = Instant::now();
             let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
@@ -285,9 +398,11 @@ fn draw_buffer_view(
                 &delimiter_highlights,
                 &active_scope_guides,
                 &search_highlights,
+                &snippet_placeholders,
+                &diagnostic_lines,
                 visual_selection,
                 one_shot_highlight,
-                syntax_language.is_none(),
+                use_lexical_fallback,
             )?;
             let lines_time = lines_start.elapsed();
             Ok::<_, minui::Error>((syntax_time, overlay_time, lines_time))
@@ -329,15 +444,88 @@ fn draw_buffer_view(
         draw_finder_popup(&popup, style, window)?;
     } else if let Some(popup) = state.pin_selector_popup() {
         draw_pin_selector_popup(&popup, style, window)?;
+    } else if let Some(popup) = state.completion_popup() {
+        if spec.visible {
+            let cursor_x = spec.x.saturating_add(content_x);
+            if let Some(preview) = state.completion_preview() {
+                let preview_width =
+                    clipped_cell_width(&preview.text, vw.saturating_sub(cursor_x) as usize);
+                let inline_diagnostic = diagnostic_lines.get(&active_cursor_line);
+                let source_line = inline_diagnostic.map(|_| {
+                    state
+                        .session
+                        .active_buffer()
+                        .line_string(active_cursor_line)
+                });
+                if let Some(source_line) = source_line.as_deref() {
+                    clear_inline_diagnostic(
+                        window,
+                        spec.y,
+                        content_x,
+                        source_line,
+                        scroll_x,
+                        text_w as usize,
+                        background_style,
+                    )?;
+                }
+                draw_completion_preview(
+                    window,
+                    style,
+                    cursor_x,
+                    spec.y,
+                    vw.saturating_sub(cursor_x),
+                    &preview.text,
+                    &preview.suffix,
+                )?;
+                if let Some((diagnostic, source_line)) =
+                    inline_diagnostic.zip(source_line.as_deref())
+                {
+                    draw_inline_diagnostic_shifted(
+                        window,
+                        spec.y,
+                        content_x,
+                        source_line,
+                        scroll_x,
+                        text_w as usize,
+                        background_style,
+                        diagnostic,
+                        preview_width,
+                    )?;
+                }
+            }
+            draw_completion_popup(&popup, style, window, cursor_x, spec.y, text_h)?;
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: cursor_x,
+                y: spec.y,
+                visible: true,
+            });
+        }
     } else if spec.visible {
-        cursor_spec = Some(minui::window::CursorSpec {
-            x: spec.x.saturating_add(content_x),
-            y: spec.y,
-            visible: true,
-        });
+        let cursor_x = spec.x.saturating_add(content_x);
+        if state.symbol_info_popup(vw).is_some() {
+            state.clamp_symbol_info_scroll(vw);
+            let popup = state
+                .symbol_info_popup(vw)
+                .expect("symbol info popup should still exist after clamping");
+            draw_symbol_info_popup(&popup, style, window, cursor_x, spec.y)?;
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: cursor_x,
+                y: spec.y,
+                visible: true,
+            });
+        } else {
+            cursor_spec = Some(minui::window::CursorSpec {
+                x: spec.x.saturating_add(content_x),
+                y: spec.y,
+                visible: true,
+            });
+        }
     }
 
     let toast_layout = draw_status_toast(state, style, window)?;
+    if toast_layout.is_none() {
+        let _ = draw_lsp_loading_toast(state, style, window)?;
+    }
 
     if let Some(cursor) = cursor_spec {
         let cursor_hidden_by_perf = perf_popup_layout
@@ -354,29 +542,79 @@ fn draw_buffer_view(
     Ok(())
 }
 
+fn draw_lsp_loading_toast(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<Option<ui::widgets::popup::PopupLayout>> {
+    let Some(message) = state.active_lsp_loading_toast(Instant::now()) else {
+        return Ok(None);
+    };
+    let (term_w, term_h) = window.get_size();
+    let width = (cell_width(&message, TabPolicy::Fixed(4)) as u16)
+        .saturating_add(2)
+        .min(term_w.saturating_sub(2));
+    if width <= 2 || term_h <= 2 {
+        return Ok(None);
+    }
+    let popup_w = width.saturating_add(2);
+    let x = term_w.saturating_sub(popup_w.saturating_add(1));
+    let layout = ui::widgets::popup::draw_popup_frame_at(
+        window,
+        x,
+        0,
+        width,
+        1,
+        "",
+        ui::widgets::popup::PopupChrome {
+            border: style.command_line.border,
+            title: style.command_line.title,
+            fill: style.command_line.text,
+        },
+    )?;
+    let mut view = ui::widgets::popup::popup_window_view(window, layout);
+    view.write_str_colored(0, 1, &message, style.command_line.text)?;
+    Ok(Some(layout))
+}
+
 fn draw_gutter_padding(
     window: &mut dyn Window,
     style: UiStyle,
     gutter_w: u16,
     text_h: u16,
     padding_w: u16,
+    first_line: usize,
+    git_diff: Option<&app::GitDiffSnapshot>,
 ) -> minui::Result<()> {
-    if padding_w == 0 || text_h == 0 {
+    if text_h == 0 {
         return Ok(());
     }
 
     let pad = " ".repeat(padding_w as usize);
     let color = ColorPair::new(style.theme.bg, style.theme.bg);
     for row in 0..text_h {
-        window.write_str_colored(row, gutter_w, &pad, color)?;
+        if padding_w > 0 {
+            window.write_str_colored(row, gutter_w, &pad, color)?;
+        }
+        let line_idx = first_line.saturating_add(row as usize);
+        let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) else {
+            continue;
+        };
+        let (glyph, colors) = style.git.gutter_marker(kind);
+        window.write_str_colored(row, 0, glyph, colors)?;
     }
     Ok(())
 }
 
-fn line_number_gutter_width(total_lines: usize) -> u16 {
+fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
+    git_diff.is_some_and(|diff| !diff.stats.is_empty())
+}
+
+fn line_number_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
     let digits = total_lines.max(1).ilog10() as u16 + 1;
-    // digits + separator column
-    digits.saturating_add(1)
+    let git_marker_width = u16::from(show_git_marker_column);
+    // optional git marker column + digits + separator column
+    digits.saturating_add(git_marker_width).saturating_add(1)
 }
 
 fn draw_relative_line_numbers(
@@ -384,6 +622,7 @@ fn draw_relative_line_numbers(
     style: UiStyle,
     gutter_w: u16,
     text_h: u16,
+    show_git_marker_column: bool,
     first_line: usize,
     cursor_line: usize,
     total_lines: usize,
@@ -393,7 +632,8 @@ fn draw_relative_line_numbers(
     }
 
     let sep_x = gutter_w.saturating_sub(1);
-    let number_w = gutter_w.saturating_sub(1) as usize;
+    let marker_offset = u16::from(show_git_marker_column);
+    let number_w = gutter_w.saturating_sub(marker_offset).saturating_sub(1) as usize;
     let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
     let current_color = ColorPair::new(style.theme.white, style.theme.bg);
 
@@ -430,7 +670,7 @@ fn draw_relative_line_numbers(
         };
 
         if number_w > 0 {
-            window.write_str_colored(row, 0, &text, color)?;
+            window.write_str_colored(row, marker_offset, &text, color)?;
         }
 
         window.write_str_colored(row, sep_x, "▕", color)?;
@@ -591,6 +831,9 @@ fn draw_buffer_snapshot_for_id(
     colors: ColorPair,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
+    state.refresh_git_diff_for_buffer(buffer_id);
+    let git_diff = state.git_diff_for_buffer(buffer_id).cloned();
+    let show_git_marker_column = git_marker_column_visible(git_diff.as_ref());
     let syntax_language = state
         .session
         .meta(buffer_id)
@@ -598,7 +841,7 @@ fn draw_buffer_snapshot_for_id(
     let Some(result) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
         let cursor = view.cursor.cursor;
         let total_lines = buffer.len_lines().max(1);
-        let gutter_w = line_number_gutter_width(total_lines);
+        let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
         let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
         let text_w = width.saturating_sub(content_x);
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
@@ -622,11 +865,16 @@ fn draw_buffer_snapshot_for_id(
                     )
             })
             .flatten();
-        let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
-            syntax_language,
-            snapshot.first_line,
-            snapshot.lines.len(),
-        );
+        let use_lexical_fallback = syntax_language.is_none()
+            || syntax_language
+                .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+        let syntax_spans = view
+            .syntax_highlighter
+            .visible_line_spans_for_display_cached(
+                syntax_language,
+                snapshot.first_line,
+                snapshot.lines.len(),
+            );
         let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
         let delimiter_highlights = delimiter_analysis
             .map(|analysis| {
@@ -659,13 +907,23 @@ fn draw_buffer_snapshot_for_id(
             style,
             gutter_w,
             height,
+            show_git_marker_column,
             snapshot.first_line,
             view.cursor.cursor.line,
             total_lines,
         )?;
-        draw_gutter_padding(window, style, gutter_w, height, GUTTER_CONTENT_PADDING)?;
+        draw_gutter_padding(
+            window,
+            style,
+            gutter_w,
+            height,
+            GUTTER_CONTENT_PADDING,
+            snapshot.first_line,
+            git_diff.as_ref(),
+        )?;
 
         let search_highlights = BTreeMap::new();
+        let diagnostic_lines = BTreeMap::new();
         draw_snapshot_lines(
             window,
             buffer,
@@ -679,9 +937,11 @@ fn draw_buffer_snapshot_for_id(
             &delimiter_highlights,
             &active_scope_guides,
             &search_highlights,
+            &BTreeMap::new(),
+            &diagnostic_lines,
             None,
             None,
-            syntax_language.is_none(),
+            use_lexical_fallback,
         )
     }) else {
         return Ok(());
@@ -702,6 +962,8 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     lexical_fallback_enabled: bool,
@@ -714,8 +976,14 @@ fn draw_snapshot_lines(
         let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(&source_line))
             .filter(|spans| !spans.is_empty());
-        let syntax_line_spans = syntax_spans
-            .and_then(|rows| rows.get(row))
+        let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
+        let merged_line_spans = match (syntax_line_spans, fallback_line_spans.as_deref()) {
+            (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(syntax, fallback)),
+            _ => None,
+        };
+        let syntax_line_spans = merged_line_spans
+            .as_deref()
+            .or(syntax_line_spans)
             .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
@@ -725,9 +993,25 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let diagnostic_line = diagnostic_lines.get(&line_idx);
+        let snippet_ranges = snippet_placeholders
+            .get(&line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let has_search_highlights = search_highlights
             .get(&line_idx)
             .is_some_and(|ranges| !ranges.is_empty());
+        let diagnostic_cells = diagnostic_line.map(|diagnostic| {
+            selected_visible_cells(
+                &source_line,
+                scroll_x,
+                text_w,
+                diagnostic.start_col,
+                diagnostic
+                    .end_col
+                    .max(diagnostic.start_col.saturating_add(1)),
+            )
+        });
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
@@ -738,6 +1022,8 @@ fn draw_snapshot_lines(
         if transient_selection.is_none()
             && !has_search_highlights
             && syntax_line_spans.is_none_or(|spans| spans.is_empty())
+            && diagnostic_line.is_none()
+            && snippet_ranges.is_empty()
             && highlighted_chars.is_empty()
             && visible_indent_guides.is_empty()
             && visible_line.is_ascii()
@@ -752,6 +1038,18 @@ fn draw_snapshot_lines(
                 default_colors,
                 color_column,
             )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
             continue;
         }
 
@@ -777,12 +1075,26 @@ fn draw_snapshot_lines(
                     sel_range.end,
                 );
                 let highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
-                    vec![
+                    let mut layers = vec![
                         (selected_cells.as_slice(), selection_bg),
                         (search_cells.as_slice(), style.theme.selection_bg),
-                    ]
+                    ];
+                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                        layers.push((
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ));
+                    }
+                    layers
                 } else {
-                    vec![(selected_cells.as_slice(), selection_bg)]
+                    let mut layers = vec![(selected_cells.as_slice(), selection_bg)];
+                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                        layers.push((
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ));
+                    }
+                    layers
                 };
                 draw_line_with_highlights(
                     window,
@@ -817,10 +1129,42 @@ fn draw_snapshot_lines(
                     highlighted_chars,
                     style,
                 )?;
+                draw_snippet_placeholders(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    snippet_ranges,
+                    style,
+                )?;
+                if let Some(diagnostic) = diagnostic_line {
+                    draw_inline_diagnostic(
+                        window,
+                        row as u16,
+                        content_x,
+                        &source_line,
+                        scroll_x,
+                        text_w,
+                        style,
+                        diagnostic,
+                    )?;
+                }
                 continue;
             }
             if highlight_empty_line {
-                let highlight_layers = [(&[][..], selection_bg)];
+                let highlight_layers = if let Some(diagnostic) = diagnostic_line {
+                    vec![
+                        (&[][..], selection_bg),
+                        (
+                            &[][..],
+                            style.diagnostic_inline.background(diagnostic.severity),
+                        ),
+                    ]
+                } else {
+                    vec![(&[][..], selection_bg)]
+                };
                 draw_line_with_highlights(
                     window,
                     row as u16,
@@ -835,6 +1179,18 @@ fn draw_snapshot_lines(
                     &highlight_layers,
                     true,
                 )?;
+                if let Some(diagnostic) = diagnostic_line {
+                    draw_inline_diagnostic(
+                        window,
+                        row as u16,
+                        content_x,
+                        &source_line,
+                        scroll_x,
+                        text_w,
+                        style,
+                        diagnostic,
+                    )?;
+                }
                 continue;
             }
         }
@@ -842,7 +1198,18 @@ fn draw_snapshot_lines(
         if let Some(search_cells) = search_cells.as_ref()
             && search_cells.iter().any(|selected| *selected)
         {
-            let highlight_layers = [(search_cells.as_slice(), style.theme.selection_bg)];
+            let highlight_layers =
+                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                    vec![
+                        (search_cells.as_slice(), style.theme.selection_bg),
+                        (
+                            diagnostic.0.as_slice(),
+                            style.diagnostic_inline.background(diagnostic.1.severity),
+                        ),
+                    ]
+                } else {
+                    vec![(search_cells.as_slice(), style.theme.selection_bg)]
+                };
             draw_line_with_highlights(
                 window,
                 row as u16,
@@ -876,24 +1243,67 @@ fn draw_snapshot_lines(
                 highlighted_chars,
                 style,
             )?;
-            continue;
-        }
-
-        if let Some(spans) = syntax_line_spans
-            && !spans.is_empty()
-        {
-            draw_line_with_syntax(
+            draw_snippet_placeholders(
                 window,
                 row as u16,
                 content_x,
                 &source_line,
                 scroll_x,
                 text_w,
-                default_colors,
-                color_column,
+                snippet_ranges,
                 style,
-                spans,
             )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
+            continue;
+        }
+
+        if let Some(spans) = syntax_line_spans
+            && !spans.is_empty()
+        {
+            if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                let highlight_layers = [(
+                    diagnostic.0.as_slice(),
+                    style.diagnostic_inline.background(diagnostic.1.severity),
+                )];
+                draw_line_with_highlights(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    default_colors,
+                    color_column,
+                    style,
+                    Some(spans),
+                    &highlight_layers,
+                    false,
+                )?;
+            } else {
+                draw_line_with_syntax(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    default_colors,
+                    color_column,
+                    style,
+                    spans,
+                )?;
+            }
             draw_indent_guides(
                 window,
                 row as u16,
@@ -913,18 +1323,71 @@ fn draw_snapshot_lines(
                 highlighted_chars,
                 style,
             )?;
+            draw_snippet_placeholders(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                snippet_ranges,
+                style,
+            )?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(
+                    window,
+                    row as u16,
+                    content_x,
+                    &source_line,
+                    scroll_x,
+                    text_w,
+                    style,
+                    diagnostic,
+                )?;
+            }
             continue;
         }
 
-        draw_plain_line(
+        if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+            let highlight_layers = [(
+                diagnostic.0.as_slice(),
+                style.diagnostic_inline.background(diagnostic.1.severity),
+            )];
+            draw_line_with_highlights(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                color_column,
+                style,
+                None,
+                &highlight_layers,
+                false,
+            )?;
+        } else {
+            draw_plain_line(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                default_colors,
+                color_column,
+            )?;
+        }
+        draw_snippet_placeholders(
             window,
             row as u16,
             content_x,
             &source_line,
             scroll_x,
             text_w,
-            default_colors,
-            color_column,
+            snippet_ranges,
+            style,
         )?;
         draw_indent_guides(
             window,
@@ -945,6 +1408,18 @@ fn draw_snapshot_lines(
             highlighted_chars,
             style,
         )?;
+        if let Some(diagnostic) = diagnostic_line {
+            draw_inline_diagnostic(
+                window,
+                row as u16,
+                content_x,
+                &source_line,
+                scroll_x,
+                text_w,
+                style,
+                diagnostic,
+            )?;
+        }
     }
 
     Ok(())
@@ -963,6 +1438,205 @@ fn selected_visible_cells(
         width_cells,
         &[sel_start_char..sel_end_char_exclusive],
     )
+}
+
+fn draw_snippet_placeholders(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    ranges: &[std::ops::Range<usize>],
+    style: UiStyle,
+) -> minui::Result<()> {
+    if ranges.is_empty() || text_w == 0 {
+        return Ok(());
+    }
+
+    let visible_end = scroll_x.saturating_add(text_w);
+    let color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let mut cell = 0usize;
+    let mut char_col = 0usize;
+    for grapheme in source_line.graphemes(true) {
+        let width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
+        let start_cell = cell;
+        let end_cell = cell.saturating_add(width);
+        let start_col = char_col;
+        let end_col = char_col.saturating_add(grapheme.chars().count());
+        cell = end_cell;
+        char_col = end_col;
+
+        if end_cell <= scroll_x {
+            continue;
+        }
+        if start_cell >= visible_end {
+            break;
+        }
+        if start_cell < scroll_x || end_cell > visible_end {
+            continue;
+        }
+        if !ranges
+            .iter()
+            .any(|range| start_col < range.end && end_col > range.start)
+        {
+            continue;
+        }
+
+        let visible_x = start_cell.saturating_sub(scroll_x);
+        if grapheme == "\t" {
+            let spaces = " ".repeat(width.max(1));
+            window.write_str_colored(
+                row,
+                content_x.saturating_add(visible_x as u16),
+                &spaces,
+                color,
+            )?;
+        } else {
+            window.write_str_colored(
+                row,
+                content_x.saturating_add(visible_x as u16),
+                grapheme,
+                color,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn draw_inline_diagnostic(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+    diagnostic: &app::DiagnosticLine,
+) -> minui::Result<()> {
+    draw_inline_diagnostic_shifted(
+        window,
+        row,
+        content_x,
+        source_line,
+        scroll_x,
+        text_w,
+        style,
+        diagnostic,
+        0,
+    )
+}
+
+fn clear_inline_diagnostic(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+) -> minui::Result<()> {
+    if text_w == 0 {
+        return Ok(());
+    }
+
+    let Some(start_cell) = inline_diagnostic_start_cell(source_line, scroll_x, text_w, 0) else {
+        return Ok(());
+    };
+    let blank = " ".repeat(text_w.saturating_sub(start_cell));
+    window.write_str_colored(
+        row,
+        content_x.saturating_add(start_cell as u16),
+        &blank,
+        ColorPair::new(style.theme.white, style.theme.bg),
+    )
+}
+
+fn draw_inline_diagnostic_shifted(
+    window: &mut dyn Window,
+    row: u16,
+    content_x: u16,
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    style: UiStyle,
+    diagnostic: &app::DiagnosticLine,
+    shift_cells: usize,
+) -> minui::Result<()> {
+    if text_w == 0 {
+        return Ok(());
+    }
+
+    let Some(start_cell) = inline_diagnostic_start_cell(source_line, scroll_x, text_w, shift_cells)
+    else {
+        return Ok(());
+    };
+    let available = text_w.saturating_sub(start_cell);
+    let inline_text = ui::widgets::popup::clip_text_to_cells(&diagnostic.inline_text, available);
+    if inline_text.is_empty() {
+        return Ok(());
+    }
+
+    let colors = style.diagnostic_inline.colors(diagnostic.severity);
+
+    window.write_str_colored(
+        row,
+        content_x.saturating_add(start_cell as u16),
+        &inline_text,
+        colors,
+    )
+}
+
+fn inline_diagnostic_start_cell(
+    source_line: &str,
+    scroll_x: usize,
+    text_w: usize,
+    shift_cells: usize,
+) -> Option<usize> {
+    let line_width = visible_content_cell_width(source_line, scroll_x, text_w);
+    let start_cell = line_width.saturating_add(shift_cells).saturating_add(5);
+    (start_cell < text_w).then_some(start_cell)
+}
+
+fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usize) -> usize {
+    if max_cells == 0 || source_line.is_empty() {
+        return 0;
+    }
+
+    let mut consumed_cells = 0usize;
+    let mut visible_cells = 0usize;
+
+    for grapheme in source_line.graphemes(true) {
+        let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
+        if consumed_cells.saturating_add(grapheme_width) <= scroll_x {
+            consumed_cells = consumed_cells.saturating_add(grapheme_width);
+            continue;
+        }
+
+        let remaining_cells = max_cells.saturating_sub(visible_cells);
+        if remaining_cells == 0 {
+            break;
+        }
+
+        visible_cells = visible_cells.saturating_add(grapheme_width.min(remaining_cells));
+        if visible_cells >= max_cells {
+            break;
+        }
+    }
+
+    visible_cells
+}
+
+fn clipped_cell_width(text: &str, max_cells: usize) -> usize {
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize;
+        if width.saturating_add(ch_width) > max_cells {
+            break;
+        }
+        width = width.saturating_add(ch_width);
+    }
+    width
 }
 
 fn highlighted_visible_cells(
@@ -1337,6 +2011,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
             None,
             None,
             false,
@@ -1499,6 +2175,26 @@ pub fn run() -> minui::Result<()> {
     }
 
     let mut window = TerminalWindow::new()?;
+    let symbol_info_keybind = KeybindAction::Custom("trigger-symbol-info".to_string());
+    if window
+        .keyboard_mut()
+        .add_keybind("ctrl-i", symbol_info_keybind.clone())
+        .is_err()
+    {
+        let _ = window
+            .keyboard_mut()
+            .add_keybind("ctrl+i", symbol_info_keybind);
+    }
+    let completion_keybind = KeybindAction::Custom("trigger-completion".to_string());
+    if window
+        .keyboard_mut()
+        .add_keybind("ctrl-shift-k", completion_keybind.clone())
+        .is_err()
+    {
+        let _ = window
+            .keyboard_mut()
+            .add_keybind("ctrl+shift+k", completion_keybind);
+    }
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
     let style = UiStyle::default();
@@ -1534,6 +2230,7 @@ pub fn run() -> minui::Result<()> {
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
         state.poll_analysis_results();
+        state.poll_lsp();
         state.poll_finder_results();
         state.expire_status_message(Instant::now());
 

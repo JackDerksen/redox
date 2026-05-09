@@ -475,7 +475,11 @@ impl EditorState {
             | EditorMode::Command
             | EditorMode::Search
             | EditorMode::Finder
-            | EditorMode::PinSelect => {}
+            | EditorMode::PinSelect
+            | EditorMode::LspMarketplace
+            | EditorMode::CodeActions
+            | EditorMode::SymbolInfo
+            | EditorMode::DiagnosticsList => {}
         }
     }
 
@@ -496,7 +500,11 @@ impl EditorState {
             | EditorMode::Command
             | EditorMode::Search
             | EditorMode::Finder
-            | EditorMode::PinSelect => {}
+            | EditorMode::PinSelect
+            | EditorMode::LspMarketplace
+            | EditorMode::CodeActions
+            | EditorMode::SymbolInfo
+            | EditorMode::DiagnosticsList => {}
         }
     }
 

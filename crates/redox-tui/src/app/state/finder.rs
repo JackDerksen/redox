@@ -920,8 +920,12 @@ impl EditorState {
     }
 
     fn open_pinned_path_in_editor(&mut self, path: PathBuf) {
-        self.transient_origin_dir = self.current_work_context_directory();
-        self.transient_origin_buffer_id = Some(self.session.active_id());
+        if self.transient_origin_dir.is_none() {
+            self.transient_origin_dir = Some(self.session.launch_dir().to_path_buf());
+        }
+        if self.transient_origin_buffer_id.is_none() {
+            self.transient_origin_buffer_id = Some(self.session.active_id());
+        }
         self.open_path_in_editor(path, true);
     }
 
@@ -953,27 +957,6 @@ impl EditorState {
             .path
             .clone()
             .map(|path| fs::canonicalize(&path).unwrap_or(path))
-    }
-
-    fn current_work_context_directory(&self) -> Option<PathBuf> {
-        self.transient_origin_dir
-            .clone()
-            .or_else(|| {
-                self.transient_origin_buffer_id
-                    .and_then(|buffer_id| self.session.meta(buffer_id))
-                    .and_then(|meta| meta.path.as_ref())
-                    .map(|path| path.parent().unwrap_or(path.as_path()).to_path_buf())
-            })
-            .or_else(|| {
-                self.current_active_file_path()
-                    .as_deref()
-                    .map(|path| path.parent().unwrap_or(path).to_path_buf())
-            })
-            .or_else(|| {
-                self.explorer
-                    .as_ref()
-                    .map(|explorer| explorer.dir_path.clone())
-            })
     }
 
     #[cfg(test)]

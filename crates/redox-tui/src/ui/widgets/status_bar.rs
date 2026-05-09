@@ -17,8 +17,9 @@
 //! - This widget draws at x=0 and computes y based on window height.
 
 use minui::widgets::Widget;
-use minui::{Color, ColorPair, Result, Window};
+use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
 use redox_core::BufferLoadPhase;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::style::{StatusModuleColors, StatusModuleKind};
@@ -422,13 +423,27 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
+    let git_module = git_diff_module(state, style);
+    let git_module_width = git_module.as_ref().map(StatusModule::width).unwrap_or(0);
+    let diagnostics_module = diagnostic_summary_module(state, module_theme);
+    let diagnostics_width = diagnostics_module
+        .as_ref()
+        .map(StatusModule::width)
+        .unwrap_or(0);
     let dirty_width = if state.active_dirty() { 1 } else { 0 };
-    let left_text_width = mode_width.saturating_add(dirty_width);
+    let left_text_width = mode_width
+        .saturating_add(git_module_width)
+        .saturating_add(diagnostics_width)
+        .saturating_add(dirty_width);
 
     let center_text = if state.finder_popup().is_some() {
         " finder ".to_string()
     } else if state.pin_selector_popup().is_some() {
         " pinboard ".to_string()
+    } else if state.lsp_marketplace_popup().is_some() {
+        " lsp ".to_string()
+    } else if state.diagnostics_popup().is_some() {
+        " diagnostics ".to_string()
     } else if state.explorer_popup().is_some() {
         " explorer ".to_string()
     } else {
@@ -448,7 +463,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     };
 
     let cursor = state.active_cursor_pos();
-    let total_lines = state.session.active_buffer().len_lines();
+    let buffer = state.session.active_buffer();
+    let total_lines = buffer.len_lines();
     let minimap_module_colors = module_theme.colors(StatusModuleKind::Minimap);
     let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
         cursor.line,
@@ -457,8 +473,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         style.palette.minimap_alt,
         minimap_module_colors.wrapper.bg,
     );
+    let visual_col = visual_column(buffer.line_string(cursor.line).as_str(), cursor.col);
     let coords_module = StatusModule::new(
-        format!("{}:{}", cursor.line + 1, cursor.col + 1),
+        format!("{}:{}", cursor.line + 1, visual_col + 1),
         module_theme.colors(StatusModuleKind::Coords),
     )
     .with_content_align(Align::Right);
@@ -488,7 +505,18 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_color(mode_colors)
                 .with_align(Align::Left)
                 .with_min_width(mode_width),
-        )
+        );
+    let status_bar = if let Some(module) = git_module {
+        status_bar.add_module(module)
+    } else {
+        status_bar
+    };
+    let status_bar = if let Some(module) = diagnostics_module {
+        status_bar.add_module(module)
+    } else {
+        status_bar
+    };
+    let status_bar = status_bar
         .add_segment(if state.active_dirty() {
             Segment::new("+")
                 .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
@@ -508,6 +536,52 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .add_module(minimap_module);
 
     status_bar
+}
+
+fn visual_column(line: &str, char_col: usize) -> usize {
+    let graphemes: Vec<&str> = line.graphemes(true).collect();
+    let cursor_g = char_col_to_grapheme_index(&graphemes, char_col);
+    graphemes[..cursor_g.min(graphemes.len())]
+        .iter()
+        .map(|g| cell_width(*g, TabPolicy::Fixed(4)) as usize)
+        .sum()
+}
+
+fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {
+    if cursor_col_chars == 0 {
+        return 0;
+    }
+
+    let mut chars_seen = 0usize;
+    for (i, grapheme) in graphemes.iter().enumerate() {
+        let grapheme_chars = grapheme.chars().count();
+        if chars_seen + grapheme_chars > cursor_col_chars {
+            return i;
+        }
+        chars_seen += grapheme_chars;
+        if chars_seen == cursor_col_chars {
+            return i + 1;
+        }
+    }
+
+    graphemes.len()
+}
+
+fn git_diff_module(state: &EditorState, style: UiStyle) -> Option<StatusModule> {
+    let Some(diff) = state.active_git_diff() else {
+        return None;
+    };
+    if diff.stats.is_empty() {
+        return None;
+    }
+
+    Some(StatusModule::new(
+        format!(
+            "+{} ~{} -{}",
+            diff.stats.added, diff.stats.modified, diff.stats.removed
+        ),
+        style.git.diff_module,
+    ))
 }
 
 fn status_bar_mode_presentation(
@@ -532,10 +606,44 @@ fn status_bar_mode_presentation(
         EditorMode::Search => ("SEARCH", style.palette.mode_command),
         EditorMode::Finder => ("FINDER", style.palette.mode_command),
         EditorMode::PinSelect => ("PINBOARD", style.palette.mode_command),
+        EditorMode::LspMarketplace | EditorMode::DiagnosticsList => {
+            ("NORMAL", style.palette.mode_normal)
+        }
+        EditorMode::CodeActions => ("ACTIONS", style.palette.mode_normal),
+        EditorMode::SymbolInfo => ("INFO", style.palette.mode_normal),
         EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
         EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
         EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
     }
+}
+
+fn diagnostic_summary_module(
+    state: &EditorState,
+    module_theme: crate::ui::style::StatusModuleTheme,
+) -> Option<StatusModule> {
+    let summary = state.active_diagnostic_summary();
+    if summary.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if summary.errors > 0 {
+        parts.push(format!("×{}", summary.errors));
+    }
+    if summary.warnings > 0 {
+        parts.push(format!("△{}", summary.warnings));
+    }
+    if summary.information > 0 {
+        parts.push(format!("•{}", summary.information));
+    }
+    if summary.hints > 0 {
+        parts.push(format!("⚬{}", summary.hints));
+    }
+
+    Some(StatusModule::new(
+        parts.join(" "),
+        module_theme.colors(StatusModuleKind::Diagnostics),
+    ))
 }
 
 #[cfg(test)]
@@ -622,5 +730,4 @@ mod tests {
         assert_eq!(segments[2].text, STATUS_MODULE_EDGE_RIGHT);
         assert_eq!(segments[2].colors, Some(wrapper_colors.wrapper));
     }
-
 }

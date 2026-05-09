@@ -10,6 +10,7 @@
 //! - support both single edits and batched edit application
 
 use crate::buffer::{Edit, EditBatchSummary, Pos, Selection, TextBuffer};
+use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 impl TextBuffer {
     /// Insert `text` at the given logical position.
@@ -422,11 +423,11 @@ impl TextBuffer {
         }
 
         let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
-        let indent = "\t".repeat(count);
+        let indent = SOFT_TAB.repeat(count);
         let mut added_by_line = Vec::with_capacity(end.saturating_sub(start) + 1);
         for line in start..=end {
             let _ = self.insert(Pos::new(line, 0), &indent);
-            added_by_line.push((line, count));
+            added_by_line.push((line, indent.chars().count()));
         }
         added_by_line
     }
@@ -441,8 +442,6 @@ impl TextBuffer {
         end_line_inclusive: usize,
         count: usize,
     ) -> Vec<(usize, usize)> {
-        const TAB_STOP: usize = 4;
-
         if count == 0 {
             return Vec::new();
         }
@@ -463,7 +462,9 @@ impl TextBuffer {
                 }
 
                 let mut spaces = 0usize;
-                while idx + spaces < chars.len() && chars[idx + spaces] == ' ' && spaces < TAB_STOP
+                while idx + spaces < chars.len()
+                    && chars[idx + spaces] == ' '
+                    && spaces < SOFT_TAB_WIDTH
                 {
                     spaces += 1;
                 }

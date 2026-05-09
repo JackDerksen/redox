@@ -82,6 +82,7 @@ pub fn draw_popup_frame_at(
         window.write_str_colored(y, x + 2, &title_text, chrome.title)?;
     }
 
+    //if inner_w > 0 && inner_h > 0 && chrome.fill.bg != minui::Color::Transparent {
     if inner_w > 0 && inner_h > 0 {
         let blank_row = " ".repeat(inner_w as usize);
         for row in 0..inner_h {
@@ -114,7 +115,7 @@ pub fn wrap_text_to_cells(text: &str, max_cells: usize) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for raw_line in text.lines() {
         let wrapped = wrap_line_to_cells(raw_line, max_cells);
         if wrapped.is_empty() {
@@ -182,16 +183,16 @@ fn wrap_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_w = 0usize;
 
-    for token in line.split_word_bounds() {
+    for token in coalesced_word_tokens(line) {
         let is_space = token.chars().all(char::is_whitespace);
-        let token_w = text_cell_width(token);
+        let token_w = text_cell_width(&token);
 
         if is_space {
             if current.is_empty() {
                 continue;
             }
             if current_w + token_w <= max_cells {
-                current.push_str(token);
+                current.push_str(&token);
                 current_w += token_w;
             } else {
                 out.push(current.trim_end().to_string());
@@ -203,14 +204,14 @@ fn wrap_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
 
         if token_w <= max_cells {
             if current_w + token_w <= max_cells {
-                current.push_str(token);
+                current.push_str(&token);
                 current_w += token_w;
             } else {
                 if !current.trim_end().is_empty() {
                     out.push(current.trim_end().to_string());
                 }
                 current.clear();
-                current.push_str(token);
+                current.push_str(&token);
                 current_w = token_w;
             }
             continue;
@@ -222,7 +223,7 @@ fn wrap_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
         current.clear();
         current_w = 0;
 
-        for chunk in hard_wrap_token(token, max_cells) {
+        for chunk in hard_wrap_token(&token, max_cells) {
             out.push(chunk);
         }
     }
@@ -232,6 +233,77 @@ fn wrap_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
     }
 
     out
+}
+
+fn coalesced_word_tokens(line: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut pending_prefix = String::new();
+
+    for token in line.split_word_bounds() {
+        let is_space = token.chars().all(char::is_whitespace);
+        if is_space {
+            if !pending_prefix.is_empty() {
+                if let Some(last) = out.last_mut() {
+                    last.push_str(&pending_prefix);
+                } else {
+                    out.push(std::mem::take(&mut pending_prefix));
+                }
+            }
+            out.push(token.to_string());
+            continue;
+        }
+
+        if token.chars().all(attachable_punctuation_char) {
+            if let Some(last) = out.last_mut()
+                && !last.chars().all(char::is_whitespace)
+            {
+                last.push_str(token);
+            } else {
+                pending_prefix.push_str(token);
+            }
+            continue;
+        }
+
+        let mut merged = String::new();
+        if !pending_prefix.is_empty() {
+            merged.push_str(&pending_prefix);
+            pending_prefix.clear();
+        }
+        merged.push_str(token);
+        out.push(merged);
+    }
+
+    if !pending_prefix.is_empty() {
+        if let Some(last) = out.last_mut() {
+            last.push_str(&pending_prefix);
+        } else {
+            out.push(pending_prefix);
+        }
+    }
+
+    out
+}
+
+fn attachable_punctuation_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '`' | '\''
+            | '"'
+            | ','
+            | '.'
+            | ':'
+            | ';'
+            | '!'
+            | '?'
+            | ')'
+            | ']'
+            | '}'
+            | '>'
+            | '('
+            | '['
+            | '{'
+            | '<'
+    )
 }
 
 fn hard_wrap_token(token: &str, max_cells: usize) -> Vec<String> {
@@ -275,6 +347,16 @@ mod tests {
     fn wrap_text_hard_wraps_long_tokens() {
         let wrapped = wrap_text_to_cells("superlongtoken", 5);
         assert_eq!(wrapped, vec!["super", "longt", "oken"]);
+    }
+
+    #[test]
+    fn wrap_text_keeps_backticks_attached_to_code_tokens() {
+        let wrapped = wrap_text_to_cells(
+            "consider importing this struct: `use std::time::Instant;`",
+            56,
+        );
+        assert!(!wrapped.iter().any(|line| line == "`"));
+        assert!(wrapped.last().is_some_and(|line| line.ends_with('`')));
     }
 
     #[test]

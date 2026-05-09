@@ -14,6 +14,7 @@ use self::languages::{
 };
 use super::style::{SyntaxRole, UiStyle};
 use crate::ui::helpers::apply_color_column;
+use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
@@ -308,6 +309,24 @@ impl SyntaxHighlighter {
         })
     }
 
+    pub fn visible_line_spans_for_display_cached(
+        &self,
+        language: Option<SyntaxLanguage>,
+        first_line: usize,
+        line_count: usize,
+    ) -> Option<VisibleLineSyntaxSpans<'_>> {
+        let language = language?;
+        let cache = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.language == language)?;
+        Some(VisibleLineSyntaxSpans {
+            line_spans: &cache.line_spans,
+            first_line,
+            line_count,
+        })
+    }
+
     pub(crate) fn has_cache_for(&self, language: SyntaxLanguage) -> bool {
         !self.cache_stale
             && self
@@ -322,7 +341,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache_stale
             && self
@@ -504,6 +522,39 @@ pub fn language_for_path(path: Option<&Path>) -> Option<SyntaxLanguage> {
     config_language_for_path(path)
 }
 
+pub fn language_for_name(name: &str) -> Option<SyntaxLanguage> {
+    let normalised = name.trim().to_ascii_lowercase();
+    match normalised.as_str() {
+        "c" => Some(SyntaxLanguage::C),
+        "cpp" | "c++" | "cc" | "cxx" => Some(SyntaxLanguage::Cpp),
+        "css" => Some(SyntaxLanguage::Css),
+        "go" | "golang" => Some(SyntaxLanguage::Go),
+        "html" => Some(SyntaxLanguage::Html),
+        "javascript" | "js" | "jsx" | "mjs" | "cjs" => Some(SyntaxLanguage::JavaScript),
+        "json" | "jsonc" => Some(SyntaxLanguage::Json),
+        "lua" => Some(SyntaxLanguage::Lua),
+        "markdown" | "md" => Some(SyntaxLanguage::Markdown),
+        "python" | "py" => Some(SyntaxLanguage::Python),
+        "rust" | "rs" => Some(SyntaxLanguage::Rust),
+        "toml" => Some(SyntaxLanguage::Toml),
+        "typescript" | "ts" => Some(SyntaxLanguage::TypeScript),
+        "tsx" | "typescriptreact" => Some(SyntaxLanguage::Tsx),
+        "yaml" | "yml" => Some(SyntaxLanguage::Yaml),
+        _ => None,
+    }
+}
+
+pub fn line_spans_for_source(
+    source: &str,
+    language: Option<SyntaxLanguage>,
+) -> Option<Vec<Vec<LineSyntaxSpan>>> {
+    let language = language?;
+    let config = language_config_for(language)?;
+    let mut engine = QuerySyntaxEngine::new(config)?;
+    let (spans, _) = engine.parse_line_spans(source)?;
+    Some(spans)
+}
+
 pub fn scope_guides_enabled(language: Option<SyntaxLanguage>) -> bool {
     !matches!(language, Some(SyntaxLanguage::Markdown))
 }
@@ -540,7 +591,7 @@ pub(crate) fn smart_newline_insert(
     if delimiter_split(&virtual_source, &tree, line, right_trimmed) || quote_split {
         let split_indent = if quote_split {
             let mut indent = base_indent.clone();
-            indent.push('\t');
+            indent.push_str(SOFT_TAB);
             indent
         } else {
             inner_indent
@@ -629,7 +680,7 @@ fn desired_indent_for_line_source(
                 || starts_with_html_closing(next_text.trim_start()))
         {
             let mut indent = floored_indent(leading_indent(next_text));
-            indent.push('\t');
+            indent.push_str(SOFT_TAB);
             return Some(indent);
         }
         return Some(String::new());
@@ -672,7 +723,7 @@ fn indent_after_line(
     let text = lines.get(line).copied()?;
     let mut indent = floored_indent(leading_indent(text));
     if opens_line(source, tree, language, line) {
-        indent.push('\t');
+        indent.push_str(SOFT_TAB);
     }
     Some(indent)
 }
@@ -781,14 +832,14 @@ fn leading_indent(text: &str) -> &str {
 }
 
 fn floored_indent(indent: &str) -> String {
-    "\t".repeat(indent_width(indent) / 4)
+    SOFT_TAB.repeat(indent_width(indent) / SOFT_TAB_WIDTH)
 }
 
 fn indent_width(indent: &str) -> usize {
     let mut col = 0usize;
     for ch in indent.chars() {
         match ch {
-            '\t' => col += 4 - (col % 4),
+            '\t' => col += SOFT_TAB_WIDTH - (col % SOFT_TAB_WIDTH),
             ' ' => col += 1,
             _ => break,
         }
@@ -814,7 +865,7 @@ fn remove_one_indent_level(indent: &mut String) {
         .chars()
         .rev()
         .take_while(|ch| *ch == ' ')
-        .take(4)
+        .take(SOFT_TAB_WIDTH)
         .count();
     for _ in 0..remove {
         indent.pop();
@@ -873,10 +924,10 @@ fn markdown_indent_after_line(text: &str) -> Option<String> {
 
     if let Some(marker_len) = markdown_list_marker_len(rest) {
         continuation_width += marker_len;
-        return Some("\t".repeat(continuation_width / 4));
+        return Some(" ".repeat(continuation_width));
     }
 
-    saw_block_quote.then(|| "\t".repeat(continuation_width / 4))
+    saw_block_quote.then(|| " ".repeat(continuation_width))
 }
 
 fn markdown_list_marker_len(text: &str) -> Option<usize> {
@@ -1151,6 +1202,54 @@ pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
     }
 
     spans
+}
+
+// Fix for syntax highlighting colour flicker
+pub fn merge_line_spans_for_display(
+    base: &[LineSyntaxSpan],
+    fallback: &[LineSyntaxSpan],
+) -> Vec<LineSyntaxSpan> {
+    if base.is_empty() {
+        return fallback.to_vec();
+    }
+    if fallback.is_empty() {
+        return base.to_vec();
+    }
+
+    let mut merged = base.to_vec();
+    for fallback_span in fallback {
+        let mut cursor = fallback_span.start_byte;
+        for span in base {
+            if span.start_byte >= fallback_span.end_byte {
+                break;
+            }
+            if span.end_byte <= cursor {
+                continue;
+            }
+            if span.start_byte > cursor {
+                merged.push(LineSyntaxSpan {
+                    start_byte: cursor,
+                    end_byte: span.start_byte.min(fallback_span.end_byte),
+                    role: fallback_span.role,
+                    priority: fallback_span.priority,
+                });
+            }
+            cursor = cursor.max(span.end_byte);
+            if cursor >= fallback_span.end_byte {
+                break;
+            }
+        }
+        if cursor < fallback_span.end_byte {
+            merged.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: fallback_span.end_byte,
+                role: fallback_span.role,
+                priority: fallback_span.priority,
+            });
+        }
+    }
+    merged.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
+    merged
 }
 
 fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
@@ -1999,6 +2098,55 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn stale_visible_line_spans_for_display_reuse_previous_cache() {
+        let buffer = TextBuffer::from_str("// note\n");
+        let mut highlighter = SyntaxHighlighter::default();
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
+
+        highlighter.mark_cache_stale();
+
+        let spans = highlighter
+            .visible_line_spans_for_display_cached(Some(SyntaxLanguage::Rust), 0, 1)
+            .expect("stale display cache should still be available");
+        assert!(
+            spans[0]
+                .iter()
+                .any(|span| span.role == SyntaxRole::Comment && span.start_byte == 0)
+        );
+    }
+
+    #[test]
+    fn merge_line_spans_for_display_only_fills_uncovered_gaps() {
+        let merged = super::merge_line_spans_for_display(
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 5,
+                role: SyntaxRole::Keyword,
+                priority: 20,
+            }],
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 10,
+                role: SyntaxRole::Comment,
+                priority: 10,
+            }],
+        );
+
+        assert!(merged.iter().any(|span| span.role == SyntaxRole::Keyword
+            && span.start_byte == 0
+            && span.end_byte == 5));
+        assert!(merged.iter().any(|span| span.role == SyntaxRole::Comment
+            && span.start_byte == 5
+            && span.end_byte == 10));
+        assert!(!merged.iter().any(|span| span.role == SyntaxRole::Comment
+            && span.start_byte == 0
+            && span.end_byte == 10));
     }
 
     #[test]

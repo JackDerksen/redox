@@ -5,6 +5,7 @@ use redox_core::{
 };
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -146,6 +147,43 @@ fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindS
         Ok(value) => value,
         Err(err) => panic::resume_unwind(err),
     }
+}
+
+fn with_path_prefix<T>(dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = previous_path.as_ref() {
+        paths.extend(std::env::split_paths(existing));
+    }
+    let joined = std::env::join_paths(paths).expect("failed to join PATH");
+    unsafe {
+        std::env::set_var("PATH", &joined);
+    }
+
+    let result = panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+    match previous_path {
+        Some(value) => unsafe {
+            std::env::set_var("PATH", value);
+        },
+        None => unsafe {
+            std::env::remove_var("PATH");
+        },
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(err) => panic::resume_unwind(err),
+    }
+}
+
+fn write_executable(path: &std::path::Path, script: &str) {
+    fs::write(path, script).expect("failed to write executable");
+    let mut permissions = fs::metadata(path)
+        .expect("failed to stat executable")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("failed to chmod executable");
 }
 
 #[test]
@@ -560,10 +598,109 @@ fn explorer_stays_in_previous_context_after_opening_pinned_file() {
             let popup = state.explorer_popup().expect("explorer popup");
             assert_eq!(
                 popup.dir_path,
-                fs::canonicalize(&left_dir).expect("left dir canonical")
+                fs::canonicalize(&root).expect("root canonical")
             );
         },
     );
+}
+
+#[test]
+fn explorer_stays_in_previous_context_after_saving_pinned_file() {
+    with_isolated_launch_env(
+        "explorer_stays_in_previous_context_after_pinned_save",
+        |root| {
+            let left_dir = root.join("left");
+            let right_dir = root.join("right");
+            fs::create_dir_all(&left_dir).expect("failed to create left dir");
+            fs::create_dir_all(&right_dir).expect("failed to create right dir");
+
+            let left_file = left_dir.join("left.txt");
+            let pinned_file = right_dir.join("pinned.txt");
+            fs::write(&left_file, "left\n").expect("failed to write left file");
+            fs::write(&pinned_file, "pinned  \n").expect("failed to write pinned file");
+
+            let session =
+                EditorSession::open_initial_file(&left_file).expect("failed to open session");
+            let mut state = EditorState::new(session);
+
+            let _ = state
+                .session
+                .open_file(&pinned_file)
+                .expect("failed to switch to pinned file");
+            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+            let _ = state
+                .session
+                .open_file(&left_file)
+                .expect("failed to return to left file");
+            state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+            run_command(&mut state, "w");
+
+            state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+            let popup = state.explorer_popup().expect("explorer popup");
+            assert_eq!(
+                popup.dir_path,
+                fs::canonicalize(&root).expect("root canonical")
+            );
+            assert_eq!(
+                fs::read_to_string(&pinned_file).expect("failed to read pinned file"),
+                "pinned\n"
+            );
+        },
+    );
+}
+
+#[test]
+fn switching_between_pinned_files_keeps_original_explorer_context() {
+    with_isolated_launch_env("switch_between_pinned_files_keeps_origin", |root| {
+        let left_dir = root.join("left");
+        let right_dir = root.join("right");
+        let other_dir = root.join("other");
+        fs::create_dir_all(&left_dir).expect("failed to create left dir");
+        fs::create_dir_all(&right_dir).expect("failed to create right dir");
+        fs::create_dir_all(&other_dir).expect("failed to create other dir");
+
+        let left_file = left_dir.join("left.txt");
+        let first_pin = right_dir.join("first.txt");
+        let second_pin = other_dir.join("second.txt");
+        fs::write(&left_file, "left\n").expect("failed to write left file");
+        fs::write(&first_pin, "first\n").expect("failed to write first pin");
+        fs::write(&second_pin, "second\n").expect("failed to write second pin");
+
+        let session = EditorSession::open_initial_file(&left_file).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        let _ = state
+            .session
+            .open_file(&first_pin)
+            .expect("failed to switch to first pin");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&second_pin)
+            .expect("failed to switch to second pin");
+        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
+        state.apply_input(InputAction::PinSelectorMoveNext, 80, 24);
+        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
+
+        let _ = state
+            .session
+            .open_file(&left_file)
+            .expect("failed to return to left file");
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
+        state.apply_input(InputAction::OpenPinnedSlot { slot: 1 }, 80, 24);
+        state.apply_input(InputAction::OpenExplorer, 80, 24);
+
+        let popup = state.explorer_popup().expect("explorer popup");
+        assert_eq!(
+            popup.dir_path,
+            fs::canonicalize(&root).expect("root canonical")
+        );
+    });
 }
 
 #[test]
@@ -2105,6 +2242,56 @@ fn insert_mode_tab_advances_out_of_auto_pair_closer() {
 }
 
 #[test]
+fn insert_mode_tab_inserts_soft_tab_spaces() {
+    let path = temp_file_path("insert_mode_soft_tab");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "    ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_tab_inserts_spaces_to_next_tab_stop() {
+    let path = temp_file_path("insert_mode_tab_stop");
+    let mut state = state_with_text(path.clone(), "ab");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "ab  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_backspace_removes_full_soft_tab_indent() {
+    let path = temp_file_path("insert_mode_soft_tab_backspace");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+    state.apply_input(InputAction::Backspace, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_existing_quote_advances_cursor() {
     let path = temp_file_path("insert_mode_skip_existing_quote");
     let mut state = state_with_text(path.clone(), "");
@@ -2464,6 +2651,159 @@ fn command_write_trims_trailing_whitespace_on_save() {
     );
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_softens_leading_hard_tabs_without_external_formatter() {
+    let path = temp_file_path("write_softens_tabs");
+    let mut state = state_with_text(path.clone(), "alpha\tbeta\n\tgamma\n  \tdelta\n");
+
+    run_command(&mut state, "w");
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha\tbeta\n    gamma\n    delta\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("failed to read saved file"),
+        "alpha\tbeta\n    gamma\n    delta\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_formats_python_with_ruff_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_python", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        let ruff_path = bin_dir.join("ruff");
+        write_executable(
+            &ruff_path,
+            "#!/bin/sh
+if [ \"$1\" = \"check\" ]; then
+  exit 0
+fi
+if [ \"$1\" = \"format\" ]; then
+  cat <<'EOF' > \"$2\"
+def main():
+\tprint('hi')
+EOF
+  exit 0
+fi
+exit 1
+",
+        );
+
+        let path = root.join("example.py");
+        fs::write(&path, "def main():\n    print('hi')\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "def main():\n    print('hi')\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "def main():\n    print('hi')\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
+}
+
+#[test]
+fn command_write_formats_go_with_gofmt_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_go", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        let gofmt_path = bin_dir.join("gofmt");
+        write_executable(
+            &gofmt_path,
+            "#!/bin/sh
+cat <<'EOF' > \"$2\"
+package main
+
+func main() {
+\tprintln(\"hi\")
+}
+EOF
+",
+        );
+
+        let path = root.join("example.go");
+        fs::write(
+            &path,
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n",
+        )
+        .expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
+}
+
+#[test]
+fn command_write_formats_rust_with_cargo_fmt_and_converts_tabs_to_soft_tabs() {
+    with_isolated_launch_env("write_formats_rust", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        write_executable(&bin_dir.join("rustfmt"), "#!/bin/sh\nexit 0\n");
+        let cargo_path = bin_dir.join("cargo");
+        write_executable(
+            &cargo_path,
+            "#!/bin/sh
+if [ \"$1\" = \"fmt\" ]; then
+  file=\"$3\"
+  cat <<'EOF' > \"$file\"
+fn main() {
+\tprintln!(\"hi\");
+}
+EOF
+  exit 0
+fi
+exit 1
+",
+        );
+
+        let cargo_toml = root.join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            "[package]\nname = \"fmt-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("failed to write Cargo.toml");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("failed to create src dir");
+        let path = src_dir.join("main.rs");
+        fs::write(&path, "fn main() {\n    println!(\"hi\");\n}\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read saved file"),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("written"));
+    });
 }
 
 #[test]
@@ -5091,8 +5431,11 @@ fn insert_enter_uses_tree_sitter_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "fn main() {\n\t");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "fn main() {\n    "
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5113,9 +5456,9 @@ fn insert_enter_splits_closing_delimiter_with_smart_indent() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n}"
+        "fn main() {\n    \n}"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5134,8 +5477,8 @@ fn insert_enter_splits_angle_delimiters_with_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "<\n\t\n>");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.session.active_buffer().to_string(), "<\n    \n>");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5156,9 +5499,9 @@ fn insert_enter_splits_quote_delimiters_with_smart_indent() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "let text = \"\n\t\n\";"
+        "let text = \"\n    \n\";"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5178,8 +5521,8 @@ fn insert_enter_splits_backtick_delimiters_with_smart_indent() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "`\n\t\n`");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.session.active_buffer().to_string(), "`\n    \n`");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
     let _ = fs::remove_file(path);
 }
 
@@ -5198,9 +5541,9 @@ fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     state.apply_input(InputAction::OpenLineBelow, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n}\n"
+        "fn main() {\n    \n}\n"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
 
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     state
@@ -5212,9 +5555,9 @@ fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     state.apply_input(InputAction::OpenLineAbove, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\t\n\t\n}\n"
+        "fn main() {\n    \n    \n}\n"
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(2, 1));
+    assert_eq!(state.active_cursor_pos(), Pos::new(2, 4));
 
     let _ = fs::remove_file(path);
 }
@@ -5233,8 +5576,8 @@ fn markdown_enter_and_open_line_continue_list_indentation() {
     state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
 
     state.apply_input(InputAction::Enter, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "- item\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
 
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     state
@@ -5244,8 +5587,8 @@ fn markdown_enter_and_open_line_continue_list_indentation() {
         .cursor
         .cursor = Pos::new(0, 0);
     state.apply_input(InputAction::OpenLineBelow, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "- item\n\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n  \n  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
 
     let _ = fs::remove_file(path);
 }
@@ -5291,15 +5634,15 @@ fn smart_indent_floors_partial_tab_widths() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "\t  if ready {\n\t\t"
+        "\t  if ready {\n        "
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 8));
 
     let _ = fs::remove_file(path);
 }
 
 #[test]
-fn markdown_list_indent_floors_to_full_tab_width() {
+fn markdown_list_indent_preserves_exact_continuation_width() {
     let path = temp_file_path("smart_markdown_floor").with_extension("md");
     let mut state = state_with_text(path.clone(), "    - item");
     let id = state.session.active_id();
@@ -5313,8 +5656,11 @@ fn markdown_list_indent_floors_to_full_tab_width() {
 
     state.apply_input(InputAction::Enter, 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "    - item\n\t");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "    - item\n      "
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 6));
 
     let _ = fs::remove_file(path);
 }
@@ -5370,7 +5716,7 @@ fn visual_move_reindents_line_for_new_tree_sitter_scope() {
     state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "fn main() {\n\tcall();\n\tlet x = 1;\n}\n"
+        "fn main() {\n\tcall();\n    let x = 1;\n}\n"
     );
 
     state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
@@ -5464,7 +5810,10 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
     );
 
     state.apply_input(InputAction::IndentVisualSelection { count: 1 }, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "\tone\n\ttwo\n");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "    one\n    two\n"
+    );
 
     state.apply_input(InputAction::OutdentVisualSelection { count: 1 }, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "one\ntwo\n");

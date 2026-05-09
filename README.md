@@ -1,20 +1,20 @@
 <p align="center">
-	<img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
+    <img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
 </p>
 
 <h1 align="center">
-	A terminal-based text editor, built with MinUI
+    A terminal-based text editor, built with MinUI
 </h1>
 
 <p align="center">
-	Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
-	<br><br>
-	<strong>PLEASE NOTE</strong>: This editor is in no way associated with
-	<a href="https://www.redox-os.org/">Redox OS</a>.
+    Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
+    <br><br>
+    <strong>PLEASE NOTE</strong>: This editor is in no way associated with
+    <a href="https://www.redox-os.org/">Redox OS</a>.
 </p>
 
 <p align="center">
-    <img width="1541" height="1027" alt="Redox Demo" src="assets/redox-demo.png" />
+    <img width="1529" height="1090" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 ## Project structure
@@ -39,11 +39,11 @@ redox/
         └── src/
             ├── app/
             │   ├── state.rs    # Main editor state and mode model
-            │   └── state/      # Commands, editing, explorer, finder, perf, search, etc.
+            │   └── state/      # Commands, editing, explorer, finder, LSP, perf, search, etc.
             ├── input/          # Key/event mapping, counts, operators, cursor controller
             └── ui/
                 ├── syntax/     # Tree-sitter language adapters and highlighting
-                ├── widgets/    # About, command line, explorer, finder, status, toast, perf
+                ├── widgets/    # About, command line, explorer, finder, LSP, status, toast, perf
                 ├── overlays.rs # Indent guides, delimiter highlights, colour column
                 ├── render.rs   # Text snapshot/render helpers
                 └── style.rs    # Theme and colour definitions
@@ -128,6 +128,8 @@ Enter command mode with `:`.
 | `:about` | Toggle the about popup. |
 | `:rain` | Toggle rain mode. |
 | `:perf` | Toggle the performance metrics popup. |
+| `:lsp list` | Open the language tools marketplace. |
+| `:lsp status` | Show the active buffer's detected language tools. |
 
 Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 
@@ -137,6 +139,10 @@ Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 | ---- | --------- |
 | `<space><space>` | Open the fuzzy file finder for the launch directory. |
 | `<space>e` | Toggle the file explorer. |
+| `<space>x` | Toggle the diagnostics list for the current file. |
+| `<space>ca` | Show quick fixes for the diagnostic under the cursor. |
+| `gd` | Go to symbol definition using the active LSP. |
+| `ctrl+shift+k` | Request LSP completions in insert mode. |
 | `Enter` | Open the selected explorer/finder entry. |
 | `-` | Navigate to the parent directory in the explorer. |
 | `ctrl+shift+p` | Open the pinboard for the current file or selected finder entry. |
@@ -165,6 +171,61 @@ Pinboard controls:
 | `shift+j` / `shift+k` | Reorder the selected pin down/up. |
 | `d` | Delete the selected pin. |
 | `Escape` / `ctrl+c` | Close the pinboard. |
+
+### Language tools
+
+Redox can start installed language servers for supported file types and display diagnostics inline, in the status bar, and in a diagnostics popup.
+
+Open the language tools marketplace with `:lsp list`.
+
+Completion controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| Typing code | Request completions automatically after a short pause. |
+| `ctrl+i` | Show type, signature, or documentation for the symbol under the cursor. |
+| `ctrl+shift+k` | Request completions in insert mode. |
+| `ctrl+n` / `ctrl+p` or `Down` / `Up` | Move through completion results. |
+| `Enter` | Accept the selected completion or snippet. |
+| `ctrl+e` | Close completions. |
+| `Escape` | Leave insert mode. |
+
+Marketplace controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `j` / `k` or `Down` / `Up` | Move through tools. |
+| `i` | Enable or install the selected tool. If the executable is already on `PATH`, Redox just enables it. |
+| `u` | Disable or uninstall the selected tool when Redox knows how it was installed. |
+| `Escape` / `ctrl+c` | Close the marketplace. |
+
+Diagnostics controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `<space>x` | Toggle the diagnostics list for the current file. |
+| `j` / `k` or `Down` / `Up` | Move through diagnostics. |
+| `Enter` | Jump to the selected diagnostic. |
+| `a` | Open quick fixes for the selected diagnostic in a lower split. |
+| `Escape` / `ctrl+c` | Close the lower quick-fix split, or close the diagnostics list when no split is open. |
+
+Code action controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `<space>ca` | Open quick fixes for the diagnostic under the cursor. |
+| `j` / `k` or `Down` / `Up` | Move through available actions. |
+| `Enter` | Apply the selected quick fix. |
+| `Escape` / `ctrl+c` | Close the quick-fix popup. |
+
+Other language tool commands:
+
+| Command / keys | Behaviour |
+| -------------- | --------- |
+| `:lsp status` | Show the detected language, LSP, and linter for the current file. |
+| `gd` | Go to symbol definition. |
+| `ctrl+i` | Show symbol info. |
+| Typing code or `ctrl+shift+k` | Request completions. |
 
 ### Editing and motion
 
@@ -268,6 +329,11 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Basic local search (`/`, `f`, `F`)
 - [x] Performance popup for frame timing
 - [x] Toast/status popups for longer messages
+- [x] LSP diagnostics, go-to-definition, completion, snippets, and language tool management
+- [ ] LSP symbol renaming (project-wide)
+- [x] LSP document formatting
+- [x] LSP code actions and quick fixes
+- [x] Basic git integration (diff stats)
 - [ ] Undo tree UI with stored history
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality

@@ -183,8 +183,6 @@ impl EditorState {
         self.explorer_delete_confirmation_token = None;
         let dir_path = std::fs::canonicalize(&dir_path).unwrap_or(dir_path);
         let return_to = self.session.active_id();
-        self.transient_origin_buffer_id = None;
-        self.transient_origin_dir = None;
         let entries = list_explorer_entries(&dir_path)?;
         let preferred_name = self.session.active_meta().path.as_ref().and_then(|path| {
             let parent = path.parent().unwrap_or(path.as_path());
@@ -544,6 +542,7 @@ impl EditorState {
 
         self.sync_session_after_explorer_write(&planned_write.changes);
         let pin_sync_error = self.sync_pinned_files_after_explorer_write(&planned_write.changes);
+        self.mark_git_repo_statuses_stale();
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,
@@ -1874,5 +1873,4 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
     }
-
 }

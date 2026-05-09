@@ -7,6 +7,8 @@
 pub mod state;
 
 pub use state::{
-    AboutPopup, EditorMode, EditorState, ExplorerPopup, FinderPopup, FinderPreview,
-    FramePerfSample, FramePerfStats, PerfPopup, PinSelectorPopup, StatusMessageStyle,
+    AboutPopup, CompletionEntry, CompletionPopup, DiagnosticLine, DiagnosticSeverity, EditorMode,
+    EditorState, ExplorerPopup, FinderPopup, FinderPreview, FramePerfSample, FramePerfStats,
+    GitDiffSnapshot, GitFileStatusKind, GitGutterKind, LspEntryStatusKind, LspMarketplacePopup,
+    PerfPopup, PinSelectorPopup, StatusMessageStyle,
 };

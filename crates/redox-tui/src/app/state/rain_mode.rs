@@ -49,11 +49,13 @@ impl EditorState {
             };
             let snapshot =
                 snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
-            let syntax_spans = view.syntax_highlighter.visible_line_spans_cached(
-                syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
-            );
+            let syntax_spans = view
+                .syntax_highlighter
+                .visible_line_spans_for_display_cached(
+                    syntax_language,
+                    snapshot.first_line,
+                    snapshot.lines.len(),
+                );
 
             crate::ui::RainAnimation::capture(
                 buffer,

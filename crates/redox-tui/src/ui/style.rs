@@ -2,6 +2,8 @@
 
 use minui::{Color, ColorPair};
 
+use crate::app::{DiagnosticSeverity, GitFileStatusKind, GitGutterKind};
+
 pub const STATUS_BAR_HEIGHT_ROWS: usize = 1;
 pub const STATUS_BAR_HEIGHT_CELLS: u16 = STATUS_BAR_HEIGHT_ROWS as u16;
 
@@ -202,12 +204,14 @@ impl StatusModuleColors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusModuleKind {
     Coords,
+    Diagnostics,
     Minimap,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusModuleTheme {
     pub coords: StatusModuleColors,
+    pub diagnostics: StatusModuleColors,
     pub minimap: StatusModuleColors,
 }
 
@@ -215,6 +219,7 @@ impl StatusModuleTheme {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+            diagnostics: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
             minimap: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
         }
     }
@@ -222,8 +227,53 @@ impl StatusModuleTheme {
     pub fn colors(self, kind: StatusModuleKind) -> StatusModuleColors {
         match kind {
             StatusModuleKind::Coords => self.coords,
+            StatusModuleKind::Diagnostics => self.diagnostics,
             StatusModuleKind::Minimap => self.minimap,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GitStyle {
+    pub added: ColorPair,
+    pub modified: ColorPair,
+    pub conflict: ColorPair,
+    pub removed: ColorPair,
+    pub diff_module: StatusModuleColors,
+}
+
+impl GitStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            added: ColorPair::new(theme.green, theme.bg),
+            modified: ColorPair::new(theme.yellow, theme.bg),
+            conflict: ColorPair::new(theme.orange, theme.bg),
+            removed: ColorPair::new(theme.red, theme.bg),
+            diff_module: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+        }
+    }
+
+    pub fn file_status(self, status: GitFileStatusKind) -> ColorPair {
+        match status {
+            GitFileStatusKind::Added => self.added,
+            GitFileStatusKind::Modified => self.modified,
+            GitFileStatusKind::Conflict => self.conflict,
+            GitFileStatusKind::Removed => self.removed,
+        }
+    }
+
+    pub fn gutter_marker(self, kind: GitGutterKind) -> (&'static str, ColorPair) {
+        match kind {
+            GitGutterKind::Added => ("▍", self.added),
+            GitGutterKind::Modified => ("▍", self.modified),
+            GitGutterKind::Removed => ("▶", self.removed),
+        }
+    }
+}
+
+impl Default for GitStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
     }
 }
 
@@ -265,7 +315,6 @@ pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
     pub status_module_gap_width: u16,
-    pub popup_dim_amount: u8,
 }
 
 impl Default for Layout {
@@ -274,7 +323,6 @@ impl Default for Layout {
             status_left_min_width: 12,
             status_right_min_width: 18,
             status_module_gap_width: 0,
-            popup_dim_amount: 5,
         }
     }
 }
@@ -383,6 +431,70 @@ impl CommandLineStyle {
 impl Default for CommandLineStyle {
     fn default() -> Self {
         Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticInlineStyle {
+    pub error: ColorPair,
+    pub warning: ColorPair,
+    pub information: ColorPair,
+    pub hint: ColorPair,
+}
+
+impl DiagnosticInlineStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            error: ColorPair::new(
+                theme.light_red,
+                Color::Rgb {
+                    // dim red background
+                    r: 49,
+                    g: 38,
+                    b: 43,
+                },
+            ),
+            warning: ColorPair::new(
+                theme.light_orange,
+                Color::Rgb {
+                    // dim orange background
+                    r: 49,
+                    g: 43,
+                    b: 42,
+                },
+            ),
+            information: ColorPair::new(
+                theme.light_gray,
+                Color::Rgb {
+                    // dim gray background
+                    r: 35,
+                    g: 34,
+                    b: 38,
+                },
+            ),
+            hint: ColorPair::new(
+                theme.light_blue,
+                Color::Rgb {
+                    // dim blue background
+                    r: 39,
+                    g: 45,
+                    b: 49,
+                },
+            ),
+        }
+    }
+
+    pub fn colors(self, severity: DiagnosticSeverity) -> ColorPair {
+        match severity {
+            DiagnosticSeverity::Error => self.error,
+            DiagnosticSeverity::Warning => self.warning,
+            DiagnosticSeverity::Information => self.information,
+            DiagnosticSeverity::Hint => self.hint,
+        }
+    }
+
+    pub fn background(self, severity: DiagnosticSeverity) -> Color {
+        self.colors(severity).bg
     }
 }
 
@@ -551,7 +663,7 @@ impl SyntaxStyle {
             number: ColorPair::new(theme.purple, bg),
             boolean: ColorPair::new(theme.purple, bg),
             float: ColorPair::new(theme.light_purple, bg),
-            comment: ColorPair::new(theme.light_gray, bg),
+            comment: ColorPair::new(theme.dark_gray, bg),
             constant: ColorPair::new(theme.purple, bg),
             constant_builtin: ColorPair::new(theme.purple, bg),
             constant_macro: ColorPair::new(theme.yellow, bg),
@@ -616,10 +728,12 @@ impl Default for SyntaxStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
+    pub git: GitStyle,
     pub palette: Palette,
     pub layout: Layout,
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
+    pub diagnostic_inline: DiagnosticInlineStyle,
     pub explorer: ExplorerStyle,
     pub finder: FinderStyle,
     pub perf: PerfStyle,
@@ -631,10 +745,12 @@ impl Default for UiStyle {
         let theme = BaseTheme::default();
         Self {
             theme,
+            git: GitStyle::from_theme(theme),
             palette: Palette::from_theme(theme),
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
+            diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
@@ -643,55 +759,82 @@ impl Default for UiStyle {
     }
 }
 
-fn dim_color(color: Color, amount: u8) -> Color {
+fn dim_foreground_color(color: Color, bg: Color) -> Color {
+    const FOREGROUND_WEIGHT: u16 = 699;
+    const BACKGROUND_WEIGHT: u16 = 301;
+
     match color {
-        Color::Rgb { r, g, b } => Color::Rgb {
-            r: r.saturating_sub(amount),
-            g: g.saturating_sub(amount),
-            b: b.saturating_sub(amount),
-        },
+        Color::Rgb { r, g, b } => {
+            let Color::Rgb {
+                r: bg_r,
+                g: bg_g,
+                b: bg_b,
+            } = bg
+            else {
+                return color;
+            };
+            Color::Rgb {
+                r: blend_channel(r, bg_r, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
+                g: blend_channel(g, bg_g, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
+                b: blend_channel(b, bg_b, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
+            }
+        }
         Color::Transparent => Color::Transparent,
         other => other,
     }
 }
 
+fn blend_channel(fg: u8, bg: u8, fg_weight: u16, bg_weight: u16) -> u8 {
+    let fg_weight = u32::from(fg_weight);
+    let bg_weight = u32::from(bg_weight);
+    let total = fg_weight.saturating_add(bg_weight).max(1);
+    let value = u32::from(fg)
+        .saturating_mul(fg_weight)
+        .saturating_add(u32::from(bg).saturating_mul(bg_weight))
+        .saturating_add(total / 2)
+        / total;
+    value.min(u32::from(u8::MAX)) as u8
+}
+
 impl BaseTheme {
-    pub fn dimmed(self, amount: u8) -> Self {
+    pub fn dimmed(self) -> Self {
         Self {
-            bg: dim_color(self.bg, amount),
-            color_column: dim_color(self.color_column, amount),
-            scope: dim_color(self.scope, amount),
-            selection_bg: dim_color(self.selection_bg, amount),
-            selection_fg: dim_color(self.selection_fg, amount),
-            white: dim_color(self.white, amount),
-            black: dim_color(self.black, amount),
-            red: dim_color(self.red, amount),
-            green: dim_color(self.green, amount),
-            yellow: dim_color(self.yellow, amount),
-            blue: dim_color(self.blue, amount),
-            purple: dim_color(self.purple, amount),
-            orange: dim_color(self.orange, amount),
-            light_red: dim_color(self.light_red, amount),
-            light_green: dim_color(self.light_green, amount),
-            light_yellow: dim_color(self.light_yellow, amount),
-            light_blue: dim_color(self.light_blue, amount),
-            light_purple: dim_color(self.light_purple, amount),
-            light_orange: dim_color(self.light_orange, amount),
-            dark_gray: dim_color(self.dark_gray, amount),
-            light_gray: dim_color(self.light_gray, amount),
+            bg: self.bg,
+            color_column: self.color_column,
+            scope: self.scope,
+            selection_bg: self.selection_bg,
+            selection_fg: dim_foreground_color(self.selection_fg, self.bg),
+            white: dim_foreground_color(self.white, self.bg),
+            black: dim_foreground_color(self.black, self.bg),
+            red: dim_foreground_color(self.red, self.bg),
+            green: dim_foreground_color(self.green, self.bg),
+            yellow: dim_foreground_color(self.yellow, self.bg),
+            blue: dim_foreground_color(self.blue, self.bg),
+            purple: dim_foreground_color(self.purple, self.bg),
+            orange: dim_foreground_color(self.orange, self.bg),
+            light_red: dim_foreground_color(self.light_red, self.bg),
+            light_green: dim_foreground_color(self.light_green, self.bg),
+            light_yellow: dim_foreground_color(self.light_yellow, self.bg),
+            light_blue: dim_foreground_color(self.light_blue, self.bg),
+            light_purple: dim_foreground_color(self.light_purple, self.bg),
+            light_orange: dim_foreground_color(self.light_orange, self.bg),
+            dark_gray: dim_foreground_color(self.dark_gray, self.bg),
+            light_gray: dim_foreground_color(self.light_gray, self.bg),
         }
     }
 }
 
 impl UiStyle {
     pub fn dimmed(self) -> Self {
-        let theme = self.theme.dimmed(self.layout.popup_dim_amount);
+        let theme = self.theme.dimmed();
         Self {
             theme,
+            git: GitStyle::from_theme(theme),
             palette: Palette::from_theme(theme),
             layout: self.layout,
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
+            diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
@@ -705,19 +848,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dimmed_style_reduces_rgb_channels_by_popup_amount() {
+    fn dimmed_style_fades_foreground_without_changing_background() {
         let style = UiStyle::default();
         let dimmed = style.dimmed();
 
         assert_eq!(
             dimmed.theme.bg,
             Color::Rgb {
-                r: 21,
-                g: 20,
-                b: 23,
+                r: 26,
+                g: 25,
+                b: 28,
             }
         );
-        assert_eq!(dimmed.layout.popup_dim_amount, 5);
+        assert_eq!(
+            dimmed.theme.purple,
+            Color::Rgb {
+                r: 134,
+                g: 140,
+                b: 186,
+            }
+        );
     }
 
     #[test]

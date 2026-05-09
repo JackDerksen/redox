@@ -692,8 +692,8 @@ fn indent_line_span_adds_tabs_and_reports_counts() {
     let mut b = TextBuffer::from_str("one\ntwo\n");
     let added = b.indent_line_span(0, 1, 2);
 
-    assert_eq!(added, vec![(0, 2), (1, 2)]);
-    assert_eq!(b.to_string(), "\t\tone\n\t\ttwo\n");
+    assert_eq!(added, vec![(0, 8), (1, 8)]);
+    assert_eq!(b.to_string(), "        one\n        two\n");
 }
 
 #[test]

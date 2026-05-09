@@ -20,11 +20,20 @@ mod analysis;
 use analysis::AnalysisWorker;
 mod explorer;
 mod finder;
+mod git;
+mod lsp;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
+pub use git::{GitDiffSnapshot, GitFileStatusKind, GitGutterKind};
+pub use lsp::{
+    CodeActionPopup, CodeActionPopupEntry, CompletionEntry, CompletionPopup, DiagnosticLine,
+    DiagnosticSeverity, DiagnosticsCodeActionsPane, DiagnosticsPopup, DiagnosticsPopupFocus,
+    LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
+    SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
+};
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
@@ -115,6 +124,10 @@ pub enum EditorMode {
     Search,
     Finder,
     PinSelect,
+    LspMarketplace,
+    DiagnosticsList,
+    CodeActions,
+    SymbolInfo,
     Visual,
     VisualLine,
     VisualBlock,
@@ -124,7 +137,14 @@ impl EditorMode {
     pub fn has_popup_overlay(self) -> bool {
         matches!(
             self,
-            EditorMode::Command | EditorMode::Search | EditorMode::Finder | EditorMode::PinSelect
+            EditorMode::Command
+                | EditorMode::Search
+                | EditorMode::Finder
+                | EditorMode::PinSelect
+                | EditorMode::LspMarketplace
+                | EditorMode::DiagnosticsList
+                | EditorMode::CodeActions
+                | EditorMode::SymbolInfo
         )
     }
 
@@ -136,6 +156,10 @@ impl EditorMode {
             EditorMode::Search => InputMode::Search,
             EditorMode::Finder => InputMode::Finder,
             EditorMode::PinSelect => InputMode::PinSelect,
+            EditorMode::LspMarketplace => InputMode::LspMarketplace,
+            EditorMode::DiagnosticsList => InputMode::DiagnosticsList,
+            EditorMode::CodeActions => InputMode::CodeActions,
+            EditorMode::SymbolInfo => InputMode::SymbolInfo,
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
@@ -203,6 +227,7 @@ pub struct EditorState {
     finder_index_cache: HashMap<PathBuf, Vec<finder::FinderFileCandidate>>,
     pin_selector: Option<PinSelectorState>,
     pinned_files: PinnedFilesState,
+    lsp: lsp::LspState,
     pub mode: EditorMode,
     pub input: InputState,
     pub command_line: String,
@@ -224,6 +249,7 @@ pub struct EditorState {
     transient_origin_buffer_id: Option<BufferId>,
     transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
+    git: git::GitState,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
 }
@@ -250,6 +276,7 @@ impl EditorState {
             finder_index_cache: HashMap::new(),
             pin_selector: None,
             pinned_files: PinnedFilesState::load(),
+            lsp: lsp::LspState::default(),
             mode: EditorMode::Normal,
             input: InputState::new(),
             command_line: String::new(),
@@ -271,10 +298,13 @@ impl EditorState {
             transient_origin_buffer_id: None,
             transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
+            git: git::GitState::default(),
             perf_visible: false,
             perf_stats: None,
         };
+        let mut state = state;
         state.request_analysis(active, 0);
+        state.initialise_lsp_state();
         state
     }
 
@@ -289,6 +319,13 @@ impl EditorState {
         self.status_msg = Some(lines.join("\n"));
         self.status_msg_line_styles = styles;
         self.status_msg_expires_at = None;
+    }
+
+    pub fn set_status_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
+        self.status_msg = Some(lines.join("\n"));
+        self.status_msg_line_styles = styles;
+        self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
     pub fn clear_status(&mut self) {
@@ -410,6 +447,18 @@ impl EditorState {
         &self.session.active_meta().display_name
     }
 
+    pub fn active_git_diff(&self) -> Option<&GitDiffSnapshot> {
+        self.git.diff_for(self.session.active_id())
+    }
+
+    pub fn git_diff_for_buffer(&self, buffer_id: BufferId) -> Option<&GitDiffSnapshot> {
+        self.git.diff_for(buffer_id)
+    }
+
+    pub fn git_status_for_path(&self, path: &std::path::Path) -> Option<GitFileStatusKind> {
+        self.git.status_for_path(path)
+    }
+
     pub fn active_cursor_pos(&self) -> Pos {
         let id = self.session.active_id();
         self.views
@@ -439,7 +488,11 @@ impl EditorState {
             | EditorMode::Command
             | EditorMode::Search
             | EditorMode::Finder
-            | EditorMode::PinSelect => return None,
+            | EditorMode::PinSelect
+            | EditorMode::LspMarketplace => return None,
+            EditorMode::DiagnosticsList | EditorMode::CodeActions | EditorMode::SymbolInfo => {
+                return None;
+            }
         };
         Some((Selection::new(anchor, view.cursor.cursor), mode))
     }
@@ -512,17 +565,7 @@ impl EditorState {
 
     fn invalidate_active_render_caches(&mut self) {
         let active_id = self.session.active_id();
-        let version = {
-            let view = self.views.entry(active_id).or_default();
-            view.invalidate_render_caches();
-            view.analysis_version
-        };
-        self.request_analysis(active_id, version);
-        if let Some(search) = self.search_state.as_mut()
-            && search.buffer_id == active_id
-        {
-            search.dirty = true;
-        }
+        self.invalidate_buffer_render_caches(active_id);
     }
 
     fn request_analysis(&self, buffer_id: BufferId, version: u64) {
@@ -563,10 +606,42 @@ impl EditorState {
         self.request_analysis(buffer_id, version);
     }
 
+    fn invalidate_buffer_render_caches(&mut self, buffer_id: BufferId) {
+        let version = {
+            let view = self.views.entry(buffer_id).or_default();
+            view.invalidate_render_caches();
+            view.analysis_version
+        };
+        self.git.mark_stale(buffer_id);
+        self.request_analysis(buffer_id, version);
+        if let Some(search) = self.search_state.as_mut()
+            && search.buffer_id == buffer_id
+        {
+            search.dirty = true;
+        }
+    }
+
     pub fn poll_analysis_results(&mut self) {
         while let Some(result) = self.analysis_worker.try_recv() {
             self.apply_analysis_result(result);
         }
+    }
+
+    pub fn refresh_active_git_diff(&mut self) {
+        let active_id = self.session.active_id();
+        self.refresh_git_diff_for_buffer(active_id);
+    }
+
+    pub fn refresh_git_diff_for_buffer(&mut self, buffer_id: BufferId) {
+        self.git.refresh_for_buffer(&self.session, buffer_id);
+    }
+
+    pub fn refresh_git_repo_status_for_dir(&mut self, dir: &std::path::Path) {
+        self.git.refresh_repo_status_for_dir(dir);
+    }
+
+    pub fn mark_git_repo_statuses_stale(&mut self) {
+        self.git.mark_all_repo_statuses_stale();
     }
 
     fn apply_analysis_result(&mut self, result: analysis::AnalysisResult) {
