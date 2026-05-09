@@ -407,14 +407,25 @@ fn load_repo_statuses(repo_root: &Path) -> Option<RepoStatuses> {
 
         let x = raw_entry[0] as char;
         let y = raw_entry[1] as char;
+        let is_rename_or_copy = matches!(x, 'R' | 'C');
         let path_bytes = &raw_entry[3..];
-        let path = String::from_utf8(path_bytes.to_vec()).ok()?;
-        let status = classify_repo_status(x, y)?;
+        let Ok(path) = String::from_utf8(path_bytes.to_vec()) else {
+            if is_rename_or_copy {
+                let _ = entries.next();
+            }
+            continue;
+        };
+        let Some(status) = classify_repo_status(x, y) else {
+            if is_rename_or_copy {
+                let _ = entries.next();
+            }
+            continue;
+        };
         let file_path = repo_root.join(path);
         set_repo_status(&mut file_statuses, file_path.clone(), status);
         set_directory_statuses(&mut directory_statuses, repo_root, &file_path, status);
 
-        if matches!(x, 'R' | 'C') {
+        if is_rename_or_copy {
             let _ = entries.next();
         }
     }
