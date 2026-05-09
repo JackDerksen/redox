@@ -1,7 +1,14 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CodeActionOrigin {
+    pub(super) buffer_id: BufferId,
+    pub(super) workspace: WorkspaceKey,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct CodeActionsPopupState {
+    pub(super) origin: CodeActionOrigin,
     pub(super) selected: usize,
     pub(super) requested_at: Pos,
     pub(super) return_mode: EditorMode,
@@ -73,6 +80,9 @@ pub(super) struct LspCommand {
 impl EditorState {
     pub fn code_actions_popup(&self) -> Option<CodeActionPopup> {
         let state = self.lsp.code_actions_popup.as_ref()?;
+        if self.session.active_id() != state.origin.buffer_id {
+            return None;
+        }
         if state.return_mode == EditorMode::Normal && self.active_cursor_pos() != state.requested_at
         {
             return None;
@@ -157,6 +167,10 @@ impl EditorState {
             }
             return;
         };
+        let origin = CodeActionOrigin {
+            buffer_id: active_id,
+            workspace: document.workspace.clone(),
+        };
         let Some((entry, requested_at, title, range, diagnostics)) =
             self.code_action_request_context()
         else {
@@ -188,6 +202,7 @@ impl EditorState {
         self.cancel_pending_lsp_requests(
             &document.workspace,
             PendingRequest::CodeActions {
+                origin: origin.clone(),
                 requested_at,
                 return_mode,
                 title: title.clone(),
@@ -208,6 +223,7 @@ impl EditorState {
         if self.mode == EditorMode::DiagnosticsList
             && let Some(state) = self.lsp.diagnostics_popup.as_mut()
         {
+            state.code_action_origin = Some(origin.clone());
             state.pending_code_actions = Some(PendingDiagnosticsCodeActions {
                 diagnostic: entry.clone(),
                 document_version,
@@ -235,6 +251,7 @@ impl EditorState {
                     },
                     PendingClientRequest {
                         kind: PendingRequest::CodeActions {
+                            origin,
                             requested_at,
                             return_mode,
                             title,
@@ -263,9 +280,13 @@ impl EditorState {
     }
 
     pub(in crate::app::state) fn apply_selected_code_action(&mut self) {
-        let Some(workspace) = self.active_workspace_key() else {
+        let Some(origin) = self.selected_code_action_origin() else {
             return;
         };
+        if self.session.active_id() != origin.buffer_id {
+            self.close_code_actions_popup();
+            return;
+        }
         let Some(action) = self.selected_code_action() else {
             return;
         };
@@ -289,7 +310,7 @@ impl EditorState {
         }
 
         if let Some(command) = action.command.as_ref() {
-            let Some(client) = self.lsp.clients.get_mut(&workspace) else {
+            let Some(client) = self.lsp.clients.get_mut(&origin.workspace) else {
                 if edit_applied {
                     self.consume_applied_code_action(return_mode);
                     self.set_status("applied quick fix edit, but no LSP client for command");
@@ -304,7 +325,10 @@ impl EditorState {
             {
                 Ok(id) => {
                     self.lsp.pending_requests.insert(
-                        RequestKey { workspace, id },
+                        RequestKey {
+                            workspace: origin.workspace,
+                            id,
+                        },
                         PendingClientRequest {
                             kind: PendingRequest::ExecuteCommand {
                                 title: action.title.clone(),
@@ -396,6 +420,18 @@ impl EditorState {
 
         let popup = self.lsp.code_actions_popup.as_ref()?;
         popup.actions.get(popup.selected).cloned()
+    }
+
+    fn selected_code_action_origin(&self) -> Option<CodeActionOrigin> {
+        if self.diagnostics_code_actions_are_focused() {
+            return self
+                .lsp
+                .diagnostics_popup
+                .as_ref()?
+                .code_action_origin
+                .clone();
+        }
+        Some(self.lsp.code_actions_popup.as_ref()?.origin.clone())
     }
 
     fn try_open_cached_diagnostic_code_actions(&mut self) -> bool {
@@ -547,14 +583,6 @@ impl EditorState {
         }))
     }
 
-    fn active_workspace_key(&self) -> Option<WorkspaceKey> {
-        let active_id = self.session.active_id();
-        self.lsp
-            .documents
-            .get(&active_id)
-            .map(|document| document.workspace.clone())
-    }
-
     pub(super) fn apply_workspace_edit(&mut self, edit: &WorkspaceEdit) -> io::Result<()> {
         let original_active = self.session.active_id();
         let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
@@ -625,6 +653,7 @@ impl EditorState {
             return false;
         };
         let PendingRequest::CodeActions {
+            origin,
             requested_at,
             return_mode,
             title,
@@ -634,9 +663,14 @@ impl EditorState {
             return false;
         };
         self.lsp.pending_requests.remove(&key);
+        if origin.workspace != *workspace {
+            return true;
+        }
 
         if let Some(error) = message.get("error") {
-            if let Some(popup) = self.lsp.diagnostics_popup.as_mut() {
+            if let Some(popup) = self.lsp.diagnostics_popup.as_mut()
+                && popup.code_action_origin.as_ref() == Some(&origin)
+            {
                 popup.pending_code_actions = None;
                 if matches!(trigger, CodeActionRequestTrigger::Manual) {
                     popup.code_actions = None;
@@ -656,7 +690,9 @@ impl EditorState {
 
         let actions = parse_code_action_response(message);
         if actions.is_empty() {
-            if let Some(popup) = self.lsp.diagnostics_popup.as_mut() {
+            if let Some(popup) = self.lsp.diagnostics_popup.as_mut()
+                && popup.code_action_origin.as_ref() == Some(&origin)
+            {
                 let should_close = popup
                     .pending_code_actions
                     .as_ref()
@@ -676,7 +712,9 @@ impl EditorState {
 
         if return_mode == EditorMode::DiagnosticsList {
             let fallback_document_version = self.active_document_version().unwrap_or_default();
-            if let Some(popup) = self.lsp.diagnostics_popup.as_mut() {
+            if let Some(popup) = self.lsp.diagnostics_popup.as_mut()
+                && popup.code_action_origin.as_ref() == Some(&origin)
+            {
                 let (diagnostic, document_version, open_on_arrival) = popup
                     .pending_code_actions
                     .as_ref()
@@ -720,9 +758,15 @@ impl EditorState {
                 }
                 return true;
             }
+            return true;
+        }
+
+        if self.session.active_id() != origin.buffer_id {
+            return true;
         }
 
         self.lsp.code_actions_popup = Some(CodeActionsPopupState {
+            origin,
             selected: 0,
             requested_at,
             return_mode,

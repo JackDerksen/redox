@@ -519,6 +519,7 @@ struct LspMarketplaceState {
 
 #[derive(Debug, Clone)]
 struct DiagnosticsPopupState {
+    code_action_origin: Option<CodeActionOrigin>,
     selected: usize,
     code_actions: Option<CodeActionsPaneState>,
     focus: DiagnosticsPopupFocus,
@@ -601,6 +602,7 @@ struct RequestKey {
 enum PendingRequest {
     GotoDefinition,
     CodeActions {
+        origin: CodeActionOrigin,
         requested_at: Pos,
         return_mode: EditorMode,
         title: String,
@@ -1497,6 +1499,7 @@ impl EditorState {
             return;
         }
         self.lsp.diagnostics_popup = Some(DiagnosticsPopupState {
+            code_action_origin: None,
             selected: 0,
             code_actions: None,
             focus: DiagnosticsPopupFocus::Diagnostics,
@@ -2140,8 +2143,12 @@ impl EditorState {
             self.send_lsp_cancel_request(&key);
             match kind {
                 PendingRequest::GotoDefinition => self.set_status("definition lookup timed out"),
-                PendingRequest::CodeActions { trigger, .. } => {
-                    if let Some(state) = self.lsp.diagnostics_popup.as_mut() {
+                PendingRequest::CodeActions {
+                    origin, trigger, ..
+                } => {
+                    if let Some(state) = self.lsp.diagnostics_popup.as_mut()
+                        && state.code_action_origin.as_ref() == Some(&origin)
+                    {
                         state.pending_code_actions = None;
                         if matches!(trigger, CodeActionRequestTrigger::Manual) {
                             state.code_actions = None;
