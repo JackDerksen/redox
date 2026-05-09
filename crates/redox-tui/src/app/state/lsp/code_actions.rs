@@ -279,16 +279,23 @@ impl EditorState {
                 .unwrap_or(EditorMode::Normal)
         };
 
+        let mut edit_applied = false;
         if let Some(edit) = action.edit.as_ref() {
             if let Err(error) = self.apply_workspace_edit(edit) {
                 self.set_status(format!("quick fix failed: {error}"));
                 return;
             }
+            edit_applied = true;
         }
 
         if let Some(command) = action.command.as_ref() {
             let Some(client) = self.lsp.clients.get_mut(&workspace) else {
-                self.set_status("no LSP client for current buffer");
+                if edit_applied {
+                    self.consume_applied_code_action(return_mode);
+                    self.set_status("applied quick fix edit, but no LSP client for command");
+                } else {
+                    self.set_status("no LSP client for current buffer");
+                }
                 return;
             };
             match client
@@ -301,27 +308,33 @@ impl EditorState {
                         PendingClientRequest {
                             kind: PendingRequest::ExecuteCommand {
                                 title: action.title.clone(),
+                                edit_applied,
                             },
                             started_at: Instant::now(),
                         },
                     );
+                    if edit_applied {
+                        self.consume_applied_code_action(return_mode);
+                        self.set_status(format!(
+                            "applied quick fix edit; running command: {}",
+                            action.title
+                        ));
+                    }
                 }
                 Err(error) => {
-                    self.set_status(format!("quick fix command failed: {error}"));
+                    if edit_applied {
+                        self.consume_applied_code_action(return_mode);
+                        self.set_status(format!(
+                            "applied quick fix edit, but command failed: {error}"
+                        ));
+                    } else {
+                        self.set_status(format!("quick fix command failed: {error}"));
+                    }
                     return;
                 }
             }
         } else {
-            if return_mode == EditorMode::DiagnosticsList {
-                let _ = self.close_diagnostics_code_actions_pane();
-            } else {
-                self.close_code_actions_popup();
-            }
-            if return_mode == EditorMode::DiagnosticsList
-                && self.current_diagnostic_popup_entries().is_empty()
-            {
-                self.close_diagnostics_popup();
-            }
+            self.consume_applied_code_action(return_mode);
             self.set_status(format!("applied quick fix: {}", action.title));
         }
     }
@@ -360,6 +373,19 @@ impl EditorState {
         }
         state.focus = DiagnosticsPopupFocus::Diagnostics;
         true
+    }
+
+    fn consume_applied_code_action(&mut self, return_mode: EditorMode) {
+        if return_mode == EditorMode::DiagnosticsList {
+            let _ = self.close_diagnostics_code_actions_pane();
+        } else {
+            self.close_code_actions_popup();
+        }
+        if return_mode == EditorMode::DiagnosticsList
+            && self.current_diagnostic_popup_entries().is_empty()
+        {
+            self.close_diagnostics_popup();
+        }
     }
 
     fn selected_code_action(&self) -> Option<AvailableCodeAction> {
@@ -723,7 +749,11 @@ impl EditorState {
         let Some(request) = self.lsp.pending_requests.get(&key).cloned() else {
             return false;
         };
-        let PendingRequest::ExecuteCommand { title } = request.kind else {
+        let PendingRequest::ExecuteCommand {
+            title,
+            edit_applied,
+        } = request.kind
+        else {
             return false;
         };
         self.lsp.pending_requests.remove(&key);
@@ -733,7 +763,14 @@ impl EditorState {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown LSP error");
-            self.set_status(format!("quick fix command failed: {detail}"));
+            if edit_applied {
+                self.close_code_actions_popup();
+                self.set_status(format!(
+                    "applied quick fix edit, but command failed: {detail}"
+                ));
+            } else {
+                self.set_status(format!("quick fix command failed: {detail}"));
+            }
             return true;
         }
 

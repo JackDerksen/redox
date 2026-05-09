@@ -608,6 +608,7 @@ enum PendingRequest {
     },
     ExecuteCommand {
         title: String,
+        edit_applied: bool,
     },
     SymbolInfo {
         requested_at: Pos,
