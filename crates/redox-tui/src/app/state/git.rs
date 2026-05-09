@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,8 @@ use redox_core::{BufferId, BufferKind, EditorSession};
 use tempfile::NamedTempFile;
 
 const DIRTY_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+const REPO_STATUS_WORKERS: usize = 2;
+const REPO_STATUS_QUEUE_BOUND: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitFileStatusKind {
@@ -88,6 +91,7 @@ pub struct GitState {
     pending_repo_status_dirs: HashSet<PathBuf>,
     repo_status_tx: Sender<GitRepoStatusResult>,
     repo_status_rx: Receiver<GitRepoStatusResult>,
+    repo_status_job_tx: SyncSender<GitRepoStatusJob>,
     diff_tx: Sender<GitDiffResult>,
     diff_rx: Receiver<GitDiffResult>,
 }
@@ -116,6 +120,11 @@ struct GitRepoStatusResult {
     statuses: Option<RepoStatuses>,
 }
 
+struct GitRepoStatusJob {
+    dir: PathBuf,
+    tx: Sender<GitRepoStatusResult>,
+}
+
 #[derive(Debug)]
 struct GitDiffResult {
     buffer_id: BufferId,
@@ -132,6 +141,7 @@ type RepoStatuses = (
 impl Default for GitState {
     fn default() -> Self {
         let (repo_status_tx, repo_status_rx) = mpsc::channel();
+        let repo_status_job_tx = start_repo_status_workers();
         let (diff_tx, diff_rx) = mpsc::channel();
         Self {
             cache: HashMap::new(),
@@ -139,6 +149,7 @@ impl Default for GitState {
             pending_repo_status_dirs: HashSet::new(),
             repo_status_tx,
             repo_status_rx,
+            repo_status_job_tx,
             diff_tx,
             diff_rx,
         }
@@ -194,16 +205,17 @@ impl GitState {
             return;
         }
 
-        self.pending_repo_status_dirs.insert(dir.clone());
         let tx = self.repo_status_tx.clone();
-        thread::spawn(move || {
-            let result = load_repo_statuses_for_dir(&dir);
-            let _ = tx.send(GitRepoStatusResult {
-                requested_dir: dir,
-                repo_root: result.as_ref().map(|(repo_root, _)| repo_root.clone()),
-                statuses: result.map(|(_, statuses)| statuses),
-            });
-        });
+        match self.repo_status_job_tx.try_send(GitRepoStatusJob {
+            dir: dir.clone(),
+            tx,
+        }) {
+            Ok(()) => {
+                self.pending_repo_status_dirs.insert(dir);
+            }
+            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Disconnected(_)) => {}
+        }
     }
 
     pub fn refresh_for_buffer(&mut self, session: &EditorSession, buffer_id: BufferId) {
@@ -320,6 +332,37 @@ impl GitState {
             entry.pending = false;
         }
     }
+}
+
+fn start_repo_status_workers() -> SyncSender<GitRepoStatusJob> {
+    let (tx, rx) = mpsc::sync_channel::<GitRepoStatusJob>(REPO_STATUS_QUEUE_BOUND);
+    let rx = Arc::new(Mutex::new(rx));
+
+    for _ in 0..REPO_STATUS_WORKERS {
+        let rx = Arc::clone(&rx);
+        thread::spawn(move || {
+            loop {
+                let job = {
+                    let Ok(rx) = rx.lock() else {
+                        break;
+                    };
+                    rx.recv()
+                };
+                let Ok(job) = job else {
+                    break;
+                };
+
+                let result = load_repo_statuses_for_dir(&job.dir);
+                let _ = job.tx.send(GitRepoStatusResult {
+                    requested_dir: job.dir,
+                    repo_root: result.as_ref().map(|(repo_root, _)| repo_root.clone()),
+                    statuses: result.map(|(_, statuses)| statuses),
+                });
+            }
+        });
+    }
+
+    tx
 }
 
 fn load_repo_statuses_for_dir(dir: &Path) -> Option<(PathBuf, RepoStatuses)> {
