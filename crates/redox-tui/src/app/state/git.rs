@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, EditorSession};
+use tempfile::NamedTempFile;
 
 const DIRTY_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -437,10 +438,12 @@ fn load_git_diff(path: &Path, current_text: &str) -> Option<GitDiffSnapshot> {
     let head_spec = format!("HEAD:{rel_path}");
     let head_text = git_stdout(&repo_root, &["show", &head_spec]).unwrap_or_default();
 
-    let old_path = temp_git_diff_path("old");
-    let new_path = temp_git_diff_path("new");
-    fs::write(&old_path, head_text).ok()?;
-    fs::write(&new_path, current_text).ok()?;
+    let mut old_file = NamedTempFile::new().ok()?;
+    let mut new_file = NamedTempFile::new().ok()?;
+    old_file.write_all(head_text.as_bytes()).ok()?;
+    new_file.write_all(current_text.as_bytes()).ok()?;
+    let old_path = old_file.path();
+    let new_path = new_file.path();
 
     let output = Command::new("git")
         .arg("-C")
@@ -454,9 +457,6 @@ fn load_git_diff(path: &Path, current_text: &str) -> Option<GitDiffSnapshot> {
         .arg(&new_path)
         .output()
         .ok()?;
-
-    let _ = fs::remove_file(&old_path);
-    let _ = fs::remove_file(&new_path);
 
     if !(output.status.success() || output.status.code() == Some(1)) {
         return None;
@@ -477,17 +477,6 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
-}
-
-fn temp_git_diff_path(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "redox-git-diff-{label}-{}-{nanos}.tmp",
-        std::process::id()
-    ))
 }
 
 fn parse_git_patch(patch: &str) -> GitDiffSnapshot {
