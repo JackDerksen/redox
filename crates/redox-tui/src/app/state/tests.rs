@@ -2654,19 +2654,19 @@ fn command_write_trims_trailing_whitespace_on_save() {
 }
 
 #[test]
-fn command_write_softens_hard_tabs_without_external_formatter() {
+fn command_write_softens_leading_hard_tabs_without_external_formatter() {
     let path = temp_file_path("write_softens_tabs");
-    let mut state = state_with_text(path.clone(), "alpha\tbeta\n\tgamma\n");
+    let mut state = state_with_text(path.clone(), "alpha\tbeta\n\tgamma\n  \tdelta\n");
 
     run_command(&mut state, "w");
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "alpha   beta\n    gamma\n"
+        "alpha\tbeta\n    gamma\n    delta\n"
     );
     assert_eq!(
         fs::read_to_string(&path).expect("failed to read saved file"),
-        "alpha   beta\n    gamma\n"
+        "alpha\tbeta\n    gamma\n    delta\n"
     );
 
     let _ = fs::remove_file(path);

@@ -550,10 +550,11 @@ fn apply_save_format_passes(text: &str) -> String {
 fn expand_hard_tabs(text: &str, tab_width: usize) -> String {
     let mut expanded = String::with_capacity(text.len());
     let mut col = 0usize;
+    let mut in_indent = true;
 
     for ch in text.chars() {
         match ch {
-            '\t' => {
+            '\t' if in_indent => {
                 let spaces = tab_width - (col % tab_width);
                 expanded.extend(std::iter::repeat_n(' ', spaces));
                 col += spaces;
@@ -561,10 +562,15 @@ fn expand_hard_tabs(text: &str, tab_width: usize) -> String {
             '\n' => {
                 expanded.push('\n');
                 col = 0;
+                in_indent = true;
+            }
+            ' ' if in_indent => {
+                expanded.push(ch);
+                col += 1;
             }
             _ => {
                 expanded.push(ch);
-                col += 1;
+                in_indent = false;
             }
         }
     }
