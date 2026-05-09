@@ -2256,6 +2256,27 @@ fn insert_mode_tab_inserts_soft_tab_spaces() {
 }
 
 #[test]
+fn insert_mode_tab_inserts_spaces_to_next_tab_stop() {
+    let path = temp_file_path("insert_mode_tab_stop");
+    let mut state = state_with_text(path.clone(), "ab");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "ab  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_backspace_removes_full_soft_tab_indent() {
     let path = temp_file_path("insert_mode_soft_tab_backspace");
     let mut state = state_with_text(path.clone(), "");

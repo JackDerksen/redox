@@ -1,10 +1,12 @@
+use minui::{TabPolicy, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{EditorMode, EditorState};
+use crate::SOFT_TAB_WIDTH;
 use crate::input::{InputAction, InputMode, InsertKind};
 use crate::ui::syntax::smart_newline_insert;
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
-use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 impl EditorState {
     /// Apply a high-level input action using the active viewport size for cursor reconciliation.
@@ -1038,7 +1040,7 @@ impl EditorState {
         match behaviour {
             InsertCharBehaviour::Plain => {
                 let text = if ch == '\t' {
-                    SOFT_TAB.to_string()
+                    soft_tab_insert_text(self.session.active_buffer(), cursor)
                 } else {
                     ch.to_string()
                 };
@@ -1270,6 +1272,45 @@ fn soft_tab_backspace_range(buffer: &TextBuffer, cursor: Pos) -> Option<(Pos, Po
     };
 
     (cursor.col >= remove).then_some((Pos::new(line, cursor.col - remove), cursor))
+}
+
+fn soft_tab_insert_text(buffer: &TextBuffer, cursor: Pos) -> String {
+    let line = buffer.clamp_line(cursor.line);
+    let line_text = buffer.line_string(line);
+    let col = visual_column(&line_text, cursor.col);
+    let next_tab = ((col / SOFT_TAB_WIDTH) + 1) * SOFT_TAB_WIDTH;
+    " ".repeat(next_tab - col)
+}
+
+fn visual_column(line: &str, char_col: usize) -> usize {
+    let graphemes: Vec<&str> = line.graphemes(true).collect();
+    let cursor_g = char_col_to_grapheme_index(&graphemes, char_col);
+    graphemes[..cursor_g.min(graphemes.len())]
+        .iter()
+        .map(|g| cell_width(*g, TabPolicy::Fixed(SOFT_TAB_WIDTH as u16)) as usize)
+        .sum()
+}
+
+fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {
+    if cursor_col_chars == 0 {
+        return 0;
+    }
+
+    let mut chars_seen = 0usize;
+    for (i, g) in graphemes.iter().enumerate() {
+        let next = chars_seen + g.chars().count();
+        if cursor_col_chars <= chars_seen {
+            return i;
+        }
+        if cursor_col_chars < next {
+            return i;
+        }
+        if cursor_col_chars == next {
+            return i + 1;
+        }
+        chars_seen = next;
+    }
+    graphemes.len()
 }
 
 fn is_char_search_motion(motion: Motion) -> bool {
