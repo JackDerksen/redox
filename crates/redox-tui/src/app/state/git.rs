@@ -195,12 +195,13 @@ impl GitState {
         if self.pending_repo_status_dirs.contains(&dir) {
             return;
         };
-        if self
+        if let Some((repo_root, entry)) = self
             .repo_status_cache
             .iter()
             .filter(|(repo_root, _)| dir.starts_with(repo_root))
             .max_by_key(|(repo_root, _)| repo_root.components().count())
-            .is_some_and(|(_, entry)| !entry.stale)
+            && !entry.stale
+            && (repo_root == &dir || !dir_is_separate_repo_from_cached_root(&dir, repo_root))
         {
             return;
         }
@@ -363,6 +364,16 @@ fn start_repo_status_workers() -> SyncSender<GitRepoStatusJob> {
     }
 
     tx
+}
+
+fn dir_is_separate_repo_from_cached_root(dir: &Path, cached_repo_root: &Path) -> bool {
+    if dir.join(".git").exists() {
+        return true;
+    }
+
+    git_stdout(dir, &["rev-parse", "--show-toplevel"])
+        .map(|repo_root| PathBuf::from(repo_root.trim()))
+        .is_some_and(|repo_root| repo_root != cached_repo_root)
 }
 
 fn load_repo_statuses_for_dir(dir: &Path) -> Option<(PathBuf, RepoStatuses)> {
