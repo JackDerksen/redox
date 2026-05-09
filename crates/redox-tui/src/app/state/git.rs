@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use redox_core::{BufferId, BufferKind, EditorSession};
@@ -78,10 +80,15 @@ impl GitDiffSnapshot {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GitState {
     cache: HashMap<BufferId, GitDiffCacheEntry>,
     repo_status_cache: HashMap<PathBuf, GitRepoStatusCacheEntry>,
+    pending_repo_status_dirs: HashSet<PathBuf>,
+    repo_status_tx: Sender<GitRepoStatusResult>,
+    repo_status_rx: Receiver<GitRepoStatusResult>,
+    diff_tx: Sender<GitDiffResult>,
+    diff_rx: Receiver<GitDiffResult>,
 }
 
 #[derive(Debug)]
@@ -91,6 +98,7 @@ struct GitDiffCacheEntry {
     last_refreshed_at: Instant,
     stale: bool,
     snapshot: Option<GitDiffSnapshot>,
+    pending: bool,
 }
 
 #[derive(Debug)]
@@ -98,6 +106,42 @@ struct GitRepoStatusCacheEntry {
     file_statuses: HashMap<PathBuf, GitFileStatusKind>,
     directory_statuses: HashMap<PathBuf, GitFileStatusKind>,
     stale: bool,
+}
+
+#[derive(Debug)]
+struct GitRepoStatusResult {
+    requested_dir: PathBuf,
+    repo_root: Option<PathBuf>,
+    statuses: Option<RepoStatuses>,
+}
+
+#[derive(Debug)]
+struct GitDiffResult {
+    buffer_id: BufferId,
+    path: Option<PathBuf>,
+    dirty: bool,
+    snapshot: Option<GitDiffSnapshot>,
+}
+
+type RepoStatuses = (
+    HashMap<PathBuf, GitFileStatusKind>,
+    HashMap<PathBuf, GitFileStatusKind>,
+);
+
+impl Default for GitState {
+    fn default() -> Self {
+        let (repo_status_tx, repo_status_rx) = mpsc::channel();
+        let (diff_tx, diff_rx) = mpsc::channel();
+        Self {
+            cache: HashMap::new(),
+            repo_status_cache: HashMap::new(),
+            pending_repo_status_dirs: HashSet::new(),
+            repo_status_tx,
+            repo_status_rx,
+            diff_tx,
+            diff_rx,
+        }
+    }
 }
 
 impl GitState {
@@ -133,34 +177,37 @@ impl GitState {
     }
 
     pub fn refresh_repo_status_for_dir(&mut self, dir: &Path) {
-        let Some(repo_root_raw) = git_stdout(dir, &["rev-parse", "--show-toplevel"])
-            .map(|output| output.trim().to_string())
-        else {
+        self.drain_repo_status_results();
+
+        let dir = dir.to_path_buf();
+        if self.pending_repo_status_dirs.contains(&dir) {
             return;
         };
-        let repo_root = PathBuf::from(repo_root_raw);
         if self
             .repo_status_cache
-            .get(&repo_root)
-            .is_some_and(|entry| !entry.stale)
+            .iter()
+            .filter(|(repo_root, _)| dir.starts_with(repo_root))
+            .max_by_key(|(repo_root, _)| repo_root.components().count())
+            .is_some_and(|(_, entry)| !entry.stale)
         {
             return;
         }
-        let Some((file_statuses, directory_statuses)) = load_repo_statuses(&repo_root) else {
-            self.repo_status_cache.remove(&repo_root);
-            return;
-        };
-        self.repo_status_cache.insert(
-            repo_root,
-            GitRepoStatusCacheEntry {
-                file_statuses,
-                directory_statuses,
-                stale: false,
-            },
-        );
+
+        self.pending_repo_status_dirs.insert(dir.clone());
+        let tx = self.repo_status_tx.clone();
+        thread::spawn(move || {
+            let result = load_repo_statuses_for_dir(&dir);
+            let _ = tx.send(GitRepoStatusResult {
+                requested_dir: dir,
+                repo_root: result.as_ref().map(|(repo_root, _)| repo_root.clone()),
+                statuses: result.map(|(_, statuses)| statuses),
+            });
+        });
     }
 
     pub fn refresh_for_buffer(&mut self, session: &EditorSession, buffer_id: BufferId) {
+        self.drain_diff_results();
+
         let Some(meta) = session.meta(buffer_id) else {
             self.cache.remove(&buffer_id);
             return;
@@ -175,6 +222,7 @@ impl GitState {
         let now = Instant::now();
         let should_refresh = match self.cache.get(&buffer_id) {
             Some(entry) if entry.path != path => true,
+            Some(entry) if entry.pending => false,
             Some(entry) if entry.dirty != dirty => {
                 if dirty {
                     now.duration_since(entry.last_refreshed_at) >= DIRTY_REFRESH_INTERVAL
@@ -196,34 +244,91 @@ impl GitState {
             return;
         }
 
-        let snapshot = path
+        let current_text = path
             .as_deref()
             .and_then(|buffer_path| {
                 session
                     .buffer(buffer_id)
                     .map(|buffer| (buffer_path, buffer))
             })
-            .and_then(|(buffer_path, buffer)| load_git_diff(buffer_path, &buffer.to_string()));
+            .map(|(buffer_path, buffer)| (buffer_path.to_path_buf(), buffer.to_string()));
+
+        let previous_snapshot = self
+            .cache
+            .get(&buffer_id)
+            .and_then(|entry| entry.snapshot.clone());
 
         self.cache.insert(
             buffer_id,
             GitDiffCacheEntry {
-                path,
+                path: path.clone(),
                 dirty,
                 last_refreshed_at: now,
                 stale: false,
-                snapshot,
+                snapshot: previous_snapshot,
+                pending: current_text.is_some(),
             },
         );
+
+        if let Some((buffer_path, current_text)) = current_text {
+            let tx = self.diff_tx.clone();
+            thread::spawn(move || {
+                let snapshot = load_git_diff(&buffer_path, &current_text);
+                let _ = tx.send(GitDiffResult {
+                    buffer_id,
+                    path: Some(buffer_path),
+                    dirty,
+                    snapshot,
+                });
+            });
+        }
+    }
+
+    fn drain_repo_status_results(&mut self) {
+        while let Ok(result) = self.repo_status_rx.try_recv() {
+            self.pending_repo_status_dirs.remove(&result.requested_dir);
+            let Some(repo_root) = result.repo_root else {
+                continue;
+            };
+            let Some((file_statuses, directory_statuses)) = result.statuses else {
+                self.repo_status_cache.remove(&repo_root);
+                continue;
+            };
+            self.repo_status_cache.insert(
+                repo_root,
+                GitRepoStatusCacheEntry {
+                    file_statuses,
+                    directory_statuses,
+                    stale: false,
+                },
+            );
+        }
+    }
+
+    fn drain_diff_results(&mut self) {
+        while let Ok(result) = self.diff_rx.try_recv() {
+            let Some(entry) = self.cache.get_mut(&result.buffer_id) else {
+                continue;
+            };
+            if entry.path != result.path || entry.dirty != result.dirty {
+                continue;
+            }
+            entry.snapshot = result.snapshot;
+            entry.last_refreshed_at = Instant::now();
+            entry.stale = false;
+            entry.pending = false;
+        }
     }
 }
 
-fn load_repo_statuses(
-    repo_root: &Path,
-) -> Option<(
-    HashMap<PathBuf, GitFileStatusKind>,
-    HashMap<PathBuf, GitFileStatusKind>,
-)> {
+fn load_repo_statuses_for_dir(dir: &Path) -> Option<(PathBuf, RepoStatuses)> {
+    let repo_root_raw = git_stdout(dir, &["rev-parse", "--show-toplevel"])?;
+    let repo_root = PathBuf::from(repo_root_raw.trim());
+    let statuses = load_repo_statuses(&repo_root)?;
+    Some((repo_root, statuses))
+}
+
+fn load_repo_statuses(repo_root: &Path) -> Option<RepoStatuses> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -469,7 +574,13 @@ fn parse_hunk_range(range: &str) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitDiffStats, GitGutterKind, parse_git_patch};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use super::{
+        GitDiffStats, GitFileStatusKind, GitGutterKind, GitRepoStatusCacheEntry, GitState,
+        parse_git_patch,
+    };
 
     #[test]
     fn parse_git_patch_classifies_added_modified_and_removed_lines() {
@@ -494,5 +605,32 @@ diff --git a/old b/new
         assert_eq!(snapshot.marker_for_line(2), Some(GitGutterKind::Added));
         assert_eq!(snapshot.marker_for_line(6), Some(GitGutterKind::Modified));
         assert_eq!(snapshot.marker_for_line(10), Some(GitGutterKind::Removed));
+    }
+
+    #[test]
+    fn status_for_path_prefers_deepest_matching_repo_root() {
+        let outer = PathBuf::from("/tmp/work");
+        let inner = outer.join("nested");
+        let path = inner.join("src/lib.rs");
+        let mut state = GitState::default();
+
+        state.repo_status_cache.insert(
+            outer.clone(),
+            GitRepoStatusCacheEntry {
+                file_statuses: HashMap::new(),
+                directory_statuses: HashMap::from([(inner.clone(), GitFileStatusKind::Modified)]),
+                stale: false,
+            },
+        );
+        state.repo_status_cache.insert(
+            inner,
+            GitRepoStatusCacheEntry {
+                file_statuses: HashMap::from([(path.clone(), GitFileStatusKind::Added)]),
+                directory_statuses: HashMap::new(),
+                stale: false,
+            },
+        );
+
+        assert_eq!(state.status_for_path(&path), Some(GitFileStatusKind::Added));
     }
 }
