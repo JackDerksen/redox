@@ -93,7 +93,7 @@ pub fn draw_completion_preview(
     if preview.is_empty() {
         return Ok(());
     }
-    let color = ColorPair::new(style.theme.light_gray, style.theme.bg);
+    let color = ColorPair::new(style.syntax.comment.fg, style.theme.bg);
     window.write_str_colored(y, x, &preview, color)?;
 
     let used_width = text_width(&preview) as u16;
@@ -356,7 +356,7 @@ fn draw_documentation(
     let row = y + capacity as u16 + 1;
     let separator = "─".repeat(width.saturating_sub(2) as usize);
     window.write_str_colored(row, x + 1, &separator, style.finder.border)?;
-    let color = ColorPair::new(style.syntax.comment.fg, style.finder.text.bg);
+    let color = ColorPair::new(style.theme.light_gray, style.finder.text.bg);
     for (idx, line) in lines.iter().enumerate() {
         window.write_str_colored(row + 1 + idx as u16, x + 2, line, color)?;
     }
