@@ -243,18 +243,19 @@ fn explorer_row_style(
     let is_dir = line == ".." || line.ends_with('/');
     let name = line.strip_suffix('/').unwrap_or(line);
     let is_hidden = name.starts_with('.');
-    if is_hidden {
-        return ExplorerRowStyle {
-            text: style.explorer.hidden,
-            git_status: None,
-        };
-    }
 
     let git_status = if line == ".." {
         None
     } else {
         explorer_line_git_status(state, dir_path, line)
     };
+
+    if is_hidden {
+        return ExplorerRowStyle {
+            text: style.explorer.hidden,
+            git_status,
+        };
+    }
 
     if is_dir {
         return ExplorerRowStyle {
@@ -286,9 +287,6 @@ fn explorer_line_git_status(
         return None;
     }
     let name = line.strip_suffix('/').unwrap_or(line);
-    if name.starts_with('.') {
-        return None;
-    }
     state.git_status_for_path(&dir_path.join(name))
 }
 
