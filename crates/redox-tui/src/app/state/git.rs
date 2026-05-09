@@ -482,8 +482,9 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 fn parse_git_patch(patch: &str) -> GitDiffSnapshot {
     let mut stats = GitDiffStats::default();
     let mut markers = BTreeMap::new();
+    let mut lines = patch.lines().peekable();
 
-    for line in patch.lines() {
+    while let Some(line) = lines.next() {
         let Some(hunk) = line.strip_prefix("@@ ") else {
             continue;
         };
@@ -496,10 +497,77 @@ fn parse_git_patch(patch: &str) -> GitDiffSnapshot {
 
         let (old_start, old_count) = parse_hunk_range(old_range.trim_start_matches('-'));
         let (new_start, new_count) = parse_hunk_range(new_range);
+        let header_stats = GitDiffStats {
+            modified: old_count.min(new_count),
+            added: new_count.saturating_sub(old_count.min(new_count)),
+            removed: old_count.saturating_sub(old_count.min(new_count)),
+        };
+        let mut hunk_stats = GitDiffStats::default();
+        let mut hunk_markers = BTreeMap::new();
+        let mut _old_line = old_start.saturating_sub(1);
+        let mut new_line = new_start.saturating_sub(1);
+        let mut removed_at_position = 0usize;
+        let mut scanned_body = false;
 
-        let modified = old_count.min(new_count);
-        let added = new_count.saturating_sub(modified);
-        let removed = old_count.saturating_sub(modified);
+        while let Some(body_line) = lines.peek().copied() {
+            if body_line.starts_with("@@ ") {
+                break;
+            }
+
+            let body_line = lines.next().unwrap_or_default();
+            let Some(prefix) = body_line.as_bytes().first().copied() else {
+                continue;
+            };
+
+            match prefix {
+                b'+' => {
+                    scanned_body = true;
+                    if removed_at_position > 0 {
+                        hunk_stats.modified += 1;
+                        removed_at_position -= 1;
+                        set_marker(&mut hunk_markers, new_line, GitGutterKind::Modified);
+                    } else {
+                        hunk_stats.added += 1;
+                        set_marker(&mut hunk_markers, new_line, GitGutterKind::Added);
+                    }
+                    new_line = new_line.saturating_add(1);
+                }
+                b'-' => {
+                    scanned_body = true;
+                    removed_at_position = removed_at_position.saturating_add(1);
+                    _old_line = _old_line.saturating_add(1);
+                }
+                b' ' => {
+                    for _ in 0..removed_at_position {
+                        hunk_stats.removed += 1;
+                        set_marker(&mut hunk_markers, new_line, GitGutterKind::Removed);
+                    }
+                    removed_at_position = 0;
+                    _old_line = _old_line.saturating_add(1);
+                    new_line = new_line.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        for _ in 0..removed_at_position {
+            hunk_stats.removed += 1;
+            set_marker(&mut hunk_markers, new_line, GitGutterKind::Removed);
+        }
+
+        if scanned_body {
+            stats.added += hunk_stats.added;
+            stats.modified += hunk_stats.modified;
+            stats.removed += hunk_stats.removed;
+            for (line, kind) in hunk_markers {
+                set_marker(&mut markers, line, kind);
+            }
+            continue;
+        }
+
+        let modified = header_stats.modified;
+        let added = header_stats.added;
+        let removed = header_stats.removed;
 
         stats.modified += modified;
         stats.added += added;
