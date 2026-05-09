@@ -161,7 +161,12 @@ impl EditorState {
             self.code_action_request_context()
         else {
             if trigger == CodeActionRequestTrigger::Manual {
-                self.set_status("no diagnostic under cursor");
+                let message = if self.mode == EditorMode::DiagnosticsList {
+                    "no diagnostic selected"
+                } else {
+                    "no diagnostic under cursor"
+                };
+                self.set_status(message);
             }
             return;
         };
