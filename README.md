@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-    <img width="1541" height="1027" alt="Redox Demo" src="assets/redox-demo.png" />
+    <img width="1529" height="1090" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 ## Project structure
@@ -330,11 +330,11 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Performance popup for frame timing
 - [x] Toast/status popups for longer messages
 - [x] LSP diagnostics, go-to-definition, completion, snippets, and language tool management
-- [ ] Undo tree UI with stored history
-- [ ] LSP symbol renaming
-- [ ] LSP document formatting
+- [ ] LSP symbol renaming (project-wide)
+- [x] LSP document formatting
 - [x] LSP code actions and quick fixes
-- [ ] Basic git integration (diff stats)
+- [x] Basic git integration (diff stats)
+- [ ] Undo tree UI with stored history
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] A dashboard screen with similar functionality to nvim dashboards
