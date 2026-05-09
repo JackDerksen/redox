@@ -315,7 +315,15 @@ impl EditorState {
             && let Some(formatter) = formatter_for(language)
             && formatter_available(formatter, path)
         {
-            run_formatter(formatter, self.session.launch_dir(), path)?;
+            if let Err(error) = run_formatter(formatter, self.session.launch_dir(), path) {
+                if formatter == SaveFormatter::Ruff {
+                    self.reload_active_buffer_from_disk(path, viewport_width_cells, text_vh)
+                        .map_err(|reload_error| {
+                            format!("{error}; failed to reload formatter output: {reload_error}")
+                        })?;
+                }
+                return Err(error);
+            }
             formatted = std::fs::read_to_string(path)
                 .map_err(|error| format!("failed to read formatter output: {error}"))?;
         }
@@ -332,6 +340,18 @@ impl EditorState {
             .save_active()
             .map_err(|error| format!("failed to save formatted file: {error}"))?;
         Ok(true)
+    }
+
+    fn reload_active_buffer_from_disk(
+        &mut self,
+        path: &Path,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> Result<(), std::io::Error> {
+        let text = std::fs::read_to_string(path)?;
+        self.replace_active_buffer_text(&text, viewport_width_cells, text_vh);
+        self.session.mark_active_clean();
+        Ok(())
     }
 
     fn replace_active_buffer_text(
