@@ -5576,8 +5576,8 @@ fn markdown_enter_and_open_line_continue_list_indentation() {
     state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
 
     state.apply_input(InputAction::Enter, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "- item\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
 
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     state
@@ -5587,8 +5587,8 @@ fn markdown_enter_and_open_line_continue_list_indentation() {
         .cursor
         .cursor = Pos::new(0, 0);
     state.apply_input(InputAction::OpenLineBelow, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "- item\n\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert_eq!(state.session.active_buffer().to_string(), "- item\n  \n  ");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
 
     let _ = fs::remove_file(path);
 }
@@ -5642,7 +5642,7 @@ fn smart_indent_floors_partial_tab_widths() {
 }
 
 #[test]
-fn markdown_list_indent_floors_to_full_tab_width() {
+fn markdown_list_indent_preserves_exact_continuation_width() {
     let path = temp_file_path("smart_markdown_floor").with_extension("md");
     let mut state = state_with_text(path.clone(), "    - item");
     let id = state.session.active_id();
@@ -5658,9 +5658,9 @@ fn markdown_list_indent_floors_to_full_tab_width() {
 
     assert_eq!(
         state.session.active_buffer().to_string(),
-        "    - item\n    "
+        "    - item\n      "
     );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 6));
 
     let _ = fs::remove_file(path);
 }

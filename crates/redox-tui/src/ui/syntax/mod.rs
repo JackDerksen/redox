@@ -924,10 +924,10 @@ fn markdown_indent_after_line(text: &str) -> Option<String> {
 
     if let Some(marker_len) = markdown_list_marker_len(rest) {
         continuation_width += marker_len;
-        return Some(SOFT_TAB.repeat(continuation_width / SOFT_TAB_WIDTH));
+        return Some(" ".repeat(continuation_width));
     }
 
-    saw_block_quote.then(|| SOFT_TAB.repeat(continuation_width / SOFT_TAB_WIDTH))
+    saw_block_quote.then(|| " ".repeat(continuation_width))
 }
 
 fn markdown_list_marker_len(text: &str) -> Option<usize> {
