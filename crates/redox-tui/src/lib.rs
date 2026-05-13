@@ -13,6 +13,7 @@ use minui::prelude::{
     render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
     widgets::Widget,
 };
+use minui::widgets::WindowView;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
@@ -89,19 +90,18 @@ fn draw_buffer_view(
     state.refresh_active_git_diff();
 
     if let Some(popup) = state.explorer_popup() {
-        if let Some(background_id) = state.explorer_background_buffer_id()
-            && !state.explorer_background_is_placeholder_blank()
-        {
-            draw_buffer_snapshot_for_id(
-                state,
-                background_style,
-                background_id,
-                vw,
-                text_h,
-                editor_text,
-                window,
-            )?;
-        }
+        let fallback_id = state
+            .explorer_background_buffer_id()
+            .filter(|_| !state.explorer_background_is_placeholder_blank());
+        draw_popup_background(
+            state,
+            background_style,
+            window,
+            vw,
+            text_h,
+            editor_text,
+            fallback_id,
+        )?;
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
         state.set_viewport_size(
             inner_w as usize,
@@ -122,17 +122,15 @@ fn draw_buffer_view(
     }
 
     if let Some(popup) = state.about_popup() {
-        if let Some(background_id) = state.about_background_buffer_id() {
-            draw_buffer_snapshot_for_id(
-                state,
-                background_style,
-                background_id,
-                vw,
-                text_h,
-                editor_text,
-                window,
-            )?;
-        }
+        draw_popup_background(
+            state,
+            background_style,
+            window,
+            vw,
+            text_h,
+            editor_text,
+            state.about_background_buffer_id(),
+        )?;
         let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
         state.set_viewport_size(
             inner_w as usize,
@@ -144,14 +142,14 @@ fn draw_buffer_view(
     }
 
     if let Some(popup) = state.lsp_marketplace_popup() {
-        draw_buffer_snapshot_for_id(
+        draw_popup_background(
             state,
             background_style,
-            state.session.active_id(),
+            window,
             vw,
             text_h,
             editor_text,
-            window,
+            Some(state.session.active_id()),
         )?;
         let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
             vw,
@@ -173,14 +171,14 @@ fn draw_buffer_view(
     }
 
     if let Some(popup) = state.diagnostics_popup() {
-        draw_buffer_snapshot_for_id(
+        draw_popup_background(
             state,
             background_style,
-            state.session.active_id(),
+            window,
             vw,
             text_h,
             editor_text,
-            window,
+            Some(state.session.active_id()),
         )?;
         let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
             vw,
@@ -202,14 +200,14 @@ fn draw_buffer_view(
     }
 
     if let Some(popup) = state.code_actions_popup() {
-        draw_buffer_snapshot_for_id(
+        draw_popup_background(
             state,
             background_style,
-            state.session.active_id(),
+            window,
             vw,
             text_h,
             editor_text,
-            window,
+            Some(state.session.active_id()),
         )?;
         let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
             vw,
@@ -236,10 +234,150 @@ fn draw_buffer_view(
     let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
     let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
     let text_w = vw.saturating_sub(content_x);
+    state.set_editor_area_size(vw as usize, text_h as usize);
     state.set_viewport_size(
         text_w as usize,
         text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
     );
+    if state.panes().len() > 1 {
+        state.sync_active_pane_view();
+        if let Some(rect) = state
+            .pane_rects(vw, text_h)
+            .into_iter()
+            .find(|rect| rect.pane_id == state.active_pane_id())
+        {
+            let total_lines = state.session.active_buffer().len_lines().max(1);
+            let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+            let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+            let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+            let pane_text_w = rect.width.saturating_sub(content_x);
+            state.set_viewport_size(
+                pane_text_w as usize,
+                rect.height.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+            );
+            state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
+        }
+        let split_background_style = if popup_overlay_active {
+            background_style
+        } else {
+            style
+        };
+        draw_split_editor_panes(
+            state,
+            split_background_style,
+            window,
+            vw,
+            text_h,
+            editor_text,
+            !popup_overlay_active,
+        )?;
+        state.advance_one_shot_highlight();
+        let status_start = Instant::now();
+        let status = build_editor_status_bar(state, style);
+        status.draw(window)?;
+        perf.status += status_start.elapsed();
+
+        let perf_popup_layout = if let Some(popup) = state.perf_popup()
+            && !matches!(
+                state.mode,
+                app::EditorMode::Command
+                    | app::EditorMode::Search
+                    | app::EditorMode::Finder
+                    | app::EditorMode::PinSelect
+            ) {
+            let layout = perf_popup_layout(vw, vh, style);
+            draw_perf_popup_view(style, window, popup)?;
+            Some(layout)
+        } else {
+            None
+        };
+
+        if matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) {
+            draw_command_line_popup(state, style, window)?;
+        } else if let Some(popup) = state.finder_popup() {
+            draw_finder_popup(&popup, style, window)?;
+        } else if let Some(popup) = state.pin_selector_popup() {
+            draw_pin_selector_popup(&popup, style, window)?;
+        } else if let Some(popup) = state.completion_popup() {
+            if let Some(context) = active_split_cursor_context(state, vw, text_h) {
+                let cursor_x = context.x;
+                if let Some(preview) = state.completion_preview() {
+                    let preview_width =
+                        clipped_cell_width(&preview.text, vw.saturating_sub(cursor_x) as usize);
+                    let active_cursor_line = state.active_cursor_pos().line;
+                    let inline_diagnostic = state
+                        .active_diagnostic_lines(active_cursor_line, 1)
+                        .remove(&active_cursor_line);
+                    let source_line = inline_diagnostic.as_ref().map(|_| {
+                        state
+                            .session
+                            .active_buffer()
+                            .line_string(active_cursor_line)
+                    });
+                    if let Some(source_line) = source_line.as_deref() {
+                        clear_inline_diagnostic(
+                            window,
+                            context.y,
+                            context.content_x,
+                            source_line,
+                            context.scroll_x,
+                            context.text_w as usize,
+                            background_style,
+                        )?;
+                    }
+                    draw_completion_preview(
+                        window,
+                        style,
+                        cursor_x,
+                        context.y,
+                        vw.saturating_sub(cursor_x),
+                        &preview.text,
+                        &preview.suffix,
+                    )?;
+                    if let Some((diagnostic, source_line)) =
+                        inline_diagnostic.as_ref().zip(source_line.as_deref())
+                    {
+                        draw_inline_diagnostic_shifted(
+                            window,
+                            context.y,
+                            context.content_x,
+                            source_line,
+                            context.scroll_x,
+                            context.text_w as usize,
+                            background_style,
+                            diagnostic,
+                            preview_width,
+                        )?;
+                    }
+                }
+                draw_completion_popup(&popup, style, window, cursor_x, context.y, context.height)?;
+                window.request_cursor(minui::window::CursorSpec {
+                    x: cursor_x,
+                    y: context.y,
+                    visible: true,
+                });
+            }
+        } else if state.active_rain_animation().is_some() {
+            hide_cursor(window);
+        } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
+            if perf_popup_layout
+                .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y))
+            {
+                hide_cursor(window);
+            } else {
+                window.request_cursor(cursor);
+            }
+        }
+        let toast_layout = draw_status_toast(state, style, window)?;
+        if toast_layout.is_none() {
+            let _ = draw_lsp_loading_toast(state, style, window)?;
+        }
+        return Ok(());
+    }
+
     state.ensure_rain_animation(text_w, text_h, editor_text, background_style);
 
     if let Some(animation) = state.active_rain_animation() {
@@ -822,6 +960,309 @@ fn hide_cursor(window: &mut dyn Window) {
     });
 }
 
+fn draw_popup_background(
+    state: &mut EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    width: u16,
+    height: u16,
+    editor_text: ColorPair,
+    fallback_buffer_id: Option<BufferId>,
+) -> minui::Result<()> {
+    if state.panes().len() > 1 {
+        let active_before_draw = state.session.active_id();
+        state.sync_active_pane_view();
+        draw_split_editor_panes(state, style, window, width, height, editor_text, false)?;
+        let _ = state.session.activate(active_before_draw);
+        return Ok(());
+    }
+
+    if let Some(buffer_id) = fallback_buffer_id {
+        draw_buffer_snapshot_for_id(
+            state,
+            style,
+            buffer_id,
+            width,
+            height,
+            editor_text,
+            window,
+            None,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_split_editor_panes(
+    state: &mut EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    width: u16,
+    height: u16,
+    editor_text: ColorPair,
+    dim_inactive: bool,
+) -> minui::Result<()> {
+    let rects = state.pane_rects(width, height);
+    for rect in rects.iter().copied() {
+        let Some((buffer_id, view)) = state
+            .panes()
+            .iter()
+            .find(|pane| pane.id == rect.pane_id)
+            .map(|pane| (pane.buffer_id, pane.view.clone()))
+        else {
+            continue;
+        };
+        state
+            .views
+            .entry(buffer_id)
+            .or_default()
+            .copy_pane_state_from(&view);
+        let pane_style = if !dim_inactive || rect.pane_id == state.active_pane_id() {
+            style
+        } else {
+            style.dimmed()
+        };
+        let pane_text = if !dim_inactive || rect.pane_id == state.active_pane_id() {
+            editor_text
+        } else {
+            ColorPair::new(pane_style.theme.white, pane_style.theme.bg)
+        };
+        let mut pane_window = WindowView {
+            window,
+            x_offset: rect.x,
+            y_offset: rect.y,
+            scroll_x: 0,
+            scroll_y: 0,
+            width: rect.width,
+            height: rect.height,
+        };
+        let is_active_pane = rect.pane_id == state.active_pane_id();
+        if is_active_pane && state.active_rain_animation().is_some() {
+            draw_active_split_rain_pane(
+                state,
+                pane_style,
+                rect.width,
+                rect.height,
+                &mut pane_window,
+            )?;
+        } else {
+            let visual_selection = is_active_pane
+                .then(|| state.active_visual_selection())
+                .flatten();
+            let one_shot_highlight = is_active_pane.then(|| state.one_shot_highlight()).flatten();
+            let total_lines = state
+                .session
+                .buffer(buffer_id)
+                .map_or(0, |buffer| buffer.len_lines().max(1));
+            let diagnostic_lines = if is_active_pane {
+                state.active_diagnostic_lines(0, total_lines)
+            } else {
+                BTreeMap::new()
+            };
+            let snippet_placeholders = if is_active_pane {
+                state.active_snippet_placeholder_ranges(0, total_lines)
+            } else {
+                BTreeMap::new()
+            };
+            draw_buffer_snapshot_for_id(
+                state,
+                pane_style,
+                buffer_id,
+                rect.width,
+                rect.height,
+                pane_text,
+                &mut pane_window,
+                visual_selection,
+                one_shot_highlight,
+                &diagnostic_lines,
+                &snippet_placeholders,
+            )?;
+        }
+        state.sync_rendered_pane_view(rect.pane_id, buffer_id);
+    }
+    state.restore_active_pane_view();
+    draw_split_lines(window, style, &rects, width, height)
+}
+
+fn draw_split_lines(
+    window: &mut dyn Window,
+    style: UiStyle,
+    rects: &[app::PaneRect],
+    width: u16,
+    height: u16,
+) -> minui::Result<()> {
+    let line_color = ColorPair::new(style.theme.light_gray, style.theme.bg);
+    let mut line_cells = vec![false; width as usize * height as usize];
+    for rect in rects {
+        if rect.x > 0 {
+            let x = rect.x - 1;
+            if x < width {
+                let start_y = rect.y.saturating_sub(1);
+                for y in start_y..rect.y.saturating_add(rect.height).min(height) {
+                    line_cells[y as usize * width as usize + x as usize] = true;
+                }
+            }
+        }
+        if rect.y > 0 {
+            let y = rect.y - 1;
+            if y < height {
+                let start_x = rect.x.saturating_sub(1);
+                for x in start_x..rect.x.saturating_add(rect.width).min(width) {
+                    line_cells[y as usize * width as usize + x as usize] = true;
+                }
+            }
+        }
+    }
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y as usize * width as usize + x as usize;
+            if !line_cells[idx] {
+                continue;
+            }
+            let up = y > 0 && line_cells[(y - 1) as usize * width as usize + x as usize];
+            let down = y + 1 < height && line_cells[(y + 1) as usize * width as usize + x as usize];
+            let left = x > 0 && line_cells[y as usize * width as usize + (x - 1) as usize];
+            let right = x + 1 < width && line_cells[y as usize * width as usize + (x + 1) as usize];
+            let glyph = split_line_glyph(up, down, left, right);
+            window.write_str_colored(y, x, glyph, line_color)?;
+        }
+    }
+    Ok(())
+}
+
+fn split_line_glyph(up: bool, down: bool, left: bool, right: bool) -> &'static str {
+    match (up, down, left, right) {
+        (true, true, true, true) => "┼",
+        (true, true, true, false) => "┤",
+        (true, true, false, true) => "├",
+        (true, false, true, true) => "┴",
+        (false, true, true, true) => "┬",
+        (true, false, false, true) => "└",
+        (true, false, true, false) => "┘",
+        (false, true, false, true) => "┌",
+        (false, true, true, false) => "┐",
+        (true, true, _, _) => "│",
+        (_, _, true, true) => "─",
+        (true, false, false, false) | (false, true, false, false) => "│",
+        (false, false, true, false) | (false, false, false, true) => "─",
+        _ => "┼",
+    }
+}
+
+fn active_split_cursor(
+    state: &mut EditorState,
+    width: u16,
+    height: u16,
+) -> Option<minui::window::CursorSpec> {
+    let rect = state
+        .pane_rects(width, height)
+        .into_iter()
+        .find(|rect| rect.pane_id == state.active_pane_id())?;
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let text_w = rect.width.saturating_sub(content_x);
+    let spec = state.with_active_buffer_view_mut(|buffer, view| {
+        view.cursor
+            .cursor_spec(buffer, text_w as usize, rect.height as usize)
+    });
+    spec.visible.then_some(minui::window::CursorSpec {
+        x: rect.x.saturating_add(content_x).saturating_add(spec.x),
+        y: rect.y.saturating_add(spec.y),
+        visible: true,
+    })
+}
+
+struct SplitCursorContext {
+    x: u16,
+    y: u16,
+    content_x: u16,
+    text_w: u16,
+    height: u16,
+    scroll_x: usize,
+}
+
+fn active_split_cursor_context(
+    state: &mut EditorState,
+    width: u16,
+    height: u16,
+) -> Option<SplitCursorContext> {
+    let rect = state
+        .pane_rects(width, height)
+        .into_iter()
+        .find(|rect| rect.pane_id == state.active_pane_id())?;
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+    let local_content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let content_x = rect.x.saturating_add(local_content_x);
+    let text_w = rect.width.saturating_sub(local_content_x);
+    let (spec, scroll_x) = state.with_active_buffer_view_mut(|buffer, view| {
+        let (scroll_x, _) = view.cursor.viewport_scroll();
+        (
+            view.cursor
+                .cursor_spec(buffer, text_w as usize, rect.height as usize),
+            scroll_x,
+        )
+    });
+    spec.visible.then_some(SplitCursorContext {
+        x: content_x.saturating_add(spec.x),
+        y: rect.y.saturating_add(spec.y),
+        content_x,
+        text_w,
+        height: rect.height,
+        scroll_x,
+    })
+}
+
+fn draw_active_split_rain_pane(
+    state: &mut EditorState,
+    style: UiStyle,
+    width: u16,
+    height: u16,
+    window: &mut dyn Window,
+) -> minui::Result<()> {
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let active_cursor_line = state.active_cursor_pos().line;
+    let Some(animation) = state.active_rain_animation() else {
+        return Ok(());
+    };
+
+    draw_relative_line_numbers(
+        window,
+        style,
+        gutter_w,
+        height,
+        show_git_marker_column,
+        animation.first_line(),
+        active_cursor_line,
+        total_lines,
+    )?;
+    draw_gutter_padding(
+        window,
+        style,
+        gutter_w,
+        height,
+        GUTTER_CONTENT_PADDING,
+        animation.first_line(),
+        state.active_git_diff(),
+    )?;
+    animation.draw(
+        window,
+        0,
+        content_x,
+        width.saturating_sub(content_x) as usize,
+        height as usize,
+    )
+}
+
 fn draw_buffer_snapshot_for_id(
     state: &mut EditorState,
     style: UiStyle,
@@ -830,6 +1271,10 @@ fn draw_buffer_snapshot_for_id(
     height: u16,
     colors: ColorPair,
     window: &mut dyn Window,
+    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
+    snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 ) -> minui::Result<()> {
     state.refresh_git_diff_for_buffer(buffer_id);
     let git_diff = state.git_diff_for_buffer(buffer_id).cloned();
@@ -923,7 +1368,6 @@ fn draw_buffer_snapshot_for_id(
         )?;
 
         let search_highlights = BTreeMap::new();
-        let diagnostic_lines = BTreeMap::new();
         draw_snapshot_lines(
             window,
             buffer,
@@ -937,10 +1381,10 @@ fn draw_buffer_snapshot_for_id(
             &delimiter_highlights,
             &active_scope_guides,
             &search_highlights,
-            &BTreeMap::new(),
-            &diagnostic_lines,
-            None,
-            None,
+            snippet_placeholders,
+            diagnostic_lines,
+            visual_selection,
+            one_shot_highlight,
             use_lexical_fallback,
         )
     }) else {

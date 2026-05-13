@@ -2,7 +2,7 @@ use minui::{TabPolicy, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{EditorMode, EditorState};
+use super::{EditorMode, EditorState, SplitAxis, SplitDirection};
 use crate::SOFT_TAB_WIDTH;
 use crate::input::{InputAction, InputMode, InsertKind};
 use crate::ui::syntax::smart_newline_insert;
@@ -610,6 +610,14 @@ impl EditorState {
                     self.center_active_cursor_line(text_vh);
                 }
             }
+
+            InputAction::SplitFocusLeft => self.focus_split(SplitDirection::Left),
+            InputAction::SplitFocusDown => self.focus_split(SplitDirection::Down),
+            InputAction::SplitFocusUp => self.focus_split(SplitDirection::Up),
+            InputAction::SplitFocusRight => self.focus_split(SplitDirection::Right),
+            InputAction::SplitHorizontal => self.split_active_pane(SplitAxis::Horizontal),
+            InputAction::SplitVertical => self.split_active_pane(SplitAxis::Vertical),
+            InputAction::CloseSplit => self.close_active_split(),
 
             InputAction::Undo => {
                 if self.mode == EditorMode::Normal {

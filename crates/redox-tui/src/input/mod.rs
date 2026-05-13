@@ -99,6 +99,13 @@ pub enum InputAction {
     ViewportUpCenter,
     /// Centre current cursor line in viewport (`zz` in normal mode).
     CenterCursorLine,
+    SplitFocusLeft,
+    SplitFocusDown,
+    SplitFocusUp,
+    SplitFocusRight,
+    SplitHorizontal,
+    SplitVertical,
+    CloseSplit,
     /// Undo most recent edit in active buffer (`u` in normal mode).
     Undo,
     /// Redo most recently undone edit in active buffer (`Ctrl+R` in normal mode).
@@ -1572,6 +1579,15 @@ fn map_key_with_state(
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock => {}
     }
 
+    if matches!(
+        mode,
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+    ) && let Some(action) = split_key_action(mods, key)
+    {
+        state.reset_prefixes();
+        return action;
+    }
+
     if let Some(pending_search_motion) = state.pending_search_motion {
         match key {
             KeyKind::Escape => {
@@ -1792,7 +1808,7 @@ fn map_key_with_state(
     match key {
         KeyKind::Escape => {
             state.reset_prefixes();
-            if matches!(
+            return if matches!(
                 mode,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
             ) {
@@ -1801,7 +1817,7 @@ fn map_key_with_state(
                 InputAction::ClearSearch
             } else {
                 InputAction::None
-            }
+            };
         }
         KeyKind::Enter => {
             if mode != InputMode::Normal {
@@ -1887,6 +1903,23 @@ fn replacement_char_from_key(c: char, mods: KeyModifiers) -> char {
         '`' => '~',
         '\\' => '|',
         _ => c,
+    }
+}
+
+fn split_key_action(mods: KeyModifiers, key: KeyKind) -> Option<InputAction> {
+    if !mods.ctrl || mods.alt || mods.super_key {
+        return None;
+    }
+
+    match key {
+        KeyKind::Char('h') | KeyKind::Char('H') => Some(InputAction::SplitFocusLeft),
+        KeyKind::Char('j') | KeyKind::Char('J') => Some(InputAction::SplitFocusDown),
+        KeyKind::Char('k') | KeyKind::Char('K') => Some(InputAction::SplitFocusUp),
+        KeyKind::Char('l') | KeyKind::Char('L') => Some(InputAction::SplitFocusRight),
+        KeyKind::Char('-') => Some(InputAction::SplitHorizontal),
+        KeyKind::Char('\\') | KeyKind::Char('|') => Some(InputAction::SplitVertical),
+        KeyKind::Char('x') | KeyKind::Char('X') => Some(InputAction::CloseSplit),
+        _ => None,
     }
 }
 
