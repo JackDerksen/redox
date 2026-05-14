@@ -3,16 +3,12 @@
 </p>
 
 <h1 align="center">
-    A tasteful terminal-based text editor.
+    A terminal-based text editor that's tasteful by default.
 </h1>
 
 <p align="center">
-    <a href="https://github.com/JackDerksen/redox/actions/workflows/ci.yml">
-        <img alt="CI" src="https://github.com/JackDerksen/redox/actions/workflows/ci.yml/badge.svg" />
-    </a>
-    <a href="https://deepwiki.com/JackDerksen/redox">
-        <img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" />
-    </a>
+    <a href="https://github.com/JackDerksen/redox/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/JackDerksen/redox/actions/workflows/ci.yml/badge.svg" /></a>
+    <a href="https://deepwiki.com/JackDerksen/redox"><img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" /></a>
 </p>
 
 <p align="center">
