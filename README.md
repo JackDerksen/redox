@@ -10,6 +10,9 @@
     <a href="https://github.com/JackDerksen/redox/actions/workflows/ci.yml">
         <img alt="CI" src="https://github.com/JackDerksen/redox/actions/workflows/ci.yml/badge.svg" />
     </a>
+    <a href="https://deepwiki.com/JackDerksen/redox">
+        <img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" />
+    </a>
 </p>
 
 <p align="center">
