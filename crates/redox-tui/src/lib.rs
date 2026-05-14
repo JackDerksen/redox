@@ -1002,6 +1002,7 @@ fn draw_popup_background(
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )?;
     }
     Ok(())
@@ -1081,6 +1082,11 @@ fn draw_split_editor_panes(
             } else {
                 BTreeMap::new()
             };
+            let search_highlights = if is_active_pane {
+                state.active_search_highlight_ranges(first_line, visible_len)
+            } else {
+                BTreeMap::new()
+            };
             draw_buffer_snapshot_for_id(
                 state,
                 pane_style,
@@ -1091,6 +1097,7 @@ fn draw_split_editor_panes(
                 &mut pane_window,
                 visual_selection,
                 one_shot_highlight,
+                &search_highlights,
                 &diagnostic_lines,
                 &snippet_placeholders,
             )?;
@@ -1290,6 +1297,7 @@ fn draw_buffer_snapshot_for_id(
     window: &mut dyn Window,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 ) -> minui::Result<()> {
@@ -1384,7 +1392,6 @@ fn draw_buffer_snapshot_for_id(
             git_diff.as_ref(),
         )?;
 
-        let search_highlights = BTreeMap::new();
         draw_snapshot_lines(
             window,
             buffer,
@@ -1397,7 +1404,7 @@ fn draw_buffer_snapshot_for_id(
             syntax_spans,
             &delimiter_highlights,
             &active_scope_guides,
-            &search_highlights,
+            search_highlights,
             snippet_placeholders,
             diagnostic_lines,
             visual_selection,
