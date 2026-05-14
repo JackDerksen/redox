@@ -551,8 +551,8 @@ pub fn map_event_with_context(
                 match c {
                     'j' => InputAction::PinSelectorMoveNext,
                     'k' => InputAction::PinSelectorMovePrev,
-                    'p' | 'P' => InputAction::PinSelectorAssign,
-                    'd' | 'D' => InputAction::PinSelectorDeleteSelected,
+                    'p' => InputAction::PinSelectorAssign,
+                    'd' => InputAction::PinSelectorDeleteSelected,
                     _ => InputAction::None,
                 }
             }
@@ -561,8 +561,8 @@ pub fn map_event_with_context(
                 match c {
                     'j' => InputAction::LspMarketplaceMoveNext,
                     'k' => InputAction::LspMarketplaceMovePrev,
-                    'i' | 'I' => InputAction::LspMarketplaceInstallSelected,
-                    'u' | 'U' => InputAction::LspMarketplaceUninstallSelected,
+                    'i' => InputAction::LspMarketplaceInstallSelected,
+                    'u' => InputAction::LspMarketplaceUninstallSelected,
                     _ => InputAction::None,
                 }
             }
@@ -571,7 +571,7 @@ pub fn map_event_with_context(
                 match c {
                     'j' => InputAction::DiagnosticsListMoveNext,
                     'k' => InputAction::DiagnosticsListMovePrev,
-                    'a' | 'A' => InputAction::TriggerCodeActions,
+                    'a' => InputAction::TriggerCodeActions,
                     _ => InputAction::None,
                 }
             }
@@ -1293,163 +1293,169 @@ fn map_key_with_state(
 
     match mode {
         InputMode::Insert => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::CompletionCancel;
             }
-            if mods.ctrl && matches!(key, KeyKind::Char('i') | KeyKind::Char('I')) {
+            if ctrl_key(mods, key, 'i') {
                 state.reset_prefixes();
                 return InputAction::TriggerSymbolInfo;
             }
-            if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+            if ctrl_shift_key(mods, key, 'k') {
                 state.reset_prefixes();
                 return InputAction::TriggerCompletion;
             }
-            if mods.ctrl && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+            if ctrl_key(mods, key, 'k') {
                 state.reset_prefixes();
                 return InputAction::None;
             }
-            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+            if ctrl_key(mods, key, 'n') {
                 state.reset_prefixes();
                 return InputAction::CompletionMoveNext;
             }
-            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+            if ctrl_key(mods, key, 'p') {
                 state.reset_prefixes();
                 return InputAction::CompletionMovePrev;
             }
-            if mods.ctrl && matches!(key, KeyKind::Char('e') | KeyKind::Char('E')) {
+            if ctrl_key(mods, key, 'e') {
                 state.reset_prefixes();
                 return InputAction::CompletionCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::CompletionCancel,
-                KeyKind::Backspace => InputAction::Backspace,
-                KeyKind::Enter => InputAction::CompletionAccept,
-                KeyKind::Tab if mods.ctrl => InputAction::TriggerSymbolInfo,
-                KeyKind::Tab => InputAction::SnippetNext,
+                KeyKind::Escape if unmodified(mods) => InputAction::CompletionCancel,
+                KeyKind::Backspace if unmodified(mods) => InputAction::Backspace,
+                KeyKind::Enter if unmodified(mods) => InputAction::CompletionAccept,
+                KeyKind::Tab if ctrl_only(mods) => InputAction::TriggerSymbolInfo,
+                KeyKind::Tab if unmodified(mods) => InputAction::SnippetNext,
 
-                KeyKind::Up => InputAction::Motion {
+                KeyKind::Up if unmodified(mods) => InputAction::Motion {
                     motion: Motion::Up,
                     count: 1,
                 },
-                KeyKind::Down => InputAction::Motion {
+                KeyKind::Down if unmodified(mods) => InputAction::Motion {
                     motion: Motion::Down,
                     count: 1,
                 },
-                KeyKind::Left => InputAction::Motion {
+                KeyKind::Left if unmodified(mods) => InputAction::Motion {
                     motion: Motion::Left,
                     count: 1,
                 },
-                KeyKind::Right => InputAction::Motion {
+                KeyKind::Right if unmodified(mods) => InputAction::Motion {
                     motion: Motion::Right,
                     count: 1,
                 },
 
-                KeyKind::Char(c) => InputAction::InsertChar(replacement_char_from_key(c, mods)),
+                KeyKind::Char(c) if text_mods(mods) => {
+                    InputAction::InsertChar(replacement_char_from_key(c, mods))
+                }
 
                 _ => InputAction::None,
             };
         }
 
         InputMode::SymbolInfo => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::SymbolInfoCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::SymbolInfoCancel,
-                KeyKind::Up => InputAction::SymbolInfoMovePrev,
-                KeyKind::Down => InputAction::SymbolInfoMoveNext,
-                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::SymbolInfoMoveNext,
-                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::SymbolInfoMovePrev,
+                KeyKind::Escape if unmodified(mods) => InputAction::SymbolInfoCancel,
+                KeyKind::Up if unmodified(mods) => InputAction::SymbolInfoMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::SymbolInfoMoveNext,
+                KeyKind::Char('j') if unmodified(mods) => InputAction::SymbolInfoMoveNext,
+                KeyKind::Char('k') if unmodified(mods) => InputAction::SymbolInfoMovePrev,
                 _ => InputAction::None,
             };
         }
 
         InputMode::CodeActions => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::CodeActionsCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::CodeActionsCancel,
-                KeyKind::Enter => InputAction::CodeActionsApplySelected,
-                KeyKind::Up => InputAction::CodeActionsMovePrev,
-                KeyKind::Down => InputAction::CodeActionsMoveNext,
-                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::CodeActionsMoveNext,
-                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::CodeActionsMovePrev,
+                KeyKind::Escape if unmodified(mods) => InputAction::CodeActionsCancel,
+                KeyKind::Enter if unmodified(mods) => InputAction::CodeActionsApplySelected,
+                KeyKind::Up if unmodified(mods) => InputAction::CodeActionsMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::CodeActionsMoveNext,
+                KeyKind::Char('j') if unmodified(mods) => InputAction::CodeActionsMoveNext,
+                KeyKind::Char('k') if unmodified(mods) => InputAction::CodeActionsMovePrev,
                 _ => InputAction::None,
             };
         }
 
         InputMode::Command => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::CommandCancel;
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+            if ctrl_key(mods, key, 'p') {
                 state.reset_prefixes();
                 return InputAction::CommandHistoryPrev;
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+            if ctrl_key(mods, key, 'n') {
                 state.reset_prefixes();
                 return InputAction::CommandHistoryNext;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::CommandCancel,
-                KeyKind::Backspace => InputAction::CommandBackspace,
-                KeyKind::Up => InputAction::CommandHistoryPrev,
-                KeyKind::Down => InputAction::CommandHistoryNext,
-                KeyKind::Enter => InputAction::CommandEnter,
-                KeyKind::Char(c) => InputAction::CommandChar(replacement_char_from_key(c, mods)),
+                KeyKind::Escape if unmodified(mods) => InputAction::CommandCancel,
+                KeyKind::Backspace if unmodified(mods) => InputAction::CommandBackspace,
+                KeyKind::Up if unmodified(mods) => InputAction::CommandHistoryPrev,
+                KeyKind::Down if unmodified(mods) => InputAction::CommandHistoryNext,
+                KeyKind::Enter if unmodified(mods) => InputAction::CommandEnter,
+                KeyKind::Char(c) if text_mods(mods) => {
+                    InputAction::CommandChar(replacement_char_from_key(c, mods))
+                }
                 _ => InputAction::None,
             };
         }
 
         InputMode::Search => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::SearchCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::SearchCancel,
-                KeyKind::Backspace => InputAction::SearchBackspace,
-                KeyKind::Enter => InputAction::SearchEnter,
-                KeyKind::Tab => InputAction::SearchChar('\t'),
-                KeyKind::Char(c) => InputAction::SearchChar(replacement_char_from_key(c, mods)),
+                KeyKind::Escape if unmodified(mods) => InputAction::SearchCancel,
+                KeyKind::Backspace if unmodified(mods) => InputAction::SearchBackspace,
+                KeyKind::Enter if unmodified(mods) => InputAction::SearchEnter,
+                KeyKind::Tab if unmodified(mods) => InputAction::SearchChar('\t'),
+                KeyKind::Char(c) if text_mods(mods) => {
+                    InputAction::SearchChar(replacement_char_from_key(c, mods))
+                }
                 _ => InputAction::None,
             };
         }
 
         InputMode::Finder => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::FinderCancel;
             }
 
-            if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+            if ctrl_shift_key(mods, key, 'p') {
                 state.reset_prefixes();
                 return InputAction::FinderBeginPin;
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+            if ctrl_key(mods, key, 'n') {
                 state.reset_prefixes();
                 return InputAction::FinderMoveNext;
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+            if ctrl_key(mods, key, 'p') {
                 state.reset_prefixes();
                 return InputAction::FinderMovePrev;
             }
 
-            if mods.ctrl && pin_slot_from_key(key).is_some() {
+            if ctrl_only(mods) && pin_slot_from_key(key).is_some() {
                 state.reset_prefixes();
                 return InputAction::OpenPinnedSlot {
                     slot: pin_slot_from_key(key).expect("finder slot"),
@@ -1457,101 +1463,95 @@ fn map_key_with_state(
             }
 
             return match key {
-                KeyKind::Escape => InputAction::FinderCancel,
-                KeyKind::Backspace => InputAction::FinderBackspace,
-                KeyKind::Enter => InputAction::FinderEnter,
-                KeyKind::Up => InputAction::FinderMovePrev,
-                KeyKind::Down => InputAction::FinderMoveNext,
-                KeyKind::Char(c) => InputAction::FinderChar(replacement_char_from_key(c, mods)),
+                KeyKind::Escape if unmodified(mods) => InputAction::FinderCancel,
+                KeyKind::Backspace if unmodified(mods) => InputAction::FinderBackspace,
+                KeyKind::Enter if unmodified(mods) => InputAction::FinderEnter,
+                KeyKind::Up if unmodified(mods) => InputAction::FinderMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::FinderMoveNext,
+                KeyKind::Char(c) if text_mods(mods) => {
+                    InputAction::FinderChar(replacement_char_from_key(c, mods))
+                }
                 _ => InputAction::None,
             };
         }
 
         InputMode::PinSelect => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorCancel;
             }
 
-            if mods == KeyModifiers::default()
-                && matches!(key, KeyKind::Char('p') | KeyKind::Char('P'))
-            {
+            if unmodified(mods) && key == KeyKind::Char('p') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorAssign;
             }
 
-            if mods == KeyModifiers::default()
-                && matches!(key, KeyKind::Char('d') | KeyKind::Char('D'))
-            {
+            if unmodified(mods) && key == KeyKind::Char('d') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorDeleteSelected;
             }
 
-            if mods.ctrl && pin_slot_from_key(key).is_some() {
+            if ctrl_only(mods) && pin_slot_from_key(key).is_some() {
                 state.reset_prefixes();
                 return InputAction::AssignPinSlot {
                     slot: pin_slot_from_key(key).expect("pin selector slot"),
                 };
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('n') | KeyKind::Char('N')) {
+            if ctrl_key(mods, key, 'n') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorMoveNext;
             }
 
-            if mods.ctrl && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+            if ctrl_key(mods, key, 'p') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorMovePrev;
             }
 
-            if mods.shift && matches!(key, KeyKind::Char('j') | KeyKind::Char('J')) {
+            if shift_key(mods, key, 'j') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorReorderDown;
             }
 
-            if mods.shift && matches!(key, KeyKind::Char('k') | KeyKind::Char('K')) {
+            if shift_key(mods, key, 'k') {
                 state.reset_prefixes();
                 return InputAction::PinSelectorReorderUp;
             }
 
-            if mods.shift && key == KeyKind::Enter {
+            if shift_only(mods) && key == KeyKind::Enter {
                 state.reset_prefixes();
                 return InputAction::PinSelectorAssign;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::PinSelectorCancel,
-                KeyKind::Enter => InputAction::PinSelectorOpenSelected,
-                KeyKind::Backspace => InputAction::None,
-                KeyKind::Up => InputAction::PinSelectorMovePrev,
-                KeyKind::Down => InputAction::PinSelectorMoveNext,
-                KeyKind::Char('j') | KeyKind::Char('J') if !mods.shift => {
-                    InputAction::PinSelectorMoveNext
-                }
-                KeyKind::Char('k') | KeyKind::Char('K') if !mods.shift => {
-                    InputAction::PinSelectorMovePrev
-                }
+                KeyKind::Escape if unmodified(mods) => InputAction::PinSelectorCancel,
+                KeyKind::Enter if unmodified(mods) => InputAction::PinSelectorOpenSelected,
+                KeyKind::Backspace if unmodified(mods) => InputAction::None,
+                KeyKind::Up if unmodified(mods) => InputAction::PinSelectorMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::PinSelectorMoveNext,
+                KeyKind::Char('j') if unmodified(mods) => InputAction::PinSelectorMoveNext,
+                KeyKind::Char('k') if unmodified(mods) => InputAction::PinSelectorMovePrev,
                 _ => InputAction::None,
             };
         }
 
         InputMode::LspMarketplace => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::LspMarketplaceCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::LspMarketplaceCancel,
-                KeyKind::Enter => InputAction::None,
-                KeyKind::Up => InputAction::LspMarketplaceMovePrev,
-                KeyKind::Down => InputAction::LspMarketplaceMoveNext,
-                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::LspMarketplaceMoveNext,
-                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::LspMarketplaceMovePrev,
-                KeyKind::Char('i') | KeyKind::Char('I') => {
+                KeyKind::Escape if unmodified(mods) => InputAction::LspMarketplaceCancel,
+                KeyKind::Enter if unmodified(mods) => InputAction::None,
+                KeyKind::Up if unmodified(mods) => InputAction::LspMarketplaceMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::LspMarketplaceMoveNext,
+                KeyKind::Char('j') if unmodified(mods) => InputAction::LspMarketplaceMoveNext,
+                KeyKind::Char('k') if unmodified(mods) => InputAction::LspMarketplaceMovePrev,
+                KeyKind::Char('i') if unmodified(mods) => {
                     InputAction::LspMarketplaceInstallSelected
                 }
-                KeyKind::Char('u') | KeyKind::Char('U') => {
+                KeyKind::Char('u') if unmodified(mods) => {
                     InputAction::LspMarketplaceUninstallSelected
                 }
                 _ => InputAction::None,
@@ -1559,19 +1559,19 @@ fn map_key_with_state(
         }
 
         InputMode::DiagnosticsList => {
-            if mods.ctrl && matches!(key, KeyKind::Char('c') | KeyKind::Char('C')) {
+            if ctrl_key(mods, key, 'c') {
                 state.reset_prefixes();
                 return InputAction::DiagnosticsListCancel;
             }
 
             return match key {
-                KeyKind::Escape => InputAction::DiagnosticsListCancel,
-                KeyKind::Char('a') | KeyKind::Char('A') => InputAction::TriggerCodeActions,
-                KeyKind::Enter => InputAction::DiagnosticsListOpenSelected,
-                KeyKind::Up => InputAction::DiagnosticsListMovePrev,
-                KeyKind::Down => InputAction::DiagnosticsListMoveNext,
-                KeyKind::Char('j') | KeyKind::Char('J') => InputAction::DiagnosticsListMoveNext,
-                KeyKind::Char('k') | KeyKind::Char('K') => InputAction::DiagnosticsListMovePrev,
+                KeyKind::Escape if unmodified(mods) => InputAction::DiagnosticsListCancel,
+                KeyKind::Char('a') if unmodified(mods) => InputAction::TriggerCodeActions,
+                KeyKind::Enter if unmodified(mods) => InputAction::DiagnosticsListOpenSelected,
+                KeyKind::Up if unmodified(mods) => InputAction::DiagnosticsListMovePrev,
+                KeyKind::Down if unmodified(mods) => InputAction::DiagnosticsListMoveNext,
+                KeyKind::Char('j') if unmodified(mods) => InputAction::DiagnosticsListMoveNext,
+                KeyKind::Char('k') if unmodified(mods) => InputAction::DiagnosticsListMovePrev,
                 _ => InputAction::None,
             };
         }
@@ -1648,31 +1648,22 @@ fn map_key_with_state(
         }
     }
 
-    if mode == InputMode::Normal
-        && mods.ctrl
-        && matches!(key, KeyKind::Char('r') | KeyKind::Char('R'))
-    {
+    if mode == InputMode::Normal && ctrl_key(mods, key, 'r') {
         state.reset_prefixes();
         return InputAction::Redo;
     }
 
-    if mode == InputMode::Normal
-        && mods.ctrl
-        && matches!(key, KeyKind::Char('d') | KeyKind::Char('D'))
-    {
+    if mode == InputMode::Normal && ctrl_key(mods, key, 'd') {
         state.reset_prefixes();
         return InputAction::ViewportDownCenter;
     }
 
-    if mode == InputMode::Normal
-        && mods.ctrl
-        && matches!(key, KeyKind::Char('u') | KeyKind::Char('U'))
-    {
+    if mode == InputMode::Normal && ctrl_key(mods, key, 'u') {
         state.reset_prefixes();
         return InputAction::ViewportUpCenter;
     }
 
-    if mods.ctrl && mods.shift && matches!(key, KeyKind::Char('p') | KeyKind::Char('P')) {
+    if ctrl_shift_key(mods, key, 'p') {
         state.reset_prefixes();
         return InputAction::QuickPinCurrentFile;
     }
@@ -1680,8 +1671,7 @@ fn map_key_with_state(
     if matches!(
         mode,
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
-    ) && mods.ctrl
-        && matches!(key, KeyKind::Char('n') | KeyKind::Char('N'))
+    ) && ctrl_key(mods, key, 'n')
     {
         state.reset_prefixes();
         return InputAction::RepeatSearch { forward: true };
@@ -1690,8 +1680,7 @@ fn map_key_with_state(
     if matches!(
         mode,
         InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
-    ) && mods.ctrl
-        && matches!(key, KeyKind::Char('p') | KeyKind::Char('P'))
+    ) && ctrl_key(mods, key, 'p')
     {
         state.reset_prefixes();
         return InputAction::RepeatSearch { forward: false };
@@ -1700,22 +1689,18 @@ fn map_key_with_state(
     if matches!(
         mode,
         InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
-    ) && mods.ctrl
-        && matches!(key, KeyKind::Char('c') | KeyKind::Char('C'))
+    ) && ctrl_key(mods, key, 'c')
     {
         state.reset_prefixes();
         return InputAction::SetMode(InputMode::Normal);
     }
 
-    if mode == InputMode::Normal
-        && mods.ctrl
-        && matches!(key, KeyKind::Char('i') | KeyKind::Char('I'))
-    {
+    if mode == InputMode::Normal && ctrl_key(mods, key, 'i') {
         state.reset_prefixes();
         return InputAction::TriggerSymbolInfo;
     }
 
-    if mods.ctrl && matches!(key, KeyKind::Char('v') | KeyKind::Char('V')) {
+    if ctrl_key(mods, key, 'v') {
         state.reset_prefixes();
         return match mode {
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine => {
@@ -1734,7 +1719,7 @@ fn map_key_with_state(
         };
     }
 
-    if mods.ctrl && pin_slot_from_key(key).is_some() {
+    if ctrl_only(mods) && pin_slot_from_key(key).is_some() {
         state.reset_prefixes();
         return InputAction::OpenPinnedSlot {
             slot: pin_slot_from_key(key).expect("global pin slot"),
@@ -1742,7 +1727,7 @@ fn map_key_with_state(
     }
 
     // Detect `I`, `A`, etc. via key modifiers so terminal character event shape does not matter.
-    if mods.shift {
+    if shift_only(mods) {
         if matches!(key, KeyKind::Char('I') | KeyKind::Char('i')) {
             if mode != InputMode::Normal {
                 state.reset_prefixes();
@@ -1820,7 +1805,7 @@ fn map_key_with_state(
             };
         }
         KeyKind::Enter => {
-            if mode != InputMode::Normal {
+            if mode != InputMode::Normal || !unmodified(mods) {
                 state.reset_prefixes();
                 return InputAction::None;
             }
@@ -1835,33 +1820,36 @@ fn map_key_with_state(
                 state.reset_prefixes();
                 return InputAction::None;
             }
-            if mods.shift {
+            if shift_only(mods) {
                 InputAction::OutdentVisualSelection {
                     count: state.take_count_or_1(),
                 }
-            } else {
+            } else if unmodified(mods) {
                 InputAction::IndentVisualSelection {
                     count: state.take_count_or_1(),
                 }
+            } else {
+                state.reset_prefixes();
+                InputAction::None
             }
         }
-        KeyKind::Up => InputAction::Motion {
+        KeyKind::Up if unmodified(mods) => InputAction::Motion {
             motion: Motion::Up,
             count: state.take_count_or_1(),
         },
-        KeyKind::Down => InputAction::Motion {
+        KeyKind::Down if unmodified(mods) => InputAction::Motion {
             motion: Motion::Down,
             count: state.take_count_or_1(),
         },
-        KeyKind::Left => InputAction::Motion {
+        KeyKind::Left if unmodified(mods) => InputAction::Motion {
             motion: Motion::Left,
             count: state.take_count_or_1(),
         },
-        KeyKind::Right => InputAction::Motion {
+        KeyKind::Right if unmodified(mods) => InputAction::Motion {
             motion: Motion::Right,
             count: state.take_count_or_1(),
         },
-        KeyKind::Char(c) => modal_char_action(
+        KeyKind::Char(c) if text_mods(mods) => modal_char_action(
             state,
             mode,
             confirm_explorer_delete,
@@ -1906,30 +1894,71 @@ fn replacement_char_from_key(c: char, mods: KeyModifiers) -> char {
     }
 }
 
+fn unmodified(mods: KeyModifiers) -> bool {
+    mods == KeyModifiers::none()
+}
+
+fn text_mods(mods: KeyModifiers) -> bool {
+    unmodified(mods) || shift_only(mods)
+}
+
+fn ctrl_only(mods: KeyModifiers) -> bool {
+    mods == KeyModifiers::ctrl()
+}
+
+fn shift_only(mods: KeyModifiers) -> bool {
+    mods == KeyModifiers::shift()
+}
+
+fn ctrl_shift_only(mods: KeyModifiers) -> bool {
+    mods == KeyModifiers {
+        ctrl: true,
+        shift: true,
+        alt: false,
+        super_key: false,
+    }
+}
+
+fn shifted_char_key(key: KeyKind, c: char) -> bool {
+    matches!(key, KeyKind::Char(actual) if actual == c || actual == c.to_ascii_uppercase())
+}
+
+fn ctrl_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {
+    ctrl_only(mods) && key == KeyKind::Char(c)
+}
+
+fn shift_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {
+    shift_only(mods) && shifted_char_key(key, c)
+}
+
+fn ctrl_shift_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {
+    ctrl_shift_only(mods) && shifted_char_key(key, c)
+}
+
 fn split_key_action(mods: KeyModifiers, key: KeyKind) -> Option<InputAction> {
-    if !mods.ctrl || mods.alt || mods.super_key {
+    if !ctrl_only(mods) {
         return None;
     }
 
     match key {
-        KeyKind::Char('h') | KeyKind::Char('H') => Some(InputAction::SplitFocusLeft),
-        KeyKind::Char('j') | KeyKind::Char('J') => Some(InputAction::SplitFocusDown),
-        KeyKind::Char('k') | KeyKind::Char('K') => Some(InputAction::SplitFocusUp),
-        KeyKind::Char('l') | KeyKind::Char('L') => Some(InputAction::SplitFocusRight),
+        KeyKind::Char('h') => Some(InputAction::SplitFocusLeft),
+        KeyKind::Char('j') => Some(InputAction::SplitFocusDown),
+        KeyKind::Char('k') => Some(InputAction::SplitFocusUp),
+        KeyKind::Char('l') => Some(InputAction::SplitFocusRight),
         KeyKind::Char('-') => Some(InputAction::SplitHorizontal),
-        KeyKind::Char('\\') | KeyKind::Char('|') => Some(InputAction::SplitVertical),
-        KeyKind::Char('x') | KeyKind::Char('X') => Some(InputAction::CloseSplit),
+        KeyKind::Char('\\') => Some(InputAction::SplitVertical),
+        KeyKind::Char('x') => Some(InputAction::CloseSplit),
         _ => None,
     }
 }
 
 fn pin_slot_from_key(key: KeyKind) -> Option<usize> {
     match key {
-        KeyKind::Char('1') | KeyKind::Char('!') => Some(0),
-        KeyKind::Char('2') | KeyKind::Char('@') => Some(1),
-        KeyKind::Char('3') | KeyKind::Char('#') => Some(2),
-        KeyKind::Char('4') | KeyKind::Char('$') => Some(3),
-        KeyKind::Char('5') | KeyKind::Char('%') => Some(4),
+        KeyKind::Char('1') => Some(0),
+        KeyKind::Char('2') => Some(1),
+        KeyKind::Char('3') => Some(2),
+        KeyKind::Char('4') => Some(3),
+        KeyKind::Char('5') => Some(4),
         _ => None,
     }
 }
@@ -2139,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_ctrl_shift_symbol_opens_pinned_slot() {
+    fn normal_mode_ctrl_shift_symbols_do_not_alias_pinned_slots() {
         let mut state = InputState::new();
         let ctrl_shift = KeyModifiers {
             ctrl: true,
@@ -2156,7 +2185,7 @@ mod tests {
                 mods: ctrl_shift,
             }),
         );
-        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 0 });
+        assert_eq!(action, InputAction::None);
 
         let action = map_event_with_state(
             &mut state,
@@ -2166,7 +2195,7 @@ mod tests {
                 mods: ctrl_shift,
             }),
         );
-        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 3 });
+        assert_eq!(action, InputAction::None);
 
         let action = map_event_with_state(
             &mut state,
@@ -2176,7 +2205,7 @@ mod tests {
                 mods: ctrl_shift,
             }),
         );
-        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 4 });
+        assert_eq!(action, InputAction::None);
     }
 
     #[test]
