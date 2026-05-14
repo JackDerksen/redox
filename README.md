@@ -5,8 +5,13 @@
 <h1 align="center">
     A tasteful terminal-based text editor.
     <br>
-    [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/JackDerksen/redox)
+    <p align="center">
+      <a href="https://github.com/OWNER/REPO/actions/workflows/ci.yml">
+        <img alt="CI" src="https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg">
+      </a>
+    </p>
 </h1>
+
 
 <p align="center">
     Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
