@@ -3,7 +3,9 @@
 </p>
 
 <h1 align="center">
-    A terminal-based text editor, built with MinUI
+    A tasteful terminal-based text editor.
+    <br>
+    [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/JackDerksen/redox)
 </h1>
 
 <p align="center">
@@ -252,6 +254,15 @@ Other language tool commands:
 | `zz` | Centre the cursor line in the viewport. |
 | `~` | Toggle character case, or the whole visual selection. |
 
+### Splits
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `ctrl+-` | Split the active pane horizontally. |
+| <code>ctrl+\</code> | Split the active pane vertically. |
+| `ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l` | Focus the split to the left / down / up / right. |
+| `ctrl+x` | Close the active split. |
+
 ### Visual modes
 
 | Keys | Behaviour |
@@ -334,6 +345,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] LSP document formatting
 - [x] LSP code actions and quick fixes
 - [x] Basic git integration (diff stats)
+- [x] In-editor splits
 - [ ] Undo tree UI with stored history
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality

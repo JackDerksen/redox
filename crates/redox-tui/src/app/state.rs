@@ -7,12 +7,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use minui::{TabPolicy, cell_width};
 use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::{GraphemeCache, RainAnimation, SyntaxHighlighter, language_for_path};
+use crate::ui::{
+    GraphemeCache, RainAnimation, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
+};
 mod about;
 pub use about::AboutPopup;
 use about::AboutState;
@@ -65,7 +69,7 @@ struct UndoSnapshot {
     cursor: Pos,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct UndoHistory {
     undo_stack: Vec<UndoSnapshot>,
     redo_stack: Vec<UndoSnapshot>,
@@ -180,6 +184,21 @@ pub struct BufferViewState {
     insert_mode_coalesce_base: Option<UndoSnapshot>,
 }
 
+impl Clone for BufferViewState {
+    fn clone(&self) -> Self {
+        Self {
+            cursor: self.cursor.clone(),
+            grapheme_cache: GraphemeCache::new(512),
+            syntax_highlighter: SyntaxHighlighter::default(),
+            delimiter_pair_cache: DelimiterPairCache::default(),
+            visual_anchor: self.visual_anchor,
+            analysis_version: self.analysis_version,
+            undo_history: self.undo_history.clone(),
+            insert_mode_coalesce_base: self.insert_mode_coalesce_base.clone(),
+        }
+    }
+}
+
 impl Default for BufferViewState {
     fn default() -> Self {
         Self {
@@ -196,6 +215,16 @@ impl Default for BufferViewState {
 }
 
 impl BufferViewState {
+    pub(crate) fn copy_pane_state_from(&mut self, source: &Self) {
+        self.cursor = source.cursor.clone();
+        self.visual_anchor = source.visual_anchor;
+    }
+
+    fn reset_pane_position(&mut self) {
+        self.cursor = CursorController::new();
+        self.visual_anchor = None;
+    }
+
     pub(crate) fn analysis_version(&self) -> u64 {
         self.analysis_version
     }
@@ -212,6 +241,50 @@ impl BufferViewState {
 pub enum StatusMessageStyle {
     Normal,
     Dim,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDirection {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneId(usize);
+
+#[derive(Debug, Clone)]
+pub struct EditorPane {
+    pub id: PaneId,
+    pub buffer_id: BufferId,
+    pub view: BufferViewState,
+    pub last_used: u64,
+}
+
+#[derive(Debug, Clone)]
+enum SplitNode {
+    Pane(PaneId),
+    Split {
+        axis: SplitAxis,
+        first: Box<SplitNode>,
+        second: Box<SplitNode>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PaneRect {
+    pub pane_id: PaneId,
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Multi-buffer editor state for the TUI frontend.
@@ -240,6 +313,8 @@ pub struct EditorState {
     rain_pending_start: bool,
     viewport_width_cells: usize,
     viewport_height_rows: usize,
+    editor_area_width_cells: usize,
+    editor_area_height_rows: usize,
     private_register: String,
     private_register_kind: RegisterKind,
     one_shot_highlight: Option<OneShotHighlight>,
@@ -252,6 +327,11 @@ pub struct EditorState {
     git: git::GitState,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
+    panes: Vec<EditorPane>,
+    split_root: SplitNode,
+    active_pane: PaneId,
+    next_pane_id: usize,
+    pane_use_tick: u64,
 }
 
 impl EditorState {
@@ -265,6 +345,13 @@ impl EditorState {
         let mut views = HashMap::new();
         views.insert(active, BufferViewState::default());
 
+        let initial_view = BufferViewState::default();
+        let initial_pane = EditorPane {
+            id: PaneId(0),
+            buffer_id: active,
+            view: initial_view.clone(),
+            last_used: 1,
+        };
         let state = Self {
             session,
             views,
@@ -289,6 +376,8 @@ impl EditorState {
             rain_pending_start: false,
             viewport_width_cells: 80,
             viewport_height_rows: 24,
+            editor_area_width_cells: 80,
+            editor_area_height_rows: 23,
             private_register: String::new(),
             private_register_kind: RegisterKind::CharWise,
             one_shot_highlight: None,
@@ -301,6 +390,11 @@ impl EditorState {
             git: git::GitState::default(),
             perf_visible: false,
             perf_stats: None,
+            panes: vec![initial_pane],
+            split_root: SplitNode::Pane(PaneId(0)),
+            active_pane: PaneId(0),
+            next_pane_id: 1,
+            pane_use_tick: 1,
         };
         let mut state = state;
         state.request_analysis(active, 0);
@@ -353,8 +447,293 @@ impl EditorState {
         self.viewport_height_rows = height_rows;
     }
 
+    pub fn set_editor_area_size(&mut self, width_cells: usize, height_rows: usize) {
+        self.editor_area_width_cells = width_cells;
+        self.editor_area_height_rows = height_rows;
+    }
+
     pub fn viewport_size(&self) -> (usize, usize) {
         (self.viewport_width_cells, self.viewport_height_rows)
+    }
+
+    pub fn sync_active_pane_view(&mut self) {
+        let active_id = self.session.active_id();
+        if self
+            .session
+            .meta(active_id)
+            .is_some_and(|meta| meta.kind == BufferKind::Ui)
+        {
+            return;
+        }
+        if let Some(view) = self.views.get(&active_id).cloned()
+            && let Some(pane) = self
+                .panes
+                .iter_mut()
+                .find(|pane| pane.id == self.active_pane)
+        {
+            pane.buffer_id = active_id;
+            pane.view = view;
+        }
+    }
+
+    pub fn sync_rendered_pane_view(&mut self, pane_id: PaneId, buffer_id: BufferId) {
+        if let Some(view) = self.views.get(&buffer_id)
+            && let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id)
+        {
+            pane.view.copy_pane_state_from(view);
+        }
+    }
+
+    pub fn restore_active_pane_view(&mut self) {
+        let Some(pane) = self
+            .panes
+            .iter()
+            .find(|pane| pane.id == self.active_pane)
+            .cloned()
+        else {
+            return;
+        };
+        self.views
+            .entry(pane.buffer_id)
+            .or_default()
+            .copy_pane_state_from(&pane.view);
+        let _ = self.session.activate(pane.buffer_id);
+    }
+
+    fn activate_pane(&mut self, pane_id: PaneId) -> bool {
+        self.activate_pane_with_recent(pane_id, true)
+    }
+
+    fn activate_pane_with_recent(&mut self, pane_id: PaneId, mark_recent: bool) -> bool {
+        if pane_id == self.active_pane {
+            return true;
+        }
+        self.sync_active_pane_view();
+        let Some(pane) = self.panes.iter().find(|pane| pane.id == pane_id).cloned() else {
+            return false;
+        };
+        if !self.session.activate(pane.buffer_id) {
+            return false;
+        }
+        self.views
+            .entry(pane.buffer_id)
+            .or_default()
+            .copy_pane_state_from(&pane.view);
+        self.active_pane = pane_id;
+        if mark_recent {
+            self.pane_use_tick = self.pane_use_tick.saturating_add(1);
+            if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
+                pane.last_used = self.pane_use_tick;
+            }
+        }
+        self.clear_active_visual_anchor();
+        self.close_completion();
+        true
+    }
+
+    pub fn split_active_pane(&mut self, axis: SplitAxis) {
+        self.sync_active_pane_view();
+        self.nudge_active_pane_cursor_before_split(axis);
+        let Some(active) = self
+            .panes
+            .iter()
+            .find(|pane| pane.id == self.active_pane)
+            .cloned()
+        else {
+            return;
+        };
+        let new_id = PaneId(self.next_pane_id);
+        self.next_pane_id = self.next_pane_id.saturating_add(1);
+        let mut new_view = active.view.clone();
+        new_view.reset_pane_position();
+        self.panes.push(EditorPane {
+            id: new_id,
+            buffer_id: active.buffer_id,
+            view: new_view,
+            last_used: 0,
+        });
+        if replace_pane_with_split(&mut self.split_root, self.active_pane, axis, new_id) {
+            let _ = self.activate_pane(new_id);
+            self.refresh_active_split_viewport_size();
+        }
+    }
+
+    fn nudge_active_pane_cursor_before_split(&mut self, axis: SplitAxis) {
+        let Some(pane_index) = self
+            .panes
+            .iter()
+            .position(|pane| pane.id == self.active_pane)
+        else {
+            return;
+        };
+        let buffer_id = self.panes[pane_index].buffer_id;
+        let Some(buffer) = self.session.buffer(buffer_id).cloned() else {
+            return;
+        };
+        let Some(rect) = self
+            .pane_rects(
+                self.editor_area_width_cells as u16,
+                self.editor_area_height_rows as u16,
+            )
+            .into_iter()
+            .find(|rect| rect.pane_id == self.active_pane)
+        else {
+            return;
+        };
+        let total_lines = buffer.len_lines().max(1);
+        let show_git_marker_column = self
+            .git
+            .diff_for(buffer_id)
+            .is_some_and(|diff| !diff.stats.is_empty());
+        let content_x = split_gutter_width(total_lines, show_git_marker_column).saturating_add(1);
+        let view = &mut self.panes[pane_index].view;
+        nudge_cursor_out_of_new_split_area(&buffer, view, axis, rect, content_x);
+        let adjusted = view.clone();
+        self.views
+            .entry(buffer_id)
+            .or_default()
+            .copy_pane_state_from(&adjusted);
+    }
+
+    pub fn close_active_split(&mut self) {
+        if self.panes.len() <= 1 {
+            self.set_status("cannot close the last split");
+            return;
+        }
+        let closing = self.active_pane;
+        let next = self
+            .panes
+            .iter()
+            .filter(|pane| pane.id != closing)
+            .max_by_key(|pane| pane.last_used)
+            .map(|pane| pane.id);
+        if remove_pane_from_split(&mut self.split_root, closing) {
+            self.panes.retain(|pane| pane.id != closing);
+            let next = next.unwrap_or_else(|| first_pane_id(&self.split_root));
+            let _ = self.activate_pane(next);
+            self.refresh_active_split_viewport_size();
+        }
+    }
+
+    pub fn focus_split(&mut self, direction: SplitDirection) {
+        let rects = self.pane_rects(
+            self.editor_area_width_cells as u16,
+            self.editor_area_height_rows as u16,
+        );
+        let Some(current) = rects
+            .iter()
+            .find(|rect| rect.pane_id == self.active_pane)
+            .copied()
+        else {
+            return;
+        };
+        let current_left = i32::from(current.x);
+        let current_top = i32::from(current.y);
+        let current_right = current_left + i32::from(current.width);
+        let current_bottom = current_top + i32::from(current.height);
+        let candidate = rects
+            .iter()
+            .filter(|rect| rect.pane_id != self.active_pane)
+            .filter_map(|rect| {
+                let left = i32::from(rect.x);
+                let top = i32::from(rect.y);
+                let right = left + i32::from(rect.width);
+                let bottom = top + i32::from(rect.height);
+                let primary_gap = match direction {
+                    SplitDirection::Left => (right <= current_left).then_some(current_left - right),
+                    SplitDirection::Right => {
+                        (left >= current_right).then_some(left - current_right)
+                    }
+                    SplitDirection::Up => (bottom <= current_top).then_some(current_top - bottom),
+                    SplitDirection::Down => (top >= current_bottom).then_some(top - current_bottom),
+                }?;
+                let overlap = match direction {
+                    SplitDirection::Left | SplitDirection::Right => {
+                        current_bottom.min(bottom) - current_top.max(top)
+                    }
+                    SplitDirection::Up | SplitDirection::Down => {
+                        current_right.min(right) - current_left.max(left)
+                    }
+                };
+                let secondary_gap = match direction {
+                    SplitDirection::Left | SplitDirection::Right if overlap > 0 => 0,
+                    SplitDirection::Left | SplitDirection::Right => {
+                        if bottom <= current_top {
+                            current_top - bottom
+                        } else {
+                            top - current_bottom
+                        }
+                    }
+                    SplitDirection::Up | SplitDirection::Down if overlap > 0 => 0,
+                    SplitDirection::Up | SplitDirection::Down => {
+                        if right <= current_left {
+                            current_left - right
+                        } else {
+                            left - current_right
+                        }
+                    }
+                };
+                let last_used = self
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == rect.pane_id)
+                    .map(|pane| pane.last_used)
+                    .unwrap_or(0);
+                let geometry_bias = i32::from(rect.y) * 10_000 + i32::from(rect.x);
+                Some((
+                    primary_gap,
+                    secondary_gap,
+                    std::cmp::Reverse(last_used),
+                    -overlap,
+                    geometry_bias,
+                    rect.pane_id,
+                ))
+            })
+            .min_by_key(|(primary, secondary, recent, overlap, geometry, _)| {
+                (*primary, *recent, *secondary, *overlap, *geometry)
+            })
+            .map(|(_, _, _, _, _, pane_id)| pane_id);
+        if let Some(pane_id) = candidate {
+            let _ = self.activate_pane(pane_id);
+            self.refresh_active_split_viewport_size();
+        }
+    }
+
+    fn refresh_active_split_viewport_size(&mut self) {
+        if self.panes.len() <= 1 {
+            self.viewport_width_cells = self.editor_area_width_cells;
+            self.viewport_height_rows = self
+                .editor_area_height_rows
+                .saturating_add(STATUS_BAR_HEIGHT_ROWS);
+            return;
+        }
+
+        let Some(rect) = self
+            .pane_rects(
+                self.editor_area_width_cells as u16,
+                self.editor_area_height_rows as u16,
+            )
+            .into_iter()
+            .find(|rect| rect.pane_id == self.active_pane)
+        else {
+            return;
+        };
+        self.viewport_width_cells = rect.width as usize;
+        self.viewport_height_rows = (rect.height as usize).saturating_add(STATUS_BAR_HEIGHT_ROWS);
+    }
+
+    pub fn pane_rects(&self, width: u16, height: u16) -> Vec<PaneRect> {
+        let mut rects = Vec::new();
+        collect_pane_rects(&self.split_root, 0, 0, width, height, &mut rects);
+        rects
+    }
+
+    pub fn active_pane_id(&self) -> PaneId {
+        self.active_pane
+    }
+
+    pub fn panes(&self) -> &[EditorPane] {
+        &self.panes
     }
 
     pub fn take_pending_system_clipboard(&mut self) -> Option<String> {
@@ -772,6 +1151,176 @@ impl EditorState {
         self.invalidate_active_render_caches();
         self.clear_status();
     }
+}
+
+fn replace_pane_with_split(
+    node: &mut SplitNode,
+    target: PaneId,
+    axis: SplitAxis,
+    new_id: PaneId,
+) -> bool {
+    match node {
+        SplitNode::Pane(id) if *id == target => {
+            *node = SplitNode::Split {
+                axis,
+                first: Box::new(SplitNode::Pane(target)),
+                second: Box::new(SplitNode::Pane(new_id)),
+            };
+            true
+        }
+        SplitNode::Pane(_) => false,
+        SplitNode::Split { first, second, .. } => {
+            replace_pane_with_split(first, target, axis, new_id)
+                || replace_pane_with_split(second, target, axis, new_id)
+        }
+    }
+}
+
+fn remove_pane_from_split(node: &mut SplitNode, target: PaneId) -> bool {
+    match node {
+        SplitNode::Pane(_) => false,
+        SplitNode::Split { first, second, .. } => {
+            if matches!(first.as_ref(), SplitNode::Pane(id) if *id == target) {
+                *node = (**second).clone();
+                return true;
+            }
+            if matches!(second.as_ref(), SplitNode::Pane(id) if *id == target) {
+                *node = (**first).clone();
+                return true;
+            }
+            remove_pane_from_split(first, target) || remove_pane_from_split(second, target)
+        }
+    }
+}
+
+fn first_pane_id(node: &SplitNode) -> PaneId {
+    match node {
+        SplitNode::Pane(id) => *id,
+        SplitNode::Split { first, .. } => first_pane_id(first),
+    }
+}
+
+fn collect_pane_rects(
+    node: &SplitNode,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    rects: &mut Vec<PaneRect>,
+) {
+    match node {
+        SplitNode::Pane(pane_id) => rects.push(PaneRect {
+            pane_id: *pane_id,
+            x,
+            y,
+            width,
+            height,
+        }),
+        SplitNode::Split {
+            axis: SplitAxis::Vertical,
+            first,
+            second,
+        } => {
+            let first_w = width / 2;
+            let second_w = width.saturating_sub(first_w).saturating_sub(1);
+            collect_pane_rects(first, x, y, first_w, height, rects);
+            collect_pane_rects(
+                second,
+                x.saturating_add(first_w).saturating_add(1),
+                y,
+                second_w,
+                height,
+                rects,
+            );
+        }
+        SplitNode::Split {
+            axis: SplitAxis::Horizontal,
+            first,
+            second,
+        } => {
+            let first_h = height / 2;
+            let second_h = height.saturating_sub(first_h).saturating_sub(1);
+            collect_pane_rects(first, x, y, width, first_h, rects);
+            collect_pane_rects(
+                second,
+                x,
+                y.saturating_add(first_h).saturating_add(1),
+                width,
+                second_h,
+                rects,
+            );
+        }
+    }
+}
+
+fn nudge_cursor_out_of_new_split_area(
+    buffer: &TextBuffer,
+    view: &mut BufferViewState,
+    axis: SplitAxis,
+    rect: PaneRect,
+    content_x: u16,
+) {
+    match axis {
+        SplitAxis::Horizontal => {
+            let retained_height = rect.height / 2;
+            if retained_height == 0 {
+                return;
+            }
+            let spec = view.cursor.cursor_spec(
+                buffer,
+                rect.width.saturating_sub(content_x) as usize,
+                rect.height as usize,
+            );
+            if !spec.visible || spec.y < retained_height {
+                return;
+            }
+
+            let (_, scroll_y) = view.cursor.viewport_scroll();
+            let target_line = scroll_y.saturating_add(retained_height.saturating_sub(1) as usize);
+            view.cursor.cursor = buffer.clamp_pos(Pos::new(target_line, view.cursor.cursor.col));
+        }
+        SplitAxis::Vertical => {
+            let retained_width = rect.width / 2;
+            if retained_width == 0 {
+                return;
+            }
+            let text_width = rect.width.saturating_sub(content_x);
+            let spec = view
+                .cursor
+                .cursor_spec(buffer, text_width as usize, rect.height as usize);
+            let cursor_screen_x = content_x.saturating_add(spec.x);
+            if !spec.visible || cursor_screen_x < retained_width {
+                return;
+            }
+
+            let (scroll_x, _) = view.cursor.viewport_scroll();
+            let target_cell =
+                retained_width.saturating_sub(1).saturating_sub(content_x) as usize + scroll_x;
+            let line = buffer.clamp_line(view.cursor.cursor.line);
+            let col = char_col_at_or_before_cell(&buffer.line_string(line), target_cell);
+            view.cursor.cursor = buffer.clamp_pos(Pos::new(line, col));
+        }
+    }
+}
+
+fn split_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
+    let digits = total_lines.max(1).ilog10() as u16 + 1;
+    let git_marker_width = u16::from(show_git_marker_column);
+    digits.saturating_add(git_marker_width).saturating_add(1)
+}
+
+fn char_col_at_or_before_cell(line: &str, target_cell: usize) -> usize {
+    let mut cells = 0usize;
+    let mut chars = 0usize;
+    for grapheme in line.graphemes(true) {
+        let width = (cell_width(grapheme, TabPolicy::Fixed(4)) as usize).max(1);
+        if cells.saturating_add(width) > target_cell {
+            return chars;
+        }
+        cells = cells.saturating_add(width);
+        chars = chars.saturating_add(grapheme.chars().count());
+    }
+    chars
 }
 
 #[cfg(test)]

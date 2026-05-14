@@ -28,6 +28,174 @@ fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     EditorState::new(session)
 }
 
+#[test]
+fn split_popup_background_preserves_active_surface_buffer() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("split_surface_active");
+    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
+    state.set_viewport_size(80, 24);
+    state.split_active_pane(SplitAxis::Vertical);
+    let surface = state.session.open_ui_buffer("[surface]", "entry\n");
+
+    state.sync_active_pane_view();
+
+    assert_eq!(state.session.active_id(), surface);
+    assert!(state.panes().iter().all(|pane| pane.buffer_id != surface));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn splitting_starts_new_pane_at_top_without_dropping_syntax_cache() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("split_cache_cursor");
+    let text = "fn main() {\n    let answer = 42;\n    println!(\"{answer}\");\n}\n";
+    let mut state = state_with_text(path.clone(), text);
+    let buffer_id = state.session.active_id();
+    let buffer = state.session.active_buffer().clone();
+    let view = state.views.entry(buffer_id).or_default();
+    view.cursor.cursor = Pos::new(2, 4);
+    view.cursor.scroll_y_lines = 2;
+    view.syntax_highlighter
+        .replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
+    assert!(view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
+
+    state.split_active_pane(SplitAxis::Horizontal);
+
+    let active_view = state.views.get(&buffer_id).expect("active view");
+    assert_eq!(active_view.cursor.cursor, Pos::zero());
+    assert_eq!(active_view.cursor.scroll_y_lines, 0);
+    assert!(
+        active_view
+            .syntax_highlighter
+            .has_cache_for(SyntaxLanguage::Rust)
+    );
+    let original_pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == PaneId(0))
+        .expect("original pane");
+    assert_eq!(original_pane.view.cursor.cursor, Pos::new(2, 4));
+    assert_eq!(original_pane.view.cursor.scroll_y_lines, 2);
+
+    state.close_active_split();
+
+    assert!(
+        state
+            .views
+            .get(&buffer_id)
+            .expect("restored view")
+            .syntax_highlighter
+            .has_cache_for(SyntaxLanguage::Rust)
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn split_motion_uses_active_pane_height_for_scrolloff() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("split_scrolloff_height");
+    let mut state = state_with_text(path.clone(), &large_text(80));
+    state.set_editor_area_size(80, 39);
+    state.set_viewport_size(80, 40);
+
+    state.split_active_pane(SplitAxis::Horizontal);
+    assert_eq!(state.viewport_size().1, 20);
+
+    for _ in 0..15 {
+        state.apply_input(
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1,
+            },
+            80,
+            state.viewport_size().1,
+        );
+    }
+
+    let buffer_id = state.session.active_id();
+    let split_scroll = state
+        .views
+        .get(&buffer_id)
+        .expect("active view")
+        .cursor
+        .scroll_y_lines;
+    assert!(split_scroll > 0);
+
+    state.close_active_split();
+    assert_eq!(state.viewport_size().1, 40);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn horizontal_split_nudges_source_cursor_above_new_pane_area() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("split_nudge_horizontal");
+    let mut state = state_with_text(path.clone(), &large_text(80));
+    let buffer_id = state.session.active_id();
+    state.set_editor_area_size(80, 39);
+    state.set_viewport_size(76, 40);
+    state.views.entry(buffer_id).or_default().cursor.cursor = Pos::new(30, 4);
+
+    state.split_active_pane(SplitAxis::Horizontal);
+
+    let original_pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == PaneId(0))
+        .expect("original pane");
+    assert_eq!(original_pane.view.cursor.cursor.line, 18);
+    assert_eq!(
+        state
+            .views
+            .get(&buffer_id)
+            .expect("active view")
+            .cursor
+            .cursor,
+        Pos::zero()
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn vertical_split_nudges_source_cursor_left_of_new_pane_area() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("split_nudge_vertical");
+    let text = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n";
+    let mut state = state_with_text(path.clone(), text);
+    let buffer_id = state.session.active_id();
+    state.set_editor_area_size(80, 20);
+    state.set_viewport_size(76, 21);
+    state.views.entry(buffer_id).or_default().cursor.cursor = Pos::new(0, 60);
+
+    state.split_active_pane(SplitAxis::Vertical);
+
+    let original_pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == PaneId(0))
+        .expect("original pane");
+    assert!(original_pane.view.cursor.cursor.col < 60);
+    assert!(original_pane.view.cursor.cursor.col <= 36);
+    assert_eq!(
+        state
+            .views
+            .get(&buffer_id)
+            .expect("active view")
+            .cursor
+            .cursor,
+        Pos::zero()
+    );
+
+    let _ = fs::remove_file(path);
+}
+
 fn large_text(lines: usize) -> String {
     let mut out = String::new();
     for i in 0..lines {
