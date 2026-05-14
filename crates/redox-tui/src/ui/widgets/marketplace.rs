@@ -112,25 +112,16 @@ fn draw_marketplace_entries(
         };
 
         let selected = idx == popup.selected;
-        let base_colors = if selected {
-            style.finder.selected
-        } else {
-            style.finder.text
-        };
-        let dim_colors = if selected {
-            style.finder.selected
-        } else {
-            style.finder.dim
-        };
-        let status_colors = if selected {
-            style.finder.selected
-        } else {
-            match entry.status_kind {
+        let base_colors = selection_aware_color(style.finder.text, style.finder.selected, selected);
+        let dim_colors = selection_aware_color(style.finder.dim, style.finder.selected, selected);
+        let status_colors = {
+            let base = match entry.status_kind {
                 LspEntryStatusKind::Ready => style.finder.match_highlight,
                 LspEntryStatusKind::Pending => style.finder.preview_title,
                 LspEntryStatusKind::Missing => style.finder.prompt,
                 LspEntryStatusKind::Informational => style.finder.dim,
-            }
+            };
+            selection_aware_color(base, style.finder.selected, selected)
         };
 
         let prefix = marketplace_entry_prefix(selected, &entry.action_label);
@@ -176,6 +167,14 @@ fn draw_marketplace_entries(
     }
 
     Ok(row)
+}
+
+fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool) -> ColorPair {
+    if is_selected {
+        ColorPair::new(base.fg, selected.bg)
+    } else {
+        base
+    }
 }
 
 fn draw_marketplace_column_header(

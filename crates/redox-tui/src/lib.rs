@@ -1595,7 +1595,9 @@ fn draw_snapshot_lines(
                     scroll_x,
                     text_w,
                     highlighted_chars,
+                    default_colors,
                     style,
+                    syntax_line_spans,
                 )?;
                 draw_snippet_placeholders(
                     window,
@@ -1709,7 +1711,9 @@ fn draw_snapshot_lines(
                 scroll_x,
                 text_w,
                 highlighted_chars,
+                default_colors,
                 style,
+                syntax_line_spans,
             )?;
             draw_snippet_placeholders(
                 window,
@@ -1789,7 +1793,9 @@ fn draw_snapshot_lines(
                 scroll_x,
                 text_w,
                 highlighted_chars,
+                default_colors,
                 style,
+                Some(spans),
             )?;
             draw_snippet_placeholders(
                 window,
@@ -1874,7 +1880,9 @@ fn draw_snapshot_lines(
             scroll_x,
             text_w,
             highlighted_chars,
+            default_colors,
             style,
+            syntax_line_spans,
         )?;
         if let Some(diagnostic) = diagnostic_line {
             draw_inline_diagnostic(

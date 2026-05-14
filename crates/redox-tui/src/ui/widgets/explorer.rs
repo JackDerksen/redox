@@ -162,7 +162,7 @@ pub fn draw_explorer_popup_view(
                     sel_range.start,
                     sel_range.end,
                     row_style.text,
-                    ColorPair::new(style.theme.selection_fg, style.theme.selection_bg),
+                    ColorPair::new(row_style.text.fg, style.theme.selection_bg),
                 )?;
                 draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
                 continue;

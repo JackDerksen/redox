@@ -290,15 +290,18 @@ pub fn draw_pin_selector_popup(
     for (idx, slot) in popup.slots.iter().enumerate() {
         let row = idx as u16 + 1;
         let selected = idx == popup.selected;
-        let row_colors = if selected {
-            style.finder.selected
-        } else if slot.path_label.is_some() {
+        let unselected_colors = if slot.path_label.is_some() {
             style.finder.text
         } else {
             style.finder.dim
         };
+        let row_colors = if selected {
+            ColorPair::new(unselected_colors.fg, style.finder.selected.bg)
+        } else {
+            unselected_colors
+        };
         let bg = if selected {
-            style.finder.selected
+            row_colors
         } else {
             ColorPair::new(row_colors.fg, Color::Transparent)
         };
@@ -403,12 +406,15 @@ fn draw_entries(
         let entry = &popup.entries[actual_index];
         let selected = actual_index == popup.selected;
         let row = screen_row as u16;
-        let base = if selected {
-            style.selected
-        } else if entry.is_pinned {
+        let unselected_base = if entry.is_pinned {
             style.pinned_bg
         } else {
             style.text
+        };
+        let base = if selected {
+            ColorPair::new(unselected_base.fg, style.selected.bg)
+        } else {
+            unselected_base
         };
         let blank = " ".repeat(view.width as usize);
         view.write_str_colored(row, 0, &blank, base)?;

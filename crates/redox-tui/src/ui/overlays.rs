@@ -5,7 +5,10 @@ use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::ui::{UiStyle, syntax::SyntaxScopePair};
+use crate::ui::{
+    UiStyle,
+    syntax::{LineSyntaxSpan, SyntaxScopePair, syntax_color_for_range},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelimiterKind {
@@ -367,7 +370,9 @@ pub(crate) fn draw_delimiter_highlights(
     scroll_x: usize,
     width_cells: usize,
     delimiter_highlight_chars: &[usize],
+    normal_color: ColorPair,
     style: UiStyle,
+    syntax_spans: Option<&[LineSyntaxSpan]>,
 ) -> minui::Result<()> {
     let visible = visible_delimiter_cells(
         source_line,
@@ -379,12 +384,30 @@ pub(crate) fn draw_delimiter_highlights(
         return Ok(());
     }
 
-    for (visible_x, text) in visible {
-        let color = ColorPair::new(style.theme.white, style.theme.scope);
-        window.write_str_colored(row, col.saturating_add(visible_x as u16), &text, color)?;
+    for cell in visible {
+        let base_color = syntax_spans
+            .map(|spans| {
+                syntax_color_for_range(normal_color, style, spans, cell.start_byte, cell.end_byte)
+            })
+            .unwrap_or(normal_color);
+        let color = ColorPair::new(base_color.fg, style.theme.scope);
+        window.write_str_colored(
+            row,
+            col.saturating_add(cell.visible_x as u16),
+            &cell.text,
+            color,
+        )?;
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisibleDelimiterCell {
+    visible_x: usize,
+    start_byte: usize,
+    end_byte: usize,
+    text: String,
 }
 
 fn visible_delimiter_cells(
@@ -392,7 +415,7 @@ fn visible_delimiter_cells(
     scroll_x: usize,
     width_cells: usize,
     delimiter_highlight_chars: &[usize],
-) -> Vec<(usize, String)> {
+) -> Vec<VisibleDelimiterCell> {
     if width_cells == 0 || delimiter_highlight_chars.is_empty() || source_line.is_empty() {
         return Vec::new();
     }
@@ -400,16 +423,21 @@ fn visible_delimiter_cells(
     let mut out = Vec::new();
     let mut line_cells = 0usize;
     let mut char_idx = 0usize;
+    let mut byte_idx = 0usize;
 
     for g in source_line.graphemes(true) {
         let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
         let g_chars = g.chars().count();
+        let g_bytes = g.len();
         let start_cell = line_cells;
         let end_cell = line_cells.saturating_add(g_width);
         let start_char = char_idx;
+        let start_byte = byte_idx;
+        let end_byte = byte_idx.saturating_add(g_bytes);
 
         line_cells = end_cell;
         char_idx = char_idx.saturating_add(g_chars);
+        byte_idx = end_byte;
 
         if !delimiter_highlight_chars.contains(&start_char) {
             continue;
@@ -428,7 +456,12 @@ fn visible_delimiter_cells(
         } else {
             g.to_owned()
         };
-        out.push((visible_x, text));
+        out.push(VisibleDelimiterCell {
+            visible_x,
+            start_byte,
+            end_byte,
+            text,
+        });
     }
 
     out
@@ -641,8 +674,9 @@ mod tests {
     use crate::ui::syntax::SyntaxScopePair;
 
     use super::{
-        active_scope_guide_cell, active_scope_indent_guides, compute_delimiter_analysis,
-        filter_visible_indent_guides, leading_indent_guide_cells, visible_delimiter_cells,
+        VisibleDelimiterCell, active_scope_guide_cell, active_scope_indent_guides,
+        compute_delimiter_analysis, filter_visible_indent_guides, leading_indent_guide_cells,
+        visible_delimiter_cells,
     };
 
     #[test]
@@ -693,11 +727,21 @@ mod tests {
     fn visible_delimiter_cells_map_to_the_expected_columns() {
         assert_eq!(
             visible_delimiter_cells("    if {", 0, 20, &[7]),
-            vec![(7, "{".to_string())]
+            vec![VisibleDelimiterCell {
+                visible_x: 7,
+                start_byte: 7,
+                end_byte: 8,
+                text: "{".to_string(),
+            }]
         );
         assert_eq!(
             visible_delimiter_cells("    }", 0, 20, &[4]),
-            vec![(4, "}".to_string())]
+            vec![VisibleDelimiterCell {
+                visible_x: 4,
+                start_byte: 4,
+                end_byte: 5,
+                text: "}".to_string(),
+            }]
         );
     }
 
