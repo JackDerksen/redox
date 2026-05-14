@@ -701,6 +701,7 @@ impl EditorState {
 
     fn refresh_active_split_viewport_size(&mut self) {
         if self.panes.len() <= 1 {
+            self.viewport_width_cells = self.editor_area_width_cells;
             self.viewport_height_rows = self
                 .editor_area_height_rows
                 .saturating_add(STATUS_BAR_HEIGHT_ROWS);
@@ -717,7 +718,7 @@ impl EditorState {
         else {
             return;
         };
-        self.viewport_width_cells = self.viewport_width_cells.min(rect.width as usize);
+        self.viewport_width_cells = rect.width as usize;
         self.viewport_height_rows = (rect.height as usize).saturating_add(STATUS_BAR_HEIGHT_ROWS);
     }
 
