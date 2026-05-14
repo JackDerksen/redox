@@ -1056,13 +1056,16 @@ fn draw_split_editor_panes(
                 .session
                 .buffer(buffer_id)
                 .map_or(0, |buffer| buffer.len_lines().max(1));
+            let (_, scroll_y) = view.cursor.viewport_scroll();
+            let first_line = scroll_y.min(total_lines.saturating_sub(1));
+            let visible_len = (rect.height as usize).min(total_lines.saturating_sub(first_line));
             let diagnostic_lines = if is_active_pane {
-                state.active_diagnostic_lines(0, total_lines)
+                state.active_diagnostic_lines(first_line, visible_len)
             } else {
                 BTreeMap::new()
             };
             let snippet_placeholders = if is_active_pane {
-                state.active_snippet_placeholder_ranges(0, total_lines)
+                state.active_snippet_placeholder_ranges(first_line, visible_len)
             } else {
                 BTreeMap::new()
             };
