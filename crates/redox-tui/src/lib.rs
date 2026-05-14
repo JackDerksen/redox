@@ -1148,7 +1148,9 @@ fn split_line_glyph(up: bool, down: bool, left: bool, right: bool) -> &'static s
         (_, _, true, true) => "─",
         (true, false, false, false) | (false, true, false, false) => "│",
         (false, false, true, false) | (false, false, false, true) => "─",
-        _ => "┼",
+        // Fallback for "no neighbour" state
+        // (this is probably unreachable, but it's here just in case)
+        _ => " ",
     }
 }
 
