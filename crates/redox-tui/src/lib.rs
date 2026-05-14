@@ -292,6 +292,9 @@ fn draw_buffer_view(
             None
         };
 
+        let mut cursor_spec: Option<minui::window::CursorSpec> = None;
+        let mut force_hide_cursor = false;
+
         if matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
@@ -354,26 +357,35 @@ fn draw_buffer_view(
                     }
                 }
                 draw_completion_popup(&popup, style, window, cursor_x, context.y, context.height)?;
-                window.request_cursor(minui::window::CursorSpec {
+                cursor_spec = Some(minui::window::CursorSpec {
                     x: cursor_x,
                     y: context.y,
                     visible: true,
                 });
             }
         } else if state.active_rain_animation().is_some() {
-            hide_cursor(window);
+            force_hide_cursor = true;
         } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
-            if perf_popup_layout
-                .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y))
-            {
+            cursor_spec = Some(cursor);
+        }
+        let toast_layout = draw_status_toast(state, style, window)?;
+        let toast_layout = if toast_layout.is_some() {
+            toast_layout
+        } else {
+            draw_lsp_loading_toast(state, style, window)?
+        };
+        if force_hide_cursor {
+            hide_cursor(window);
+        } else if let Some(cursor) = cursor_spec {
+            let cursor_hidden_by_perf = perf_popup_layout
+                .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y));
+            let cursor_hidden_by_toast = toast_layout
+                .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+            if cursor_hidden_by_perf || cursor_hidden_by_toast {
                 hide_cursor(window);
             } else {
                 window.request_cursor(cursor);
             }
-        }
-        let toast_layout = draw_status_toast(state, style, window)?;
-        if toast_layout.is_none() {
-            let _ = draw_lsp_loading_toast(state, style, window)?;
         }
         return Ok(());
     }
