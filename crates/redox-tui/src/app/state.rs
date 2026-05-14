@@ -616,20 +616,6 @@ impl EditorState {
     }
 
     pub fn focus_split(&mut self, direction: SplitDirection) {
-        self.sync_active_pane_view();
-        if self.panes.len() == 2 {
-            if let Some(pane_id) = self
-                .panes
-                .iter()
-                .find(|pane| pane.id != self.active_pane)
-                .map(|pane| pane.id)
-            {
-                let _ = self.activate_pane(pane_id);
-                self.refresh_active_split_viewport_size();
-            }
-            return;
-        }
-
         let rects = self.pane_rects(
             self.editor_area_width_cells as u16,
             self.editor_area_height_rows as u16,
