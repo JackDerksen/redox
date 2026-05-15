@@ -986,38 +986,12 @@ fn severity_glyph(severity: DiagnosticSeverity) -> &'static str {
 fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> ColorPair {
     let popup_bg = style.finder.text.bg;
     match severity {
-        DiagnosticSeverity::Error => ColorPair::new(
-            minui::Color::Rgb {
-                r: 255,
-                g: 157,
-                b: 177,
-            },
-            popup_bg,
-        ),
-        DiagnosticSeverity::Warning => ColorPair::new(
-            minui::Color::Rgb {
-                r: 255,
-                g: 199,
-                b: 158,
-            },
-            popup_bg,
-        ),
-        DiagnosticSeverity::Information => ColorPair::new(
-            minui::Color::Rgb {
-                r: 95,
-                g: 92,
-                b: 102,
-            },
-            popup_bg,
-        ),
-        DiagnosticSeverity::Hint => ColorPair::new(
-            minui::Color::Rgb {
-                r: 187,
-                g: 232,
-                b: 238,
-            },
-            popup_bg,
-        ),
+        DiagnosticSeverity::Error => ColorPair::new(style.diagnostic_inline.error.fg, popup_bg),
+        DiagnosticSeverity::Warning => ColorPair::new(style.diagnostic_inline.warning.fg, popup_bg),
+        DiagnosticSeverity::Information => {
+            ColorPair::new(style.diagnostic_inline.information.fg, popup_bg)
+        }
+        DiagnosticSeverity::Hint => ColorPair::new(style.diagnostic_inline.hint.fg, popup_bg),
     }
 }
 

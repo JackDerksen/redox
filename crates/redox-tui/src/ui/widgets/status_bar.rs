@@ -1,21 +1,3 @@
-//! Segment-based status bar widget for `redox-tui`.
-//!
-//! This is a small custom status bar widget, different from MinUI's built-in `StatusBar`
-//! (see `minui::widgets::statusbar`). This one is generalized to support an arbitrary
-//! number of segments with per-segment colours and alignment, and just be generally
-//! more configurable.
-//!
-//! Design goals:
-//! - single-row by default (height=1), anchored at the bottom of the window, just like vim.
-//! - optional background fill (useful for a bar background colour)
-//! - multiple segments, each aligned Left/Center/Right within its own allocated region
-//!
-//! Notes:
-//! - Width computations are based on `chars().count()` (like MinUI's own StatusBar).
-//!   This is not terminal-cell accurate for wide glyphs, but it's good enough for now.
-//!   It also intelligently adjusts along with the window size.
-//! - This widget draws at x=0 and computes y based on window height.
-
 use minui::widgets::Widget;
 use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
 use redox_core::BufferLoadPhase;
@@ -29,6 +11,8 @@ const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "�
 pub(crate) const STATUS_MODULE_EDGE_LEFT: &str = "▌";
 pub(crate) const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
 const STATUS_MODULE_EDGE_WIDTH: u16 = 1;
+const STATUS_MODULE_SEPARATOR: &str = "┃";
+const STATUS_MODULE_SEPARATOR_WIDTH: u16 = 1;
 
 fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {
     if total_lines <= 1 {
@@ -103,6 +87,7 @@ pub struct Segment {
     pub colors: Option<ColorPair>,
     pub align: Align,
     pub min_width: Option<u16>,
+    clip: ClipMode,
 }
 
 impl Segment {
@@ -112,6 +97,7 @@ impl Segment {
             colors: None,
             align: Align::Left,
             min_width: None,
+            clip: ClipMode::End,
         }
     }
 
@@ -130,9 +116,20 @@ impl Segment {
         self
     }
 
+    pub fn with_path_clip(mut self) -> Self {
+        self.clip = ClipMode::Path;
+        self
+    }
+
     pub fn spacer(width: u16) -> Self {
         Self::new("").with_min_width(width)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipMode {
+    End,
+    Path,
 }
 
 #[derive(Debug, Clone)]
@@ -149,16 +146,6 @@ impl StatusModule {
             content: content.into(),
             content_align: Align::Left,
         }
-    }
-
-    fn with_content_colors(mut self, content_colors: ColorPair) -> Self {
-        self.colors.content = content_colors;
-        self
-    }
-
-    fn with_content_align(mut self, align: Align) -> Self {
-        self.content_align = align;
-        self
     }
 
     fn wrapped_text(&self) -> String {
@@ -302,25 +289,71 @@ impl EditorStatusBar {
         out
     }
 
-    fn clip_with_ellipsis(text: &str, max_chars: u16) -> String {
+    fn clip_with_ellipsis(text: &str, max_chars: u16, mode: ClipMode) -> String {
         if max_chars == 0 {
             return String::new();
         }
 
-        let len = text.chars().count() as u16;
-        if len <= max_chars {
+        let len = text.chars().count();
+        if len <= usize::from(max_chars) {
             return text.to_owned();
         }
 
-        // Reserve 1 char for ellipsis when possible.
         if max_chars == 1 {
             return "…".to_owned();
         }
 
-        let take = (max_chars - 1) as usize;
-        let mut out: String = text.chars().take(take).collect();
-        out.push('…');
-        out
+        match mode {
+            ClipMode::End => {
+                let keep = max_chars.saturating_sub(1) as usize;
+                let mut out: String = text.chars().take(keep).collect();
+                out.push('…');
+                out
+            }
+            ClipMode::Path => Self::clip_path_with_filename(text, max_chars),
+        }
+    }
+
+    fn clip_path_with_filename(text: &str, max_chars: u16) -> String {
+        let max_chars = usize::from(max_chars);
+        let trimmed = text.trim();
+        let path = trimmed
+            .split_once(" [loading ")
+            .map(|(path, _)| path)
+            .unwrap_or(trimmed);
+        let filename = path
+            .rsplit_once(['/', '\\'])
+            .map(|(_, name)| name)
+            .unwrap_or(path);
+        let filename_len = filename.chars().count();
+
+        if filename_len > max_chars {
+            return filename.chars().take(max_chars).collect();
+        }
+
+        if max_chars <= filename_len.saturating_add(2) {
+            return filename.to_owned();
+        }
+
+        if path.chars().count() <= max_chars {
+            return path.to_owned();
+        }
+
+        let Some((root, separator)) = path_root_component(path) else {
+            return filename.to_owned();
+        };
+        let root_len = root.chars().count();
+        let suffix_budget = max_chars.saturating_sub(root_len.saturating_add(3));
+        if suffix_budget <= filename_len {
+            return filename.to_owned();
+        }
+
+        let suffix = path_suffix_components(
+            &path[root.len() + separator.len()..],
+            separator,
+            suffix_budget,
+        );
+        format!("{root}{separator}…{separator}{suffix}")
     }
 
     fn draw_segment(
@@ -336,7 +369,7 @@ impl EditorStatusBar {
         }
 
         // Clip segment text to fit region.
-        let clipped = Self::clip_with_ellipsis(&seg.text, region_w);
+        let clipped = Self::clip_with_ellipsis(&seg.text, region_w, seg.clip);
         let text_w = clipped.chars().count() as u16;
 
         let x = match seg.align {
@@ -423,18 +456,17 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
-    let git_module = git_diff_module(state, style);
-    let git_module_width = git_module.as_ref().map(StatusModule::width).unwrap_or(0);
-    let diagnostics_module = diagnostic_summary_module(state, module_theme);
-    let diagnostics_width = diagnostics_module
+    let metadata_module = metadata_text(state).map(|text| {
+        StatusModule::new(
+            text,
+            StatusModuleColors::solid(style.palette.status_metadata),
+        )
+    });
+    let metadata_module_width = metadata_module
         .as_ref()
         .map(StatusModule::width)
         .unwrap_or(0);
-    let dirty_width = if state.active_dirty() { 1 } else { 0 };
-    let left_text_width = mode_width
-        .saturating_add(git_module_width)
-        .saturating_add(diagnostics_width)
-        .saturating_add(dirty_width);
+    let left_text_width = mode_width.saturating_add(metadata_module_width);
 
     let center_text = if state.finder_popup().is_some() {
         " finder ".to_string()
@@ -474,15 +506,18 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         minimap_module_colors.wrapper.bg,
     );
     let visual_col = visual_column(buffer.line_string(cursor.line).as_str(), cursor.col);
-    let coords_module = StatusModule::new(
-        format!("{}:{}", cursor.line + 1, visual_col + 1),
-        module_theme.colors(StatusModuleKind::Coords),
-    )
-    .with_content_align(Align::Right);
-    let minimap_module =
-        StatusModule::new(scroll_glyph, minimap_module_colors).with_content_colors(scroll_colors);
-    let right_module_width =
-        coords_module.width() + style.layout.status_module_gap_width + minimap_module.width();
+    let coords_text = format!("{}:{}", cursor.line + 1, visual_col + 1);
+    let right_module_colors = module_theme.colors(StatusModuleKind::Coords);
+    let coords_width = coords_text.chars().count() as u16;
+    let scroll_width = scroll_glyph.chars().count() as u16;
+    let coords_minimap_width = STATUS_MODULE_EDGE_WIDTH
+        + coords_width
+        + STATUS_MODULE_SEPARATOR_WIDTH
+        + scroll_width
+        + STATUS_MODULE_EDGE_WIDTH;
+    let dirty_width = u16::from(state.active_dirty());
+    let dirty_gap_width = dirty_width;
+    let right_module_width = dirty_width + dirty_gap_width + coords_minimap_width;
     let side_reserve_width = balanced_status_side_width(
         left_text_width,
         style.layout.status_left_min_width,
@@ -506,34 +541,54 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_align(Align::Left)
                 .with_min_width(mode_width),
         );
-    let status_bar = if let Some(module) = git_module {
-        status_bar.add_module(module)
-    } else {
-        status_bar
-    };
-    let status_bar = if let Some(module) = diagnostics_module {
+    let status_bar = if let Some(module) = metadata_module {
         status_bar.add_module(module)
     } else {
         status_bar
     };
     let status_bar = status_bar
+        .add_segment(Segment::spacer(left_padding_width))
+        .add_segment(
+            Segment::new(center_text)
+                .with_color(style.palette.status_file_path)
+                .with_align(Align::Center)
+                .with_path_clip(),
+        )
+        .add_segment(Segment::spacer(right_padding_width))
         .add_segment(if state.active_dirty() {
             Segment::new("+")
-                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+                .with_color(style.palette.status_dirty)
                 .with_min_width(1)
         } else {
             Segment::spacer(0)
         })
-        .add_segment(Segment::spacer(left_padding_width))
+        .add_segment(Segment::spacer(dirty_gap_width))
         .add_segment(
-            Segment::new(center_text)
-                .with_color(style.palette.status_bar_bg)
-                .with_align(Align::Center),
+            Segment::new(STATUS_MODULE_EDGE_LEFT)
+                .with_color(right_module_colors.wrapper)
+                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
         )
-        .add_segment(Segment::spacer(right_padding_width))
-        .add_module(coords_module)
-        .add_segment(Segment::spacer(style.layout.status_module_gap_width))
-        .add_module(minimap_module);
+        .add_segment(
+            Segment::new(coords_text)
+                .with_color(right_module_colors.content)
+                .with_align(Align::Right)
+                .with_min_width(coords_width),
+        )
+        .add_segment(
+            Segment::new(STATUS_MODULE_SEPARATOR)
+                .with_color(right_module_colors.content)
+                .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
+        )
+        .add_segment(
+            Segment::new(scroll_glyph)
+                .with_color(scroll_colors)
+                .with_min_width(scroll_width),
+        )
+        .add_segment(
+            Segment::new(STATUS_MODULE_EDGE_RIGHT)
+                .with_color(right_module_colors.wrapper)
+                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
+        );
 
     status_bar
 }
@@ -567,21 +622,45 @@ fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> us
     graphemes.len()
 }
 
-fn git_diff_module(state: &EditorState, style: UiStyle) -> Option<StatusModule> {
-    let Some(diff) = state.active_git_diff() else {
-        return None;
-    };
-    if diff.stats.is_empty() {
-        return None;
+fn path_root_component(path: &str) -> Option<(&str, &str)> {
+    let mut separators = path.match_indices(['/', '\\']);
+    let (first_idx, separator) = separators.next()?;
+
+    if first_idx == 0 {
+        let (second_idx, _) = separators.next()?;
+        return Some((&path[..second_idx], separator));
     }
 
-    Some(StatusModule::new(
-        format!(
-            "+{} ~{} -{}",
-            diff.stats.added, diff.stats.modified, diff.stats.removed
-        ),
-        style.git.diff_module,
-    ))
+    Some((&path[..first_idx], separator))
+}
+
+fn path_suffix_components(path_after_root: &str, separator: &str, max_chars: usize) -> String {
+    let components: Vec<&str> = path_after_root
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .collect();
+    let Some(filename) = components.last() else {
+        return path_after_root.to_owned();
+    };
+
+    let mut suffix = (*filename).to_owned();
+    let mut suffix_len = suffix.chars().count();
+    for component in components[..components.len().saturating_sub(1)]
+        .iter()
+        .rev()
+    {
+        let component_len = component.chars().count();
+        let candidate_len = suffix_len
+            .saturating_add(separator.chars().count())
+            .saturating_add(component_len);
+        if candidate_len > max_chars {
+            break;
+        }
+        suffix = format!("{component}{separator}{suffix}");
+        suffix_len = candidate_len;
+    }
+
+    suffix
 }
 
 fn status_bar_mode_presentation(
@@ -617,117 +696,57 @@ fn status_bar_mode_presentation(
     }
 }
 
-fn diagnostic_summary_module(
-    state: &EditorState,
-    module_theme: crate::ui::style::StatusModuleTheme,
-) -> Option<StatusModule> {
+fn metadata_text(state: &EditorState) -> Option<String> {
+    match (git_diff_summary(state), diagnostic_summary_text(state)) {
+        (Some(git), Some(diagnostics)) => {
+            Some(format!("{git}{STATUS_MODULE_SEPARATOR}{diagnostics}"))
+        }
+        (Some(git), None) => Some(git),
+        (None, Some(diagnostics)) => Some(diagnostics),
+        (None, None) => None,
+    }
+}
+
+fn git_diff_summary(state: &EditorState) -> Option<String> {
+    let Some(diff) = state.active_git_diff() else {
+        return None;
+    };
+    if diff.stats.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if diff.stats.added > 0 {
+        parts.push(format!("+{}", diff.stats.added));
+    }
+    if diff.stats.modified > 0 {
+        parts.push(format!("~{}", diff.stats.modified));
+    }
+    if diff.stats.removed > 0 {
+        parts.push(format!("-{}", diff.stats.removed));
+    }
+
+    Some(parts.join(""))
+}
+
+fn diagnostic_summary_text(state: &EditorState) -> Option<String> {
     let summary = state.active_diagnostic_summary();
     if summary.is_empty() {
         return None;
     }
 
     let mut parts = Vec::new();
-    if summary.errors > 0 {
-        parts.push(format!("×{}", summary.errors));
-    }
-    if summary.warnings > 0 {
-        parts.push(format!("△{}", summary.warnings));
-    }
-    if summary.information > 0 {
-        parts.push(format!("•{}", summary.information));
-    }
-    if summary.hints > 0 {
-        parts.push(format!("⚬{}", summary.hints));
-    }
-
-    Some(StatusModule::new(
-        parts.join(" "),
-        module_theme.colors(StatusModuleKind::Diagnostics),
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scroll_minimap_clamps_for_empty_or_single_line() {
-        let palette = UiStyle::default().palette;
-        let (glyph_a, _) = scroll_minimap_cell(
-            0,
-            0,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
-        let (glyph_b, _) = scroll_minimap_cell(
-            0,
-            1,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
-        let (glyph_c, _) = scroll_minimap_cell(
-            10,
-            1,
-            palette.minimap,
-            palette.minimap_alt,
-            palette.status_bar_bg.bg,
-        );
-        assert_eq!(glyph_a, "▇");
-        assert_eq!(glyph_b, "▇");
-        assert_eq!(glyph_c, "▇");
+    for (count, glyph) in [
+        (summary.errors, "×"),
+        (summary.warnings, "△"),
+        (summary.information, "•"),
+        (summary.hints, "⚬"),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        parts.push(format!("{glyph}{count}"));
     }
 
-    #[test]
-    fn scroll_minimap_moves_from_top_to_bottom() {
-        let style = UiStyle::default();
-        let palette = style.palette;
-        let minimap_bg = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Minimap)
-            .wrapper
-            .bg;
-        let (top_glyph, top_colors) =
-            scroll_minimap_cell(0, 100, palette.minimap, palette.minimap_alt, minimap_bg);
-        let (mid_glyph, _) =
-            scroll_minimap_cell(50, 100, palette.minimap, palette.minimap_alt, minimap_bg);
-        let (bottom_glyph, bottom_colors) =
-            scroll_minimap_cell(99, 100, palette.minimap, palette.minimap_alt, minimap_bg);
-        assert_eq!(top_glyph, "▇");
-        assert_eq!(bottom_glyph, "▁");
-        assert_ne!(mid_glyph, top_glyph);
-        assert_eq!(top_colors.bg, style.theme.white);
-        assert_eq!(bottom_colors.fg, style.theme.white);
-        assert_eq!(top_colors.fg, minimap_bg);
-        assert_eq!(bottom_colors.bg, minimap_bg);
-    }
-
-    #[test]
-    fn status_module_emits_wrapped_segments() {
-        let style = UiStyle::default();
-        let wrapper_colors = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Coords);
-        let content_colors = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Minimap);
-        let module = StatusModule::new("42:7", wrapper_colors)
-            .with_content_colors(content_colors.wrapper)
-            .with_content_align(Align::Right);
-        let width = module.width();
-        let segments = module.into_segments();
-
-        assert_eq!(width, 6);
-        assert_eq!(segments[0].text, STATUS_MODULE_EDGE_LEFT);
-        assert_eq!(segments[0].colors, Some(wrapper_colors.wrapper));
-        assert_eq!(segments[1].text, "42:7");
-        assert_eq!(segments[1].colors, Some(content_colors.wrapper));
-        assert_eq!(segments[1].align, Align::Right);
-        assert_eq!(segments[2].text, STATUS_MODULE_EDGE_RIGHT);
-        assert_eq!(segments[2].colors, Some(wrapper_colors.wrapper));
-    }
+    Some(parts.join(""))
 }

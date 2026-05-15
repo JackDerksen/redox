@@ -71,6 +71,7 @@ pub struct BaseTheme {
     pub light_purple: Color,
     pub light_orange: Color,
     pub dark_gray: Color,
+    pub mid_gray: Color,
     pub light_gray: Color,
 }
 
@@ -177,6 +178,11 @@ impl Default for BaseTheme {
                 g: (49),
                 b: (55),
             },
+            mid_gray: Color::Rgb {
+                r: (80),
+                g: (78),
+                b: (84),
+            },
             light_gray: Color::Rgb {
                 r: (104),
                 g: (101),
@@ -204,22 +210,19 @@ impl StatusModuleColors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusModuleKind {
     Coords,
-    Diagnostics,
     Minimap,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusModuleTheme {
     pub coords: StatusModuleColors,
-    pub diagnostics: StatusModuleColors,
     pub minimap: StatusModuleColors,
 }
 
 impl StatusModuleTheme {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
-            diagnostics: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
+            coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
             minimap: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
         }
     }
@@ -227,7 +230,6 @@ impl StatusModuleTheme {
     pub fn colors(self, kind: StatusModuleKind) -> StatusModuleColors {
         match kind {
             StatusModuleKind::Coords => self.coords,
-            StatusModuleKind::Diagnostics => self.diagnostics,
             StatusModuleKind::Minimap => self.minimap,
         }
     }
@@ -239,7 +241,6 @@ pub struct GitStyle {
     pub modified: ColorPair,
     pub conflict: ColorPair,
     pub removed: ColorPair,
-    pub diff_module: StatusModuleColors,
 }
 
 impl GitStyle {
@@ -249,7 +250,6 @@ impl GitStyle {
             modified: ColorPair::new(theme.yellow, theme.bg),
             conflict: ColorPair::new(theme.orange, theme.bg),
             removed: ColorPair::new(theme.red, theme.bg),
-            diff_module: StatusModuleColors::solid(ColorPair::new(theme.black, theme.light_gray)),
         }
     }
 
@@ -280,6 +280,9 @@ impl Default for GitStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub status_bar_bg: ColorPair,
+    pub status_metadata: ColorPair,
+    pub status_file_path: ColorPair,
+    pub status_dirty: ColorPair,
     pub mode_normal: ColorPair,
     pub mode_insert: ColorPair,
     pub mode_command: ColorPair,
@@ -293,12 +296,15 @@ impl Palette {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             status_bar_bg: ColorPair::new(theme.light_gray, theme.black),
+            status_metadata: ColorPair::new(theme.black, theme.dark_gray),
+            status_file_path: ColorPair::new(theme.mid_gray, theme.black),
+            status_dirty: ColorPair::new(theme.mid_gray, theme.black),
             mode_normal: ColorPair::new(theme.black, theme.purple),
             mode_insert: ColorPair::new(theme.black, theme.blue),
             mode_command: ColorPair::new(theme.black, theme.red),
             mode_visual: ColorPair::new(theme.black, theme.orange),
-            minimap: ColorPair::new(theme.white, Color::Transparent),
-            minimap_alt: ColorPair::new(Color::Transparent, theme.white),
+            minimap: ColorPair::new(theme.light_gray, Color::Transparent),
+            minimap_alt: ColorPair::new(Color::Transparent, theme.light_gray),
             status_modules: StatusModuleTheme::from_theme(theme),
         }
     }
@@ -314,7 +320,6 @@ impl Default for Palette {
 pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
-    pub status_module_gap_width: u16,
 }
 
 impl Default for Layout {
@@ -322,7 +327,6 @@ impl Default for Layout {
         Self {
             status_left_min_width: 12,
             status_right_min_width: 18,
-            status_module_gap_width: 0,
         }
     }
 }
@@ -819,6 +823,7 @@ impl BaseTheme {
             light_purple: dim_foreground_color(self.light_purple, self.bg),
             light_orange: dim_foreground_color(self.light_orange, self.bg),
             dark_gray: dim_foreground_color(self.dark_gray, self.bg),
+            mid_gray: dim_foreground_color(self.mid_gray, self.bg),
             light_gray: dim_foreground_color(self.light_gray, self.bg),
         }
     }
