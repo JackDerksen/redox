@@ -7,6 +7,9 @@ use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
+use crate::ui::widgets::popup::{
+    PopupChrome, anchored_popup_origin, draw_popup_frame_at, popup_window_view,
+};
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
@@ -27,58 +30,21 @@ pub fn draw_explorer_popup_view(
 ) -> minui::Result<Option<CursorSpec>> {
     let (vw, vh) = window.get_size();
     let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
-    let popup_w = inner_w.saturating_add(2);
-    let popup_h = inner_h.saturating_add(2);
-    let x = (vw.saturating_sub(popup_w)) / 2;
-    let y = (vh.saturating_sub(popup_h)) / 2;
-    let border_color = style.explorer.border;
-    let title_color = style.explorer.title;
-
-    let horizontal = "─".repeat(popup_w.saturating_sub(2) as usize);
-    window.write_str_colored(y, x, &format!("╭{}╮", horizontal), border_color)?;
-    if popup_h > 1 {
-        for row in (y + 1)..(y + popup_h.saturating_sub(1)) {
-            window.write_str_colored(row, x, "│", border_color)?;
-            window.write_str_colored(row, x + popup_w.saturating_sub(1), "│", border_color)?;
-        }
-    }
-    if popup_h > 1 {
-        window.write_str_colored(
-            y + popup_h.saturating_sub(1),
-            x,
-            &format!("╰{}╯", horizontal),
-            border_color,
-        )?;
-    }
-
-    let title_text = if popup.title.chars().count() > popup_w.saturating_sub(4) as usize {
-        let mut clipped: String = popup
-            .title
-            .chars()
-            .take(popup_w.saturating_sub(7) as usize)
-            .collect();
-        clipped.push_str("...");
-        clipped
-    } else {
-        popup.title
-    };
-    window.write_str_colored(y, x + 2, &title_text, title_color)?;
-
-    let mut view = WindowView {
+    let (x, y) = anchored_popup_origin(vw, vh, inner_w, inner_h);
+    let layout = draw_popup_frame_at(
         window,
-        x_offset: x + 1,
-        y_offset: y + 1,
-        scroll_x: 0,
-        scroll_y: 0,
-        width: inner_w,
-        height: inner_h,
-    };
-    if inner_w > 0 && inner_h > 0 {
-        let blank_row = " ".repeat(inner_w as usize);
-        for row in 0..inner_h {
-            view.write_str_colored(row, 0, &blank_row, style.explorer.file)?;
-        }
-    }
+        x,
+        y,
+        inner_w,
+        inner_h,
+        &popup.title,
+        PopupChrome {
+            border: style.explorer.border,
+            title: style.explorer.title,
+            fill: style.explorer.file,
+        },
+    )?;
+    let mut view = popup_window_view(window, layout);
 
     state.refresh_git_repo_status_for_dir(&popup.dir_path);
     let show_git_status_column =

@@ -3,8 +3,8 @@ use minui::widgets::Widget;
 
 use crate::app::AboutPopup;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame, popup_inner_size, popup_window_view,
-    wrap_text_to_cells,
+    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, popup_inner_size,
+    popup_window_view, wrap_text_to_cells,
 };
 use crate::ui::{UiStyle, build_editor_status_bar};
 
@@ -16,7 +16,7 @@ pub fn draw_about_popup_view(
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
     let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
-    let layout = draw_popup_frame(
+    let layout = draw_anchored_popup_frame(
         window,
         vw,
         vh,

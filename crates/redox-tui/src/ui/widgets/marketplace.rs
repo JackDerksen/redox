@@ -5,10 +5,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
 use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame, popup_inner_size, popup_window_view,
+    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, popup_inner_size, popup_window_view,
 };
 
 const LSP_TITLE: &str = "Language Tools"; // Maybe someday this will become a paid DLC
+const MARKETPLACE_LANGUAGE_TOOL_GAP: u16 = 3;
+const MARKETPLACE_TOOL_STATUS_GAP: u16 = 1;
 
 pub fn draw_lsp_marketplace_popup(
     popup: &LspMarketplacePopup,
@@ -19,12 +21,12 @@ pub fn draw_lsp_marketplace_popup(
     let (inner_w, inner_h) = popup_inner_size(
         term_w,
         term_h,
-        style.finder.width_percent,
-        style.finder.height_percent,
-        style.finder.min_width,
-        style.finder.min_height,
+        style.lsp_marketplace.width_percent,
+        style.lsp_marketplace.height_percent,
+        style.lsp_marketplace.min_width,
+        style.lsp_marketplace.min_height,
     );
-    let layout = draw_popup_frame(
+    let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
@@ -47,8 +49,9 @@ pub fn draw_lsp_marketplace_popup(
         style.finder.query_title,
     )?;
     let shared_prefix_w = marketplace_shared_prefix_width(popup);
-    row = draw_marketplace_column_header(&mut view, style, row, shared_prefix_w)?;
-    let _ = draw_marketplace_entries(&mut view, popup, style, row, shared_prefix_w)?;
+    let language_w = marketplace_language_width(popup);
+    row = draw_marketplace_column_header(&mut view, style, row, shared_prefix_w, language_w)?;
+    let _ = draw_marketplace_entries(&mut view, popup, style, row, shared_prefix_w, language_w)?;
     Ok(())
 }
 
@@ -71,6 +74,7 @@ fn draw_marketplace_entries(
     style: UiStyle,
     mut row: u16,
     shared_prefix_w: u16,
+    language_w: u16,
 ) -> minui::Result<u16> {
     let visible_rows = window.height.saturating_sub(row) as usize;
     let installed_count = popup.entries.iter().filter(|entry| entry.installed).count();
@@ -129,10 +133,14 @@ fn draw_marketplace_entries(
             break;
         }
         let (language_w, tool_w, status_w) =
-            marketplace_column_widths(window.width, shared_prefix_w);
+            marketplace_column_widths(window.width, shared_prefix_w, language_w);
         let language_x = 1u16.saturating_add(shared_prefix_w);
-        let tool_x = language_x.saturating_add(language_w).saturating_add(1);
-        let status_x = tool_x.saturating_add(tool_w).saturating_add(1);
+        let tool_x = language_x
+            .saturating_add(language_w)
+            .saturating_add(MARKETPLACE_LANGUAGE_TOOL_GAP);
+        let status_x = tool_x
+            .saturating_add(tool_w)
+            .saturating_add(MARKETPLACE_TOOL_STATUS_GAP);
 
         if selected {
             let fill = " ".repeat(window.width.saturating_sub(2) as usize);
@@ -182,6 +190,7 @@ fn draw_marketplace_column_header(
     style: UiStyle,
     row: u16,
     shared_prefix_w: u16,
+    language_w: u16,
 ) -> minui::Result<u16> {
     if row >= window.height {
         return Ok(row);
@@ -191,10 +200,15 @@ fn draw_marketplace_column_header(
     if shared_prefix_w >= window.width.saturating_sub(1) {
         return Ok(row.saturating_add(1));
     }
-    let (language_w, tool_w, status_w) = marketplace_column_widths(window.width, shared_prefix_w);
+    let (language_w, tool_w, status_w) =
+        marketplace_column_widths(window.width, shared_prefix_w, language_w);
     let language_x = 1u16.saturating_add(shared_prefix_w);
-    let tool_x = language_x.saturating_add(language_w).saturating_add(1);
-    let status_x = tool_x.saturating_add(tool_w).saturating_add(1);
+    let tool_x = language_x
+        .saturating_add(language_w)
+        .saturating_add(MARKETPLACE_LANGUAGE_TOOL_GAP);
+    let status_x = tool_x
+        .saturating_add(tool_w)
+        .saturating_add(MARKETPLACE_TOOL_STATUS_GAP);
     let header_colors = style.finder.dim;
 
     window.write_str_colored(
@@ -224,9 +238,13 @@ fn draw_marketplace_column_header(
     Ok(row.saturating_add(1))
 }
 
-fn marketplace_column_widths(total_width: u16, prefix_width: u16) -> (u16, u16, u16) {
+fn marketplace_column_widths(
+    total_width: u16,
+    prefix_width: u16,
+    preferred_language_width: u16,
+) -> (u16, u16, u16) {
     let inner = total_width.saturating_sub(2);
-    let gutter_count = 2u16;
+    let gutter_count = MARKETPLACE_LANGUAGE_TOOL_GAP.saturating_add(MARKETPLACE_TOOL_STATUS_GAP);
     let available = inner
         .saturating_sub(prefix_width)
         .saturating_sub(gutter_count);
@@ -237,11 +255,25 @@ fn marketplace_column_widths(total_width: u16, prefix_width: u16) -> (u16, u16, 
     }
 
     let status_w = (available / 3).clamp(10, 24);
-    let language_w = (available / 4).clamp(8, 14);
+    let language_w = preferred_language_width
+        .max(text_width("Language") as u16)
+        .min(available.saturating_sub(status_w).saturating_sub(1))
+        .max(1);
     let tool_w = available
         .saturating_sub(language_w)
         .saturating_sub(status_w);
     (language_w, tool_w, status_w)
+}
+
+fn marketplace_language_width(popup: &LspMarketplacePopup) -> u16 {
+    popup
+        .entries
+        .iter()
+        .map(|entry| text_width(&entry.language_label))
+        .max()
+        .unwrap_or_else(|| text_width("Language"))
+        .max(text_width("Language"))
+        .min(u16::MAX as usize) as u16
 }
 
 fn marketplace_shared_prefix_width(popup: &LspMarketplacePopup) -> u16 {

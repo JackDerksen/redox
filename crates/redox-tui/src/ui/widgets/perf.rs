@@ -2,7 +2,8 @@ use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view,
+    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
+    popup_window_view,
 };
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -127,10 +128,10 @@ pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, 
 
 pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupLayout {
     let (inner_w, inner_h) = perf_popup_inner_size(term_w, term_h, style);
-    let popup_w = inner_w.saturating_add(2);
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
     PerfPopupLayout {
-        x: term_w.saturating_sub(popup_w),
-        y: 0,
+        x,
+        y,
         inner_w,
         inner_h,
     }

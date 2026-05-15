@@ -5,9 +5,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{FinderPopup, FinderPreview, PinSelectorPopup};
 use crate::ui::UiStyle;
+use crate::ui::helpers::clip_path_with_filename;
 use crate::ui::style::{FinderStyle, StatusModuleKind};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view,
+    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
+    popup_window_view,
 };
 use crate::ui::widgets::status_bar::{
     STATUS_MODULE_EDGE_LEFT, STATUS_MODULE_EDGE_RIGHT, scroll_minimap_cell,
@@ -22,11 +24,9 @@ const PIN_MARKER: &str = "↦ ";
 const SELECTED_MARKER: &str = "›";
 const VACANT_SLOT_LABEL: &str = "<empty>";
 const QUERY_GAP_ROWS: u16 = 0;
-const FINDER_POPUP_EXPAND_CELLS: u16 = 1;
 const ENTRY_MARKER_COL: u16 = 1;
 const ENTRY_LABEL_COL: u16 = 3;
-const PIN_SELECTOR_HORIZONTAL_PADDING: u16 = 1;
-const PINBOARD_MIN_WIDTH: u16 = 24;
+const PIN_SELECTOR_HORIZONTAL_PADDING: u16 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FinderFrameLayout {
     x: u16,
@@ -86,10 +86,6 @@ pub fn draw_finder_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
-    let combined_inner_w =
-        expanded_finder_inner_size(combined_inner_w, term_w, FINDER_POPUP_EXPAND_CELLS);
-    let combined_inner_h =
-        expanded_finder_inner_size(combined_inner_h, term_h, FINDER_POPUP_EXPAND_CELLS);
     let show_preview =
         term_w >= PREVIEW_THRESHOLD_COLS && popup.preview.is_some() && combined_inner_w >= 64;
     let layout = compute_finder_popup_layout(
@@ -184,8 +180,7 @@ fn compute_finder_popup_layout(
     let preview_gap = 0u16;
     let combined_outer_w = combined_inner_w.saturating_add(2);
     let combined_outer_h = combined_inner_h.saturating_add(2);
-    let x = term_w.saturating_sub(combined_outer_w) / 2;
-    let y = term_h.saturating_sub(combined_outer_h) / 2;
+    let (x, y) = anchored_popup_origin(term_w, term_h, combined_inner_w, combined_inner_h);
 
     let left_total_inner_w = if show_preview {
         let split_inner_w = combined_outer_w
@@ -246,27 +241,27 @@ fn compute_finder_popup_layout(
     }
 }
 
-fn expanded_finder_inner_size(inner: u16, terminal_cells: u16, expand_cells: u16) -> u16 {
-    let max_inner = terminal_cells.saturating_sub(2).max(1);
-    inner
-        .saturating_add(expand_cells.saturating_mul(2))
-        .min(max_inner)
-        .max(1)
-}
-
 pub fn draw_pin_selector_popup(
     popup: &PinSelectorPopup,
     style: UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (term_w, term_h) = window.get_size();
-    let inner_w = compute_pin_selector_inner_width(popup, term_w);
+    let (inner_w, _) = popup_inner_size(
+        term_w,
+        term_h,
+        style.finder.width_percent,
+        style.finder.height_percent,
+        style.finder.min_width,
+        style.finder.min_height,
+    );
     let inner_h = popup.slots.len() as u16 + 2;
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
 
     let layout = draw_popup_frame_at(
         window,
-        term_w.saturating_sub(inner_w.saturating_add(2)) / 2,
-        term_h.saturating_sub(inner_h.saturating_add(2)) / 2,
+        x,
+        y,
         inner_w,
         inner_h,
         PIN_SELECTOR_TITLE,
@@ -277,13 +272,12 @@ pub fn draw_pin_selector_popup(
         },
     )?;
     let mut view = popup_window_view(window, layout);
+    let path_w = inner_w.saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING.saturating_mul(2));
+    let path_label = clip_path_with_filename(&popup.path_label, path_w as usize);
     view.write_str_colored(
         0,
         PIN_SELECTOR_HORIZONTAL_PADDING,
-        &clip_text_to_cells(
-            &popup.path_label,
-            inner_w.saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING.saturating_mul(2)) as usize,
-        ),
+        &path_label,
         ColorPair::new(style.finder.dim.fg, Color::Transparent),
     )?;
 
@@ -320,12 +314,12 @@ pub fn draw_pin_selector_popup(
             .saturating_sub(ENTRY_LABEL_COL)
             .saturating_sub(1)
             .max(1) as usize;
-        view.write_str_colored(
-            row,
-            ENTRY_LABEL_COL,
-            &clip_text_to_cells(value, value_w),
-            bg,
-        )?;
+        let value = if slot.path_label.is_some() {
+            clip_path_with_filename(value, value_w)
+        } else {
+            clip_text_to_cells(value, value_w)
+        };
+        view.write_str_colored(row, ENTRY_LABEL_COL, &value, bg)?;
         if hotkey_w.saturating_add(PIN_SELECTOR_HORIZONTAL_PADDING) < inner_w {
             let hotkey_color = if selected {
                 bg
@@ -344,41 +338,6 @@ pub fn draw_pin_selector_popup(
         visible: false,
     });
     Ok(())
-}
-
-fn compute_pin_selector_inner_width(popup: &PinSelectorPopup, term_w: u16) -> u16 {
-    compute_pin_selector_inner_width_from_labels(
-        &popup.path_label,
-        popup.slots.iter().map(|slot| slot.path_label.as_deref()),
-        term_w,
-    )
-}
-
-fn compute_pin_selector_inner_width_from_labels<'a>(
-    path_label: &str,
-    slot_labels: impl IntoIterator<Item = Option<&'a str>>,
-    term_w: u16,
-) -> u16 {
-    let max_inner_w = term_w.saturating_sub(4).max(1);
-    let slot_w = slot_labels
-        .into_iter()
-        .map(|label| {
-            let label = label.unwrap_or(VACANT_SLOT_LABEL);
-            text_width(label)
-                .saturating_add(12)
-                .saturating_add(PIN_SELECTOR_HORIZONTAL_PADDING as usize * 2)
-        })
-        .max()
-        .unwrap_or(20)
-        .min(max_inner_w as usize) as u16;
-    let candidate_w = text_width(path_label)
-        .saturating_add(PIN_SELECTOR_HORIZONTAL_PADDING as usize * 2)
-        .min(max_inner_w as usize) as u16;
-
-    slot_w
-        .max(candidate_w)
-        .max(PINBOARD_MIN_WIDTH)
-        .min(max_inner_w)
 }
 
 fn draw_entries(
@@ -714,8 +673,7 @@ fn text_width(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        FinderFrameLayout, PIN_SELECTOR_HORIZONTAL_PADDING, PINBOARD_MIN_WIDTH, QUERY_GAP_ROWS,
-        compute_finder_popup_layout, compute_pin_selector_inner_width_from_labels,
+        FinderFrameLayout, QUERY_GAP_ROWS, compute_finder_popup_layout,
         finder_file_scroll_position, finder_input_cursor_offset, finder_input_view,
         finder_right_footer, text_width, visible_entry_rows, visible_right_footer_width,
     };
@@ -774,24 +732,6 @@ mod tests {
                 inner_w: 70,
                 inner_h: 1,
             }
-        );
-    }
-
-    #[test]
-    fn pinboard_width_respects_candidate_path_label() {
-        let path_label = "src/some/deeply/nested/current_candidate_file.rs";
-
-        assert_eq!(
-            compute_pin_selector_inner_width_from_labels(path_label, [Some("a.rs")], 120),
-            text_width(path_label) as u16 + PIN_SELECTOR_HORIZONTAL_PADDING * 2
-        );
-    }
-
-    #[test]
-    fn pinboard_width_keeps_default_minimum_when_candidate_is_short() {
-        assert_eq!(
-            compute_pin_selector_inner_width_from_labels("a.rs", [Some("b.rs")], 120),
-            PINBOARD_MIN_WIDTH
         );
     }
 

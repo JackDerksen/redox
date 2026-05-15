@@ -409,7 +409,6 @@ impl Default for AboutStyle {
 pub struct CommandLineStyle {
     pub width_percent: u16,
     pub min_width: u16,
-    pub top_margin_rows: u16,
     pub inner_height_rows: u16,
     pub border: ColorPair,
     pub title: ColorPair,
@@ -422,7 +421,6 @@ impl CommandLineStyle {
         Self {
             width_percent: 65,
             min_width: 24,
-            top_margin_rows: 6,
             inner_height_rows: 1,
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.red, theme.bg),
@@ -526,8 +524,8 @@ pub struct FinderStyle {
 impl FinderStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            width_percent: 78,
-            height_percent: 72,
+            width_percent: 65,
+            height_percent: 60,
             min_width: 52,
             min_height: 14,
             border: ColorPair::new(theme.light_gray, theme.bg),
@@ -548,6 +546,31 @@ impl FinderStyle {
 }
 
 impl Default for FinderStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LspMarketplaceStyle {
+    pub width_percent: u16,
+    pub height_percent: u16,
+    pub min_width: u16,
+    pub min_height: u16,
+}
+
+impl LspMarketplaceStyle {
+    pub fn from_theme(_theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 65,
+            height_percent: 60,
+            min_width: 56,
+            min_height: 12,
+        }
+    }
+}
+
+impl Default for LspMarketplaceStyle {
     fn default() -> Self {
         Self::from_theme(BaseTheme::default())
     }
@@ -740,6 +763,7 @@ pub struct UiStyle {
     pub diagnostic_inline: DiagnosticInlineStyle,
     pub explorer: ExplorerStyle,
     pub finder: FinderStyle,
+    pub lsp_marketplace: LspMarketplaceStyle,
     pub perf: PerfStyle,
     pub syntax: SyntaxStyle,
 }
@@ -757,6 +781,7 @@ impl Default for UiStyle {
             diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
+            lsp_marketplace: LspMarketplaceStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }
@@ -842,6 +867,7 @@ impl UiStyle {
             diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
+            lsp_marketplace: LspMarketplaceStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
         }

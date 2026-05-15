@@ -29,7 +29,7 @@ impl EditorState {
         }
 
         Some(AboutPopup {
-            title: "about".to_string(),
+            title: "About".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             message: ABOUT_MESSAGE.to_string(),
             repo_url: ABOUT_REPO_URL.to_string(),

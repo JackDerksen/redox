@@ -3,6 +3,7 @@ use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
+const POPUP_ANCHOR_WIDTH_PERCENT: u16 = 65;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PopupChrome {
@@ -32,7 +33,7 @@ pub fn popup_inner_size(
     (popup_w.saturating_sub(2), popup_h.saturating_sub(2))
 }
 
-pub fn draw_popup_frame(
+pub fn draw_anchored_popup_frame(
     window: &mut dyn Window,
     term_w: u16,
     term_h: u16,
@@ -41,11 +42,31 @@ pub fn draw_popup_frame(
     title: &str,
     chrome: PopupChrome,
 ) -> minui::Result<PopupLayout> {
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    draw_popup_frame_at(window, x, y, inner_w, inner_h, title, chrome)
+}
+
+pub fn anchored_popup_origin(term_w: u16, term_h: u16, inner_w: u16, inner_h: u16) -> (u16, u16) {
+    let popup_w = inner_w.saturating_add(2);
+    let x = term_w.saturating_sub(popup_w) / 2;
+    let y = popup_anchor_top_padding(term_h);
+    clamp_popup_origin(term_w, term_h, inner_w, inner_h, x, y)
+}
+
+fn clamp_popup_origin(
+    term_w: u16,
+    term_h: u16,
+    inner_w: u16,
+    inner_h: u16,
+    x: u16,
+    y: u16,
+) -> (u16, u16) {
     let popup_w = inner_w.saturating_add(2);
     let popup_h = inner_h.saturating_add(2);
-    let x = (term_w.saturating_sub(popup_w)) / 2;
-    let y = (term_h.saturating_sub(popup_h)) / 2;
-    draw_popup_frame_at(window, x, y, inner_w, inner_h, title, chrome)
+    (
+        x.min(term_w.saturating_sub(popup_w)),
+        y.min(term_h.saturating_sub(popup_h)),
+    )
 }
 
 pub fn draw_popup_frame_at(
@@ -158,6 +179,11 @@ fn compute_popup_dim(total: u16, percent: u16, min: u16) -> u16 {
     let floor = min.min(total);
     let ceiling = if total > 2 { total - 2 } else { total };
     desired.max(floor).min(ceiling.max(floor))
+}
+
+fn popup_anchor_top_padding(term_h: u16) -> u16 {
+    let available_percent = 100u16.saturating_sub(POPUP_ANCHOR_WIDTH_PERCENT.min(100));
+    ((u32::from(term_h) * u32::from(available_percent)) / 200) as u16
 }
 
 fn clip_with_ellipsis(text: &str, max_chars: usize) -> String {

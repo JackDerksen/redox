@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{EditorMode, EditorState};
 use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
+    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
 };
 
 const COMMAND_PROMPT: &str = "❯";
@@ -27,11 +27,7 @@ pub fn draw_command_line_popup(
     let (term_w, term_h) = window.get_size();
     let inner_w = command_line_inner_width(term_w, style);
     let inner_h = style.command_line.inner_height_rows.max(1);
-    let popup_w = inner_w.saturating_add(2);
-    let popup_h = inner_h.saturating_add(2);
-    let x = term_w.saturating_sub(popup_w) / 2;
-    let max_y = term_h.saturating_sub(popup_h);
-    let y = style.command_line.top_margin_rows.min(max_y);
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
 
     let layout = draw_popup_frame_at(
         window,

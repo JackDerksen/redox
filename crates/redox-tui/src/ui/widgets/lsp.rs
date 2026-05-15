@@ -13,8 +13,8 @@ use crate::ui::syntax::{
     line_spans_for_source, syntax_color_for_range,
 };
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame, draw_popup_frame_at, popup_inner_size,
-    popup_window_view, wrap_text_to_cells,
+    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_frame_at,
+    popup_inner_size, popup_window_view, wrap_text_to_cells,
 };
 
 const DIAGNOSTICS_TITLE: &str = "Diagnostics";
@@ -618,7 +618,7 @@ pub fn draw_diagnostics_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
-    let layout = draw_popup_frame(
+    let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
@@ -808,7 +808,7 @@ pub fn draw_code_actions_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
-    let layout = draw_popup_frame(
+    let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
