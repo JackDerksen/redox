@@ -12,7 +12,7 @@ const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "�
 pub(crate) const STATUS_MODULE_EDGE_LEFT: &str = "▌";
 pub(crate) const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
 const STATUS_MODULE_EDGE_WIDTH: u16 = 1;
-const STATUS_MODULE_SEPARATOR: &str = "┃";
+pub(crate) const STATUS_MODULE_SEPARATOR: &str = "┃";
 const STATUS_MODULE_SEPARATOR_WIDTH: u16 = 1;
 
 fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {

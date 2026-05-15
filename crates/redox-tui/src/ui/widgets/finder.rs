@@ -12,7 +12,7 @@ use crate::ui::widgets::popup::{
     popup_window_view,
 };
 use crate::ui::widgets::status_bar::{
-    STATUS_MODULE_EDGE_LEFT, STATUS_MODULE_EDGE_RIGHT, scroll_minimap_cell,
+    STATUS_MODULE_EDGE_LEFT, STATUS_MODULE_EDGE_RIGHT, STATUS_MODULE_SEPARATOR, scroll_minimap_cell,
 };
 
 const FINDER_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
@@ -54,21 +54,22 @@ struct HighlightedText<'a> {
 
 struct FinderFooterIndicator {
     left_edge: &'static str,
+    separator: &'static str,
     glyph: &'static str,
     right_edge: &'static str,
     wrapper_colors: ColorPair,
     content_colors: ColorPair,
+    minimap_colors: ColorPair,
 }
 
 struct FinderRightFooter {
     text: String,
-    text_colors: ColorPair,
     indicator: Option<FinderFooterIndicator>,
 }
 
 impl FinderRightFooter {
     fn width(&self) -> u16 {
-        text_width(&self.text) as u16 + self.indicator.as_ref().map_or(0, |_| 3)
+        text_width(&self.text) as u16 + self.indicator.as_ref().map_or(0, |_| 4)
     }
 }
 
@@ -521,22 +522,36 @@ fn draw_query_row(
     let right_w = visible_right_footer_width(right_footer, view.width);
     if right_w > 0 {
         let footer_col = view.width.saturating_sub(right_w);
-        view.write_str_colored(0, footer_col, &right_footer.text, right_footer.text_colors)?;
         if let Some(indicator) = &right_footer.indicator {
-            let module_col = footer_col.saturating_add(text_width(&right_footer.text) as u16);
-            view.write_str_colored(0, module_col, indicator.left_edge, indicator.wrapper_colors)?;
+            view.write_str_colored(0, footer_col, indicator.left_edge, indicator.wrapper_colors)?;
             view.write_str_colored(
                 0,
-                module_col.saturating_add(1),
-                indicator.glyph,
+                footer_col.saturating_add(1),
+                &right_footer.text,
+                indicator.content_colors,
+            )?;
+            let separator_col =
+                footer_col.saturating_add(1 + text_width(&right_footer.text) as u16);
+            view.write_str_colored(
+                0,
+                separator_col,
+                indicator.separator,
                 indicator.content_colors,
             )?;
             view.write_str_colored(
                 0,
-                module_col.saturating_add(2),
+                separator_col.saturating_add(1),
+                indicator.glyph,
+                indicator.minimap_colors,
+            )?;
+            view.write_str_colored(
+                0,
+                separator_col.saturating_add(2),
                 indicator.right_edge,
                 indicator.wrapper_colors,
             )?;
+        } else {
+            view.write_str_colored(0, footer_col, &right_footer.text, style.finder.dim)?;
         }
     }
     let input_col = prompt_col.saturating_add(2);
@@ -657,12 +672,20 @@ fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
 
 fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
     let text = format!("{}/{}", popup.result_count, popup.total_count);
-    let text_colors = style.finder.dim;
     let indicator = {
-        let minimap_module_colors = style
+        let module_bg = style
             .palette
             .status_modules
-            .colors(StatusModuleKind::Minimap);
+            .colors(StatusModuleKind::Coords)
+            .wrapper
+            .bg;
+        let minimap_module_bg = style
+            .palette
+            .status_modules
+            .colors(StatusModuleKind::Minimap)
+            .wrapper
+            .bg;
+        let capsule_colors = ColorPair::new(style.finder.text.bg, module_bg);
         let pinned_count = popup
             .entries
             .iter()
@@ -675,20 +698,21 @@ fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter
             popup.result_count,
             style.palette.minimap,
             style.palette.minimap_alt,
-            minimap_module_colors.wrapper.bg,
+            minimap_module_bg,
         );
         FinderFooterIndicator {
-            left_edge: STATUS_MODULE_EDGE_RIGHT, // I know this looks wrong, but it looks nice
+            left_edge: STATUS_MODULE_EDGE_LEFT,
+            separator: STATUS_MODULE_SEPARATOR,
             glyph,
-            right_edge: STATUS_MODULE_EDGE_LEFT,
-            wrapper_colors: ColorPair::new(minimap_module_colors.wrapper.bg, style.finder.text.bg),
-            content_colors: colors,
+            right_edge: STATUS_MODULE_EDGE_RIGHT,
+            wrapper_colors: capsule_colors,
+            content_colors: capsule_colors,
+            minimap_colors: colors,
         }
     };
 
     FinderRightFooter {
         text,
-        text_colors,
         indicator: Some(indicator),
     }
 }
@@ -786,7 +810,7 @@ mod tests {
         let footer = finder_right_footer(&popup, UiStyle::default());
 
         assert!(footer.indicator.is_some());
-        assert_eq!(footer.width(), text_width("84/84") as u16 + 3);
+        assert_eq!(footer.width(), text_width("84/84") as u16 + 4);
     }
 
     #[test]
@@ -818,7 +842,7 @@ mod tests {
         assert!(input_w > incorrectly_reserved_input_w);
         assert_eq!(
             finder_input_view(&popup.query, popup.query_cursor, input_w),
-            "cdef"
+            "bcdef"
         );
         assert_eq!(
             finder_input_view(
@@ -830,7 +854,7 @@ mod tests {
         );
         assert_eq!(
             finder_input_cursor_offset(&popup.query, popup.query_cursor, input_w),
-            4
+            5
         );
     }
 
