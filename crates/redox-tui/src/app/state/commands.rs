@@ -24,6 +24,7 @@ impl EditorState {
 
         let cmd_raw = self.command_line.trim().to_string();
         self.command_line.clear();
+        self.command_line_cursor = 0;
         self.mode = EditorMode::Normal;
         self.reset_command_history_navigation();
 
@@ -130,6 +131,7 @@ impl EditorState {
 
         self.command_history.nav_index = Some(next_index);
         self.command_line = self.command_history.entries[next_index].clone();
+        self.command_line_cursor = self.command_line.len();
     }
 
     pub(super) fn command_history_next(&mut self) {
@@ -145,6 +147,7 @@ impl EditorState {
             self.command_history.nav_index = None;
             self.command_line = std::mem::take(&mut self.command_history.draft);
         }
+        self.command_line_cursor = self.command_line.len();
     }
 
     fn push_command_history(&mut self, command: String) {

@@ -175,6 +175,8 @@ pub enum InputAction {
     /// Command-line editing actions (buffer is owned by editor state).
     CommandChar(char),
     CommandBackspace,
+    CommandMoveLeft,
+    CommandMoveRight,
     CommandHistoryPrev,
     CommandHistoryNext,
     CommandEnter,
@@ -183,11 +185,15 @@ pub enum InputAction {
     /// Search-line editing actions.
     SearchChar(char),
     SearchBackspace,
+    SearchMoveLeft,
+    SearchMoveRight,
     SearchEnter,
     SearchCancel,
     /// Finder prompt editing actions.
     FinderChar(char),
     FinderBackspace,
+    FinderMoveLeft,
+    FinderMoveRight,
     FinderMoveNext,
     FinderMovePrev,
     FinderEnter,
@@ -1406,6 +1412,8 @@ fn map_key_with_state(
             return match key {
                 KeyKind::Escape if unmodified(mods) => InputAction::CommandCancel,
                 KeyKind::Backspace if unmodified(mods) => InputAction::CommandBackspace,
+                KeyKind::Left if unmodified(mods) => InputAction::CommandMoveLeft,
+                KeyKind::Right if unmodified(mods) => InputAction::CommandMoveRight,
                 KeyKind::Up if unmodified(mods) => InputAction::CommandHistoryPrev,
                 KeyKind::Down if unmodified(mods) => InputAction::CommandHistoryNext,
                 KeyKind::Enter if unmodified(mods) => InputAction::CommandEnter,
@@ -1425,6 +1433,8 @@ fn map_key_with_state(
             return match key {
                 KeyKind::Escape if unmodified(mods) => InputAction::SearchCancel,
                 KeyKind::Backspace if unmodified(mods) => InputAction::SearchBackspace,
+                KeyKind::Left if unmodified(mods) => InputAction::SearchMoveLeft,
+                KeyKind::Right if unmodified(mods) => InputAction::SearchMoveRight,
                 KeyKind::Enter if unmodified(mods) => InputAction::SearchEnter,
                 KeyKind::Tab if unmodified(mods) => InputAction::SearchChar('\t'),
                 KeyKind::Char(c) if text_mods(mods) => {
@@ -1466,6 +1476,8 @@ fn map_key_with_state(
                 KeyKind::Escape if unmodified(mods) => InputAction::FinderCancel,
                 KeyKind::Backspace if unmodified(mods) => InputAction::FinderBackspace,
                 KeyKind::Enter if unmodified(mods) => InputAction::FinderEnter,
+                KeyKind::Left if unmodified(mods) => InputAction::FinderMoveLeft,
+                KeyKind::Right if unmodified(mods) => InputAction::FinderMoveRight,
                 KeyKind::Up if unmodified(mods) => InputAction::FinderMovePrev,
                 KeyKind::Down if unmodified(mods) => InputAction::FinderMoveNext,
                 KeyKind::Char(c) if text_mods(mods) => {

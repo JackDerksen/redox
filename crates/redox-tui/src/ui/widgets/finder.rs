@@ -155,7 +155,7 @@ pub fn draw_finder_popup(
         .saturating_sub(right_w)
         .saturating_sub(input_col.saturating_add(1))
         .max(1) as usize;
-    let cursor_offset = finder_input_cursor_offset(&popup.query, input_w);
+    let cursor_offset = finder_input_cursor_offset(&popup.query, popup.query_cursor, input_w);
     window.request_cursor(CursorSpec {
         x: query_layout
             .x
@@ -545,7 +545,7 @@ fn draw_query_row(
         .saturating_sub(right_w)
         .saturating_sub(input_col.saturating_add(1))
         .max(1) as usize;
-    let clipped = finder_input_view(&popup.query, input_w);
+    let clipped = finder_input_view(&popup.query, popup.query_cursor, input_w);
     view.write_str_colored(0, input_col, &clipped, style.command_line.text)?;
     Ok(input_col)
 }
@@ -593,9 +593,28 @@ fn draw_highlighted_text(
     Ok(())
 }
 
-fn finder_input_view(text: &str, max_cells: usize) -> String {
+fn finder_input_view(text: &str, cursor: usize, max_cells: usize) -> String {
     if text_width(text) <= max_cells {
         return clip_text_to_cells(text, max_cells);
+    }
+
+    let cursor = clamp_cursor(text, cursor);
+    let (left, right) = text.split_at(cursor);
+    let left_width = text_width(left);
+    if left_width <= max_cells {
+        return clip_text_to_cells(text, max_cells);
+    }
+
+    let visible_left_width = max_cells;
+    let visible_left = clip_text_right_to_cells(left, visible_left_width);
+    let cursor_offset = text_width(&visible_left);
+    let visible_right = clip_text_to_cells(right, max_cells.saturating_sub(cursor_offset));
+    format!("{visible_left}{visible_right}")
+}
+
+fn clip_text_right_to_cells(text: &str, max_cells: usize) -> String {
+    if max_cells == 0 || text.is_empty() {
+        return String::new();
     }
 
     let mut used = 0usize;
@@ -613,9 +632,27 @@ fn finder_input_view(text: &str, max_cells: usize) -> String {
     graphemes[start..].concat()
 }
 
-fn finder_input_cursor_offset(text: &str, max_cells: usize) -> usize {
-    let visible = finder_input_view(text, max_cells);
-    text_width(&visible)
+fn finder_input_cursor_offset(text: &str, cursor: usize, max_cells: usize) -> usize {
+    if max_cells == 0 || text.is_empty() {
+        return 0;
+    }
+
+    let cursor = clamp_cursor(text, cursor);
+    let left_width = text_width(&text[..cursor]);
+    if text_width(text) <= max_cells || left_width <= max_cells {
+        return left_width.min(max_cells);
+    }
+
+    let visible_left = clip_text_right_to_cells(&text[..cursor], max_cells);
+    text_width(&visible_left)
+}
+
+fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
+    cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
 }
 
 fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
@@ -740,6 +777,7 @@ mod tests {
         let popup = FinderPopup {
             entries: Vec::new(),
             query: "main".to_string(),
+            query_cursor: 4,
             selected: 0,
             result_count: 84,
             total_count: 84,
@@ -756,6 +794,7 @@ mod tests {
         let popup = FinderPopup {
             entries: Vec::new(),
             query: "abcdef".to_string(),
+            query_cursor: 6,
             selected: 0,
             result_count: 84,
             total_count: 84,
@@ -777,12 +816,22 @@ mod tests {
 
         assert_eq!(right_w, 0);
         assert!(input_w > incorrectly_reserved_input_w);
-        assert_eq!(finder_input_view(&popup.query, input_w), "cdef");
         assert_eq!(
-            finder_input_view(&popup.query, incorrectly_reserved_input_w),
+            finder_input_view(&popup.query, popup.query_cursor, input_w),
+            "cdef"
+        );
+        assert_eq!(
+            finder_input_view(
+                &popup.query,
+                popup.query_cursor,
+                incorrectly_reserved_input_w
+            ),
             "f"
         );
-        assert_eq!(finder_input_cursor_offset(&popup.query, input_w), 4);
+        assert_eq!(
+            finder_input_cursor_offset(&popup.query, popup.query_cursor, input_w),
+            4
+        );
     }
 
     #[test]

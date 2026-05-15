@@ -194,6 +194,7 @@ impl EditorState {
                 self.clear_active_visual_anchor();
                 self.mode = EditorMode::Command;
                 self.command_line.clear();
+                self.command_line_cursor = 0;
                 self.reset_command_history_navigation();
                 self.clear_status();
                 self.input.reset_prefixes();
@@ -212,6 +213,7 @@ impl EditorState {
             InputAction::CommandCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.command_line_cursor = 0;
                 self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
@@ -219,14 +221,26 @@ impl EditorState {
             InputAction::CommandChar(c) => {
                 if self.mode == EditorMode::Command {
                     self.detach_command_history_navigation();
-                    self.command_line.push(c);
+                    insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
                 }
             }
 
             InputAction::CommandBackspace => {
                 if self.mode == EditorMode::Command {
                     self.detach_command_history_navigation();
-                    self.command_line.pop();
+                    backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
+                }
+            }
+
+            InputAction::CommandMoveLeft => {
+                if self.mode == EditorMode::Command {
+                    move_cursor_left(&self.command_line, &mut self.command_line_cursor);
+                }
+            }
+
+            InputAction::CommandMoveRight => {
+                if self.mode == EditorMode::Command {
+                    move_cursor_right(&self.command_line, &mut self.command_line_cursor);
                 }
             }
 
@@ -355,19 +369,32 @@ impl EditorState {
             InputAction::SearchCancel => {
                 self.mode = EditorMode::Normal;
                 self.command_line.clear();
+                self.command_line_cursor = 0;
                 self.reset_command_history_navigation();
                 self.input.reset_prefixes();
             }
 
             InputAction::SearchChar(c) => {
                 if self.mode == EditorMode::Search {
-                    self.command_line.push(c);
+                    insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
                 }
             }
 
             InputAction::SearchBackspace => {
                 if self.mode == EditorMode::Search {
-                    self.command_line.pop();
+                    backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
+                }
+            }
+
+            InputAction::SearchMoveLeft => {
+                if self.mode == EditorMode::Search {
+                    move_cursor_left(&self.command_line, &mut self.command_line_cursor);
+                }
+            }
+
+            InputAction::SearchMoveRight => {
+                if self.mode == EditorMode::Search {
+                    move_cursor_right(&self.command_line, &mut self.command_line_cursor);
                 }
             }
 
@@ -390,6 +417,18 @@ impl EditorState {
             InputAction::FinderBackspace => {
                 if self.mode == EditorMode::Finder {
                     self.finder_backspace();
+                }
+            }
+
+            InputAction::FinderMoveLeft => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_move_query_cursor_left();
+                }
+            }
+
+            InputAction::FinderMoveRight => {
+                if self.mode == EditorMode::Finder {
+                    self.finder_move_query_cursor_right();
                 }
             }
 
@@ -1297,6 +1336,55 @@ fn visual_column(line: &str, char_col: usize) -> usize {
         .iter()
         .map(|g| cell_width(*g, TabPolicy::Fixed(SOFT_TAB_WIDTH as u16)) as usize)
         .sum()
+}
+
+pub(super) fn insert_at_cursor(text: &mut String, cursor: &mut usize, ch: char) {
+    clamp_string_cursor(text, cursor);
+    text.insert(*cursor, ch);
+    *cursor += ch.len_utf8();
+}
+
+pub(super) fn backspace_at_cursor(text: &mut String, cursor: &mut usize) {
+    clamp_string_cursor(text, cursor);
+    let Some(prev) = previous_char_boundary(text, *cursor) else {
+        return;
+    };
+    text.replace_range(prev..*cursor, "");
+    *cursor = prev;
+}
+
+pub(super) fn move_cursor_left(text: &str, cursor: &mut usize) {
+    clamp_str_cursor(text, cursor);
+    if let Some(prev) = previous_char_boundary(text, *cursor) {
+        *cursor = prev;
+    }
+}
+
+pub(super) fn move_cursor_right(text: &str, cursor: &mut usize) {
+    clamp_str_cursor(text, cursor);
+    if *cursor >= text.len() {
+        return;
+    }
+    *cursor += text[*cursor..]
+        .chars()
+        .next()
+        .map(char::len_utf8)
+        .unwrap_or(0);
+}
+
+pub(super) fn clamp_string_cursor(text: &mut String, cursor: &mut usize) {
+    clamp_str_cursor(text, cursor);
+}
+
+pub(super) fn clamp_str_cursor(text: &str, cursor: &mut usize) {
+    *cursor = (*cursor).min(text.len());
+    while *cursor > 0 && !text.is_char_boundary(*cursor) {
+        *cursor -= 1;
+    }
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
+    text[..cursor].char_indices().last().map(|(idx, _)| idx)
 }
 
 fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {

@@ -90,6 +90,7 @@ impl EditorState {
     pub(super) fn enter_search_mode(&mut self) {
         self.mode = EditorMode::Search;
         self.command_line.clear();
+        self.command_line_cursor = 0;
         self.clear_status();
         self.input.reset_prefixes();
     }
@@ -100,6 +101,7 @@ impl EditorState {
         }
 
         let term = std::mem::take(&mut self.command_line);
+        self.command_line_cursor = 0;
         self.mode = EditorMode::Normal;
 
         if term.is_empty() {

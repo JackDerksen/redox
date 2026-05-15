@@ -49,7 +49,11 @@ pub fn draw_command_line_popup(
 
     let input_col = prompt_col.saturating_add(command_text_width(prompt) as u16 + 1);
     let input_width = inner_w.saturating_sub(input_col);
-    let (clipped, cursor_offset) = command_line_view(&state.command_line, input_width as usize);
+    let (clipped, cursor_offset) = command_line_view(
+        &state.command_line,
+        state.command_line_cursor,
+        input_width as usize,
+    );
     view.write_str_colored(row, input_col, &clipped, style.command_line.text)?;
 
     window.request_cursor(minui::window::CursorSpec {
@@ -83,22 +87,41 @@ fn command_text_width(text: &str) -> usize {
         .sum()
 }
 
-fn command_line_view(text: &str, input_width: usize) -> (String, usize) {
+fn command_line_view(text: &str, cursor: usize, input_width: usize) -> (String, usize) {
     if input_width == 0 || text.is_empty() {
         return (String::new(), 0);
     }
 
+    let cursor = clamp_cursor(text, cursor);
     let text_width = command_text_width(text);
     if text_width <= input_width {
         let clipped = clip_text_to_cells(text, input_width);
-        let cursor_offset = command_text_width(&clipped);
+        let cursor_offset = command_text_width(&text[..cursor]);
         return (clipped, cursor_offset);
     }
 
-    let visible_width = input_width.saturating_sub(1).max(1);
-    let clipped = clip_text_right_to_cells(text, visible_width);
-    let cursor_offset = command_text_width(&clipped);
+    let (left, right) = text.split_at(cursor);
+    let left_width = command_text_width(left);
+    if left_width <= input_width {
+        let clipped = clip_text_to_cells(text, input_width);
+        return (clipped, left_width);
+    }
+
+    let visible_left_width = input_width.saturating_sub(1).max(1);
+    let visible_left = clip_text_right_to_cells(left, visible_left_width);
+    let cursor_offset = command_text_width(&visible_left);
+    let remaining_width = input_width.saturating_sub(cursor_offset);
+    let visible_right = clip_text_to_cells(right, remaining_width);
+    let clipped = format!("{visible_left}{visible_right}");
     (clipped, cursor_offset)
+}
+
+fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
+    cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
 }
 
 fn clip_text_right_to_cells(text: &str, max_cells: usize) -> String {
@@ -128,21 +151,22 @@ mod tests {
 
     #[test]
     fn command_line_view_keeps_short_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("wq", 8);
+        let (visible, cursor_offset) = command_line_view("wq", 2, 8);
         assert_eq!(visible, "wq");
         assert_eq!(cursor_offset, 2);
     }
 
     #[test]
     fn command_line_view_scrolls_long_input_left_and_keeps_right_padding() {
-        let (visible, cursor_offset) = command_line_view("abcdefghijklmnopqrstuvwxyz", 8);
+        let text = "abcdefghijklmnopqrstuvwxyz";
+        let (visible, cursor_offset) = command_line_view(text, text.len(), 8);
         assert_eq!(visible, "tuvwxyz");
         assert_eq!(cursor_offset, 7);
     }
 
     #[test]
     fn command_line_view_keeps_exact_fit_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("exactfit", 8);
+        let (visible, cursor_offset) = command_line_view("exactfit", 8, 8);
         assert_eq!(visible, "exactfit");
         assert_eq!(cursor_offset, 8);
     }

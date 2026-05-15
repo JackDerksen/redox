@@ -12,6 +12,7 @@ use redox_core::{
     FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges, path_match_score,
 };
 
+use super::actions::{backspace_at_cursor, insert_at_cursor, move_cursor_left, move_cursor_right};
 use super::{EditorMode, EditorState};
 
 const MAX_PINNED_FILES: usize = 5;
@@ -23,6 +24,7 @@ const MAX_FINDER_INDEX_BATCHES_PER_POLL: usize = 8;
 pub struct FinderPopup {
     pub entries: Vec<FinderPopupEntry>,
     pub query: String,
+    pub query_cursor: usize,
     pub selected: usize,
     pub result_count: usize,
     pub total_count: usize,
@@ -60,6 +62,7 @@ pub struct PinSelectorSlot {
 pub(super) struct FinderState {
     launch_dir: PathBuf,
     query: String,
+    query_cursor: usize,
     all_files: Vec<FinderFileCandidate>,
     file_results: Vec<FinderFileResult>,
     combined_entries: Vec<FinderCombinedEntry>,
@@ -140,6 +143,7 @@ impl FinderState {
         let mut state = Self {
             launch_dir,
             query: String::new(),
+            query_cursor: 0,
             all_files,
             file_results: Vec::new(),
             combined_entries: Vec::new(),
@@ -166,6 +170,7 @@ impl FinderState {
                 })
                 .collect(),
             query: self.query.clone(),
+            query_cursor: self.query_cursor,
             selected: self.selected,
             result_count: self.file_results.len(),
             total_count: self.all_files.len(),
@@ -197,11 +202,19 @@ impl FinderState {
     }
 
     fn set_query_char(&mut self, ch: char) {
-        self.query.push(ch);
+        insert_at_cursor(&mut self.query, &mut self.query_cursor, ch);
     }
 
     fn pop_query_char(&mut self) {
-        self.query.pop();
+        backspace_at_cursor(&mut self.query, &mut self.query_cursor);
+    }
+
+    fn move_query_cursor_left(&mut self) {
+        move_cursor_left(&self.query, &mut self.query_cursor);
+    }
+
+    fn move_query_cursor_right(&mut self) {
+        move_cursor_right(&self.query, &mut self.query_cursor);
     }
 
     fn refresh_results(&mut self, pinned_files: &[PinnedFileEntry], preferred_path: Option<&Path>) {
@@ -684,6 +697,18 @@ impl EditorState {
         if let Some(finder) = self.finder.as_mut() {
             finder.pop_query_char();
             finder.refresh_results_to_bottom(&pinned);
+        }
+    }
+
+    pub(super) fn finder_move_query_cursor_left(&mut self) {
+        if let Some(finder) = self.finder.as_mut() {
+            finder.move_query_cursor_left();
+        }
+    }
+
+    pub(super) fn finder_move_query_cursor_right(&mut self) {
+        if let Some(finder) = self.finder.as_mut() {
+            finder.move_query_cursor_right();
         }
     }
 
