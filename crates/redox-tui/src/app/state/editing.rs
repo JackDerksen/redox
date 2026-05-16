@@ -397,7 +397,7 @@ impl EditorState {
         let before = self.capture_active_undo_snapshot();
 
         let active_id = self.session.active_id();
-        let (start_pos, end_pos, mut cut_text, indent) = {
+        let (start_pos, end_pos, mut cut_text, indent, line_ending) = {
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
             let start_line = buffer.clamp_line(view.cursor.cursor.line);
@@ -405,9 +405,11 @@ impl EditorState {
                 .saturating_add(count.saturating_sub(1))
                 .min(buffer.len_lines() - 1);
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
+            let exact_text = buffer.line_span_text(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
             let indent = leading_line_indent(&buffer.line_string(start_line)).to_string();
-            (start_pos, end_pos, text, indent)
+            let line_ending = trailing_line_ending(&exact_text).to_string();
+            (start_pos, end_pos, text, indent, line_ending)
         };
 
         self.private_register = std::mem::take(&mut cut_text);
@@ -417,7 +419,7 @@ impl EditorState {
         {
             let buffer = self.session.active_buffer_mut();
             let new_pos = buffer.delete_range(start_pos, end_pos);
-            let replacement = format!("{indent}\n");
+            let replacement = format!("{indent}{line_ending}");
             let _ = buffer.insert(new_pos, &replacement);
             view.cursor.cursor = Pos::new(new_pos.line, indent.chars().count());
             view.cursor
@@ -1018,6 +1020,18 @@ fn leading_line_indent(text: &str) -> &str {
         .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))
         .unwrap_or(text.len());
     &text[..end]
+}
+
+fn trailing_line_ending(text: &str) -> &str {
+    if text.ends_with("\r\n") {
+        "\r\n"
+    } else if text.ends_with('\n') {
+        "\n"
+    } else if text.ends_with('\r') {
+        "\r"
+    } else {
+        ""
+    }
 }
 
 fn adjust_col_after_indent_change(col: usize, removed: usize, added: usize) -> usize {
