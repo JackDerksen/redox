@@ -93,7 +93,7 @@ struct BufferRecord {
     meta: BufferMeta,
     buffer: TextBuffer,
     clean_fingerprint: u64,
-    clean_len_chars: usize,
+    clean_normalized_len_chars: usize,
     loader: Option<IncrementalFileLoader>,
     load_status: BufferLoadStatus,
 }
@@ -215,16 +215,12 @@ impl EditorSession {
             dirty: false,
             is_new_file: !file_exists,
         };
-        let clean_fingerprint = if matches!(load_status.phase, BufferLoadPhase::Complete) {
-            content_fingerprint(&buffer)
-        } else {
-            hash_text("")
-        };
-        let clean_len_chars = if matches!(load_status.phase, BufferLoadPhase::Complete) {
-            buffer.len_chars()
-        } else {
-            0
-        };
+        let (clean_fingerprint, clean_normalized_len_chars) =
+            if matches!(load_status.phase, BufferLoadPhase::Complete) {
+                normalized_content_fingerprint(&buffer)
+            } else {
+                normalized_text_fingerprint("")
+            };
 
         self.buffers.insert(
             id,
@@ -232,7 +228,7 @@ impl EditorSession {
                 meta,
                 buffer,
                 clean_fingerprint,
-                clean_len_chars,
+                clean_normalized_len_chars,
                 loader,
                 load_status,
             },
@@ -246,6 +242,8 @@ impl EditorSession {
     /// Open an in-memory UI buffer.
     pub fn open_ui_buffer(&mut self, name: impl Into<String>, initial_text: &str) -> BufferId {
         let id = self.alloc_id();
+        let (clean_fingerprint, clean_normalized_len_chars) =
+            normalized_text_fingerprint(initial_text);
         let meta = BufferMeta {
             id,
             kind: BufferKind::Ui,
@@ -260,8 +258,8 @@ impl EditorSession {
             BufferRecord {
                 meta,
                 buffer: TextBuffer::from_str(initial_text),
-                clean_fingerprint: hash_text(initial_text),
-                clean_len_chars: initial_text.chars().count(),
+                clean_fingerprint,
+                clean_normalized_len_chars,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -274,6 +272,7 @@ impl EditorSession {
     /// Open a new unnamed file buffer and activate it.
     pub fn open_unnamed_buffer(&mut self) -> BufferId {
         let id = self.alloc_id();
+        let (clean_fingerprint, clean_normalized_len_chars) = normalized_text_fingerprint("");
         let meta = BufferMeta {
             id,
             kind: BufferKind::File,
@@ -288,8 +287,8 @@ impl EditorSession {
             BufferRecord {
                 meta,
                 buffer: TextBuffer::new(),
-                clean_fingerprint: hash_text(""),
-                clean_len_chars: 0,
+                clean_fingerprint,
+                clean_normalized_len_chars,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -399,8 +398,9 @@ impl EditorSession {
             .buffers
             .get_mut(&id)
             .expect("active buffer must exist in session map");
-        rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-        rec.clean_len_chars = rec.buffer.len_chars();
+        let (fingerprint, normalized_len_chars) = normalized_content_fingerprint(&rec.buffer);
+        rec.clean_fingerprint = fingerprint;
+        rec.clean_normalized_len_chars = normalized_len_chars;
         rec.meta.dirty = false;
     }
 
@@ -690,8 +690,10 @@ impl EditorSession {
                 std::fs::write(path, &content)
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
 
-                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-                rec.clean_len_chars = rec.buffer.len_chars();
+                let (fingerprint, normalized_len_chars) =
+                    normalized_content_fingerprint(&rec.buffer);
+                rec.clean_fingerprint = fingerprint;
+                rec.clean_normalized_len_chars = normalized_len_chars;
                 rec.meta.dirty = false;
                 rec.meta.is_new_file = false;
                 Ok(())
@@ -725,13 +727,12 @@ impl EditorSession {
             return Some(rec.meta.dirty);
         }
 
-        let current_len = rec.buffer.len_chars();
-        if current_len != rec.clean_len_chars {
+        let (current, current_len) = normalized_content_fingerprint(&rec.buffer);
+        if current_len != rec.clean_normalized_len_chars {
             rec.meta.dirty = true;
             return Some(true);
         }
 
-        let current = content_fingerprint(&rec.buffer);
         rec.meta.dirty = current != rec.clean_fingerprint;
         Some(rec.meta.dirty)
     }
@@ -770,8 +771,10 @@ impl EditorSession {
                 rec.load_status.phase = BufferLoadPhase::Complete;
                 rec.load_status.error = None;
                 if rec.meta.path.is_some() {
-                    rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-                    rec.clean_len_chars = rec.buffer.len_chars();
+                    let (fingerprint, normalized_len_chars) =
+                        normalized_content_fingerprint(&rec.buffer);
+                    rec.clean_fingerprint = fingerprint;
+                    rec.clean_normalized_len_chars = normalized_len_chars;
                 }
                 return Ok(0);
             }
@@ -789,8 +792,10 @@ impl EditorSession {
             rec.load_status.phase = BufferLoadPhase::Complete;
             rec.load_status.error = None;
             if rec.meta.path.is_some() {
-                rec.clean_fingerprint = content_fingerprint(&rec.buffer);
-                rec.clean_len_chars = rec.buffer.len_chars();
+                let (fingerprint, normalized_len_chars) =
+                    normalized_content_fingerprint(&rec.buffer);
+                rec.clean_fingerprint = fingerprint;
+                rec.clean_normalized_len_chars = normalized_len_chars;
             }
             rec.loader = None;
         } else {
@@ -845,8 +850,9 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
         rec.meta.display_name = orphaned_display_name(&rec.meta.display_name);
         rec.meta.is_new_file = true;
         rec.meta.dirty = true;
-        rec.clean_fingerprint = hash_text("");
-        rec.clean_len_chars = 0;
+        let (fingerprint, normalized_len_chars) = normalized_text_fingerprint("");
+        rec.clean_fingerprint = fingerprint;
+        rec.clean_normalized_len_chars = normalized_len_chars;
     }
 }
 
@@ -966,18 +972,47 @@ fn relative_path(path: &Path, base: &Path) -> Option<PathBuf> {
     }
 }
 
-fn content_fingerprint(buffer: &TextBuffer) -> u64 {
+fn normalized_content_fingerprint(buffer: &TextBuffer) -> (u64, usize) {
     let mut hasher = DefaultHasher::new();
+    let mut len = 0usize;
+    let mut previous_was_cr = false;
     for chunk in buffer.rope().chunks() {
-        chunk.hash(&mut hasher);
+        hash_normalized_newlines(chunk.chars(), &mut hasher, &mut len, &mut previous_was_cr);
     }
-    hasher.finish()
+    (hasher.finish(), len)
 }
 
-fn hash_text(text: &str) -> u64 {
+fn normalized_text_fingerprint(text: &str) -> (u64, usize) {
     let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
+    let mut len = 0usize;
+    let mut previous_was_cr = false;
+    hash_normalized_newlines(text.chars(), &mut hasher, &mut len, &mut previous_was_cr);
+    (hasher.finish(), len)
+}
+
+fn hash_normalized_newlines(
+    chars: impl Iterator<Item = char>,
+    hasher: &mut DefaultHasher,
+    len: &mut usize,
+    previous_was_cr: &mut bool,
+) {
+    for ch in chars {
+        match ch {
+            '\r' => {
+                '\n'.hash(hasher);
+                *len += 1;
+                *previous_was_cr = true;
+            }
+            '\n' if *previous_was_cr => {
+                *previous_was_cr = false;
+            }
+            _ => {
+                ch.hash(hasher);
+                *len += 1;
+                *previous_was_cr = false;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
