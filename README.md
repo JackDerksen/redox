@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <img width="1529" height="1090" alt="Redox Demo" src="assets/redox-demo.png" />
+    <img width="2374" height="1339" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 ## Project structure

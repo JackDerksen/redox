@@ -6,7 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{FinderPopup, FinderPreview, PinSelectorPopup};
 use crate::ui::UiStyle;
 use crate::ui::helpers::clip_path_with_filename;
-use crate::ui::style::{FinderStyle, StatusModuleKind};
+use crate::ui::style::FinderStyle;
 use crate::ui::widgets::popup::{
     PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view,
@@ -673,18 +673,8 @@ fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
 fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
     let text = format!("{}/{}", popup.result_count, popup.total_count);
     let indicator = {
-        let module_bg = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Coords)
-            .wrapper
-            .bg;
-        let minimap_module_bg = style
-            .palette
-            .status_modules
-            .colors(StatusModuleKind::Minimap)
-            .wrapper
-            .bg;
+        let module_bg = style.status_line.coords.wrapper.bg;
+        let minimap_module_bg = style.status_line.minimap_module.wrapper.bg;
         let capsule_colors = ColorPair::new(style.finder.text.bg, module_bg);
         let pinned_count = popup
             .entries
@@ -696,8 +686,8 @@ fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter
         let (glyph, colors) = scroll_minimap_cell(
             selected_file_index,
             popup.result_count,
-            style.palette.minimap,
-            style.palette.minimap_alt,
+            style.status_line.minimap,
+            style.status_line.minimap_alt,
             minimap_module_bg,
         );
         FinderFooterIndicator {

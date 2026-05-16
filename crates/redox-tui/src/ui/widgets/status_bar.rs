@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
-use crate::ui::style::{StatusModuleColors, StatusModuleKind};
+use crate::ui::style::StatusModuleColors;
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
@@ -14,6 +14,7 @@ pub(crate) const STATUS_MODULE_EDGE_RIGHT: &str = "▐";
 const STATUS_MODULE_EDGE_WIDTH: u16 = 1;
 pub(crate) const STATUS_MODULE_SEPARATOR: &str = "┃";
 const STATUS_MODULE_SEPARATOR_WIDTH: u16 = 1;
+const DIRTY_GAP_WIDTH: u16 = 0;
 
 fn scroll_progress_idx(cursor_line: usize, total_lines: usize) -> usize {
     if total_lines <= 1 {
@@ -138,6 +139,7 @@ struct StatusModule {
     colors: StatusModuleColors,
     content: String,
     content_align: Align,
+    separator_colors: Option<ColorPair>,
 }
 
 impl StatusModule {
@@ -146,7 +148,13 @@ impl StatusModule {
             colors,
             content: content.into(),
             content_align: Align::Left,
+            separator_colors: None,
         }
+    }
+
+    fn with_separator_color(mut self, colors: ColorPair) -> Self {
+        self.separator_colors = Some(colors);
+        self
     }
 
     fn wrapped_text(&self) -> String {
@@ -164,20 +172,49 @@ impl StatusModule {
         self.content_width() + (STATUS_MODULE_EDGE_WIDTH * 2)
     }
 
-    fn into_segments(self) -> [Segment; 3] {
+    fn into_segments(self) -> Vec<Segment> {
         let content_width = self.content_width();
-        [
+        let mut segments = vec![
             Segment::new(STATUS_MODULE_EDGE_LEFT)
                 .with_color(self.colors.wrapper)
                 .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-            Segment::new(self.content)
-                .with_color(self.colors.content)
-                .with_align(self.content_align)
-                .with_min_width(content_width),
+        ];
+
+        if let Some(separator_colors) = self.separator_colors {
+            let mut first = true;
+            for part in self.content.split(STATUS_MODULE_SEPARATOR) {
+                if !first {
+                    segments.push(
+                        Segment::new(STATUS_MODULE_SEPARATOR)
+                            .with_color(separator_colors)
+                            .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
+                    );
+                }
+                if !part.is_empty() {
+                    segments.push(
+                        Segment::new(part)
+                            .with_color(self.colors.content)
+                            .with_align(self.content_align)
+                            .with_min_width(part.chars().count() as u16),
+                    );
+                }
+                first = false;
+            }
+        } else {
+            segments.push(
+                Segment::new(self.content)
+                    .with_color(self.colors.content)
+                    .with_align(self.content_align)
+                    .with_min_width(content_width),
+            );
+        }
+
+        segments.push(
             Segment::new(STATUS_MODULE_EDGE_RIGHT)
                 .with_color(self.colors.wrapper)
                 .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-        ]
+        );
+        segments
     }
 }
 
@@ -403,7 +440,6 @@ impl Widget for EditorStatusBar {
 
 /// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
-    let module_theme = style.palette.status_modules;
     let (mode_label, mode_colors) = status_bar_mode_presentation(
         state.mode,
         state.rain_is_active(),
@@ -416,10 +452,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
     let metadata_module = metadata_text(state).map(|text| {
-        StatusModule::new(
-            text,
-            StatusModuleColors::solid(style.palette.status_metadata),
-        )
+        StatusModule::new(text, style.status_line.metadata)
+            .with_separator_color(style.status_line.metadata.wrapper)
     });
     let metadata_module_width = metadata_module
         .as_ref()
@@ -456,17 +490,16 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let cursor = state.active_cursor_pos();
     let buffer = state.session.active_buffer();
     let total_lines = buffer.len_lines();
-    let minimap_module_colors = module_theme.colors(StatusModuleKind::Minimap);
     let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
         cursor.line,
         total_lines,
-        style.palette.minimap,
-        style.palette.minimap_alt,
-        minimap_module_colors.wrapper.bg,
+        style.status_line.minimap,
+        style.status_line.minimap_alt,
+        style.status_line.minimap_module.wrapper.bg,
     );
     let visual_col = visual_column(buffer.line_string(cursor.line).as_str(), cursor.col);
     let coords_text = format!("{}:{}", cursor.line + 1, visual_col + 1);
-    let right_module_colors = module_theme.colors(StatusModuleKind::Coords);
+    let right_module_colors = style.status_line.coords;
     let coords_width = coords_text.chars().count() as u16;
     let scroll_width = scroll_glyph.chars().count() as u16;
     let coords_minimap_width = STATUS_MODULE_EDGE_WIDTH
@@ -475,8 +508,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         + scroll_width
         + STATUS_MODULE_EDGE_WIDTH;
     let dirty_width = u16::from(state.active_dirty());
-    let dirty_gap_width = dirty_width;
-    let right_module_width = dirty_width + dirty_gap_width + coords_minimap_width;
+    let right_module_width = dirty_width + DIRTY_GAP_WIDTH + coords_minimap_width;
     let side_reserve_width = balanced_status_side_width(
         left_text_width,
         style.layout.status_left_min_width,
@@ -493,7 +525,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
 
     let status_bar = EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)
-        .with_bg(style.palette.status_bar_bg)
+        .with_bg(style.status_line.bar)
         .add_segment(
             Segment::new(mode_text)
                 .with_color(mode_colors)
@@ -509,19 +541,19 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .add_segment(Segment::spacer(left_padding_width))
         .add_segment(
             Segment::new(center_text)
-                .with_color(style.palette.status_file_path)
+                .with_color(style.status_line.path)
                 .with_align(Align::Center)
                 .with_path_clip(),
         )
         .add_segment(Segment::spacer(right_padding_width))
         .add_segment(if state.active_dirty() {
             Segment::new("+")
-                .with_color(style.palette.status_dirty)
+                .with_color(style.status_line.dirty)
                 .with_min_width(1)
         } else {
             Segment::spacer(0)
         })
-        .add_segment(Segment::spacer(dirty_gap_width))
+        .add_segment(Segment::spacer(DIRTY_GAP_WIDTH))
         .add_segment(
             Segment::new(STATUS_MODULE_EDGE_LEFT)
                 .with_color(right_module_colors.wrapper)
@@ -535,7 +567,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         )
         .add_segment(
             Segment::new(STATUS_MODULE_SEPARATOR)
-                .with_color(right_module_colors.content)
+                .with_color(right_module_colors.wrapper)
                 .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
         )
         .add_segment(
@@ -589,28 +621,28 @@ fn status_bar_mode_presentation(
     style: UiStyle,
 ) -> (&'static str, ColorPair) {
     if rain_active {
-        return ("RAIN", style.palette.mode_command);
+        return ("RAIN", style.status_line.mode_command);
     }
 
     if finder_visible || pinboard_visible {
-        return ("NORMAL", style.palette.mode_normal);
+        return ("NORMAL", style.status_line.mode_normal);
     }
 
     match mode {
-        EditorMode::Normal => ("NORMAL", style.palette.mode_normal),
-        EditorMode::Insert => ("INSERT", style.palette.mode_insert),
-        EditorMode::Command => ("COMMAND", style.palette.mode_command),
-        EditorMode::Search => ("SEARCH", style.palette.mode_command),
-        EditorMode::Finder => ("FINDER", style.palette.mode_command),
-        EditorMode::PinSelect => ("PINBOARD", style.palette.mode_command),
+        EditorMode::Normal => ("NORMAL", style.status_line.mode_normal),
+        EditorMode::Insert => ("INSERT", style.status_line.mode_insert),
+        EditorMode::Command => ("COMMAND", style.status_line.mode_command),
+        EditorMode::Search => ("SEARCH", style.status_line.mode_command),
+        EditorMode::Finder => ("FINDER", style.status_line.mode_command),
+        EditorMode::PinSelect => ("PINBOARD", style.status_line.mode_command),
         EditorMode::LspMarketplace | EditorMode::DiagnosticsList => {
-            ("NORMAL", style.palette.mode_normal)
+            ("NORMAL", style.status_line.mode_normal)
         }
-        EditorMode::CodeActions => ("ACTIONS", style.palette.mode_normal),
-        EditorMode::SymbolInfo => ("INFO", style.palette.mode_normal),
-        EditorMode::Visual => ("VISUAL", style.palette.mode_visual),
-        EditorMode::VisualLine => ("V-LINE", style.palette.mode_visual),
-        EditorMode::VisualBlock => ("V-BLOCK", style.palette.mode_visual),
+        EditorMode::CodeActions => ("ACTIONS", style.status_line.mode_normal),
+        EditorMode::SymbolInfo => ("INFO", style.status_line.mode_normal),
+        EditorMode::Visual => ("VISUAL", style.status_line.mode_visual),
+        EditorMode::VisualLine => ("V-LINE", style.status_line.mode_visual),
+        EditorMode::VisualBlock => ("V-BLOCK", style.status_line.mode_visual),
     }
 }
 

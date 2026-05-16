@@ -179,9 +179,9 @@ impl Default for BaseTheme {
                 b: (55),
             },
             mid_gray: Color::Rgb {
-                r: (80),
-                g: (78),
-                b: (84),
+                r: (65),
+                g: (62),
+                b: (70),
             },
             light_gray: Color::Rgb {
                 r: (104),
@@ -203,34 +203,6 @@ impl StatusModuleColors {
         Self {
             wrapper: colors,
             content: colors,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusModuleKind {
-    Coords,
-    Minimap,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct StatusModuleTheme {
-    pub coords: StatusModuleColors,
-    pub minimap: StatusModuleColors,
-}
-
-impl StatusModuleTheme {
-    pub fn from_theme(theme: BaseTheme) -> Self {
-        Self {
-            coords: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
-            minimap: StatusModuleColors::solid(ColorPair::new(theme.black, theme.dark_gray)),
-        }
-    }
-
-    pub fn colors(self, kind: StatusModuleKind) -> StatusModuleColors {
-        match kind {
-            StatusModuleKind::Coords => self.coords,
-            StatusModuleKind::Minimap => self.minimap,
         }
     }
 }
@@ -278,39 +250,49 @@ impl Default for GitStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Palette {
-    pub status_bar_bg: ColorPair,
-    pub status_metadata: ColorPair,
-    pub status_file_path: ColorPair,
-    pub status_dirty: ColorPair,
+pub struct StatusLinePalette {
+    pub bar: ColorPair,
+    pub path: ColorPair,
+    pub dirty: ColorPair,
     pub mode_normal: ColorPair,
     pub mode_insert: ColorPair,
     pub mode_command: ColorPair,
     pub mode_visual: ColorPair,
+    pub metadata: StatusModuleColors,
+    pub coords: StatusModuleColors,
+    pub minimap_module: StatusModuleColors,
     pub minimap: ColorPair,
     pub minimap_alt: ColorPair,
-    pub status_modules: StatusModuleTheme,
 }
 
-impl Palette {
+impl StatusLinePalette {
     pub fn from_theme(theme: BaseTheme) -> Self {
+        let module_shell = ColorPair::new(theme.black, theme.dark_gray);
+        let module_text = ColorPair::new(theme.black, theme.dark_gray);
         Self {
-            status_bar_bg: ColorPair::new(theme.light_gray, theme.black),
-            status_metadata: ColorPair::new(theme.black, theme.dark_gray),
-            status_file_path: ColorPair::new(theme.mid_gray, theme.black),
-            status_dirty: ColorPair::new(theme.mid_gray, theme.black),
+            bar: ColorPair::new(theme.light_gray, theme.black),
+            path: ColorPair::new(theme.dark_gray, theme.black),
+            dirty: ColorPair::new(theme.mid_gray, theme.black),
             mode_normal: ColorPair::new(theme.black, theme.purple),
             mode_insert: ColorPair::new(theme.black, theme.blue),
             mode_command: ColorPair::new(theme.black, theme.red),
             mode_visual: ColorPair::new(theme.black, theme.orange),
+            metadata: StatusModuleColors {
+                wrapper: module_shell,
+                content: module_text,
+            },
+            coords: StatusModuleColors {
+                wrapper: module_shell,
+                content: module_text,
+            },
+            minimap_module: StatusModuleColors::solid(module_shell),
             minimap: ColorPair::new(theme.light_gray, Color::Transparent),
             minimap_alt: ColorPair::new(Color::Transparent, theme.light_gray),
-            status_modules: StatusModuleTheme::from_theme(theme),
         }
     }
 }
 
-impl Default for Palette {
+impl Default for StatusLinePalette {
     fn default() -> Self {
         Self::from_theme(BaseTheme::default())
     }
@@ -756,7 +738,7 @@ impl Default for SyntaxStyle {
 pub struct UiStyle {
     pub theme: BaseTheme,
     pub git: GitStyle,
-    pub palette: Palette,
+    pub status_line: StatusLinePalette,
     pub layout: Layout,
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
@@ -774,7 +756,7 @@ impl Default for UiStyle {
         Self {
             theme,
             git: GitStyle::from_theme(theme),
-            palette: Palette::from_theme(theme),
+            status_line: StatusLinePalette::from_theme(theme),
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
@@ -860,7 +842,7 @@ impl UiStyle {
         Self {
             theme,
             git: GitStyle::from_theme(theme),
-            palette: Palette::from_theme(theme),
+            status_line: StatusLinePalette::from_theme(theme),
             layout: self.layout,
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
