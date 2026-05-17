@@ -67,6 +67,7 @@ pub(super) struct FinderState {
     file_results: Vec<FinderFileResult>,
     combined_entries: Vec<FinderCombinedEntry>,
     selected: usize,
+    anchor_selection_to_bottom: bool,
     preview: Option<FinderPreviewCache>,
 }
 
@@ -148,6 +149,7 @@ impl FinderState {
             file_results: Vec::new(),
             combined_entries: Vec::new(),
             selected: initial_selected,
+            anchor_selection_to_bottom: true,
             preview: None,
         };
         state.refresh_results(pinned_files, None);
@@ -199,6 +201,7 @@ impl FinderState {
         let max_index = self.combined_entries.len().saturating_sub(1) as isize;
         let next = (self.selected as isize + delta).clamp(0, max_index) as usize;
         self.selected = next;
+        self.anchor_selection_to_bottom = false;
     }
 
     fn set_query_char(&mut self, ch: char) {
@@ -307,19 +310,35 @@ impl FinderState {
             return;
         }
 
-        self.selected = previous_path
-            .as_ref()
-            .and_then(|path| {
-                self.combined_entries
-                    .iter()
-                    .position(|entry| &entry.path == path)
-            })
-            .unwrap_or_else(|| self.combined_entries.len().saturating_sub(1));
+        self.selected = if self.anchor_selection_to_bottom && preferred_path.is_none() {
+            self.last_file_entry_index()
+        } else {
+            previous_path
+                .as_ref()
+                .and_then(|path| {
+                    self.combined_entries
+                        .iter()
+                        .position(|entry| &entry.path == path)
+                })
+                .unwrap_or_else(|| self.last_file_entry_index())
+        };
     }
 
     fn refresh_results_to_bottom(&mut self, pinned_files: &[PinnedFileEntry]) {
         self.refresh_results(pinned_files, None);
-        self.selected = self.combined_entries.len().saturating_sub(1);
+        self.selected = self.last_file_entry_index();
+        self.anchor_selection_to_bottom = true;
+    }
+
+    fn last_file_entry_index(&self) -> usize {
+        if self.combined_entries.is_empty() {
+            return 0;
+        }
+
+        self.combined_entries
+            .iter()
+            .rposition(|entry| matches!(entry.kind, FinderCombinedKind::File))
+            .unwrap_or_else(|| self.combined_entries.len().saturating_sub(1))
     }
 
     fn refresh_preview(&mut self) {
