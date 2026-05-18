@@ -272,7 +272,7 @@ impl StatusLinePalette {
         Self {
             bar: ColorPair::new(theme.light_gray, theme.black),
             path: ColorPair::new(theme.dark_gray, theme.black),
-            dirty: ColorPair::new(theme.mid_gray, theme.black),
+            dirty: ColorPair::new(theme.light_gray, theme.black),
             mode_normal: ColorPair::new(theme.black, theme.purple),
             mode_insert: ColorPair::new(theme.black, theme.blue),
             mode_command: ColorPair::new(theme.black, theme.red),
@@ -369,7 +369,7 @@ impl AboutStyle {
         Self {
             width_percent: 65,
             height_percent: 52,
-            min_width: 56,
+            min_width: 52,
             min_height: 12,
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.light_gray, theme.bg),
@@ -546,7 +546,7 @@ impl LspMarketplaceStyle {
         Self {
             width_percent: 65,
             height_percent: 60,
-            min_width: 56,
+            min_width: 52,
             min_height: 12,
         }
     }
@@ -579,10 +579,10 @@ pub struct PerfStyle {
 impl PerfStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            width_percent: 56,
-            height_percent: 48,
-            min_width: 50,
-            min_height: 14,
+            width_percent: 44,
+            height_percent: 34,
+            min_width: 40,
+            min_height: 12,
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.yellow, theme.bg),
             text: ColorPair::new(theme.white, theme.bg),

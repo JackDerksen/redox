@@ -1,13 +1,7 @@
 //! Editing operations for `TextBuffer`.
 //!
-//! This file is meant to be included as part of the `buffer::text_buffer` module
-//! and adds editing-focused methods via an `impl TextBuffer` block.
-//!
-//! Design goals:
-//! - keep public methods small and composable
-//! - use char indices (ropey’s primary indexing model) internally
-//! - return updated `Pos`/`Selection` to make call sites explicit
-//! - support both single edits and batched edit application
+//! Methods in this module mutate the rope and return explicit cursor or
+//! selection results so callers can keep editor state in sync.
 
 use crate::buffer::{Edit, EditBatchSummary, Pos, Selection, TextBuffer};
 use crate::{SOFT_TAB, SOFT_TAB_WIDTH};

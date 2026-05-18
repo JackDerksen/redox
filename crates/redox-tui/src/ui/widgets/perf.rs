@@ -2,12 +2,19 @@ use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
 use crate::ui::widgets::popup::{
-    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view,
 };
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const PERF_FRAME_BUDGET_MS: f32 = 1_000.0 / 60.0;
+const PERF_BUDGET_ROW: u16 = 0;
+const PERF_HEADER_ROW: u16 = 1;
+const PERF_FIRST_METRIC_ROW: u16 = 2;
+const PERF_LABEL_WIDTH: u16 = 6;
+const PERF_VALUE_COL: u16 = 8;
+const PERF_VALUE_WIDTH: u16 = 5;
+const PERF_BAR_COL: u16 = 16;
 
 struct PerfRow {
     label: &'static str,
@@ -16,13 +23,7 @@ struct PerfRow {
     hot_ms: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PerfPopupLayout {
-    pub x: u16,
-    pub y: u16,
-    pub inner_w: u16,
-    pub inner_h: u16,
-}
+pub type PerfPopupLayout = PopupLayout;
 
 pub fn draw_perf_popup_view(
     style: UiStyle,
@@ -40,11 +41,7 @@ pub fn draw_perf_popup_view(
         inner_w,
         inner_h,
         "performance",
-        PopupChrome {
-            border: style.perf.border,
-            title: style.perf.title,
-            fill: style.perf.text,
-        },
+        PopupChrome::perf(style),
     )?;
     let mut view = popup_window_view(window, layout);
 
@@ -55,10 +52,10 @@ pub fn draw_perf_popup_view(
     let left = 2u16.min(inner_w.saturating_sub(1));
     let max_w = inner_w.saturating_sub(left);
     let Some(stats) = popup.stats else {
-        if inner_h > 1 {
+        if inner_h > 0 {
             write_line(
                 &mut view,
-                1,
+                PERF_BUDGET_ROW,
                 left,
                 "collecting frame stats...",
                 style.perf.text,
@@ -68,44 +65,70 @@ pub fn draw_perf_popup_view(
         return Ok(());
     };
 
-    if inner_h > 1 {
+    if inner_h > PERF_BUDGET_ROW {
         let budget = format!("budget {:>4.1} ms", PERF_FRAME_BUDGET_MS);
-        write_line(&mut view, 1, left, &budget, style.perf.dim, max_w)?;
-    }
-    if inner_h > 3 {
-        write_line(&mut view, 3, left, "metric", style.perf.label, max_w)?;
         write_line(
             &mut view,
-            3,
-            left.saturating_add(10),
-            "avg",
+            PERF_BUDGET_ROW,
+            left,
+            &budget,
+            style.perf.dim,
+            max_w,
+        )?;
+    }
+    if inner_h > PERF_HEADER_ROW {
+        write_line(
+            &mut view,
+            PERF_HEADER_ROW,
+            left,
+            "metric",
+            style.perf.label,
+            max_w,
+        )?;
+        write_line(
+            &mut view,
+            PERF_HEADER_ROW,
+            left.saturating_add(PERF_VALUE_COL),
+            &format!("{:>width$}", "avg", width = PERF_VALUE_WIDTH as usize),
             style.perf.label,
             max_w,
         )?;
     }
 
-    let bar_col = left.saturating_add(19);
+    let rows = perf_rows(stats);
+    let bar_col = left.saturating_add(PERF_BAR_COL);
     let bar_w = inner_w.saturating_sub(bar_col).saturating_sub(2);
-    for (idx, row) in perf_rows(stats).iter().enumerate() {
-        let y = 4u16.saturating_add(idx as u16);
+    for (idx, row) in rows.iter().enumerate() {
+        let y = PERF_FIRST_METRIC_ROW.saturating_add(idx as u16);
         if y >= inner_h {
             break;
         }
 
-        write_line(&mut view, y, left, row.label, style.perf.label, 8)?;
-        let value = format!("{:>5.1}", row.value_ms);
         write_line(
             &mut view,
             y,
-            left.saturating_add(10),
+            left,
+            row.label,
+            style.perf.label,
+            PERF_LABEL_WIDTH,
+        )?;
+        let value = format!(
+            "{:>width$.1}",
+            row.value_ms,
+            width = PERF_VALUE_WIDTH as usize
+        );
+        write_line(
+            &mut view,
+            y,
+            left.saturating_add(PERF_VALUE_COL),
             &value,
             style.perf.value,
-            6,
+            PERF_VALUE_WIDTH,
         )?;
         draw_bar(&mut view, y, bar_col, bar_w, row, style)?;
     }
 
-    let events_row = 4u16.saturating_add(perf_rows(stats).len() as u16);
+    let events_row = PERF_FIRST_METRIC_ROW.saturating_add(rows.len() as u16);
     if events_row < inner_h {
         let events = format!("events {:>3}", stats.event_count);
         write_line(&mut view, events_row, left, &events, style.perf.dim, max_w)?;
@@ -128,21 +151,13 @@ pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, 
 
 pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupLayout {
     let (inner_w, inner_h) = perf_popup_inner_size(term_w, term_h, style);
-    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    let x = term_w.saturating_sub(inner_w.saturating_add(2));
     PerfPopupLayout {
         x,
-        y,
+        y: 0,
         inner_w,
         inner_h,
     }
-}
-
-pub fn perf_popup_occludes_cursor(layout: PerfPopupLayout, x: u16, y: u16) -> bool {
-    let popup_w = layout.inner_w.saturating_add(2);
-    let popup_h = layout.inner_h.saturating_add(2);
-    let x_end = layout.x.saturating_add(popup_w);
-    let y_end = layout.y.saturating_add(popup_h);
-    x >= layout.x && x < x_end && y >= layout.y && y < y_end
 }
 
 fn perf_rows(stats: FramePerfStats) -> [PerfRow; 10] {
@@ -259,21 +274,32 @@ fn write_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{PerfPopupLayout, perf_popup_occludes_cursor};
+    use super::perf_popup_layout;
+    use crate::ui::UiStyle;
+    use crate::ui::widgets::popup::{PopupLayout, popup_occludes_cursor};
+
+    #[test]
+    fn perf_popup_layout_anchors_to_top_right() {
+        let layout = perf_popup_layout(100, 40, UiStyle::default());
+        assert_eq!(layout.y, 0);
+        assert_eq!(layout.x + layout.inner_w + 2, 100);
+        assert_eq!(layout.inner_w, 42);
+        assert_eq!(layout.inner_h, 11);
+    }
 
     #[test]
     fn perf_popup_occludes_cursor_inside_frame_bounds() {
-        let layout = PerfPopupLayout {
+        let layout = PopupLayout {
             x: 20,
             y: 0,
             inner_w: 10,
             inner_h: 5,
         };
 
-        assert!(perf_popup_occludes_cursor(layout, 20, 0));
-        assert!(perf_popup_occludes_cursor(layout, 31, 6));
-        assert!(!perf_popup_occludes_cursor(layout, 19, 0));
-        assert!(!perf_popup_occludes_cursor(layout, 32, 6));
-        assert!(!perf_popup_occludes_cursor(layout, 31, 7));
+        assert!(popup_occludes_cursor(layout, 20, 0));
+        assert!(popup_occludes_cursor(layout, 31, 6));
+        assert!(!popup_occludes_cursor(layout, 19, 0));
+        assert!(!popup_occludes_cursor(layout, 32, 6));
+        assert!(!popup_occludes_cursor(layout, 31, 7));
     }
 }

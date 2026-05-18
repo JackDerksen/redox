@@ -18,14 +18,7 @@ pub fn draw_lsp_marketplace_popup(
     window: &mut dyn Window,
 ) -> minui::Result<()> {
     let (term_w, term_h) = window.get_size();
-    let (inner_w, inner_h) = popup_inner_size(
-        term_w,
-        term_h,
-        style.lsp_marketplace.width_percent,
-        style.lsp_marketplace.height_percent,
-        style.lsp_marketplace.min_width,
-        style.lsp_marketplace.min_height,
-    );
+    let (inner_w, inner_h) = lsp_marketplace_popup_inner_size(term_w, term_h, style);
     let layout = draw_anchored_popup_frame(
         window,
         term_w,
@@ -33,11 +26,7 @@ pub fn draw_lsp_marketplace_popup(
         inner_w,
         inner_h,
         LSP_TITLE,
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: style.finder.text,
-        },
+        PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
 
@@ -53,6 +42,17 @@ pub fn draw_lsp_marketplace_popup(
     row = draw_marketplace_column_header(&mut view, style, row, shared_prefix_w, language_w)?;
     let _ = draw_marketplace_entries(&mut view, popup, style, row, shared_prefix_w, language_w)?;
     Ok(())
+}
+
+pub fn lsp_marketplace_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+    popup_inner_size(
+        term_w,
+        term_h,
+        style.lsp_marketplace.width_percent,
+        style.lsp_marketplace.height_percent,
+        style.lsp_marketplace.min_width,
+        style.lsp_marketplace.min_height,
+    )
 }
 
 fn draw_section_header(

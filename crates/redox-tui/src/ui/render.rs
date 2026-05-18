@@ -1,22 +1,9 @@
 //! UI helpers for rendering the editor viewport.
 //!
-//! Goals (current):
-//! - Provide a small viewport abstraction for rendering a `TextBuffer` into a MinUI `Window`.
-//! - Be reasonably efficient for large files / very long lines (still some work to do here).
-//! - Use grapheme clusters for horizontal slicing (so combined characters stay intact).
-//! - Clip by terminal *cell width* (so wide glyphs don’t overflow the viewport).
-//! - **Do not soft wrap**: long lines continue off-screen (like many modal editors).
-//!
-//! Notes:
-//! - This module is UI-only and should not leak into `redox-core`.
-//! - Allocations are intentionally kept bounded to the visible rows.
-//! - The grapheme cache is an optimization (it avoids re-segmenting the same line)
-//!   every frame when you are not editing the buffer.
-//!
-//! Future work:
-//! - Cursor rendering, selection, and incremental updates.
+//! Rendering keeps allocations bounded to visible rows, clips by terminal cell
+//! width, and leaves long lines unwrapped.
 
-use minui::{TabPolicy, Window, cell_width};
+use minui::{TabPolicy, cell_width};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -39,13 +26,6 @@ pub struct TextViewport {
     pub scroll_y: usize,
     pub width: u16,
     pub height: u16,
-}
-
-impl TextViewport {
-    // Intentionally no `from_window(...)` constructor for now.
-    //
-    // The current code constructs `TextViewport` directly at call sites. If/when
-    // this helper is needed again, it can be reintroduced.
 }
 
 /// Snapshot of visible text lines for the current frame.
@@ -119,12 +99,10 @@ impl GraphemeCache {
             .iter()
             .position(|e| e.line_idx == line_idx && e.hash == h)
         {
-            // Bump usage
             self.entries[pos].last_used_tick = self.tick;
             return &self.entries[pos].graphemes;
         }
 
-        // Miss: segment and insert.
         let line = buffer.line_slice(line_idx);
         let graphemes: Vec<Box<str>> = if let Some(line_text) = line.as_str() {
             line_text
@@ -140,7 +118,6 @@ impl GraphemeCache {
         };
 
         if self.entries.len() >= self.max_entries {
-            // Evict least recently used
             if let Some((evict_idx, _)) = self
                 .entries
                 .iter()
@@ -158,19 +135,9 @@ impl GraphemeCache {
             last_used_tick: self.tick,
         });
 
-        // Safe: we just pushed one entry, so it exists.
         let last = self.entries.len() - 1;
         &self.entries[last].graphemes
     }
-}
-
-/// Draw a snapshot into the window.
-#[allow(dead_code)]
-pub fn draw_snapshot(snapshot: &RenderSnapshot, window: &mut dyn Window) -> minui::Result<()> {
-    for (row, line) in snapshot.lines.iter().enumerate() {
-        window.write_str(row as u16, 0, line)?;
-    }
-    Ok(())
 }
 
 /// Build a *non-wrapping* snapshot of visible **document lines**.
@@ -209,86 +176,13 @@ pub fn snapshot_lines_wrapped_cached(
         } else {
             let graphemes = cache.graphemes_for_line(buffer, line_idx);
 
-            // Horizontal scroll is in terminal cells.
             let start_g = skip_graphemes_by_cells(graphemes, viewport.scroll_x);
-
-            // Clip to viewport width (no wrapping).
             let visible = clip_graphemes_to_cells(&graphemes[start_g..], max_cells);
             out_rows.push(visible);
         }
     }
 
     RenderSnapshot::new(first_line, out_rows)
-}
-
-/// Build a grapheme-aware + cell-width-clipped snapshot of visible lines.
-///
-/// This variant uses an internal cache for grapheme boundaries. If I later don't
-/// want caching, use [`snapshot_lines_uncached`].
-/// Currently unused; the wrapped variant is preferred.
-#[allow(dead_code)]
-pub fn snapshot_lines_cached(
-    buffer: &TextBuffer,
-    viewport: &TextViewport,
-    cache: &mut GraphemeCache,
-) -> RenderSnapshot {
-    let mut lines = Vec::with_capacity(viewport.height as usize);
-    let first_line = viewport.scroll_y;
-    let last_line = first_line.saturating_add(viewport.height as usize);
-
-    let max_cells = viewport.width as usize;
-
-    for line_idx in first_line..last_line {
-        if line_idx >= buffer.len_lines() {
-            break;
-        }
-
-        let graphemes = cache.graphemes_for_line(buffer, line_idx);
-
-        // Horizontal scroll is in grapheme units.
-        let start_g = viewport.scroll_x.min(graphemes.len());
-
-        let visible = clip_graphemes_to_cells(&graphemes[start_g..], max_cells);
-        lines.push(visible);
-    }
-
-    RenderSnapshot::new(first_line, lines)
-}
-
-/// Build a grapheme-aware + cell-width-clipped snapshot of visible lines (no cache).
-#[allow(dead_code)]
-pub fn snapshot_lines_uncached(buffer: &TextBuffer, viewport: &TextViewport) -> RenderSnapshot {
-    let mut lines = Vec::with_capacity(viewport.height as usize);
-    let first_line = viewport.scroll_y;
-    let last_line = first_line.saturating_add(viewport.height as usize);
-
-    let max_cells = viewport.width as usize;
-
-    for line_idx in first_line..last_line {
-        if line_idx >= buffer.len_lines() {
-            break;
-        }
-
-        let line_text = buffer.line_string(line_idx);
-        let graphemes: Vec<&str> = line_text.graphemes(true).collect();
-
-        let start_g = viewport.scroll_x.min(graphemes.len());
-        let visible = clip_graphemes_to_cells_ref(&graphemes[start_g..], max_cells);
-
-        lines.push(visible);
-    }
-
-    RenderSnapshot::new(first_line, lines)
-}
-
-/// Backwards-compatible entry point used by `main.rs`.
-///
-/// Uses uncached rendering by default. If I later want caching, switch call sites to
-/// [`snapshot_lines_cached`] and store a `GraphemeCache` in your app state.
-/// Currently unused (the wrapped variant is preferred).
-#[allow(dead_code)]
-pub fn snapshot_lines(buffer: &TextBuffer, viewport: &TextViewport) -> RenderSnapshot {
-    snapshot_lines_uncached(buffer, viewport)
 }
 
 /// Skip graphemes from the start of a line until at least `skip_cells` terminal cells have been skipped.
@@ -328,7 +222,6 @@ fn clip_graphemes_to_cells(graphemes: &[Box<str>], max_cells: usize) -> String {
         return String::new();
     }
 
-    // Build output with bounded width.
     let mut out = String::new();
     let mut used = 0usize;
 
@@ -339,45 +232,11 @@ fn clip_graphemes_to_cells(graphemes: &[Box<str>], max_cells: usize) -> String {
 
         let w = cell_width(g, TabPolicy::Fixed(4)) as usize;
 
-        // If it doesn't fit, stop (don’t overrun).
         if w > 0 && used + w > max_cells {
             break;
         }
 
         if g.as_ref() == "\t" {
-            out.extend(std::iter::repeat_n(' ', w));
-        } else {
-            out.push_str(g);
-        }
-        used = used.saturating_add(w);
-    }
-
-    out
-}
-
-/// Clip uncached graphemes (`&str`) to a maximum number of terminal cells.
-///
-/// Same behavior as [`clip_graphemes_to_cells`].
-#[allow(dead_code)]
-fn clip_graphemes_to_cells_ref(graphemes: &[&str], max_cells: usize) -> String {
-    if max_cells == 0 || graphemes.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    let mut used = 0usize;
-
-    for g in graphemes {
-        if used >= max_cells {
-            break;
-        }
-
-        let w = cell_width(g, TabPolicy::Fixed(4)) as usize;
-        if w > 0 && used + w > max_cells {
-            break;
-        }
-
-        if *g == "\t" {
             out.extend(std::iter::repeat_n(' ', w));
         } else {
             out.push_str(g);

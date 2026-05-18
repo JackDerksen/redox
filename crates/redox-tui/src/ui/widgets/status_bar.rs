@@ -169,29 +169,24 @@ impl StatusModule {
     }
 
     fn width(&self) -> u16 {
-        self.content_width() + (STATUS_MODULE_EDGE_WIDTH * 2)
+        status_module_width(self.content_width())
     }
 
     fn into_segments(self) -> Vec<Segment> {
         let content_width = self.content_width();
-        let mut segments = vec![
-            Segment::new(STATUS_MODULE_EDGE_LEFT)
-                .with_color(self.colors.wrapper)
-                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-        ];
-
-        if let Some(separator_colors) = self.separator_colors {
+        let parts = if let Some(separator_colors) = self.separator_colors {
             let mut first = true;
+            let mut parts = Vec::new();
             for part in self.content.split(STATUS_MODULE_SEPARATOR) {
                 if !first {
-                    segments.push(
+                    parts.push(
                         Segment::new(STATUS_MODULE_SEPARATOR)
                             .with_color(separator_colors)
                             .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
                     );
                 }
                 if !part.is_empty() {
-                    segments.push(
+                    parts.push(
                         Segment::new(part)
                             .with_color(self.colors.content)
                             .with_align(self.content_align)
@@ -200,22 +195,37 @@ impl StatusModule {
                 }
                 first = false;
             }
+            parts
         } else {
-            segments.push(
+            vec![
                 Segment::new(self.content)
                     .with_color(self.colors.content)
                     .with_align(self.content_align)
                     .with_min_width(content_width),
-            );
-        }
+            ]
+        };
 
-        segments.push(
-            Segment::new(STATUS_MODULE_EDGE_RIGHT)
-                .with_color(self.colors.wrapper)
-                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-        );
-        segments
+        status_module_segments(self.colors, parts)
     }
+}
+
+fn status_module_width(content_width: u16) -> u16 {
+    content_width + (STATUS_MODULE_EDGE_WIDTH * 2)
+}
+
+fn status_module_segments(colors: StatusModuleColors, parts: Vec<Segment>) -> Vec<Segment> {
+    let mut segments = vec![
+        Segment::new(STATUS_MODULE_EDGE_LEFT)
+            .with_color(colors.wrapper)
+            .with_min_width(STATUS_MODULE_EDGE_WIDTH),
+    ];
+    segments.extend(parts);
+    segments.push(
+        Segment::new(STATUS_MODULE_EDGE_RIGHT)
+            .with_color(colors.wrapper)
+            .with_min_width(STATUS_MODULE_EDGE_WIDTH),
+    );
+    segments
 }
 
 /// Segment-based status bar widget.
@@ -261,6 +271,11 @@ impl EditorStatusBar {
         self
     }
 
+    fn add_segments(mut self, segments: impl IntoIterator<Item = Segment>) -> Self {
+        self.segments.extend(segments);
+        self
+    }
+
     fn add_module(mut self, module: StatusModule) -> Self {
         self.segments.extend(module.into_segments());
         self
@@ -279,8 +294,6 @@ impl EditorStatusBar {
         }
 
         if let Some(bg) = self.bg_colors {
-            // Fill full line with spaces in the background colour.
-            // Matches MinUI's approach.
             let full = " ".repeat(width as usize);
             window.write_str_colored(y, 0, &full, bg)?;
         }
@@ -398,7 +411,6 @@ impl EditorStatusBar {
                 break;
             }
 
-            // Clamp region to window width.
             let region_w = region_w.min(width - x);
 
             if region_w > 0 {
@@ -440,18 +452,25 @@ impl Widget for EditorStatusBar {
 
 /// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
-    let (mode_label, mode_colors) = status_bar_mode_presentation(
-        state.mode,
-        state.rain_is_active(),
-        state.finder_popup().is_some(),
-        state.pin_selector_popup().is_some(),
-        style,
-    );
+    let buffer_id = state.statusline_buffer_id();
+    let Some(buffer) = state.session.buffer(buffer_id) else {
+        return EditorStatusBar::new()
+            .with_height(STATUS_BAR_HEIGHT_CELLS)
+            .with_bg(style.status_line.bar);
+    };
+    let Some(meta) = state.session.meta(buffer_id) else {
+        return EditorStatusBar::new()
+            .with_height(STATUS_BAR_HEIGHT_CELLS)
+            .with_bg(style.status_line.bar);
+    };
+
+    let (mode_label, mode_colors) =
+        status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style);
 
     let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
     let mode_text = mode_module.wrapped_text();
     let mode_width = mode_text.chars().count() as u16;
-    let metadata_module = metadata_text(state).map(|text| {
+    let metadata_module = metadata_text(state, buffer_id).map(|text| {
         StatusModule::new(text, style.status_line.metadata)
             .with_separator_color(style.status_line.metadata.wrapper)
     });
@@ -461,20 +480,13 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .unwrap_or(0);
     let left_text_width = mode_width.saturating_add(metadata_module_width);
 
-    let center_text = if state.finder_popup().is_some() {
-        " finder ".to_string()
-    } else if state.pin_selector_popup().is_some() {
-        " pinboard ".to_string()
-    } else if state.lsp_marketplace_popup().is_some() {
-        " lsp ".to_string()
-    } else if state.diagnostics_popup().is_some() {
-        " diagnostics ".to_string()
-    } else if state.explorer_popup().is_some() {
-        " explorer ".to_string()
+    let center_text = if let Some(label) = state.statusline_popup_label() {
+        format!(" {label} ")
     } else {
-        let mut name = state.active_display_name().to_string();
-        let load = state.session.active_buffer_load_status();
-        if load.phase == BufferLoadPhase::Loading {
+        let mut name = meta.display_name.to_string();
+        if let Some(load) = state.session.buffer_load_status(buffer_id)
+            && load.phase == BufferLoadPhase::Loading
+        {
             let progress = match load.total_bytes {
                 Some(total) if total > 0 => {
                     let pct = (load.bytes_loaded.saturating_mul(100) / total).min(100);
@@ -487,8 +499,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         format!(" {name} ")
     };
 
-    let cursor = state.active_cursor_pos();
-    let buffer = state.session.active_buffer();
+    let cursor = state.cursor_pos_for_buffer(buffer_id);
     let total_lines = buffer.len_lines();
     let (scroll_glyph, scroll_colors) = scroll_minimap_cell(
         cursor.line,
@@ -502,12 +513,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let right_module_colors = style.status_line.coords;
     let coords_width = coords_text.chars().count() as u16;
     let scroll_width = scroll_glyph.chars().count() as u16;
-    let coords_minimap_width = STATUS_MODULE_EDGE_WIDTH
-        + coords_width
-        + STATUS_MODULE_SEPARATOR_WIDTH
-        + scroll_width
-        + STATUS_MODULE_EDGE_WIDTH;
-    let dirty_width = u16::from(state.active_dirty());
+    let coords_minimap_width =
+        status_module_width(coords_width + STATUS_MODULE_SEPARATOR_WIDTH + scroll_width);
+    let dirty_width = u16::from(meta.dirty);
     let right_module_width = dirty_width + DIRTY_GAP_WIDTH + coords_minimap_width;
     let side_reserve_width = balanced_status_side_width(
         left_text_width,
@@ -546,7 +554,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_path_clip(),
         )
         .add_segment(Segment::spacer(right_padding_width))
-        .add_segment(if state.active_dirty() {
+        .add_segment(if meta.dirty {
             Segment::new("+")
                 .with_color(style.status_line.dirty)
                 .with_min_width(1)
@@ -554,78 +562,54 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
             Segment::spacer(0)
         })
         .add_segment(Segment::spacer(DIRTY_GAP_WIDTH))
-        .add_segment(
-            Segment::new(STATUS_MODULE_EDGE_LEFT)
-                .with_color(right_module_colors.wrapper)
-                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-        )
-        .add_segment(
-            Segment::new(coords_text)
-                .with_color(right_module_colors.content)
-                .with_align(Align::Right)
-                .with_min_width(coords_width),
-        )
-        .add_segment(
-            Segment::new(STATUS_MODULE_SEPARATOR)
-                .with_color(right_module_colors.wrapper)
-                .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
-        )
-        .add_segment(
-            Segment::new(scroll_glyph)
-                .with_color(scroll_colors)
-                .with_min_width(scroll_width),
-        )
-        .add_segment(
-            Segment::new(STATUS_MODULE_EDGE_RIGHT)
-                .with_color(right_module_colors.wrapper)
-                .with_min_width(STATUS_MODULE_EDGE_WIDTH),
-        );
+        .add_segments(status_module_segments(
+            right_module_colors,
+            vec![
+                Segment::new(coords_text)
+                    .with_color(right_module_colors.content)
+                    .with_align(Align::Right)
+                    .with_min_width(coords_width),
+                Segment::new(STATUS_MODULE_SEPARATOR)
+                    .with_color(right_module_colors.wrapper)
+                    .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
+                Segment::new(scroll_glyph)
+                    .with_color(scroll_colors)
+                    .with_min_width(scroll_width),
+            ],
+        ));
 
     status_bar
 }
 
 fn visual_column(line: &str, char_col: usize) -> usize {
-    let graphemes: Vec<&str> = line.graphemes(true).collect();
-    let cursor_g = char_col_to_grapheme_index(&graphemes, char_col);
-    graphemes[..cursor_g.min(graphemes.len())]
-        .iter()
-        .map(|g| cell_width(*g, TabPolicy::Fixed(4)) as usize)
-        .sum()
-}
-
-fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {
-    if cursor_col_chars == 0 {
+    if char_col == 0 {
         return 0;
     }
 
+    let mut width = 0usize;
     let mut chars_seen = 0usize;
-    for (i, grapheme) in graphemes.iter().enumerate() {
+    for grapheme in line.graphemes(true) {
         let grapheme_chars = grapheme.chars().count();
-        if chars_seen + grapheme_chars > cursor_col_chars {
-            return i;
+        if chars_seen + grapheme_chars > char_col {
+            return width;
         }
+        width += cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
         chars_seen += grapheme_chars;
-        if chars_seen == cursor_col_chars {
-            return i + 1;
+        if chars_seen == char_col {
+            return width;
         }
     }
 
-    graphemes.len()
+    width
 }
 
 fn status_bar_mode_presentation(
     mode: EditorMode,
     rain_active: bool,
-    finder_visible: bool,
-    pinboard_visible: bool,
     style: UiStyle,
 ) -> (&'static str, ColorPair) {
     if rain_active {
         return ("RAIN", style.status_line.mode_command);
-    }
-
-    if finder_visible || pinboard_visible {
-        return ("NORMAL", style.status_line.mode_normal);
     }
 
     match mode {
@@ -646,8 +630,11 @@ fn status_bar_mode_presentation(
     }
 }
 
-fn metadata_text(state: &EditorState) -> Option<String> {
-    match (git_diff_summary(state), diagnostic_summary_text(state)) {
+fn metadata_text(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+    match (
+        git_diff_summary(state, buffer_id),
+        diagnostic_summary_text(state, buffer_id),
+    ) {
         (Some(git), Some(diagnostics)) => {
             Some(format!("{git}{STATUS_MODULE_SEPARATOR}{diagnostics}"))
         }
@@ -657,8 +644,8 @@ fn metadata_text(state: &EditorState) -> Option<String> {
     }
 }
 
-fn git_diff_summary(state: &EditorState) -> Option<String> {
-    let Some(diff) = state.active_git_diff() else {
+fn git_diff_summary(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+    let Some(diff) = state.git_diff_for_buffer(buffer_id) else {
         return None;
     };
     if diff.stats.is_empty() {
@@ -679,8 +666,8 @@ fn git_diff_summary(state: &EditorState) -> Option<String> {
     Some(parts.join(""))
 }
 
-fn diagnostic_summary_text(state: &EditorState) -> Option<String> {
-    let summary = state.active_diagnostic_summary();
+fn diagnostic_summary_text(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+    let summary = state.diagnostic_summary_for_buffer(buffer_id);
     if summary.is_empty() {
         return None;
     }

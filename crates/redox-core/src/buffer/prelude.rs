@@ -1,8 +1,7 @@
 //! Convenience re-exports for the `buffer` module.
 //!
-//! The plan:
-//! - `use redox-core::buffer::prelude::*;` in higher-level editor code.
-//! - keep call sites clean without importing many individual symbols.
+//! Downstream crates can `use redox_core::buffer::prelude::*` when they need the
+//! common buffer types without importing each symbol individually.
 
 pub use super::Edit;
 pub use super::Pos;

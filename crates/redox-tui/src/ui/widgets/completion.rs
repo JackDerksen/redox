@@ -2,7 +2,9 @@ use minui::{ColorPair, TabPolicy, Window, cell_width};
 
 use crate::app::{CompletionEntry, CompletionPopup};
 use crate::ui::style::SyntaxRole;
-use crate::ui::widgets::popup::wrap_text_to_cells;
+use crate::ui::widgets::popup::{
+    PopupChrome, clip_text_to_cells, draw_popup_frame_at, wrap_text_to_cells,
+};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const COMPLETION_VISIBLE_ROWS: usize = 8;
@@ -69,7 +71,15 @@ pub fn draw_completion_popup(
     };
     let x = anchor_x.min(term_w.saturating_sub(width));
 
-    draw_frame(window, x, y, width, frame_h, style)?;
+    draw_popup_frame_at(
+        window,
+        x,
+        y,
+        width.saturating_sub(2),
+        frame_h.saturating_sub(2),
+        "",
+        PopupChrome::finder(style),
+    )?;
     draw_entries(window, popup, style, x, y, layout, capacity)?;
     if !documentation.is_empty() {
         draw_documentation(window, &documentation, style, x, y, width, capacity)?;
@@ -249,41 +259,6 @@ fn popup_visible_len(popup: &CompletionPopup) -> usize {
         .min(COMPLETION_VISIBLE_ROWS)
 }
 
-fn draw_frame(
-    window: &mut dyn Window,
-    x: u16,
-    y: u16,
-    width: u16,
-    height: u16,
-    style: UiStyle,
-) -> minui::Result<()> {
-    let border = style.finder.border;
-    let fill = style.finder.text;
-    window.write_str_colored(
-        y,
-        x,
-        &format!("╭{}╮", "─".repeat(width.saturating_sub(2) as usize)),
-        border,
-    )?;
-    for row in 1..height.saturating_sub(1) {
-        window.write_str_colored(y + row, x, "│", border)?;
-        window.write_str_colored(
-            y + row,
-            x + 1,
-            &" ".repeat(width.saturating_sub(2) as usize),
-            fill,
-        )?;
-        window.write_str_colored(y + row, x + width.saturating_sub(1), "│", border)?;
-    }
-    window.write_str_colored(
-        y + height.saturating_sub(1),
-        x,
-        &format!("╰{}╯", "─".repeat(width.saturating_sub(2) as usize)),
-        border,
-    )?;
-    Ok(())
-}
-
 fn draw_entries(
     window: &mut dyn Window,
     popup: &CompletionPopup,
@@ -427,20 +402,6 @@ fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool
     } else {
         base
     }
-}
-
-fn clip_text_to_cells(text: &str, max_cells: usize) -> String {
-    let mut out = String::new();
-    let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize;
-        if width.saturating_add(ch_width) > max_cells {
-            break;
-        }
-        out.push(ch);
-        width = width.saturating_add(ch_width);
-    }
-    out
 }
 
 fn text_width(text: &str) -> usize {

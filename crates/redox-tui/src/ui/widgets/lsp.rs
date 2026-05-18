@@ -72,11 +72,7 @@ pub fn draw_symbol_info_popup(
         content_width,
         inner_h,
         &popup.title,
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: style.finder.text,
-        },
+        PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
     for (idx, line) in display_lines
@@ -625,11 +621,7 @@ pub fn draw_diagnostics_popup(
         inner_w,
         inner_h,
         DIAGNOSTICS_TITLE,
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: style.finder.text,
-        },
+        PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
     let summary = format!("{} diagnostics", popup.entries.len());
@@ -815,11 +807,7 @@ pub fn draw_code_actions_popup(
         inner_w,
         inner_h,
         CODE_ACTIONS_TITLE,
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: style.finder.text,
-        },
+        PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
     let summary = format!("{} actions", popup.entries.len());

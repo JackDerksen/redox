@@ -20,6 +20,7 @@ const FULL_LOAD_CHUNK_BYTES: usize = 64 * 1024;
 pub struct BufferId(u64);
 
 impl BufferId {
+    /// Return the stable numeric identifier for this buffer.
     #[inline]
     pub fn get(self) -> u64 {
         self.0
@@ -38,41 +39,62 @@ pub enum BufferKind {
 /// Buffer metadata tracked by session management.
 #[derive(Debug, Clone)]
 pub struct BufferMeta {
+    /// Stable identifier for the buffer.
     pub id: BufferId,
+    /// Whether the buffer is file-backed or an ephemeral UI surface.
     pub kind: BufferKind,
+    /// Human-readable name shown by editor frontends.
     pub display_name: String,
+    /// Filesystem path for file-backed buffers.
     pub path: Option<PathBuf>,
+    /// Whether current contents differ from the last clean snapshot.
     pub dirty: bool,
+    /// Whether this buffer represents a missing path that has not been saved yet.
     pub is_new_file: bool,
 }
 
 /// Listing row for buffer UIs such as `:ls`.
 #[derive(Debug, Clone)]
 pub struct BufferSummary {
+    /// Stable identifier for the buffer.
     pub id: BufferId,
+    /// Whether the buffer is file-backed or an ephemeral UI surface.
     pub kind: BufferKind,
+    /// Human-readable name shown by editor frontends.
     pub display_name: String,
+    /// Filesystem path for file-backed buffers.
     pub path: Option<PathBuf>,
+    /// Whether current contents differ from the last clean snapshot.
     pub dirty: bool,
+    /// Whether this buffer represents a missing path that has not been saved yet.
     pub is_new_file: bool,
+    /// Whether this row describes the active buffer.
     pub is_active: bool,
 }
 
 /// Loading phase for a file-backed buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferLoadPhase {
+    /// The buffer is not currently loading from disk.
     NotLoading,
+    /// Incremental file loading is still in progress.
     Loading,
+    /// File loading completed successfully.
     Complete,
+    /// File loading failed.
     Failed,
 }
 
 /// Snapshot status for file loading progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferLoadStatus {
+    /// Current loading phase.
     pub phase: BufferLoadPhase,
+    /// Number of bytes loaded so far.
     pub bytes_loaded: usize,
+    /// Total file size in bytes, when known.
     pub total_bytes: Option<usize>,
+    /// Failure detail when `phase` is [`BufferLoadPhase::Failed`].
     pub error: Option<String>,
 }
 
@@ -109,9 +131,12 @@ pub struct EditorSession {
     launch_dir: PathBuf,
 }
 
+/// Result of reconciling file-backed buffers with paths discovered on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilePathSyncResult {
+    /// Buffers whose path metadata was updated.
     pub remapped_ids: Vec<BufferId>,
+    /// Buffers closed because their backing paths disappeared.
     pub closed_ids: Vec<BufferId>,
 }
 

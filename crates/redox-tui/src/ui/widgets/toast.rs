@@ -38,11 +38,6 @@ pub fn draw_status_toast(
         return Ok(None);
     };
 
-    let chrome = PopupChrome {
-        border: style.command_line.border,
-        title: style.command_line.title,
-        fill: style.command_line.text,
-    };
     let layout = draw_popup_frame_at(
         window,
         toast.x,
@@ -50,7 +45,7 @@ pub fn draw_status_toast(
         toast.inner_w,
         toast.inner_h,
         "",
-        chrome,
+        PopupChrome::command_line(style),
     )?;
     let mut view = popup_window_view(window, layout);
     for (row, line) in toast.lines.iter().enumerate() {
@@ -67,15 +62,6 @@ pub fn draw_status_toast(
         )?;
     }
     Ok(Some(layout))
-}
-
-pub fn status_toast_occludes_cursor(layout: PopupLayout, x: u16, y: u16) -> bool {
-    let popup_w = layout.inner_w.saturating_add(2);
-    let popup_h = layout.inner_h.saturating_add(2);
-    x >= layout.x
-        && x < layout.x.saturating_add(popup_w)
-        && y >= layout.y
-        && y < layout.y.saturating_add(popup_h)
 }
 
 fn status_toast_perf_popup_layout(

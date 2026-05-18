@@ -820,14 +820,6 @@ impl EditorState {
         }
     }
 
-    pub fn active_dirty(&self) -> bool {
-        self.session.active_meta().dirty
-    }
-
-    pub fn active_display_name(&self) -> &str {
-        &self.session.active_meta().display_name
-    }
-
     pub fn active_git_diff(&self) -> Option<&GitDiffSnapshot> {
         self.git.diff_for(self.session.active_id())
     }
@@ -846,6 +838,60 @@ impl EditorState {
             .get(&id)
             .map(|view| view.cursor.cursor)
             .unwrap_or(Pos::zero())
+    }
+
+    pub fn cursor_pos_for_buffer(&self, buffer_id: BufferId) -> Pos {
+        self.views
+            .get(&buffer_id)
+            .map(|view| view.cursor.cursor)
+            .unwrap_or(Pos::zero())
+    }
+
+    pub fn statusline_buffer_id(&self) -> BufferId {
+        self.explorer_background_buffer_id()
+            .or_else(|| self.about_background_buffer_id())
+            .unwrap_or_else(|| self.session.active_id())
+    }
+
+    pub fn statusline_mode(&self) -> EditorMode {
+        match self.mode {
+            EditorMode::Finder
+            | EditorMode::PinSelect
+            | EditorMode::LspMarketplace
+            | EditorMode::DiagnosticsList => EditorMode::Normal,
+            EditorMode::CodeActions | EditorMode::SymbolInfo => self
+                .lsp_statusline_return_mode()
+                .unwrap_or(EditorMode::Normal),
+            mode => mode,
+        }
+    }
+
+    pub fn statusline_popup_label(&self) -> Option<&'static str> {
+        if matches!(self.mode, EditorMode::Command) {
+            Some("command")
+        } else if matches!(self.mode, EditorMode::Search) {
+            Some("search")
+        } else if self.finder_popup().is_some() {
+            Some("finder")
+        } else if self.pin_selector_popup().is_some() {
+            Some("pinboard")
+        } else if self.code_actions_popup().is_some() {
+            Some("actions")
+        } else if self.diagnostics_popup().is_some() {
+            Some("diagnostics")
+        } else if self.lsp_marketplace_popup().is_some() {
+            Some("lsp")
+        } else if self.symbol_info_popup_is_visible() {
+            Some("info")
+        } else if self.about_popup().is_some() {
+            Some("about")
+        } else if self.explorer_popup().is_some() {
+            Some("explorer")
+        } else if self.perf_popup().is_some() {
+            Some("performance")
+        } else {
+            None
+        }
     }
 
     pub fn active_visual_selection(&self) -> Option<(Selection, VisualModeKind)> {

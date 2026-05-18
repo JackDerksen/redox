@@ -1,19 +1,8 @@
 //! Document cursor controller + viewport scrolling logic for `redox-tui`.
 //!
-//! This module is intentionally **TUI/UI specific** and should stay lightweight.
-//! - It owns viewport state (`scroll_x_cells`, `scroll_y_lines`) and projects a document cursor
-//!   into terminal cell coordinates for rendering.
-//! - It delegates *document navigation semantics* (Vim motions like `w`, `gg`, `G`, etc.) to
-//!   `redox_core::motion` so those behaviors are shared across frontends.
-//!
-//! Design goals:
-//! - Cursor should not move beyond end-of-file (line clamped to last line, col clamped to line len).
-//! - Viewport can scroll down until the **last line** is the only one at the top of the viewport.
-//!   This may reveal blank space below EOF, but that space is not part of the buffer and must
-//!   never be reachable by the cursor.
-//! - Horizontal scrolling is cell-accurate (tabs + wide glyphs) and never affects vertical scroll.
-//!
-//! This file intentionally does not depend on the rest of `redox-tui::ui` to avoid circular deps.
+//! This TUI-specific layer owns viewport state and projects document cursor
+//! positions into terminal cell coordinates. Motion semantics stay in
+//! `redox_core::motion`.
 
 use minui::{TabPolicy, cell_width, window::CursorSpec};
 use redox_core::motion::{Motion, apply_motion_n};
@@ -99,22 +88,10 @@ impl CursorController {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
-        // Clamp the cursor first (edits can invalidate col/line).
         self.cursor = buffer.clamp_pos(self.cursor);
         self.preferred_col = None;
         self.invalidate_visual_cache();
-
-        // Clamp scroll to content first (keeps state sane).
-        self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
-
-        // Compute cursor visual position under current scroll.
-        let info = self.cursor_visual_info(buffer, viewport_width_cells);
-
-        // Follow cursor with margins.
-        self.follow_cursor(buffer, info, viewport_width_cells, viewport_height_rows);
-
-        // Final clamp (ensures no negative scroll).
-        self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
+        self.reconcile_scroll(buffer, viewport_width_cells, viewport_height_rows);
     }
 
     pub fn clamp_for_normal_mode(&mut self, buffer: &TextBuffer) {
@@ -151,16 +128,18 @@ impl CursorController {
             }
         }
 
-        // Clamp scroll to content first (keeps state sane).
+        self.reconcile_scroll(buffer, viewport_width_cells, viewport_height_rows);
+    }
+
+    fn reconcile_scroll(
+        &mut self,
+        buffer: &TextBuffer,
+        viewport_width_cells: usize,
+        viewport_height_rows: usize,
+    ) {
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
-
-        // Compute cursor visual position under current scroll.
         let info = self.cursor_visual_info(buffer, viewport_width_cells);
-
-        // Follow cursor with margins.
         self.follow_cursor(buffer, info, viewport_width_cells, viewport_height_rows);
-
-        // Final clamp (ensures no negative scroll).
         self.clamp_scroll_to_content(buffer, viewport_width_cells, viewport_height_rows);
     }
 
@@ -210,7 +189,6 @@ impl CursorController {
 
         let info = self.cursor_visual_info(buffer, viewport_width_cells);
 
-        // Cursor position in viewport coordinates.
         let vx = info.cursor_x_cells.saturating_sub(self.scroll_x_cells);
         let vy = info.cursor_y_lines.saturating_sub(self.scroll_y_lines);
 
@@ -229,8 +207,6 @@ impl CursorController {
         (self.scroll_x_cells, self.scroll_y_lines)
     }
 
-    // --- Follow logic ---
-
     fn follow_cursor(
         &mut self,
         buffer: &TextBuffer,
@@ -242,21 +218,16 @@ impl CursorController {
             return;
         }
 
-        // Keep the cursor on-screen first, then apply scrolloff-style margins.
         let top = self.scroll_y_lines;
         let bottom_exclusive = top + viewport_height_rows;
 
         let cursor_line = info.cursor_y_lines;
         let total_lines = buffer.len_lines().max(1);
 
-        // "scrolloff" margins, but disabled near BOF/EOF so we don't create blank space at
-        // the viewport edges.
         let max_margin = viewport_height_rows.saturating_sub(1);
         let desired_top_margin = self.follow.top_margin_rows.min(max_margin);
         let desired_bottom_margin = self.follow.bottom_margin_rows.min(max_margin);
 
-        // If we're close enough to BOF/EOF, disable the margin on that side.
-        // (When there are fewer than `margin` lines available above/below, act like margin=0.)
         let effective_top_margin = if cursor_line < desired_top_margin {
             0
         } else {
@@ -270,21 +241,17 @@ impl CursorController {
             desired_bottom_margin
         };
 
-        // 1) Hard guarantee: if cursor is above the viewport, scroll up to it.
         if cursor_line < top {
             self.scroll_y_lines = cursor_line;
         } else if cursor_line >= bottom_exclusive {
-            // 2) Hard guarantee: if cursor is below the viewport, scroll down just enough.
             self.scroll_y_lines =
                 cursor_line.saturating_sub(viewport_height_rows.saturating_sub(1));
         } else {
-            // 3) Cursor is currently on-screen: apply top/bottom margin policies.
             let top_threshold = top + effective_top_margin;
             if cursor_line < top_threshold {
                 self.scroll_y_lines = cursor_line.saturating_sub(effective_top_margin);
             }
 
-            // Recompute after any top adjustment.
             let top = self.scroll_y_lines;
             let bottom_exclusive = top + viewport_height_rows;
 
@@ -296,7 +263,6 @@ impl CursorController {
             }
         }
 
-        // Horizontal follow (no margins for now; keep cursor within viewport).
         if self.follow.horizontal_follow {
             let left = self.scroll_x_cells;
             let right_exclusive = left + viewport_width_cells;
@@ -309,19 +275,14 @@ impl CursorController {
         }
     }
 
-    // --- Clamping ---
-
-    /// Clamp scroll offsets so they are valid and don't move past EOF.
-    ///
-    /// For vertical clamping, we compute the total number of visual rows in the wrapped stream,
-    /// then allow `scroll_y_rows` to be at most `total_rows - 1` (so the last line can be top-most).
+    /// Clamp scroll offsets without preventing the last real line from sitting
+    /// at the top of the viewport.
     fn clamp_scroll_to_content(
         &mut self,
         buffer: &TextBuffer,
         _viewport_width_cells: usize,
-        viewport_height_rows: usize,
+        _viewport_height_rows: usize,
     ) {
-        // Horizontal clamp: keep within current line width for sanity.
         let line = buffer.clamp_line(self.cursor.line);
         let line_len = buffer.line_len_chars(line);
         if line_len <= LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS {
@@ -329,22 +290,11 @@ impl CursorController {
             self.scroll_x_cells = self.scroll_x_cells.min(max_x);
         }
 
-        // Vertical clamp (line-based, no wrapping):
-        //
-        // We allow scrolling until the last real file line is at the top of the viewport.
-        // This will expose "vacuum" space (blank area) below EOF when the viewport is taller.
-        // That space is not part of the buffer and must not be reachable by the cursor.
         let total_lines = buffer.len_lines().max(1);
         let max_top = total_lines.saturating_sub(1);
 
         self.scroll_y_lines = self.scroll_y_lines.min(max_top);
-
-        // Note: we intentionally do NOT clamp to `total_lines - viewport_height_rows` here.
-        // Doing so would prevent the last line from being able to sit at the top.
-        let _ = viewport_height_rows;
     }
-
-    // --- Non-wrapping projection ---
 
     /// Compute cursor visual (x,y) under non-wrapping rendering.
     ///
@@ -367,7 +317,6 @@ impl CursorController {
             };
         }
 
-        // Compute x in terminal cells by measuring grapheme widths up to the cursor char column.
         let line_text = buffer.line_string(line_idx);
         if line_text.is_empty() {
             self.visual_cache = Some(VisualCache {
@@ -381,10 +330,7 @@ impl CursorController {
             };
         }
 
-        let graphemes: Vec<&str> = line_text.graphemes(true).collect();
-        let cursor_g = char_col_to_grapheme_index(&graphemes, pos.col);
-
-        let x = graphemes_cell_width(&graphemes[..cursor_g.min(graphemes.len())], self.tab_policy);
+        let x = cell_width_until_char_col(&line_text, pos.col, self.tab_policy);
         self.visual_cache = Some(VisualCache {
             line: line_idx,
             col: pos.col,
@@ -490,36 +436,21 @@ struct VisualCache {
     x_cells: usize,
 }
 
-/// Convert a cursor column in char units to a grapheme index into `graphemes`.
-///
-/// If the cursor is at/after end-of-line, returns `graphemes.len()`.
-fn char_col_to_grapheme_index(graphemes: &[&str], cursor_col_chars: usize) -> usize {
-    if cursor_col_chars == 0 {
-        return 0;
-    }
-
+fn cell_width_until_char_col(line: &str, cursor_col_chars: usize, tab_policy: TabPolicy) -> usize {
     let mut chars_seen = 0usize;
-    for (i, g) in graphemes.iter().enumerate() {
-        let gc = g.chars().count();
-        if chars_seen + gc > cursor_col_chars {
-            return i;
+    let mut width = 0usize;
+    for grapheme in line.graphemes(true) {
+        let next = chars_seen + grapheme.chars().count();
+        if cursor_col_chars < next {
+            return width;
         }
-        chars_seen += gc;
+        width += cell_width(grapheme, tab_policy) as usize;
+        chars_seen = next;
         if chars_seen == cursor_col_chars {
-            return i + 1; // cursor is between graphemes
+            return width;
         }
     }
-
-    graphemes.len()
-}
-
-/// Cell width of a slice of graphemes (`&str`) using MinUI's `cell_width`.
-fn graphemes_cell_width(graphemes: &[&str], tab_policy: TabPolicy) -> usize {
-    let mut w = 0usize;
-    for g in graphemes {
-        w += cell_width(*g, tab_policy) as usize;
-    }
-    w
+    width
 }
 
 #[inline]

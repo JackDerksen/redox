@@ -29,6 +29,6 @@ pub use widgets::{
     draw_about_popup_view, draw_code_actions_popup, draw_command_line_popup, draw_completion_popup,
     draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
-    draw_symbol_info_popup, explorer_popup_inner_size, perf_popup_layout,
-    perf_popup_occludes_cursor, status_toast_occludes_cursor, symbol_info_content_width_limit,
+    draw_symbol_info_popup, explorer_popup_inner_size, lsp_marketplace_popup_inner_size,
+    perf_popup_layout, symbol_info_content_width_limit,
 };

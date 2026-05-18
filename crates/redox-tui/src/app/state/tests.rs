@@ -46,6 +46,26 @@ fn split_popup_background_preserves_active_surface_buffer() {
 }
 
 #[test]
+fn statusline_uses_background_buffer_for_surface_popups() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let path = temp_file_path("statusline_background");
+    let mut state = state_with_text(path.clone(), "alpha\n");
+    let background_id = state.session.active_id();
+
+    run_command(&mut state, "about");
+
+    assert_eq!(state.statusline_buffer_id(), background_id);
+    assert_eq!(state.statusline_popup_label(), Some("about"));
+
+    run_command(&mut state, "explorer");
+
+    assert_eq!(state.statusline_buffer_id(), background_id);
+    assert_eq!(state.statusline_popup_label(), Some("explorer"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn splitting_starts_new_pane_at_top_without_dropping_syntax_cache() {
     let _guard = global_test_state_lock().lock().unwrap();
     let path = temp_file_path("split_cache_cursor");
@@ -3062,7 +3082,13 @@ fn explorer_command_opens_ui_buffer() {
     run_command(&mut state, "explorer");
 
     assert!(state.explorer_popup().is_some());
-    assert!(state.active_display_name().contains("[explorer]"));
+    assert!(
+        state
+            .session
+            .active_meta()
+            .display_name
+            .contains("[explorer]")
+    );
     assert!(
         state
             .session

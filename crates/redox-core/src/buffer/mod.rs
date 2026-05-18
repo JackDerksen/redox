@@ -1,11 +1,10 @@
 //! Ropey-backed text buffer module.
 //!
-//! This module is split across multiple files to keep each concern small:
+//! Public buffer APIs are organized by concern:
 //! - `pos.rs`: logical positions and selections
 //! - `edit.rs`: edit representation (char-indexed)
-//! - `text_buffer.rs`: the `TextBuffer` implementation (backed by `ropey::Rope`)
+//! - `text_buffer/`: the [`TextBuffer`] implementation
 //! - `util.rs`: internal helper functions
-//! - `tests.rs`: unit tests
 //! - `prelude.rs`: convenience re-exports for downstream crates
 
 mod edit;

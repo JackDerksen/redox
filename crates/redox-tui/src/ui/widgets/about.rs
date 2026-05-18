@@ -23,11 +23,7 @@ pub fn draw_about_popup_view(
         inner_w,
         inner_h,
         &popup.title,
-        PopupChrome {
-            border: style.about.border,
-            title: style.about.title,
-            fill: style.about.text,
-        },
+        PopupChrome::about(style),
     )?;
     let mut view = popup_window_view(window, layout);
 

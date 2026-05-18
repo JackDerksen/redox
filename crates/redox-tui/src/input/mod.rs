@@ -1074,10 +1074,7 @@ fn resolve_pending_operator(
     action
 }
 
-// TODO: This is kind of a gross temporary fix. In the future, I'll need to
-// refactor basically the entire motion handling system into something like
-// a shared "key/char to motion-or-sequence" translation layer and then let
-// both plain motions and operator-pending motions consume that same result.
+// Operator-pending motions currently reuse the same sequence table as plain motions.
 fn operator_motion_from_input(state: &mut InputState, c: char) -> Option<Motion> {
     if !state.pending_sequence.is_empty() {
         let mut candidate = state.pending_sequence.clone();

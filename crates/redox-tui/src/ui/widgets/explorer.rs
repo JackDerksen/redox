@@ -8,7 +8,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
 use crate::ui::widgets::popup::{
-    PopupChrome, anchored_popup_origin, draw_popup_frame_at, popup_window_view,
+    PopupChrome, anchored_popup_origin, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
 
@@ -38,11 +38,7 @@ pub fn draw_explorer_popup_view(
         inner_w,
         inner_h,
         &popup.title,
-        PopupChrome {
-            border: style.explorer.border,
-            title: style.explorer.title,
-            fill: style.explorer.file,
-        },
+        PopupChrome::explorer(style),
     )?;
     let mut view = popup_window_view(window, layout);
 
@@ -168,28 +164,14 @@ fn reconcile_explorer_cursor_for_popup(
 }
 
 pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
-    let popup_w = compute_popup_dim(
+    popup_inner_size(
         term_w,
-        style.explorer.width_percent,
-        style.explorer.min_width,
-    );
-    let popup_h = compute_popup_dim(
         term_h,
+        style.explorer.width_percent,
         style.explorer.height_percent,
+        style.explorer.min_width,
         style.explorer.min_height,
-    );
-    (popup_w.saturating_sub(2), popup_h.saturating_sub(2))
-}
-
-fn compute_popup_dim(total: u16, percent: u16, min: u16) -> u16 {
-    if total == 0 {
-        return 0;
-    }
-
-    let desired = ((u32::from(total) * u32::from(percent)) / 100) as u16;
-    let floor = min.min(total);
-    let ceiling = if total > 2 { total - 2 } else { total };
-    desired.max(floor).min(ceiling.max(floor))
+    )
 }
 
 fn explorer_row_style(

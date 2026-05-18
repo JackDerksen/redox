@@ -3,12 +3,10 @@
 //! These are **logical** positions: (line, column), both 0-based, where column is
 //! a character offset within the line (not a visual column).
 
-/// A stable identifier for positions within a buffer.
+/// Logical position within a buffer.
 ///
-/// This is a *logical* position: line + column (both 0-based).
-/// It is not a byte offset.
-///
-/// Column is a char offset within the line.
+/// Both fields are zero-based. `col` is a character offset within the line,
+/// not a byte offset or terminal-cell column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pos {
     pub line: usize,

@@ -1,24 +1,11 @@
 //! High-level editor navigation logic (motions).
 //!
-//! This module is intentionally **UI-agnostic** and depends only on core editor
-//! types like [`TextBuffer`] and [`Pos`]. It provides a stable API to build
-//! Vim-like behavior on top of (e.g. `w`, `gg`, `G`, `0`, `$`, etc.).
+//! Motions are deterministic, side-effect-free cursor transformations over a
+//! [`TextBuffer`]. They use logical [`Pos`] values: line and column are both
+//! zero-based, and columns are character offsets, not visual cells.
 //!
-//! Design goals:
-//! - Keep motions deterministic and side-effect-free.
-//! - Keep indexing consistent with `redox-core`: `Pos { line, col }` where `col`
-//!   is in **char units** (Ropey model).
-//! - Centralize motion semantics here so frontends (TUI/GUI) only project the
-//!   resulting document cursor into their own viewport/cell coordinate systems.
-//!
-//! Notes:
-//! - Word motions here currently use `TextBuffer`'s existing word helpers
-//!   (`word_start_before`, `word_end_after`), which in turn use `buffer::util::is_word_char`.
-//! - This module keeps motion semantics centralized so frontends remain thin.
-//!
-//! This file defines:
-//! - [`Motion`] enum: the set of supported navigation intents.
-//! - [`apply_motion`] / [`apply_motion_n`]: apply motions to a cursor position.
+//! Frontends should apply these motions first, then project the result into
+//! viewport, scrolling, and terminal-cell coordinates.
 
 use crate::{Pos, TextBuffer};
 
@@ -216,17 +203,31 @@ pub fn apply_motion_for_operator(
     }
 }
 
-/// Apply a motion `count` times (Vim-style numeric prefix).
+/// Apply a motion with a Vim-style numeric count.
 ///
 /// - If `count == 0`, this returns `cursor` unchanged.
-/// - Motions are applied iteratively so they can clamp naturally at boundaries.
+/// - Left/right motions use direct char-index arithmetic.
+/// - Other repeated motions are applied step by step so they can stop naturally
+///   at document or line boundaries.
 pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: usize) -> Pos {
+    if count == 0 {
+        return buffer.clamp_pos(cursor);
+    }
+
+    match motion {
+        Motion::Left => {
+            let at = buffer.pos_to_char(cursor);
+            return buffer.char_to_pos(at.saturating_sub(count));
+        }
+        Motion::Right => {
+            let at = buffer.pos_to_char(cursor);
+            return buffer.char_to_pos(at.saturating_add(count).min(buffer.len_chars()));
+        }
+        _ => {}
+    }
+
     if motion == Motion::MatchDelimiter {
-        return if count == 0 {
-            buffer.clamp_pos(cursor)
-        } else {
-            apply_motion(buffer, cursor, motion)
-        };
+        return apply_motion(buffer, cursor, motion);
     }
 
     let mut cur = buffer.clamp_pos(cursor);

@@ -24,7 +24,7 @@ pub use lsp::{
     build_symbol_info_display_lines, draw_code_actions_popup, draw_diagnostics_popup,
     draw_symbol_info_popup, symbol_info_content_width_limit,
 };
-pub use marketplace::draw_lsp_marketplace_popup;
-pub use perf::{draw_perf_popup_view, perf_popup_layout, perf_popup_occludes_cursor};
+pub use marketplace::{draw_lsp_marketplace_popup, lsp_marketplace_popup_inner_size};
+pub use perf::{draw_perf_popup_view, perf_popup_layout};
 pub use status_bar::build_editor_status_bar;
-pub use toast::{draw_status_toast, status_toast_occludes_cursor};
+pub use toast::draw_status_toast;

@@ -2,6 +2,8 @@ use minui::widgets::WindowView;
 use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::ui::UiStyle;
+
 const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 const POPUP_ANCHOR_WIDTH_PERCENT: u16 = 65;
 
@@ -12,12 +14,87 @@ pub struct PopupChrome {
     pub fill: ColorPair,
 }
 
+impl PopupChrome {
+    pub fn new(border: ColorPair, title: ColorPair, fill: ColorPair) -> Self {
+        Self {
+            border,
+            title,
+            fill,
+        }
+    }
+
+    pub fn about(style: UiStyle) -> Self {
+        Self::new(style.about.border, style.about.title, style.about.text)
+    }
+
+    pub fn command_line(style: UiStyle) -> Self {
+        Self::new(
+            style.command_line.border,
+            style.command_line.title,
+            style.command_line.text,
+        )
+    }
+
+    pub fn explorer(style: UiStyle) -> Self {
+        Self::new(
+            style.explorer.border,
+            style.explorer.title,
+            style.explorer.file,
+        )
+    }
+
+    pub fn finder(style: UiStyle) -> Self {
+        Self::new(style.finder.border, style.finder.title, style.finder.text)
+    }
+
+    pub fn finder_preview(style: UiStyle) -> Self {
+        Self::new(
+            style.finder.border,
+            style.finder.preview_title,
+            style.finder.text,
+        )
+    }
+
+    pub fn finder_query(style: UiStyle) -> Self {
+        Self::new(
+            style.command_line.border,
+            style.finder.query_title,
+            style.command_line.text,
+        )
+    }
+
+    pub fn perf(style: UiStyle) -> Self {
+        Self::new(style.perf.border, style.perf.title, style.perf.text)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PopupLayout {
     pub inner_w: u16,
     pub inner_h: u16,
     pub x: u16,
     pub y: u16,
+}
+
+impl PopupLayout {
+    pub fn outer_w(self) -> u16 {
+        self.inner_w.saturating_add(2)
+    }
+
+    pub fn outer_h(self) -> u16 {
+        self.inner_h.saturating_add(2)
+    }
+
+    pub fn occludes(self, x: u16, y: u16) -> bool {
+        x >= self.x
+            && x < self.x.saturating_add(self.outer_w())
+            && y >= self.y
+            && y < self.y.saturating_add(self.outer_h())
+    }
+}
+
+pub fn popup_occludes_cursor(layout: PopupLayout, x: u16, y: u16) -> bool {
+    layout.occludes(x, y)
 }
 
 pub fn popup_inner_size(
@@ -103,7 +180,6 @@ pub fn draw_popup_frame_at(
         window.write_str_colored(y, x + 2, &title_text, chrome.title)?;
     }
 
-    //if inner_w > 0 && inner_h > 0 && chrome.fill.bg != minui::Color::Transparent {
     if inner_w > 0 && inner_h > 0 {
         let blank_row = " ".repeat(inner_w as usize);
         for row in 0..inner_h {

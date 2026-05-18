@@ -1,11 +1,7 @@
 //! Core `TextBuffer` definition and constructors.
 //!
-//! This file intentionally only does a couple of things:
-//! - It defines the `TextBuffer` type and its invariants.
-//! - It provides basic constructors and low-level rope access.
-//!
-//! Everything else (line indexing, movement, slicing, editing) should live in
-//! sibling modules as additional `impl TextBuffer` blocks.
+//! Line indexing, movement, slicing, and editing live in sibling modules as
+//! additional `impl TextBuffer` blocks.
 
 use anyhow::{Context as _, Result};
 use ropey::Rope;
@@ -14,16 +10,12 @@ use std::io::BufReader;
 
 /// A Ropey-backed text buffer.
 ///
-/// Invariants and conventions:
+/// Conventions:
 /// - The backing store is a `ropey::Rope`.
-/// - Public APIs should generally speak in char indices (Unicode scalar
-///   value offsets) and logical positions (line/col in chars) because Ropey’s
-///   safe indexing APIs are char-based.
-/// - Byte indexing can be supported where needed, but should not be the primary
-///   index type for the editor core.
-///
-/// Higher-level editor state (modes, undo, viewports, etc.) should be built on
-/// top of this type rather than embedded inside it.
+/// - Public APIs use character indices and logical positions (`line`, `col` in
+///   chars), matching Ropey's safe indexing model.
+/// - Visual columns, modes, undo history, and viewport state live outside this
+///   type so multiple frontends can build on the same core.
 #[derive(Debug, Clone)]
 pub struct TextBuffer {
     pub(super) rope: Rope,
@@ -36,13 +28,13 @@ impl Default for TextBuffer {
 }
 
 impl TextBuffer {
-    /// Create an empty buffer
+    /// Create an empty buffer.
     #[inline]
     pub fn new() -> Self {
         Self { rope: Rope::new() }
     }
 
-    /// Create a buffer from UTF-8 text
+    /// Create a buffer from UTF-8 text.
     #[inline]
     pub fn from_str(s: &str) -> Self {
         Self {
@@ -71,7 +63,7 @@ impl TextBuffer {
         &self.rope
     }
 
-    /// Mutable access to the underlying rope (use this sparingly!)
+    /// Mutable access to the underlying rope.
     ///
     /// Prefer dedicated editing APIs so invariants and bookkeeping remain easy to maintain.
     #[inline]
@@ -79,15 +71,13 @@ impl TextBuffer {
         &mut self.rope
     }
 
-    /// Total number of chars in the buffer.
-    ///
-    /// Kept here because it is a fundamental primitive used by most other modules.
+    /// Number of Unicode scalar values in the buffer.
     #[inline]
     pub fn len_chars(&self) -> usize {
         self.rope.len_chars()
     }
 
-    /// Whether or not the buffer contains zero characters (is empty).
+    /// Returns true when the buffer contains no characters.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.rope.len_chars() == 0

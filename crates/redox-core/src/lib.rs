@@ -1,7 +1,10 @@
 //! Core editor primitives.
 //!
-//! This crate provides a rope-based text buffer (via `ropey`) and small, focused
-//! navigation utilities suitable for implementing a Vim-like editor.
+//! `redox-core` provides the UI-agnostic pieces of the editor:
+//! - [`TextBuffer`], a Ropey-backed text buffer with char-indexed editing APIs.
+//! - [`EditorSession`], a multi-buffer session model with dirty tracking and
+//!   bounded incremental loading.
+//! - [`motion`], deterministic Vim-like cursor motion helpers.
 //!
 //! Notes on indexing
 //! - `ropey::Rope` is UTF-8 text stored as a rope.
@@ -22,8 +25,6 @@ pub mod motion;
 pub mod session;
 pub mod text;
 
-// Prefer using the rope-backed buffer implementation from `buffer`.
-// Re-export the common types here for ergonomic access by downstream crates.
 pub use buffer::{
     DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextObjectEditPlan,
     TextObjectKind, TextObjectScope, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,

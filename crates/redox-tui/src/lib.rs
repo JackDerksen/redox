@@ -32,14 +32,15 @@ use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
     merge_line_spans_for_display, scope_guides_enabled, syntax_color_for_range,
 };
+use ui::widgets::popup::popup_occludes_cursor;
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
     draw_command_line_popup, draw_completion_popup, draw_completion_preview,
     draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_perf_popup_view, draw_pin_selector_popup, draw_status_toast,
-    draw_symbol_info_popup, explorer_popup_inner_size, language_for_path, perf_popup_layout,
-    perf_popup_occludes_cursor, snapshot_lines_wrapped_cached, status_toast_occludes_cursor,
+    draw_symbol_info_popup, explorer_popup_inner_size, language_for_path,
+    lsp_marketplace_popup_inner_size, perf_popup_layout, snapshot_lines_wrapped_cached,
 };
 
 pub(crate) const SOFT_TAB_WIDTH: usize = 4;
@@ -63,17 +64,8 @@ fn draw_buffer_view(
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
-    let popup_overlay_active = matches!(
-        state.mode,
-        app::EditorMode::Command
-            | app::EditorMode::Search
-            | app::EditorMode::Finder
-            | app::EditorMode::PinSelect
-            | app::EditorMode::LspMarketplace
-            | app::EditorMode::DiagnosticsList
-            | app::EditorMode::CodeActions
-            | app::EditorMode::SymbolInfo
-    ) || state.explorer_popup().is_some()
+    let popup_overlay_active = state.mode.has_popup_overlay()
+        || state.explorer_popup().is_some()
         || state.about_popup().is_some();
     let background_style = if popup_overlay_active {
         style.dimmed()
@@ -111,7 +103,7 @@ fn draw_buffer_view(
         let toast_layout = draw_status_toast(state, style, window)?;
         if let Some(cursor) = cursor_spec {
             let cursor_hidden_by_toast = toast_layout
-                .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             if cursor_hidden_by_toast {
                 hide_cursor(window);
             } else {
@@ -142,87 +134,51 @@ fn draw_buffer_view(
     }
 
     if let Some(popup) = state.lsp_marketplace_popup() {
-        draw_popup_background(
+        draw_modal_popup_background(
             state,
+            style,
             background_style,
             window,
             vw,
             text_h,
             editor_text,
             Some(state.session.active_id()),
+            lsp_marketplace_popup_inner_size(vw, vh, style),
         )?;
-        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
-            vw,
-            vh,
-            style.finder.width_percent,
-            style.finder.height_percent,
-            style.finder.min_width,
-            style.finder.min_height,
-        );
-        state.set_viewport_size(
-            inner_w as usize,
-            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-        );
-        let status = build_editor_status_bar(state, style);
-        status.draw(window)?;
         draw_lsp_marketplace_popup(&popup, style, window)?;
         hide_cursor(window);
         return Ok(());
     }
 
     if let Some(popup) = state.diagnostics_popup() {
-        draw_popup_background(
+        draw_modal_popup_background(
             state,
+            style,
             background_style,
             window,
             vw,
             text_h,
             editor_text,
             Some(state.session.active_id()),
+            finder_popup_inner_size(vw, vh, style),
         )?;
-        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
-            vw,
-            vh,
-            style.finder.width_percent,
-            style.finder.height_percent,
-            style.finder.min_width,
-            style.finder.min_height,
-        );
-        state.set_viewport_size(
-            inner_w as usize,
-            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-        );
-        let status = build_editor_status_bar(state, style);
-        status.draw(window)?;
         draw_diagnostics_popup(&popup, style, window)?;
         hide_cursor(window);
         return Ok(());
     }
 
     if let Some(popup) = state.code_actions_popup() {
-        draw_popup_background(
+        draw_modal_popup_background(
             state,
+            style,
             background_style,
             window,
             vw,
             text_h,
             editor_text,
             Some(state.session.active_id()),
+            finder_popup_inner_size(vw, vh, style),
         )?;
-        let (inner_w, inner_h) = crate::ui::widgets::popup::popup_inner_size(
-            vw,
-            vh,
-            style.finder.width_percent,
-            style.finder.height_percent,
-            style.finder.min_width,
-            style.finder.min_height,
-        );
-        state.set_viewport_size(
-            inner_w as usize,
-            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-        );
-        let status = build_editor_status_bar(state, style);
-        status.draw(window)?;
         draw_code_actions_popup(&popup, style, window)?;
         hide_cursor(window);
         return Ok(());
@@ -378,9 +334,9 @@ fn draw_buffer_view(
             hide_cursor(window);
         } else if let Some(cursor) = cursor_spec {
             let cursor_hidden_by_perf = perf_popup_layout
-                .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y));
+                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             let cursor_hidden_by_toast = toast_layout
-                .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             if cursor_hidden_by_perf || cursor_hidden_by_toast {
                 hide_cursor(window);
             } else {
@@ -562,7 +518,6 @@ fn draw_buffer_view(
     perf.lines += lines_time;
     state.advance_one_shot_highlight();
 
-    // --- Status bar (bottom row) ---
     let status_start = Instant::now();
     let status = build_editor_status_bar(state, style);
 
@@ -679,9 +634,9 @@ fn draw_buffer_view(
 
     if let Some(cursor) = cursor_spec {
         let cursor_hidden_by_perf = perf_popup_layout
-            .is_some_and(|layout| perf_popup_occludes_cursor(layout, cursor.x, cursor.y));
-        let cursor_hidden_by_toast = toast_layout
-            .is_some_and(|layout| status_toast_occludes_cursor(layout, cursor.x, cursor.y));
+            .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
+        let cursor_hidden_by_toast =
+            toast_layout.is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
         if cursor_hidden_by_perf || cursor_hidden_by_toast {
             hide_cursor(window);
         } else {
@@ -716,11 +671,7 @@ fn draw_lsp_loading_toast(
         width,
         1,
         "",
-        ui::widgets::popup::PopupChrome {
-            border: style.command_line.border,
-            title: style.command_line.title,
-            fill: style.command_line.text,
-        },
+        ui::widgets::popup::PopupChrome::command_line(style),
     )?;
     let mut view = ui::widgets::popup::popup_window_view(window, layout);
     view.write_str_colored(0, 1, &message, style.command_line.text)?;
@@ -763,7 +714,6 @@ fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
 fn line_number_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
     let digits = total_lines.max(1).ilog10() as u16 + 1;
     let git_marker_width = u16::from(show_git_marker_column);
-    // optional git marker column + digits + separator column
     digits.saturating_add(git_marker_width).saturating_add(1)
 }
 
@@ -849,14 +799,18 @@ fn draw_line_with_highlights(
 
     if source_line.is_empty() {
         if highlight_empty_line {
-            let bg = highlight_layers
-                .first()
-                .map(|(_, bg)| *bg)
-                .unwrap_or(normal_color.bg);
-            window.write_str_colored(row, col, " ", ColorPair::new(normal_color.fg, bg))?;
+            draw_highlight_spaces(
+                window,
+                row,
+                col,
+                0,
+                width_cells,
+                normal_color.fg,
+                highlight_layers,
+            )?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
-                && visible_col != 0
+                && highlight_bg_at_cell(highlight_layers, visible_col).is_none()
             {
                 window.write_str_colored(
                     row,
@@ -932,9 +886,20 @@ fn draw_line_with_highlights(
         used_cells = used_cells.saturating_add(g_width);
     }
 
+    draw_highlight_spaces(
+        window,
+        row,
+        col,
+        used_cells,
+        width_cells,
+        normal_color.fg,
+        highlight_layers,
+    )?;
+
     if let Some((visible_col, bg)) = color_column
         && visible_col < width_cells
         && visible_col >= used_cells
+        && highlight_bg_at_cell(highlight_layers, visible_col).is_none()
     {
         window.write_str_colored(
             row,
@@ -945,6 +910,45 @@ fn draw_line_with_highlights(
     }
 
     Ok(())
+}
+
+fn draw_highlight_spaces(
+    window: &mut dyn Window,
+    row: u16,
+    col: u16,
+    start_cell: usize,
+    width_cells: usize,
+    fg: Color,
+    highlight_layers: &[(&[bool], Color)],
+) -> minui::Result<()> {
+    let mut cell = start_cell;
+    while cell < width_cells {
+        let Some(bg) = highlight_bg_at_cell(highlight_layers, cell) else {
+            cell += 1;
+            continue;
+        };
+
+        let run_start = cell;
+        cell += 1;
+        while cell < width_cells && highlight_bg_at_cell(highlight_layers, cell) == Some(bg) {
+            cell += 1;
+        }
+        let spaces = " ".repeat(cell - run_start);
+        window.write_str_colored(
+            row,
+            col.saturating_add(run_start as u16),
+            &spaces,
+            ColorPair::new(fg, bg),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn highlight_bg_at_cell(highlight_layers: &[(&[bool], Color)], cell: usize) -> Option<Color> {
+    highlight_layers
+        .iter()
+        .find_map(|(cells, bg)| cells.get(cell).copied().unwrap_or(false).then_some(*bg))
 }
 
 fn fill_background(
@@ -970,6 +974,45 @@ fn hide_cursor(window: &mut dyn Window) {
         y: 0,
         visible: false,
     });
+}
+
+fn draw_modal_popup_background(
+    state: &mut EditorState,
+    style: UiStyle,
+    background_style: UiStyle,
+    window: &mut dyn Window,
+    width: u16,
+    text_height: u16,
+    editor_text: ColorPair,
+    fallback_buffer_id: Option<BufferId>,
+    inner_size: (u16, u16),
+) -> minui::Result<()> {
+    draw_popup_background(
+        state,
+        background_style,
+        window,
+        width,
+        text_height,
+        editor_text,
+        fallback_buffer_id,
+    )?;
+    let (inner_w, inner_h) = inner_size;
+    state.set_viewport_size(
+        inner_w as usize,
+        inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+    );
+    build_editor_status_bar(state, style).draw(window)
+}
+
+fn finder_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+    crate::ui::widgets::popup::popup_inner_size(
+        term_w,
+        term_h,
+        style.finder.width_percent,
+        style.finder.height_percent,
+        style.finder.min_width,
+        style.finder.min_height,
+    )
 }
 
 fn draw_popup_background(
@@ -1170,8 +1213,6 @@ fn split_line_glyph(up: bool, down: bool, left: bool, right: bool) -> &'static s
         (_, _, true, true) => "─",
         (true, false, false, false) | (false, true, false, false) => "│",
         (false, false, true, false) | (false, false, false, true) => "─",
-        // Fallback for "no neighbour" state
-        // (this is probably unreachable, but it's here just in case)
         _ => " ",
     }
 }
@@ -1530,18 +1571,16 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
         if let Some((selection, mode, selection_bg)) = transient_selection {
-            let highlight_empty_line = buffer.line_len_chars(line_idx) == 0
-                && selected_empty_line(selection, mode, line_idx);
-            if let Some(sel_range) =
-                buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
-            {
-                let selected_cells = selected_visible_cells(
-                    &source_line,
-                    scroll_x,
-                    text_w,
-                    sel_range.start,
-                    sel_range.end,
-                );
+            if let Some(selected_cells) = visual_selection_visible_cells(
+                buffer,
+                &source_line,
+                selection,
+                mode,
+                line_idx,
+                scroll_x,
+                text_w,
+            ) {
+                let highlight_empty_line = source_line.is_empty();
                 let highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
                     let mut layers = vec![
                         (selected_cells.as_slice(), selection_bg),
@@ -1608,46 +1647,6 @@ fn draw_snapshot_lines(
                     text_w,
                     snippet_ranges,
                     style,
-                )?;
-                if let Some(diagnostic) = diagnostic_line {
-                    draw_inline_diagnostic(
-                        window,
-                        row as u16,
-                        content_x,
-                        &source_line,
-                        scroll_x,
-                        text_w,
-                        style,
-                        diagnostic,
-                    )?;
-                }
-                continue;
-            }
-            if highlight_empty_line {
-                let highlight_layers = if let Some(diagnostic) = diagnostic_line {
-                    vec![
-                        (&[][..], selection_bg),
-                        (
-                            &[][..],
-                            style.diagnostic_inline.background(diagnostic.severity),
-                        ),
-                    ]
-                } else {
-                    vec![(&[][..], selection_bg)]
-                };
-                draw_line_with_highlights(
-                    window,
-                    row as u16,
-                    content_x,
-                    "",
-                    scroll_x,
-                    text_w,
-                    default_colors,
-                    color_column,
-                    style,
-                    syntax_line_spans,
-                    &highlight_layers,
-                    true,
                 )?;
                 if let Some(diagnostic) = diagnostic_line {
                     draw_inline_diagnostic(
@@ -2164,6 +2163,105 @@ fn highlighted_visible_cells(
     selected
 }
 
+fn visual_selection_visible_cells(
+    buffer: &redox_core::TextBuffer,
+    source_line: &str,
+    selection: redox_core::Selection,
+    mode: redox_core::VisualModeKind,
+    line_idx: usize,
+    scroll_x: usize,
+    width_cells: usize,
+) -> Option<Vec<bool>> {
+    let cells = match mode {
+        redox_core::VisualModeKind::Line => {
+            let (start_line, end_line) = selection.line_range();
+            if line_idx < start_line || line_idx > end_line {
+                return None;
+            }
+            vec![true; width_cells]
+        }
+        redox_core::VisualModeKind::Block => {
+            let (start, end) = selection.ordered();
+            if line_idx < start.line || line_idx > end.line {
+                return None;
+            }
+            let left = start.col.min(end.col);
+            let right = start.col.max(end.col).saturating_add(1);
+            visible_cell_range(left, right, scroll_x, width_cells)
+        }
+        redox_core::VisualModeKind::Char => {
+            let (start, end) = selection.ordered();
+            if line_idx < start.line || line_idx > end.line {
+                return None;
+            }
+
+            if start.line < line_idx && line_idx < end.line {
+                vec![true; width_cells]
+            } else if let Some(range) =
+                buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
+            {
+                let mut cells = selected_visible_cells(
+                    source_line,
+                    scroll_x,
+                    width_cells,
+                    range.start,
+                    range.end,
+                );
+                if start.line != end.line && line_idx == start.line {
+                    let line_width = line_cell_width(source_line);
+                    mark_visible_cell_range(&mut cells, line_width, usize::MAX, scroll_x);
+                }
+                cells
+            } else if start.line < end.line && source_line.is_empty() {
+                vec![true; width_cells]
+            } else {
+                return None;
+            }
+        }
+    };
+
+    cells.iter().any(|cell| *cell).then_some(cells)
+}
+
+fn line_cell_width(source_line: &str) -> usize {
+    source_line
+        .graphemes(true)
+        .map(|g| (cell_width(g, TabPolicy::Fixed(4)) as usize).max(1))
+        .sum()
+}
+
+fn visible_cell_range(
+    start_cell: usize,
+    end_cell: usize,
+    scroll_x: usize,
+    width_cells: usize,
+) -> Vec<bool> {
+    let mut cells = vec![false; width_cells];
+    mark_visible_cell_range(&mut cells, start_cell, end_cell, scroll_x);
+    cells
+}
+
+fn mark_visible_cell_range(
+    cells: &mut [bool],
+    start_cell: usize,
+    end_cell: usize,
+    scroll_x: usize,
+) {
+    if cells.is_empty() || start_cell >= end_cell {
+        return;
+    }
+
+    let visible_start = start_cell.saturating_sub(scroll_x);
+    let visible_end = end_cell.saturating_sub(scroll_x).min(cells.len());
+    if visible_start >= visible_end {
+        return;
+    }
+
+    for cell in &mut cells[visible_start..visible_end] {
+        *cell = true;
+    }
+}
+
 fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize) -> Vec<bool> {
     let mut occupied = vec![false; width_cells];
     if width_cells == 0 || source_line.is_empty() {
@@ -2200,17 +2298,6 @@ fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize
     }
 
     occupied
-}
-
-fn selected_empty_line(
-    selection: redox_core::Selection,
-    mode: redox_core::VisualModeKind,
-    line_idx: usize,
-) -> bool {
-    matches!(mode, redox_core::VisualModeKind::Line) && {
-        let (start, end) = selection.ordered();
-        line_idx >= start.line && line_idx <= end.line
-    }
 }
 
 fn draw_plain_line(
@@ -2496,6 +2583,23 @@ mod tests {
         .expect("plain snapshot draw should succeed");
 
         assert_eq!(window.row_text(0), "ijklmnop");
+    }
+
+    #[test]
+    fn visual_selection_visible_cells_connect_blank_lines() {
+        let buffer = redox_core::TextBuffer::from_str("alpha\n\nomega\n");
+        let selection =
+            redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
+
+        for mode in [
+            redox_core::VisualModeKind::Char,
+            redox_core::VisualModeKind::Line,
+            redox_core::VisualModeKind::Block,
+        ] {
+            let cells = visual_selection_visible_cells(&buffer, "", selection, mode, 1, 0, 8)
+                .expect("blank line should be visually selected");
+            assert!(cells.iter().any(|selected| *selected));
+        }
     }
 
     #[test]

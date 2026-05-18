@@ -1,15 +1,9 @@
 //! Position conversion and cursor movement helpers for `TextBuffer`.
 //!
-//! This file is intended to be included by `buffer::text_buffer`'s module wiring,
-//! so that `TextBuffer`'s implementation can be split into focused, maintainable
-//! chunks.
-//!
-//! Design notes on extensibility:
 //! - Positions are logical `(line, col)` in **char units** (Unicode scalar values),
 //!   matching Ropey's indexing model.
 //! - Methods clamp inputs defensively, so higher-level code can stay simpler.
-//! - Visual column/grapheme cluster concerns are deliberately out of scope here;
-//!   these are handled in higher layers that map `Pos` to screen coordinates.
+//! - Visual columns and grapheme clusters belong to UI layers.
 
 use std::cmp::min;
 
@@ -29,9 +23,7 @@ impl TextBuffer {
         Pos { line, col }
     }
 
-    /// Convert `Pos` (line+col) to absolute char index in the rope.
-    ///
-    /// The position is clamped first.
+    /// Convert `Pos` to an absolute char index in the rope.
     #[inline]
     pub fn pos_to_char(&self, pos: Pos) -> usize {
         let pos = self.clamp_pos(pos);
@@ -78,8 +70,6 @@ impl TextBuffer {
     }
 
     /// Move up one line, preserving column as much as possible.
-    ///
-    /// This implementation does not track a preferred column.
     #[inline]
     pub fn move_up(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);
@@ -92,8 +82,6 @@ impl TextBuffer {
     }
 
     /// Move down one line, preserving column as much as possible.
-    ///
-    /// This implementation does not track a preferred column.
     #[inline]
     pub fn move_down(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);

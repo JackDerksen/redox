@@ -104,11 +104,7 @@ pub fn draw_finder_popup(
         layout.results.inner_w,
         layout.results.inner_h,
         "",
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: style.finder.text,
-        },
+        PopupChrome::finder(style),
     )?;
     let mut list_view = popup_window_view(window, list_layout);
     draw_entries(&mut list_view, popup, style.finder)?;
@@ -121,11 +117,7 @@ pub fn draw_finder_popup(
             preview_frame.inner_w,
             preview_frame.inner_h,
             PREVIEW_TITLE,
-            PopupChrome {
-                border: style.finder.border,
-                title: style.finder.preview_title,
-                fill: style.finder.text,
-            },
+            PopupChrome::finder_preview(style),
         )?;
         let mut preview_view = popup_window_view(window, preview_layout);
         if let Some(preview) = &popup.preview {
@@ -140,11 +132,7 @@ pub fn draw_finder_popup(
         layout.query.inner_w,
         layout.query.inner_h,
         QUERY_TITLE,
-        PopupChrome {
-            border: style.command_line.border,
-            title: style.finder.query_title,
-            fill: style.command_line.text,
-        },
+        PopupChrome::finder_query(style),
     )?;
     let mut query_view = popup_window_view(window, query_layout);
     let right_footer = finder_right_footer(popup, style);
@@ -266,11 +254,11 @@ pub fn draw_pin_selector_popup(
         inner_w,
         inner_h,
         PIN_SELECTOR_TITLE,
-        PopupChrome {
-            border: style.finder.border,
-            title: style.finder.title,
-            fill: ColorPair::new(style.finder.text.fg, Color::Transparent),
-        },
+        PopupChrome::new(
+            style.finder.border,
+            style.finder.title,
+            ColorPair::new(style.finder.text.fg, Color::Transparent),
+        ),
     )?;
     let mut view = popup_window_view(window, layout);
     let path_w = inner_w.saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING.saturating_mul(2));

@@ -1,7 +1,7 @@
 //! Line-oriented helpers for `TextBuffer`.
 //!
-//! This file is intended to be included by the parent `text_buffer` module, and
-//! adds line/indexing utilities as an inherent `impl` on `TextBuffer`.
+//! These methods provide the line and char-index conversions used by editing,
+//! selection, and motion code.
 //!
 //! Design notes
 //! - These APIs use **char indices** (Unicode scalar values), matching `ropey`.
@@ -99,9 +99,6 @@ impl TextBuffer {
     }
 
     /// Returns the char range `[start, end)` for the line content, excluding a trailing `'\n'`.
-    ///
-    /// This will be useful for operations like "delete to end of line" or yanking the line
-    /// content without the newline.
     pub fn line_char_range(&self, line: usize) -> std::ops::Range<usize> {
         let line = self.clamp_line(line);
         let start = self.rope.line_to_char(line);

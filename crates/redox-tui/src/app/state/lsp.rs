@@ -1050,6 +1050,22 @@ impl LspSession {
 }
 
 impl EditorState {
+    pub(in crate::app::state) fn lsp_statusline_return_mode(&self) -> Option<EditorMode> {
+        match self.mode {
+            EditorMode::CodeActions => self
+                .lsp
+                .code_actions_popup
+                .as_ref()
+                .map(|popup| popup.return_mode),
+            EditorMode::SymbolInfo => self.lsp.symbol_info.as_ref().map(|popup| popup.return_mode),
+            _ => None,
+        }
+    }
+
+    pub fn symbol_info_popup_is_visible(&self) -> bool {
+        self.mode == EditorMode::SymbolInfo && self.lsp.symbol_info.is_some()
+    }
+
     pub fn completion_popup(&self) -> Option<CompletionPopup> {
         let state = self.visible_completion_state()?;
         let max_selected = state.items.len().saturating_sub(1);
@@ -1190,9 +1206,9 @@ impl EditorState {
         })
     }
 
-    pub fn active_diagnostic_summary(&self) -> DiagnosticSummary {
+    pub fn diagnostic_summary_for_buffer(&self, buffer_id: BufferId) -> DiagnosticSummary {
         let mut summary = DiagnosticSummary::default();
-        for diagnostic in self.active_display_diagnostics() {
+        for diagnostic in self.display_diagnostics_for_buffer(buffer_id) {
             match diagnostic.severity {
                 DiagnosticSeverity::Error => summary.errors += 1,
                 DiagnosticSeverity::Warning => summary.warnings += 1,
@@ -1987,8 +2003,11 @@ impl EditorState {
             })
     }
 
-    fn active_stored_diagnostics(&self) -> Vec<(&DiagnosticSource, &StoredDiagnostic)> {
-        let Some(uri) = self.active_document_uri() else {
+    fn stored_diagnostics_for_buffer(
+        &self,
+        buffer_id: BufferId,
+    ) -> Vec<(&DiagnosticSource, &StoredDiagnostic)> {
+        let Some(uri) = self.document_uri_for_buffer(buffer_id) else {
             return Vec::new();
         };
         self.lsp
@@ -2001,11 +2020,14 @@ impl EditorState {
     }
 
     fn active_display_diagnostics(&self) -> Vec<Diagnostic> {
-        let active_id = self.session.active_id();
-        let Some(buffer) = self.session.buffer(active_id) else {
+        self.display_diagnostics_for_buffer(self.session.active_id())
+    }
+
+    fn display_diagnostics_for_buffer(&self, buffer_id: BufferId) -> Vec<Diagnostic> {
+        let Some(buffer) = self.session.buffer(buffer_id) else {
             return Vec::new();
         };
-        let stored = self.active_stored_diagnostics();
+        let stored = self.stored_diagnostics_for_buffer(buffer_id);
         let suppress_lint = should_suppress_lint_diagnostics(stored.iter().copied());
         let mut deduped = Vec::<Diagnostic>::new();
         let mut seen = HashMap::<(DiagnosticSeverity, usize, usize, String), usize>::new();
@@ -2037,14 +2059,13 @@ impl EditorState {
         deduped
     }
 
-    fn active_document_uri(&self) -> Option<String> {
-        let active_id = self.session.active_id();
+    fn document_uri_for_buffer(&self, buffer_id: BufferId) -> Option<String> {
         self.lsp
             .documents
-            .get(&active_id)
+            .get(&buffer_id)
             .map(|document| document.uri.clone())
             .or_else(|| {
-                let path = self.session.meta(active_id)?.path.as_deref()?;
+                let path = self.session.meta(buffer_id)?.path.as_deref()?;
                 file_uri(path).ok()
             })
     }
