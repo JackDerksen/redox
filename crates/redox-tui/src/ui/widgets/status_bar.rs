@@ -515,8 +515,8 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let scroll_width = scroll_glyph.chars().count() as u16;
     let coords_minimap_width =
         status_module_width(coords_width + STATUS_MODULE_SEPARATOR_WIDTH + scroll_width);
-    let dirty_width = u16::from(meta.dirty);
-    let right_module_width = dirty_width + DIRTY_GAP_WIDTH + coords_minimap_width;
+    let change_marker_width = u16::from(meta.dirty || meta.external_changed);
+    let right_module_width = change_marker_width + DIRTY_GAP_WIDTH + coords_minimap_width;
     let side_reserve_width = balanced_status_side_width(
         left_text_width,
         style.layout.status_left_min_width,
@@ -554,10 +554,14 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 .with_path_clip(),
         )
         .add_segment(Segment::spacer(right_padding_width))
-        .add_segment(if meta.dirty {
+        .add_segment(if meta.external_changed {
+            Segment::new("!")
+                .with_color(style.status_line.dirty)
+                .with_min_width(change_marker_width)
+        } else if meta.dirty {
             Segment::new("+")
                 .with_color(style.status_line.dirty)
-                .with_min_width(1)
+                .with_min_width(change_marker_width)
         } else {
             Segment::spacer(0)
         })

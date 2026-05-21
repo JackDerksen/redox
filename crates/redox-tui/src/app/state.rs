@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use minui::{TabPolicy, cell_width};
-use redox_core::{BufferId, BufferKind, EditorSession, Pos, Selection, TextBuffer, VisualModeKind};
+use redox_core::{
+    BufferId, BufferKind, EditorSession, ExternalFileChangeKind, Pos, Selection, TextBuffer,
+    VisualModeKind,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
@@ -50,6 +53,7 @@ const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
 const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
+const EXTERNAL_FILE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(test)]
 pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
@@ -235,6 +239,13 @@ impl BufferViewState {
         self.delimiter_pair_cache.mark_stale();
         self.analysis_version = self.analysis_version.wrapping_add(1);
     }
+
+    fn reset_render_caches(&mut self) {
+        self.grapheme_cache.clear();
+        self.syntax_highlighter.clear_cache();
+        self.delimiter_pair_cache.clear();
+        self.analysis_version = self.analysis_version.wrapping_add(1);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,6 +344,7 @@ pub struct EditorState {
     active_pane: PaneId,
     next_pane_id: usize,
     pane_use_tick: u64,
+    next_external_file_check_at: Instant,
 }
 
 impl EditorState {
@@ -397,6 +409,7 @@ impl EditorState {
             active_pane: PaneId(0),
             next_pane_id: 1,
             pane_use_tick: 1,
+            next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
         };
         let mut state = state;
         state.request_analysis(active, 0);
@@ -803,6 +816,54 @@ impl EditorState {
         }
     }
 
+    pub fn poll_external_file_changes(&mut self, now: Instant) {
+        if now < self.next_external_file_check_at {
+            return;
+        }
+        self.next_external_file_check_at = now + EXTERNAL_FILE_CHECK_INTERVAL;
+
+        let changes = self.session.poll_external_file_changes();
+        if changes.is_empty() {
+            return;
+        }
+
+        let mut reloaded = 0usize;
+        let mut conflict: Option<String> = None;
+        let mut deleted: Option<String> = None;
+        let mut failed: Option<String> = None;
+
+        for change in changes {
+            match change.kind {
+                ExternalFileChangeKind::Reloaded => {
+                    reloaded = reloaded.saturating_add(1);
+                    self.reset_buffer_render_caches(change.id);
+                }
+                ExternalFileChangeKind::Conflict => {
+                    conflict = Some(change.display_name);
+                }
+                ExternalFileChangeKind::Deleted => {
+                    deleted = Some(change.display_name);
+                }
+                ExternalFileChangeKind::Failed => {
+                    failed = Some(change.display_name);
+                }
+            }
+        }
+
+        self.mark_git_repo_statuses_stale();
+        if let Some(name) = conflict {
+            self.set_status(format!("file changed on disk: {name} (write blocked)"));
+        } else if let Some(name) = deleted {
+            self.set_status(format!("file deleted on disk: {name}"));
+        } else if let Some(name) = failed {
+            self.set_status(format!("failed to reload changed file: {name}"));
+        } else if reloaded == 1 {
+            self.set_status("reloaded from disk");
+        } else {
+            self.set_status(format!("reloaded {reloaded} files from disk"));
+        }
+    }
+
     fn ensure_active_fully_loaded_for_edit_or_save(&mut self) -> bool {
         let active_id = self.session.active_id();
         let before_len_chars = self.session.active_buffer().len_chars();
@@ -995,6 +1056,11 @@ impl EditorState {
         self.invalidate_buffer_render_caches(active_id);
     }
 
+    fn reset_active_render_caches(&mut self) {
+        let active_id = self.session.active_id();
+        self.reset_buffer_render_caches(active_id);
+    }
+
     fn request_analysis(&self, buffer_id: BufferId, version: u64) {
         let Some(meta) = self.session.meta(buffer_id) else {
             return;
@@ -1037,6 +1103,24 @@ impl EditorState {
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             view.invalidate_render_caches();
+            view.analysis_version
+        };
+        self.git.mark_stale(buffer_id);
+        self.request_analysis(buffer_id, version);
+        if let Some(search) = self.search_state.as_mut()
+            && search.buffer_id == buffer_id
+        {
+            search.dirty = true;
+        }
+    }
+
+    fn reset_buffer_render_caches(&mut self, buffer_id: BufferId) {
+        let version = {
+            let view = self.views.entry(buffer_id).or_default();
+            if let Some(buffer) = self.session.buffer(buffer_id) {
+                view.cursor.cursor = buffer.clamp_pos(view.cursor.cursor);
+            }
+            view.reset_render_caches();
             view.analysis_version
         };
         self.git.mark_stale(buffer_id);

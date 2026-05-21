@@ -341,6 +341,12 @@ impl SyntaxHighlighter {
         }
     }
 
+    pub(crate) fn clear_cache(&mut self) {
+        self.cache = None;
+        self.cache_stale = false;
+        self.active_scope_cache = None;
+    }
+
     pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache_stale
             && self

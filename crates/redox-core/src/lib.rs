@@ -35,7 +35,7 @@ pub use fuzzy::{
 };
 pub use session::{
     BufferId, BufferKind, BufferLoadPhase, BufferLoadStatus, BufferMeta, BufferSummary,
-    EditorSession,
+    EditorSession, ExternalFileChange, ExternalFileChangeKind,
 };
 
 #[cfg(test)]

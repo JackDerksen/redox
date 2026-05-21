@@ -90,6 +90,11 @@ impl DelimiterPairCache {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.analysis = None;
+        self.stale = false;
+    }
+
     #[cfg(test)]
     pub(crate) fn has_stale_analysis(&self) -> bool {
         self.analysis.is_some() && self.stale

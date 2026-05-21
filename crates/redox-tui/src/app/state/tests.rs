@@ -2995,6 +2995,43 @@ exit 1
 }
 
 #[test]
+fn external_reload_drops_stale_syntax_cache() {
+    let path = temp_file_path("external_reload_syntax").with_extension("rs");
+    let old_text = "fn main() {\n    let value = 1;\n}\n";
+    let mut state = state_with_text(path.clone(), old_text);
+    let buffer_id = state.session.active_id();
+    let buffer = state.session.active_buffer().clone();
+    let view = state.views.entry(buffer_id).or_default();
+    view.syntax_highlighter
+        .replace_cache(SyntaxHighlighter::compute_cache(
+            &buffer,
+            SyntaxLanguage::Rust,
+        ));
+    assert!(view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
+
+    fs::write(
+        &path,
+        "// inserted elsewhere\nuse std::collections::HashMap;\nfn main() {}\n",
+    )
+    .expect("failed to update file externally");
+
+    state.poll_external_file_changes(Instant::now() + Duration::from_secs(1));
+
+    let view = state.views.get(&buffer_id).expect("active view");
+    assert!(
+        !view
+            .syntax_highlighter
+            .has_any_cache_for(SyntaxLanguage::Rust)
+    );
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "// inserted elsewhere\nuse std::collections::HashMap;\nfn main() {}\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn command_write_clamps_cursor_after_trimming_trailing_whitespace() {
     let path = temp_file_path("write_trim_cursor");
     let mut state = state_with_text(path.clone(), "alpha   \n");

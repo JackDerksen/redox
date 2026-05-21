@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -49,6 +50,8 @@ pub struct BufferMeta {
     pub path: Option<PathBuf>,
     /// Whether current contents differ from the last clean snapshot.
     pub dirty: bool,
+    /// Whether the backing file changed after this buffer diverged locally.
+    pub external_changed: bool,
     /// Whether this buffer represents a missing path that has not been saved yet.
     pub is_new_file: bool,
 }
@@ -66,6 +69,8 @@ pub struct BufferSummary {
     pub path: Option<PathBuf>,
     /// Whether current contents differ from the last clean snapshot.
     pub dirty: bool,
+    /// Whether the backing file changed after this buffer diverged locally.
+    pub external_changed: bool,
     /// Whether this buffer represents a missing path that has not been saved yet.
     pub is_new_file: bool,
     /// Whether this row describes the active buffer.
@@ -116,8 +121,41 @@ struct BufferRecord {
     buffer: TextBuffer,
     clean_fingerprint: u64,
     clean_normalized_len_chars: usize,
+    disk_stamp: Option<FileStamp>,
     loader: Option<IncrementalFileLoader>,
     load_status: BufferLoadStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+/// A file-backed buffer changed outside the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalFileChange {
+    /// Buffer that observed the external change.
+    pub id: BufferId,
+    /// Display name for status UIs.
+    pub display_name: String,
+    /// Backing path, when the buffer still has one.
+    pub path: Option<PathBuf>,
+    /// How the session handled the change.
+    pub kind: ExternalFileChangeKind,
+}
+
+/// How an external file change was reconciled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalFileChangeKind {
+    /// The clean in-memory buffer was replaced with disk contents.
+    Reloaded,
+    /// The buffer has local edits, so the disk change was left unresolved.
+    Conflict,
+    /// The backing path disappeared while the buffer was open.
+    Deleted,
+    /// Redox noticed the change but could not read the file.
+    Failed,
 }
 
 /// Multi-buffer editor session with active buffer + MRU ordering.
@@ -238,8 +276,10 @@ impl EditorSession {
             display_name: self.display_path(&normalized),
             path: Some(normalized.clone()),
             dirty: false,
+            external_changed: false,
             is_new_file: !file_exists,
         };
+        let disk_stamp = file_exists.then(|| file_stamp(&normalized).ok()).flatten();
         let (clean_fingerprint, clean_normalized_len_chars) =
             if matches!(load_status.phase, BufferLoadPhase::Complete) {
                 normalized_content_fingerprint(&buffer)
@@ -254,6 +294,7 @@ impl EditorSession {
                 buffer,
                 clean_fingerprint,
                 clean_normalized_len_chars,
+                disk_stamp,
                 loader,
                 load_status,
             },
@@ -275,6 +316,7 @@ impl EditorSession {
             display_name: name.into(),
             path: None,
             dirty: false,
+            external_changed: false,
             is_new_file: false,
         };
 
@@ -285,6 +327,7 @@ impl EditorSession {
                 buffer: TextBuffer::from_str(initial_text),
                 clean_fingerprint,
                 clean_normalized_len_chars,
+                disk_stamp: None,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -304,6 +347,7 @@ impl EditorSession {
             display_name: "[No Name]".to_string(),
             path: None,
             dirty: false,
+            external_changed: false,
             is_new_file: true,
         };
 
@@ -314,6 +358,7 @@ impl EditorSession {
                 buffer: TextBuffer::new(),
                 clean_fingerprint,
                 clean_normalized_len_chars,
+                disk_stamp: None,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
             },
@@ -427,6 +472,25 @@ impl EditorSession {
         rec.clean_fingerprint = fingerprint;
         rec.clean_normalized_len_chars = normalized_len_chars;
         rec.meta.dirty = false;
+        rec.meta.external_changed = false;
+        rec.disk_stamp = rec
+            .meta
+            .path
+            .as_deref()
+            .and_then(|path| file_stamp(path).ok());
+    }
+
+    /// Refresh the active buffer's known disk metadata after an editor-owned disk write.
+    pub fn refresh_active_disk_stamp(&mut self) {
+        let id = self.active_id();
+        if let Some(rec) = self.buffers.get_mut(&id) {
+            rec.disk_stamp = rec
+                .meta
+                .path
+                .as_deref()
+                .and_then(|path| file_stamp(path).ok());
+            rec.meta.external_changed = false;
+        }
     }
 
     #[inline]
@@ -576,6 +640,7 @@ impl EditorSession {
                 display_name: rec.meta.display_name.clone(),
                 path: rec.meta.path.clone(),
                 dirty: rec.meta.dirty,
+                external_changed: rec.meta.external_changed,
                 is_new_file: rec.meta.is_new_file,
                 is_active: Some(*id) == active,
             })
@@ -627,6 +692,8 @@ impl EditorSession {
             if let Some(rec) = self.buffers.get_mut(&id) {
                 rec.meta.path = Some(new_path.clone());
                 rec.meta.display_name = display_name;
+                rec.disk_stamp = file_stamp(&new_path).ok();
+                rec.meta.external_changed = false;
             }
 
             remapped_ids.push(id);
@@ -706,6 +773,19 @@ impl EditorSession {
                     .path
                     .as_ref()
                     .context("file buffer is missing path metadata")?;
+                if rec.meta.is_new_file && path.exists() {
+                    rec.meta.external_changed = true;
+                    bail!("file appeared on disk; reload or resolve before writing");
+                }
+                if rec.meta.external_changed
+                    || rec
+                        .disk_stamp
+                        .is_some_and(|stamp| file_stamp(path).is_ok_and(|current| current != stamp))
+                {
+                    rec.meta.external_changed = true;
+                    bail!("file changed on disk; reload or resolve before writing");
+                }
+
                 let mut content = rec.buffer.to_string();
                 if !content.is_empty() && !content.ends_with('\n') {
                     content.push('\n');
@@ -720,11 +800,144 @@ impl EditorSession {
                 rec.clean_fingerprint = fingerprint;
                 rec.clean_normalized_len_chars = normalized_len_chars;
                 rec.meta.dirty = false;
+                rec.meta.external_changed = false;
                 rec.meta.is_new_file = false;
+                rec.disk_stamp = file_stamp(path).ok();
                 Ok(())
             }
             BufferKind::Ui => bail!("cannot save UI buffer"),
         }
+    }
+
+    /// Check file-backed buffers for external changes using cheap metadata.
+    ///
+    /// Clean buffers are reloaded from disk. Dirty buffers are left untouched and
+    /// marked as conflicted so saving cannot clobber outside edits.
+    pub fn poll_external_file_changes(&mut self) -> Vec<ExternalFileChange> {
+        let ids = self.mru.clone();
+        let mut changes = Vec::new();
+
+        for id in ids {
+            let Some(rec) = self.buffers.get_mut(&id) else {
+                continue;
+            };
+            if rec.meta.kind != BufferKind::File
+                || !matches!(
+                    rec.load_status.phase,
+                    BufferLoadPhase::NotLoading | BufferLoadPhase::Complete
+                )
+            {
+                continue;
+            }
+
+            let Some(path) = rec.meta.path.clone() else {
+                continue;
+            };
+            let display_name = rec.meta.display_name.clone();
+            let previous = rec.disk_stamp;
+            let current = match file_stamp(&path) {
+                Ok(stamp) => stamp,
+                Err(_) if path.exists() => {
+                    changes.push(ExternalFileChange {
+                        id,
+                        display_name,
+                        path: Some(path),
+                        kind: ExternalFileChangeKind::Failed,
+                    });
+                    continue;
+                }
+                Err(_) if rec.meta.is_new_file => continue,
+                Err(_) => {
+                    if !rec.meta.external_changed {
+                        rec.meta.external_changed = true;
+                        changes.push(ExternalFileChange {
+                            id,
+                            display_name,
+                            path: Some(path),
+                            kind: ExternalFileChangeKind::Deleted,
+                        });
+                    }
+                    continue;
+                }
+            };
+
+            let Some(previous) = previous else {
+                if rec.meta.is_new_file {
+                    if rec.meta.dirty {
+                        rec.meta.external_changed = true;
+                        changes.push(ExternalFileChange {
+                            id,
+                            display_name,
+                            path: Some(path),
+                            kind: ExternalFileChangeKind::Conflict,
+                        });
+                    } else if let Ok(buffer) = TextBuffer::from_file(&path) {
+                        rec.buffer = buffer;
+                        let (fingerprint, normalized_len_chars) =
+                            normalized_content_fingerprint(&rec.buffer);
+                        rec.clean_fingerprint = fingerprint;
+                        rec.clean_normalized_len_chars = normalized_len_chars;
+                        rec.disk_stamp = Some(current);
+                        rec.meta.is_new_file = false;
+                        changes.push(ExternalFileChange {
+                            id,
+                            display_name,
+                            path: Some(path),
+                            kind: ExternalFileChangeKind::Reloaded,
+                        });
+                    }
+                    continue;
+                }
+                rec.disk_stamp = Some(current);
+                continue;
+            };
+            if current == previous {
+                continue;
+            }
+            if rec.meta.dirty {
+                if !rec.meta.external_changed {
+                    rec.meta.external_changed = true;
+                    changes.push(ExternalFileChange {
+                        id,
+                        display_name,
+                        path: Some(path),
+                        kind: ExternalFileChangeKind::Conflict,
+                    });
+                }
+                continue;
+            }
+
+            match TextBuffer::from_file(&path) {
+                Ok(buffer) => {
+                    rec.buffer = buffer;
+                    let (fingerprint, normalized_len_chars) =
+                        normalized_content_fingerprint(&rec.buffer);
+                    rec.clean_fingerprint = fingerprint;
+                    rec.clean_normalized_len_chars = normalized_len_chars;
+                    rec.disk_stamp = Some(current);
+                    rec.meta.dirty = false;
+                    rec.meta.external_changed = false;
+                    rec.meta.is_new_file = false;
+                    changes.push(ExternalFileChange {
+                        id,
+                        display_name,
+                        path: Some(path),
+                        kind: ExternalFileChangeKind::Reloaded,
+                    });
+                }
+                Err(_) => {
+                    rec.meta.external_changed = true;
+                    changes.push(ExternalFileChange {
+                        id,
+                        display_name,
+                        path: Some(path),
+                        kind: ExternalFileChangeKind::Failed,
+                    });
+                }
+            }
+        }
+
+        changes
     }
 
     #[inline]
@@ -800,6 +1013,11 @@ impl EditorSession {
                         normalized_content_fingerprint(&rec.buffer);
                     rec.clean_fingerprint = fingerprint;
                     rec.clean_normalized_len_chars = normalized_len_chars;
+                    rec.disk_stamp = rec
+                        .meta
+                        .path
+                        .as_deref()
+                        .and_then(|path| file_stamp(path).ok());
                 }
                 return Ok(0);
             }
@@ -821,6 +1039,11 @@ impl EditorSession {
                     normalized_content_fingerprint(&rec.buffer);
                 rec.clean_fingerprint = fingerprint;
                 rec.clean_normalized_len_chars = normalized_len_chars;
+                rec.disk_stamp = rec
+                    .meta
+                    .path
+                    .as_deref()
+                    .and_then(|path| file_stamp(path).ok());
             }
             rec.loader = None;
         } else {
@@ -875,10 +1098,20 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
         rec.meta.display_name = orphaned_display_name(&rec.meta.display_name);
         rec.meta.is_new_file = true;
         rec.meta.dirty = true;
+        rec.meta.external_changed = false;
+        rec.disk_stamp = None;
         let (fingerprint, normalized_len_chars) = normalized_text_fingerprint("");
         rec.clean_fingerprint = fingerprint;
         rec.clean_normalized_len_chars = normalized_len_chars;
     }
+}
+
+fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
+    let metadata = std::fs::metadata(path)?;
+    Ok(FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 fn orphaned_display_name(current_display_name: &str) -> String {
@@ -1195,6 +1428,81 @@ mod tests {
         assert_eq!(on_disk, "old_new\n");
         assert_eq!(session.active_buffer().to_string(), "old_new\n");
         assert!(!session.recompute_active_dirty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn external_clean_file_change_reloads_buffer() {
+        let path = temp_path("external_reload");
+        fs::write(&path, "old").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        fs::write(&path, "changed on disk\n").expect("failed to change temp file");
+
+        let changes = session.poll_external_file_changes();
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, ExternalFileChangeKind::Reloaded);
+        assert_eq!(session.active_buffer().to_string(), "changed on disk\n");
+        assert!(!session.active_meta().dirty);
+        assert!(!session.active_meta().external_changed);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn external_dirty_file_change_blocks_save() {
+        let path = temp_path("external_conflict");
+        fs::write(&path, "old").expect("failed to write temp file");
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let cursor = session.active_buffer().clamp_pos(crate::Pos::new(0, 3));
+        let _ = session.active_buffer_mut().insert(cursor, " local");
+        assert!(session.recompute_active_dirty());
+        fs::write(&path, "changed on disk\n").expect("failed to change temp file");
+
+        let changes = session.poll_external_file_changes();
+        let err = session
+            .save_active()
+            .expect_err("save should not overwrite external edits");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, ExternalFileChangeKind::Conflict);
+        assert!(session.active_meta().external_changed);
+        assert!(err.to_string().contains("file changed on disk"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read temp file"),
+            "changed on disk\n"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn new_file_created_elsewhere_blocks_save() {
+        let path = temp_path("new_file_collision");
+        if path.exists() {
+            fs::remove_file(&path).expect("failed to remove existing fixture");
+        }
+
+        let mut session = EditorSession::open_initial_file(&path).expect("open initial failed");
+        let _ = session
+            .active_buffer_mut()
+            .insert(crate::Pos::zero(), "local");
+        assert!(session.recompute_active_dirty());
+        fs::write(&path, "external").expect("failed to create external file");
+
+        let err = session
+            .save_active()
+            .expect_err("save should not overwrite newly-created file");
+
+        assert!(session.active_meta().external_changed);
+        assert!(err.to_string().contains("file appeared on disk"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("failed to read temp file"),
+            "external"
+        );
 
         let _ = fs::remove_file(path);
     }

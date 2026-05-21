@@ -73,6 +73,9 @@ impl EditorState {
             "e" => {
                 self.command_edit(arg);
             }
+            "e!" | "reload" => {
+                self.command_reload_active();
+            }
             "bn" | "bnext" => {
                 self.command_buffer_cycle_next();
             }
@@ -193,6 +196,23 @@ impl EditorState {
         }
     }
 
+    pub(super) fn command_reload_active(&mut self) {
+        let Some(path) = self.session.active_meta().path.clone() else {
+            self.set_status("no file to reload");
+            return;
+        };
+        let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
+        let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+
+        match self.reload_active_buffer_from_disk(&path, viewport_width_cells, text_vh) {
+            Ok(()) => {
+                self.mark_git_repo_statuses_stale();
+                self.set_status("reloaded from disk");
+            }
+            Err(error) => self.set_status(format!("reload failed: {error}")),
+        }
+    }
+
     pub(super) fn command_buffer_cycle_next(&mut self) {
         let count = self.session.summaries().len();
         if count <= 1 {
@@ -240,8 +260,9 @@ impl EditorState {
             let active = if summary.is_active { '%' } else { '-' };
             let dirty = if summary.dirty { '+' } else { '-' };
             let new_file = if summary.is_new_file { 'n' } else { '-' };
+            let external = if summary.external_changed { '!' } else { '-' };
             msg.push_str(&format!(
-                "[{active}{dirty}{new_file}]{}:{}",
+                "[{active}{dirty}{new_file}{external}]{}:{}",
                 summary.id.get(),
                 summary.display_name
             ));
@@ -329,6 +350,7 @@ impl EditorState {
             }
             formatted = std::fs::read_to_string(path)
                 .map_err(|error| format!("failed to read formatter output: {error}"))?;
+            self.session.refresh_active_disk_stamp();
         }
 
         let normalized = apply_save_format_passes(&formatted);
@@ -374,7 +396,7 @@ impl EditorState {
         view.cursor.cursor = buffer.clamp_pos(view.cursor.cursor);
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-        self.invalidate_active_render_caches();
+        self.reset_active_render_caches();
         let _ = self.session.recompute_active_dirty();
     }
 

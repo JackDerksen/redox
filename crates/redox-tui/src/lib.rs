@@ -2812,7 +2812,9 @@ pub fn run() -> minui::Result<()> {
         state.poll_analysis_results();
         state.poll_lsp();
         state.poll_finder_results();
-        state.expire_status_message(Instant::now());
+        let now = Instant::now();
+        state.poll_external_file_changes(now);
+        state.expire_status_message(now);
 
         if state.rain_is_active() {
             state.advance_rain_animation();
