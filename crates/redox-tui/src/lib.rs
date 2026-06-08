@@ -450,9 +450,7 @@ fn draw_buffer_view(
                         )
                 })
                 .flatten();
-            let use_lexical_fallback = syntax_language.is_none()
-                || syntax_language
-                    .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+            let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
             let syntax_spans = view
                 .syntax_highlighter
                 .visible_line_spans_for_display_cached(
@@ -1376,9 +1374,7 @@ fn draw_buffer_snapshot_for_id(
                     )
             })
             .flatten();
-        let use_lexical_fallback = syntax_language.is_none()
-            || syntax_language
-                .is_some_and(|language| view.syntax_highlighter.has_stale_cache_for(language));
+        let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
         let syntax_spans = view
             .syntax_highlighter
             .visible_line_spans_for_display_cached(
@@ -1898,6 +1894,10 @@ fn draw_snapshot_lines(
     }
 
     Ok(())
+}
+
+fn should_use_lexical_fallback(syntax_language: Option<ui::syntax::SyntaxLanguage>) -> bool {
+    syntax_language.is_none()
 }
 
 fn selected_visible_cells(
