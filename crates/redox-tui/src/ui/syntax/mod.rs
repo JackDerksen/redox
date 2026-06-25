@@ -347,6 +347,7 @@ impl SyntaxHighlighter {
         self.active_scope_cache = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache_stale
             && self
