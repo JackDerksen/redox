@@ -48,8 +48,11 @@ pub(crate) const SOFT_TAB: &str = "    ";
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const COLOR_COLUMN: usize = 79;
-const TARGET_FRAME_RATE_HZ: u64 = 60;
-const TARGET_FRAME_BUDGET: Duration = Duration::from_nanos(1_000_000_000 / TARGET_FRAME_RATE_HZ);
+const ANIMATION_FRAME_RATE_HZ: u64 = 60;
+const ANIMATION_FRAME_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000 / ANIMATION_FRAME_RATE_HZ);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const ACTIVE_SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
 enum LaunchTarget {
     Empty,
@@ -1482,8 +1485,13 @@ fn draw_snapshot_lines(
             .then(|| lexical_fallback_line_spans(&source_line))
             .filter(|spans| !spans.is_empty());
         let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
+        let allow_fallback_override = syntax_spans.is_some_and(|rows| rows.cache_stale());
         let merged_line_spans = match (syntax_line_spans, fallback_line_spans.as_deref()) {
-            (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(syntax, fallback)),
+            (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(
+                syntax,
+                fallback,
+                allow_fallback_override,
+            )),
             _ => None,
         };
         let syntax_line_spans = merged_line_spans
@@ -2442,9 +2450,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn target_frame_budget_matches_sixty_fps() {
-        assert_eq!(TARGET_FRAME_RATE_HZ, 60);
-        assert_eq!(TARGET_FRAME_BUDGET, Duration::from_nanos(16_666_666));
+    fn frame_intervals_match_expected_cadence() {
+        assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
+        assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));
+        assert_eq!(IDLE_POLL_INTERVAL, Duration::from_millis(50));
+        assert_eq!(ACTIVE_SETTLE_INTERVAL, Duration::from_millis(250));
     }
 
     fn temp_dir_path(tag: &str) -> PathBuf {
@@ -2782,6 +2792,7 @@ pub fn run() -> minui::Result<()> {
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
     let mut pending_wake_event: Option<Event> = None;
+    let mut active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
 
     loop {
         let frame_start = Instant::now();
@@ -2809,6 +2820,9 @@ pub fn run() -> minui::Result<()> {
         }
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
+        if event_count > 0 {
+            active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
+        }
         state.poll_analysis_results();
         state.poll_lsp();
         state.poll_finder_results();
@@ -2835,7 +2849,15 @@ pub fn run() -> minui::Result<()> {
             return Ok(());
         }
 
-        let remaining = TARGET_FRAME_BUDGET.saturating_sub(frame_start.elapsed());
+        let next_interval = if state.rain_is_active()
+            || state.one_shot_highlight().is_some()
+            || Instant::now() < active_until
+        {
+            ANIMATION_FRAME_INTERVAL
+        } else {
+            IDLE_POLL_INTERVAL
+        };
+        let remaining = next_interval.saturating_sub(frame_start.elapsed());
         if !remaining.is_zero() {
             let event = window.get_input_timeout(remaining)?;
             if !matches!(event, Event::Unknown) {

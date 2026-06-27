@@ -1765,6 +1765,20 @@ impl EditorState {
             return;
         };
 
+        if self
+            .lsp
+            .documents
+            .get(&active_id)
+            .is_some_and(|document| {
+                document.path == path
+                    && document.language_id == language_id
+                    && document.workspace.provider_id == provider.id
+                    && self.lsp.clients.contains_key(&document.workspace)
+            })
+        {
+            return;
+        }
+
         let root = workspace_root_for(path, provider.id, self.session.launch_dir());
         let workspace = WorkspaceKey {
             provider_id: provider.id,
@@ -1854,20 +1868,26 @@ impl EditorState {
         {
             return Ok(());
         }
-        let Some(buffer) = self.session.buffer(buffer_id) else {
+        if self.session.buffer(buffer_id).is_none() {
             return Ok(());
-        };
+        }
         let analysis_version = self
             .views
             .get(&buffer_id)
             .map(|view| view.analysis_version())
             .unwrap_or(0);
-        let text = buffer.to_string();
 
         let Some(document) = self.lsp.documents.get_mut(&buffer_id) else {
             return Ok(());
         };
         if !document.opened {
+            let Some(text) = self
+                .session
+                .buffer(buffer_id)
+                .map(|buffer| buffer.to_string())
+            else {
+                return Ok(());
+            };
             document.document_version = 1;
             client.session.send_did_open(
                 &document.path,
@@ -1884,7 +1904,7 @@ impl EditorState {
         }
 
         if document.last_sent_analysis_version == Some(analysis_version)
-            && document.last_sent_text.as_deref() == Some(text.as_str())
+            && document.last_sent_text.is_some()
         {
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
@@ -1901,6 +1921,21 @@ impl EditorState {
             if now.saturating_duration_since(pending_since) < LSP_CHANGE_DEBOUNCE {
                 return Ok(());
             }
+        }
+
+        let Some(text) = self
+            .session
+            .buffer(buffer_id)
+            .map(|buffer| buffer.to_string())
+        else {
+            return Ok(());
+        };
+
+        if document.last_sent_text.as_deref() == Some(text.as_str()) {
+            document.last_sent_analysis_version = Some(analysis_version);
+            document.pending_sync_since = None;
+            document.pending_sync_analysis_version = None;
+            return Ok(());
         }
 
         document.document_version = document.document_version.saturating_add(1);
