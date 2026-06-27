@@ -2,6 +2,7 @@
 
 mod languages;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
@@ -47,6 +48,7 @@ pub struct LineSyntaxSpan {
 pub struct SyntaxHighlighter {
     cache: Option<HighlightCache>,
     cache_stale: bool,
+    lexical_overlays: BTreeMap<usize, Vec<LineSyntaxSpan>>,
     active_scope_cache: Option<ActiveScopeCache>,
 }
 
@@ -67,6 +69,7 @@ struct ActiveScopeCache {
 #[derive(Debug, Clone, Copy)]
 pub struct VisibleLineSyntaxSpans<'a> {
     line_spans: &'a [Vec<LineSyntaxSpan>],
+    lexical_overlays: &'a BTreeMap<usize, Vec<LineSyntaxSpan>>,
     first_line: usize,
     line_count: usize,
     cache_stale: bool,
@@ -305,6 +308,7 @@ impl SyntaxHighlighter {
             .filter(|cache| cache.language == language)?;
         Some(VisibleLineSyntaxSpans {
             line_spans: &cache.line_spans,
+            lexical_overlays: &self.lexical_overlays,
             first_line,
             line_count,
             cache_stale: false,
@@ -324,6 +328,7 @@ impl SyntaxHighlighter {
             .filter(|cache| cache.language == language)?;
         Some(VisibleLineSyntaxSpans {
             line_spans: &cache.line_spans,
+            lexical_overlays: &self.lexical_overlays,
             first_line,
             line_count,
             cache_stale: self.cache_stale,
@@ -347,7 +352,16 @@ impl SyntaxHighlighter {
     pub(crate) fn clear_cache(&mut self) {
         self.cache = None;
         self.cache_stale = false;
+        self.lexical_overlays.clear();
         self.active_scope_cache = None;
+    }
+
+    pub(crate) fn replace_lexical_overlay(&mut self, line: usize, spans: Vec<LineSyntaxSpan>) {
+        if spans.is_empty() {
+            self.lexical_overlays.remove(&line);
+        } else {
+            self.lexical_overlays.insert(line, spans);
+        }
     }
 
     #[cfg(test)]
@@ -437,6 +451,7 @@ impl SyntaxHighlighter {
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
         self.cache = cache;
         self.cache_stale = false;
+        self.lexical_overlays.clear();
         self.active_scope_cache = None;
     }
 }
@@ -457,6 +472,16 @@ impl<'a> VisibleLineSyntaxSpans<'a> {
 
     pub fn cache_stale(&self) -> bool {
         self.cache_stale
+    }
+
+    pub fn lexical_overlay(&self, row: usize) -> Option<&'a [LineSyntaxSpan]> {
+        if row >= self.line_count {
+            return None;
+        }
+
+        self.lexical_overlays
+            .get(&self.first_line.saturating_add(row))
+            .map(Vec::as_slice)
     }
 }
 
