@@ -1898,9 +1898,16 @@ impl EditorState {
             return Ok(());
         }
 
-        if document.last_sent_analysis_version == Some(analysis_version)
-            && document.last_sent_text.is_some()
-        {
+        let Some(text) = self
+            .session
+            .buffer(buffer_id)
+            .map(|buffer| buffer.to_string())
+        else {
+            return Ok(());
+        };
+
+        if document.last_sent_text.as_deref() == Some(text.as_str()) {
+            document.last_sent_analysis_version = Some(analysis_version);
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
             return Ok(());
@@ -1916,21 +1923,6 @@ impl EditorState {
             if now.saturating_duration_since(pending_since) < LSP_CHANGE_DEBOUNCE {
                 return Ok(());
             }
-        }
-
-        let Some(text) = self
-            .session
-            .buffer(buffer_id)
-            .map(|buffer| buffer.to_string())
-        else {
-            return Ok(());
-        };
-
-        if document.last_sent_text.as_deref() == Some(text.as_str()) {
-            document.last_sent_analysis_version = Some(analysis_version);
-            document.pending_sync_since = None;
-            document.pending_sync_analysis_version = None;
-            return Ok(());
         }
 
         document.document_version = document.document_version.saturating_add(1);
