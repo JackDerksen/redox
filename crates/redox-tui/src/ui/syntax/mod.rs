@@ -69,6 +69,7 @@ pub struct VisibleLineSyntaxSpans<'a> {
     line_spans: &'a [Vec<LineSyntaxSpan>],
     first_line: usize,
     line_count: usize,
+    cache_stale: bool,
 }
 
 struct QuerySyntaxEngine {
@@ -306,6 +307,7 @@ impl SyntaxHighlighter {
             line_spans: &cache.line_spans,
             first_line,
             line_count,
+            cache_stale: false,
         })
     }
 
@@ -324,6 +326,7 @@ impl SyntaxHighlighter {
             line_spans: &cache.line_spans,
             first_line,
             line_count,
+            cache_stale: self.cache_stale,
         })
     }
 
@@ -450,6 +453,10 @@ impl<'a> VisibleLineSyntaxSpans<'a> {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
         )
+    }
+
+    pub fn cache_stale(&self) -> bool {
+        self.cache_stale
     }
 }
 
@@ -1211,22 +1218,28 @@ pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
     spans
 }
 
-// Fix for syntax highlighting colour flicker
+// Merge cheap lexical spans into stale tree-sitter spans for display-only fallback.
 pub fn merge_line_spans_for_display(
     base: &[LineSyntaxSpan],
     fallback: &[LineSyntaxSpan],
+    allow_fallback_override: bool,
 ) -> Vec<LineSyntaxSpan> {
+    let base = if allow_fallback_override {
+        override_base_spans_with_lexical_fallback(base, fallback)
+    } else {
+        base.to_vec()
+    };
     if base.is_empty() {
         return fallback.to_vec();
     }
     if fallback.is_empty() {
-        return base.to_vec();
+        return base;
     }
 
-    let mut merged = base.to_vec();
+    let mut merged = base.clone();
     for fallback_span in fallback {
         let mut cursor = fallback_span.start_byte;
-        for span in base {
+        for span in &base {
             if span.start_byte >= fallback_span.end_byte {
                 break;
             }
@@ -1257,6 +1270,59 @@ pub fn merge_line_spans_for_display(
     }
     merged.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
     merged
+}
+
+fn override_base_spans_with_lexical_fallback(
+    base: &[LineSyntaxSpan],
+    fallback: &[LineSyntaxSpan],
+) -> Vec<LineSyntaxSpan> {
+    if !fallback
+        .iter()
+        .any(|span| lexical_fallback_can_override(span.role))
+    {
+        return base.to_vec();
+    }
+
+    let mut clipped = Vec::new();
+    for span in base {
+        let mut cursor = span.start_byte;
+        for override_span in fallback
+            .iter()
+            .filter(|span| lexical_fallback_can_override(span.role))
+        {
+            if override_span.end_byte <= cursor {
+                continue;
+            }
+            if override_span.start_byte >= span.end_byte {
+                break;
+            }
+            if override_span.start_byte > cursor {
+                clipped.push(LineSyntaxSpan {
+                    start_byte: cursor,
+                    end_byte: override_span.start_byte.min(span.end_byte),
+                    role: span.role,
+                    priority: span.priority,
+                });
+            }
+            cursor = cursor.max(override_span.end_byte);
+            if cursor >= span.end_byte {
+                break;
+            }
+        }
+        if cursor < span.end_byte {
+            clipped.push(LineSyntaxSpan {
+                start_byte: cursor,
+                end_byte: span.end_byte,
+                role: span.role,
+                priority: span.priority,
+            });
+        }
+    }
+    clipped
+}
+
+fn lexical_fallback_can_override(role: SyntaxRole) -> bool {
+    matches!(role, SyntaxRole::Comment | SyntaxRole::String)
 }
 
 fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
@@ -2143,6 +2209,7 @@ mod tests {
                 role: SyntaxRole::Comment,
                 priority: 10,
             }],
+            false,
         );
 
         assert!(merged.iter().any(|span| span.role == SyntaxRole::Keyword
@@ -2152,6 +2219,32 @@ mod tests {
             && span.start_byte == 5
             && span.end_byte == 10));
         assert!(!merged.iter().any(|span| span.role == SyntaxRole::Comment
+            && span.start_byte == 0
+            && span.end_byte == 10));
+    }
+
+    #[test]
+    fn stale_merge_line_spans_for_display_lets_comments_override_stale_spans() {
+        let merged = super::merge_line_spans_for_display(
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 5,
+                role: SyntaxRole::Keyword,
+                priority: 20,
+            }],
+            &[super::LineSyntaxSpan {
+                start_byte: 0,
+                end_byte: 10,
+                role: SyntaxRole::Comment,
+                priority: 10,
+            }],
+            true,
+        );
+
+        assert!(!merged.iter().any(|span| span.role == SyntaxRole::Keyword
+            && span.start_byte == 0
+            && span.end_byte == 5));
+        assert!(merged.iter().any(|span| span.role == SyntaxRole::Comment
             && span.start_byte == 0
             && span.end_byte == 10));
     }

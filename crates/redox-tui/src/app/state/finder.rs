@@ -670,8 +670,10 @@ impl EditorState {
             return;
         };
 
-        let pinned = self.pinned_files.occupied_entries();
         let mut keep_worker = true;
+        let mut pending_candidates = Vec::new();
+        let mut replace_candidates = None;
+
         for _ in 0..MAX_FINDER_INDEX_BATCHES_PER_POLL {
             let Some(message) = worker.try_recv() else {
                 break;
@@ -680,21 +682,26 @@ impl EditorState {
             match message {
                 FinderIndexMessage::Batch(candidates) => {
                     self.finder_index_files.extend(candidates.iter().cloned());
-                    if let Some(finder) = self.finder.as_mut() {
-                        finder.add_file_candidates(candidates, &pinned);
-                    }
+                    pending_candidates.extend(candidates);
                 }
                 FinderIndexMessage::Done => {
                     let fresh_files = std::mem::take(&mut self.finder_index_files);
                     let launch_dir = self.session.launch_dir().to_path_buf();
                     self.finder_index_cache
                         .insert(launch_dir, fresh_files.clone());
-                    if let Some(finder) = self.finder.as_mut() {
-                        finder.replace_file_candidates(fresh_files, &pinned);
-                    }
+                    replace_candidates = Some(fresh_files);
                     keep_worker = false;
                     break;
                 }
+            }
+        }
+
+        if let Some(finder) = self.finder.as_mut() {
+            let pinned = self.pinned_files.occupied_entries();
+            if let Some(candidates) = replace_candidates {
+                finder.replace_file_candidates(candidates, &pinned);
+            } else {
+                finder.add_file_candidates(pending_candidates, &pinned);
             }
         }
 
