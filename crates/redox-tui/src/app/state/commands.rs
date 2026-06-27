@@ -95,7 +95,7 @@ impl EditorState {
                 self.command_rain();
             }
             "perf" => {
-                self.command_toggle_perf();
+                self.command_perf(arg);
             }
             "lsp" => {
                 self.command_lsp(arg);
@@ -103,6 +103,14 @@ impl EditorState {
             _ => {
                 self.set_status(format!("unknown command: {cmd_raw}"));
             }
+        }
+    }
+
+    fn command_perf(&mut self, arg: &str) {
+        match arg {
+            "popup" => self.command_toggle_perf(),
+            "corners" => self.command_toggle_perf_corners(),
+            _ => self.set_status("usage: perf popup|corners"),
         }
     }
 

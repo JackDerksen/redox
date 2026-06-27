@@ -88,6 +88,10 @@ pub struct PerfPopup {
 }
 
 impl EditorState {
+    pub fn perf_corners_visible(&self) -> bool {
+        self.perf_corners_visible
+    }
+
     pub fn perf_popup(&self) -> Option<PerfPopup> {
         self.perf_visible.then_some(PerfPopup {
             stats: self.perf_stats,
@@ -113,6 +117,12 @@ impl EditorState {
 
     pub(super) fn command_toggle_perf(&mut self) {
         self.perf_visible = !self.perf_visible;
+        self.mode = EditorMode::Normal;
+        self.clear_status();
+    }
+
+    pub(super) fn command_toggle_perf_corners(&mut self) {
+        self.perf_corners_visible = !self.perf_corners_visible;
         self.mode = EditorMode::Normal;
         self.clear_status();
     }
