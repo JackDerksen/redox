@@ -61,32 +61,41 @@ impl AnalysisWorker {
         thread::Builder::new()
             .name("redox-analysis".to_string())
             .spawn(move || {
-                while let Some(request) = request_rx.recv() {
-                    let request = drain_latest_requests(request, &request_rx);
-                    let syntax_cache = request.syntax_language.and_then(|language| {
-                        SyntaxHighlighter::compute_cache(&request.buffer, language)
-                    });
-                    if result_tx
-                        .send(AnalysisResult::Syntax {
-                            buffer_id: request.buffer_id,
-                            version: request.version,
-                            syntax_cache,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
+                while let Some(mut request) = request_rx.recv() {
+                    loop {
+                        request = drain_latest_requests(request, &request_rx);
+                        let syntax_cache = request.syntax_language.and_then(|language| {
+                            SyntaxHighlighter::compute_cache(&request.buffer, language)
+                        });
+                        if result_tx
+                            .send(AnalysisResult::Syntax {
+                                buffer_id: request.buffer_id,
+                                version: request.version,
+                                syntax_cache,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
 
-                    let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
-                    if result_tx
-                        .send(AnalysisResult::Delimiters {
-                            buffer_id: request.buffer_id,
-                            version: request.version,
-                            delimiter_analysis,
-                        })
-                        .is_err()
-                    {
-                        return;
+                        if let Some(next_request) = request_rx.try_recv() {
+                            request = next_request;
+                            continue;
+                        }
+
+                        let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
+                        if result_tx
+                            .send(AnalysisResult::Delimiters {
+                                buffer_id: request.buffer_id,
+                                version: request.version,
+                                delimiter_analysis,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+
+                        break;
                     }
                 }
             })

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use redox_core::{BufferId, BufferKind, EditorSession};
+use redox_core::{BufferId, BufferKind, EditorSession, TextBuffer};
 use tempfile::NamedTempFile;
 
 const DIRTY_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
@@ -131,6 +131,11 @@ struct GitDiffResult {
     path: Option<PathBuf>,
     dirty: bool,
     snapshot: Option<GitDiffSnapshot>,
+}
+
+struct GitDiffInput {
+    path: PathBuf,
+    buffer: TextBuffer,
 }
 
 type RepoStatuses = (
@@ -258,14 +263,17 @@ impl GitState {
             return;
         }
 
-        let current_text = path
+        let diff_input = path
             .as_deref()
             .and_then(|buffer_path| {
                 session
                     .buffer(buffer_id)
                     .map(|buffer| (buffer_path, buffer))
             })
-            .map(|(buffer_path, buffer)| (buffer_path.to_path_buf(), buffer.to_string()));
+            .map(|(buffer_path, buffer)| GitDiffInput {
+                path: buffer_path.to_path_buf(),
+                buffer: buffer.clone(),
+            });
 
         let previous_snapshot = self
             .cache
@@ -280,13 +288,15 @@ impl GitState {
                 last_refreshed_at: now,
                 stale: false,
                 snapshot: previous_snapshot,
-                pending: current_text.is_some(),
+                pending: diff_input.is_some(),
             },
         );
 
-        if let Some((buffer_path, current_text)) = current_text {
+        if let Some(input) = diff_input {
             let tx = self.diff_tx.clone();
             thread::spawn(move || {
+                let current_text = input.buffer.to_string();
+                let buffer_path = input.path;
                 let snapshot = load_git_diff(&buffer_path, &current_text);
                 let _ = tx.send(GitDiffResult {
                     buffer_id,

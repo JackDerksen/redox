@@ -1765,17 +1765,12 @@ impl EditorState {
             return;
         };
 
-        if self
-            .lsp
-            .documents
-            .get(&active_id)
-            .is_some_and(|document| {
-                document.path == path
-                    && document.language_id == language_id
-                    && document.workspace.provider_id == provider.id
-                    && self.lsp.clients.contains_key(&document.workspace)
-            })
-        {
+        if self.lsp.documents.get(&active_id).is_some_and(|document| {
+            document.path == path
+                && document.language_id == language_id
+                && document.workspace.provider_id == provider.id
+                && self.lsp.clients.contains_key(&document.workspace)
+        }) {
             return;
         }
 
