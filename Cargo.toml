@@ -1,6 +1,6 @@
 [package]
 name = "redox-editor"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 description = "A terminal-based, Vim-like text editor built with MinUI"
 license = "MIT"
@@ -25,4 +25,4 @@ resolver = "2"
 anyhow = "1.0"
 
 [dependencies]
-redox-tui = { version = "0.6.1", path = "crates/redox-tui" }
+redox-tui = { version = "0.6.2", path = "crates/redox-tui" }
