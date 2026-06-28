@@ -108,7 +108,7 @@ impl EditorState {
 
     fn command_perf(&mut self, arg: &str) {
         match arg {
-            "popup" => self.command_toggle_perf(),
+            "" | "popup" => self.command_toggle_perf(),
             "corners" => self.command_toggle_perf_corners(),
             _ => self.set_status("usage: perf popup|corners"),
         }
@@ -297,7 +297,7 @@ impl EditorState {
             return false;
         }
 
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
 
@@ -384,6 +384,8 @@ impl EditorState {
         let text = std::fs::read_to_string(path)?;
         self.replace_active_buffer_text(&text, viewport_width_cells, text_vh);
         self.session.mark_active_clean();
+        let active_id = self.session.active_id();
+        self.clear_buffer_undo_history(active_id);
         Ok(())
     }
 
@@ -414,7 +416,7 @@ impl EditorState {
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         self.mode = EditorMode::Insert;
         self.clear_status();
         self.input.reset_prefixes();

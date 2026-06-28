@@ -2468,7 +2468,7 @@ impl EditorState {
             .filter(|other| other.tabstop == tabstop)
             .map(|other| (other.start_char, other.end_char, text.to_string()))
             .collect::<Vec<_>>();
-        let before = self.capture_active_insert_coalesced_snapshot();
+        let before = self.capture_active_insert_coalesced_checkpoint();
         {
             let buffer = self.session.active_buffer_mut();
             apply_snippet_edits(buffer, &edits);
@@ -2929,7 +2929,7 @@ impl EditorState {
             .map(|expansion| expansion.text.clone())
             .unwrap_or_else(|| edit.insert.clone());
 
-        let before = self.capture_active_insert_coalesced_snapshot();
+        let before = self.capture_active_insert_coalesced_checkpoint();
         let view = self.views.entry(active_id).or_default();
         {
             let buffer = self.session.active_buffer_mut();

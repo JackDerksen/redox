@@ -65,7 +65,7 @@ impl EditorState {
         let Some(plan) = self.active_visual_selection_edit_plan() else {
             return;
         };
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         self.private_register = plan.text.clone();
         self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
@@ -98,7 +98,7 @@ impl EditorState {
         let Some(plan) = self.active_visual_selection_edit_plan() else {
             return;
         };
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -128,7 +128,7 @@ impl EditorState {
         let Some(plan) = self.active_visual_selection_edit_plan() else {
             return;
         };
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         self.private_register = plan.text.clone();
         self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
@@ -278,14 +278,14 @@ impl EditorState {
 
         match operator {
             TextObjectOperator::Delete => {
-                let before = self.capture_active_undo_snapshot();
+                let before = self.capture_active_undo_checkpoint();
                 self.private_register = plan.text;
                 self.private_register_kind = plan.register_kind;
                 self.apply_delete_ranges(&plan.delete_ranges, viewport_width_cells, text_vh, false);
                 self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
             }
             TextObjectOperator::Change => {
-                let before = self.capture_active_undo_snapshot();
+                let before = self.capture_active_undo_checkpoint();
                 self.private_register = plan.text;
                 self.private_register_kind = plan.register_kind;
                 self.apply_delete_ranges(
@@ -322,7 +322,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();
         let (start_pos, end_pos, mut cut_text) = {
@@ -394,7 +394,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();
         let (start_pos, end_pos, mut cut_text, indent, line_ending) = {
@@ -441,7 +441,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -526,7 +526,7 @@ impl EditorState {
             return;
         }
 
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         let mut changed = false;
         {
             let buffer = self.session.active_buffer_mut();
@@ -574,7 +574,7 @@ impl EditorState {
             return;
         }
 
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         let replacements = {
             let buffer = self.session.active_buffer();
             plan.delete_ranges
@@ -622,7 +622,7 @@ impl EditorState {
             return;
         }
 
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         let replacement_text = replacement.to_string();
         let view = self.views.entry(active_id).or_default();
         {
@@ -657,7 +657,7 @@ impl EditorState {
             return;
         }
 
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
         let replacements = {
             let buffer = self.session.active_buffer();
             plan.delete_ranges
@@ -701,7 +701,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let text = self.private_register.clone();
         let active_id = self.session.active_id();
@@ -722,7 +722,7 @@ impl EditorState {
 
     fn finish_active_visual_selection_edit(
         &mut self,
-        before: super::UndoSnapshot,
+        before: super::UndoCheckpoint,
         mode: EditorMode,
         status: Option<&str>,
     ) {
@@ -749,7 +749,7 @@ impl EditorState {
         if self.active_visual_selection().is_none() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
@@ -792,7 +792,7 @@ impl EditorState {
         if self.active_visual_selection().is_none() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
@@ -877,7 +877,7 @@ impl EditorState {
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
         };
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let added_by_line = self
             .session
@@ -917,7 +917,7 @@ impl EditorState {
         let Some((start_line, end_line)) = self.active_visual_line_range() else {
             return;
         };
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let removed_by_line = self
             .session
@@ -955,7 +955,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let text = self.private_register.clone();
         let active_id = self.session.active_id();
@@ -987,7 +987,7 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
-        let before = self.capture_active_undo_snapshot();
+        let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();

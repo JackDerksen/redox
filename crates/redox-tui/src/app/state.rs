@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use minui::{TabPolicy, cell_width};
 use redox_core::{
     BufferId, BufferKind, EditorSession, ExternalFileChangeKind, Pos, Selection, TextBuffer,
-    VisualModeKind,
+    UndoCheckpoint, UndoHistory, VisualModeKind,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -66,18 +66,6 @@ pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
 enum RegisterKind {
     CharWise,
     LineWise,
-}
-
-#[derive(Debug, Clone)]
-struct UndoSnapshot {
-    buffer: TextBuffer,
-    cursor: Pos,
-}
-
-#[derive(Debug, Default, Clone)]
-struct UndoHistory {
-    undo_stack: Vec<UndoSnapshot>,
-    redo_stack: Vec<UndoSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +174,6 @@ pub struct BufferViewState {
     pub visual_anchor: Option<Pos>,
     analysis_version: u64,
     undo_history: UndoHistory,
-    insert_mode_coalesce_base: Option<UndoSnapshot>,
 }
 
 impl Clone for BufferViewState {
@@ -199,7 +186,6 @@ impl Clone for BufferViewState {
             visual_anchor: self.visual_anchor,
             analysis_version: self.analysis_version,
             undo_history: self.undo_history.clone(),
-            insert_mode_coalesce_base: self.insert_mode_coalesce_base.clone(),
         }
     }
 }
@@ -214,7 +200,6 @@ impl Default for BufferViewState {
             visual_anchor: None,
             analysis_version: 0,
             undo_history: UndoHistory::default(),
-            insert_mode_coalesce_base: None,
         }
     }
 }
@@ -350,11 +335,6 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    #[inline]
-    fn buffers_equal(a: &TextBuffer, b: &TextBuffer) -> bool {
-        a.rope() == b.rope()
-    }
-
     pub fn new(session: EditorSession) -> Self {
         let active = session.active_id();
         let mut views = HashMap::new();
@@ -839,6 +819,7 @@ impl EditorState {
             match change.kind {
                 ExternalFileChangeKind::Reloaded => {
                     reloaded = reloaded.saturating_add(1);
+                    self.clear_buffer_undo_history(change.id);
                     self.reset_buffer_render_caches(change.id);
                 }
                 ExternalFileChangeKind::Conflict => {
@@ -1025,33 +1006,30 @@ impl EditorState {
         view.visual_anchor = None;
     }
 
-    fn capture_active_undo_snapshot(&mut self) -> UndoSnapshot {
+    fn capture_active_undo_checkpoint(&mut self) -> UndoCheckpoint {
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let buffer = self.session.active_buffer().clone();
-        UndoSnapshot { buffer, cursor }
+        UndoHistory::checkpoint(buffer, cursor)
     }
 
-    fn capture_active_insert_coalesced_snapshot(&mut self) -> UndoSnapshot {
+    fn capture_active_insert_coalesced_checkpoint(&mut self) -> UndoCheckpoint {
         let active_id = self.session.active_id();
-        if let Some(existing) = self
-            .views
-            .get(&active_id)
-            .and_then(|view| view.insert_mode_coalesce_base.clone())
-        {
-            return existing;
-        }
-
-        let snapshot = self.capture_active_undo_snapshot();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let buffer = self.session.active_buffer().clone();
         let view = self.views.entry(active_id).or_default();
-        view.insert_mode_coalesce_base = Some(snapshot.clone());
-        snapshot
+        view.undo_history.coalesced_checkpoint(buffer, cursor)
     }
 
     fn clear_active_insert_undo_coalesce(&mut self) {
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        view.insert_mode_coalesce_base = None;
+        view.undo_history.clear_coalesce();
+    }
+
+    fn clear_buffer_undo_history(&mut self, buffer_id: BufferId) {
+        let view = self.views.entry(buffer_id).or_default();
+        view.undo_history.clear();
     }
 
     fn invalidate_active_render_caches(&mut self) {
@@ -1204,22 +1182,13 @@ impl EditorState {
         }
     }
 
-    fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
+    fn record_active_undo_if_changed(&mut self, before: UndoCheckpoint) -> bool {
         let active_id = self.session.active_id();
-        let after_buffer = self.session.active_buffer();
-        if Self::buffers_equal(after_buffer, &before.buffer) {
-            return false;
-        }
-
+        let after_buffer = self.session.active_buffer().clone();
+        let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let view = self.views.entry(active_id).or_default();
-        let duplicate_last = view.undo_history.undo_stack.last().is_some_and(|last| {
-            Self::buffers_equal(&last.buffer, &before.buffer) && last.cursor == before.cursor
-        });
-        if !duplicate_last {
-            view.undo_history.undo_stack.push(before);
-        }
-        view.undo_history.redo_stack.clear();
-        true
+        view.undo_history
+            .record_if_changed(before, &after_buffer, after_cursor)
     }
 
     fn undo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1228,23 +1197,18 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let prev = {
+        let cursor = {
+            let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo_stack.pop()
+            view.undo_history.undo(buffer)
         };
 
-        let Some(prev) = prev else {
+        let Some(cursor) = cursor else {
             self.set_status("nothing to undo");
             return;
         };
 
-        let current = self.capture_active_undo_snapshot();
-        {
-            let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo_stack.push(current);
-        }
-
-        self.restore_active_snapshot(prev, viewport_width_cells, text_vh);
+        self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
     }
 
     fn redo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1253,45 +1217,35 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let next = {
+        let cursor = {
+            let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo_stack.pop()
+            view.undo_history.redo(buffer)
         };
 
-        let Some(next) = next else {
+        let Some(cursor) = cursor else {
             self.set_status("nothing to redo");
             return;
         };
 
-        let current = self.capture_active_undo_snapshot();
-        {
-            let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo_stack.push(current);
-        }
-
-        self.restore_active_snapshot(next, viewport_width_cells, text_vh);
+        self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
     }
 
-    fn restore_active_snapshot(
+    fn reconcile_active_after_undo_restore(
         &mut self,
-        mut snapshot: UndoSnapshot,
+        cursor: Pos,
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
         {
-            let buffer = self.session.active_buffer_mut();
-            *buffer = std::mem::take(&mut snapshot.buffer);
-        }
-
-        {
             let active_id = self.session.active_id();
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
-            view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
+            view.cursor.cursor = buffer.clamp_pos(cursor);
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             view.visual_anchor = None;
-            view.insert_mode_coalesce_base = None;
+            view.undo_history.clear_coalesce();
         }
 
         self.mode = EditorMode::Normal;

@@ -2380,6 +2380,43 @@ fn redo_stack_is_cleared_after_new_edit_post_undo() {
 }
 
 #[test]
+fn reload_from_disk_clears_stale_undo_history() {
+    let path = temp_file_path("reload_clears_undo");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    let active_id = state.session.active_id();
+    assert_eq!(
+        state
+            .views
+            .get(&active_id)
+            .expect("missing view")
+            .undo_history
+            .undo_len(),
+        1
+    );
+
+    fs::write(&path, "disk").expect("failed to update test file");
+    run_command(&mut state, "reload");
+
+    assert_eq!(state.session.active_buffer().to_string(), "disk");
+    assert_eq!(
+        state
+            .views
+            .get(&active_id)
+            .expect("missing view")
+            .undo_history
+            .undo_len(),
+        0
+    );
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "disk");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     let path = temp_file_path("insert_mode_undo_coalesce");
     let mut state = state_with_text(path.clone(), "hello");
@@ -2390,12 +2427,60 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     state.apply_input(InputAction::InsertChar('c'), 80, 24);
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
+    let active_id = state.session.active_id();
+    let history = &state
+        .views
+        .get(&active_id)
+        .expect("missing view")
+        .undo_history;
+    assert_eq!(history.undo_len(), 1);
+    let record = history.last_undo_record().expect("missing undo record");
+    assert_eq!(record.diff.deleted, "");
+    assert_eq!(record.diff.inserted, "abc");
 
     state.apply_input(InputAction::Undo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "hello");
 
     state.apply_input(InputAction::Redo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
+    let path = temp_file_path("insert_mode_undo_separate_sessions");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('a'), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    let active_id = state.session.active_id();
+    state
+        .views
+        .get_mut(&active_id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('b'), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    let history = &state
+        .views
+        .get(&active_id)
+        .expect("missing view")
+        .undo_history;
+    assert_eq!(history.undo_len(), 2);
+    assert_eq!(state.session.active_buffer().to_string(), "bahello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "ahello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
 
     let _ = fs::remove_file(path);
 }

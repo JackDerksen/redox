@@ -691,7 +691,7 @@ impl EditorState {
                         return;
                     }
                     self.close_completion();
-                    let before = self.capture_active_insert_coalesced_snapshot();
+                    let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -755,7 +755,7 @@ impl EditorState {
                         return;
                     }
                     self.close_completion();
-                    let before = self.capture_active_insert_coalesced_snapshot();
+                    let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
                     let language = language_for_path(self.session.active_meta().path.as_deref());
@@ -1029,9 +1029,9 @@ impl EditorState {
         }
 
         let before = if coalesce_insert_mode {
-            self.capture_active_insert_coalesced_snapshot()
+            self.capture_active_insert_coalesced_checkpoint()
         } else {
-            self.capture_active_undo_snapshot()
+            self.capture_active_undo_checkpoint()
         };
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -1102,7 +1102,7 @@ impl EditorState {
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             }
             InsertCharBehaviour::InsertPair(close) => {
-                let before = self.capture_active_insert_coalesced_snapshot();
+                let before = self.capture_active_insert_coalesced_checkpoint();
                 let view = self.views.entry(active_id).or_default();
                 let insert_at_char = {
                     let buffer = self.session.active_buffer();
