@@ -1515,7 +1515,8 @@ fn draw_snapshot_lines(
         let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
         let lexical_overlay_spans = syntax_spans.and_then(|rows| rows.lexical_overlay(row));
         let allow_fallback_override = syntax_spans.is_some_and(|rows| rows.cache_stale());
-        let merged_line_spans = match (syntax_line_spans, fallback_line_spans.as_deref()) {
+        let fallback_line_spans = lexical_overlay_spans.or(fallback_line_spans.as_deref());
+        let merged_line_spans = match (syntax_line_spans, fallback_line_spans) {
             (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(
                 syntax,
                 fallback,
@@ -1523,12 +1524,10 @@ fn draw_snapshot_lines(
             )),
             _ => None,
         };
-        let syntax_line_spans = lexical_overlay_spans.or_else(|| {
-            merged_line_spans
-                .as_deref()
-                .or(syntax_line_spans)
-                .or(fallback_line_spans.as_deref())
-        });
+        let syntax_line_spans = merged_line_spans
+            .as_deref()
+            .or(syntax_line_spans)
+            .or(fallback_line_spans);
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
             .map(Vec::as_slice)
