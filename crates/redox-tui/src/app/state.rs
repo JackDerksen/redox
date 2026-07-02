@@ -17,7 +17,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::syntax::lexical_fallback_line_spans;
+use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
     GraphemeCache, RainAnimation, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
@@ -1088,13 +1088,13 @@ impl EditorState {
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             view.invalidate_render_caches();
-            if syntax_language.is_some()
+            if let Some(syntax_language) = syntax_language
                 && let Some(buffer) = self.session.buffer(buffer_id)
             {
                 let line = buffer.clamp_line(view.cursor.cursor.line);
                 view.syntax_highlighter.replace_lexical_overlay(
                     line,
-                    lexical_fallback_line_spans(&buffer.line_string(line)),
+                    immediate_fallback_line_spans(&buffer.line_string(line), syntax_language),
                 );
             }
             view.analysis_version
