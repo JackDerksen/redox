@@ -1336,9 +1336,9 @@ impl EditorState {
         for entry in by_line.values_mut() {
             if entry.message_count > 1 {
                 entry.inline_text =
-                    format!("⦿ {} (+{})", entry.inline_text, entry.message_count - 1);
+                    format!("▌ {} (+{})", entry.inline_text, entry.message_count - 1);
             } else {
-                entry.inline_text = format!("⦿ {}", entry.inline_text);
+                entry.inline_text = format!("▌ {}", entry.inline_text);
             }
         }
 
