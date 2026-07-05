@@ -48,7 +48,7 @@ redox/
             ├── input/          # Key/event mapping, counts, operators, cursor controller
             └── ui/
                 ├── syntax/     # Tree-sitter language adapters and highlighting
-                ├── widgets/    # About, command line, explorer, finder, LSP, status, toast, perf
+                ├── widgets/    # About, command line, explorer, finder, LSP, etc.
                 ├── overlays.rs # Indent guides, delimiter highlights, colour column
                 ├── render.rs   # Text snapshot/render helpers
                 └── style.rs    # Theme and colour definitions
@@ -65,7 +65,7 @@ This split keeps buffer operations, indexing, motions, fuzzy scoring, and sessio
 ### Requirements
 
 - Rust toolchain (`cargo` + `rustc`)
-- A terminal that supports basic ANSI features and raw mode (and ideally full colour support)
+- A terminal that supports basic ANSI features and raw mode (and ideally full colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for the best experience!
 
 
 ### Install via CLI
@@ -126,17 +126,20 @@ Enter command mode with `:`.
 | `:q!` | Force quit. |
 | `:wq` | Write the current buffer, then quit when all buffers are clean. |
 | `:e <path>` | Open or switch to a file buffer. |
+| `:e!` / `:reload` | Reload the active file from disk. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
 | `:ls` | Show a compact summary of open buffers. |
 | `:ex` / `:explorer` | Toggle the file explorer. |
 | `:about` | Toggle the about popup. |
 | `:rain` | Toggle rain mode. |
-| `:perf` | Toggle the performance metrics popup. |
+| `:perf` / `:perf popup` | Toggle the performance metrics popup. |
+| `:perf corners` | Toggle performance corner markers. |
+| `:undo-tree` | Toggle the undo tree pane. |
 | `:lsp list` | Open the language tools marketplace. |
 | `:lsp status` | Show the active buffer's detected language tools. |
 
-Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
+Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`. Move within the command line with `Left` / `Right`, and cancel with `Escape` / `ctrl+c`.
 
 ### File navigation
 
@@ -144,6 +147,7 @@ Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 | ---- | --------- |
 | `<space><space>` | Open the fuzzy file finder for the launch directory. |
 | `<space>e` | Toggle the file explorer. |
+| `<space>u` | Toggle the undo tree pane. |
 | `<space>x` | Toggle the diagnostics list for the current file. |
 | `<space>ca` | Show quick fixes for the diagnostic under the cursor. |
 | `gd` | Go to symbol definition using the active LSP. |
@@ -152,6 +156,16 @@ Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`.
 | `-` | Navigate to the parent directory in the explorer. |
 | `ctrl+shift+p` | Open the pinboard for the current file or selected finder entry. |
 | `ctrl+1` ... `ctrl+5` | Open a pinned file slot. |
+
+Undo tree controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `<space>u` or `:undo-tree` | Toggle the undo tree pane. |
+| `j` / `k` or `Down` / `Up` | Move between undo states. |
+| `h` / `l` or `Left` / `Right` | Move to the parent state / newest child state. |
+| `Enter` | Restore the selected undo state. |
+| `Escape` / `ctrl+c` | Close the undo tree pane. |
 
 Finder controls:
 
@@ -163,6 +177,7 @@ Finder controls:
 | `ctrl+p` / `ctrl+n` | Move through results. |
 | `Enter` | Open the selected file. |
 | `ctrl+shift+p` | Pin the selected finder entry. |
+| `ctrl+1` ... `ctrl+5` | Open a pinned file slot. |
 | `Escape` / `ctrl+c` | Close the finder. |
 
 Pinboard controls:
@@ -170,6 +185,7 @@ Pinboard controls:
 | Keys | Behaviour |
 | ---- | --------- |
 | `j` / `k` or `Down` / `Up` | Move between pin slots. |
+| `ctrl+n` / `ctrl+p` | Move between pin slots. |
 | `p` or `shift+Enter` | Assign the current file to the selected slot. |
 | `ctrl+1` ... `ctrl+5` | Assign directly to a slot while the pinboard is open. |
 | `Enter` | Open the selected pinned file. |
@@ -191,7 +207,8 @@ Completion controls:
 | `ctrl+i` | Show type, signature, or documentation for the symbol under the cursor. |
 | `ctrl+shift+k` | Request completions in insert mode. |
 | `ctrl+n` / `ctrl+p` or `Down` / `Up` | Move through completion results. |
-| `Enter` | Accept the selected completion or snippet. |
+| `Enter` | Accept the selected completion. |
+| `tab` | Jump to the next snippet placeholder. |
 | `ctrl+e` | Close completions. |
 | `Escape` | Leave insert mode. |
 
@@ -222,6 +239,15 @@ Code action controls:
 | `j` / `k` or `Down` / `Up` | Move through available actions. |
 | `Enter` | Apply the selected quick fix. |
 | `Escape` / `ctrl+c` | Close the quick-fix popup. |
+
+Symbol info controls:
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `ctrl+i` | Show symbol info in normal or insert mode. |
+| `ctrl+tab` | Show symbol info in insert mode. |
+| `j` / `k` or `Down` / `Up` | Scroll the symbol info popup. |
+| `Escape` / `ctrl+c` | Close the symbol info popup. |
 
 Other language tool commands:
 
@@ -289,7 +315,8 @@ Other language tool commands:
 
 Notes:
 - Count prefixes are supported for motions and many operators, for example `3w`, `5j`, `2G`, and `2ci]`.
-- Compound motions are functional, such as `dap`, `ci"`, and `d$`.
+- Text objects include words, big words, paragraphs, parentheses, brackets, braces, single quotes, double quotes, and backticks.
+- Compound motions are functional, such as `dap`, `ci"`, `d$`, `dt,`, and `ygg`.
 - Redox is intentionally opinionated, so keybindings may still move around as the editor settles.
 
 </details>
@@ -349,7 +376,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] LSP code actions and quick fixes
 - [x] Basic git integration (diff stats)
 - [x] In-editor splits
-- [ ] Undo tree UI with stored history
+- [x] Undo-tree UI
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] A dashboard screen with similar functionality to nvim dashboards

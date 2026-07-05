@@ -28,7 +28,7 @@ pub mod text;
 pub use buffer::{
     DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextDiff,
     TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec, UndoCheckpoint,
-    UndoHistory, UndoRecord, VisualModeKind, VisualSelectionEditPlan,
+    UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry, VisualModeKind, VisualSelectionEditPlan,
 };
 pub use fuzzy::{
     FuzzyMatch, FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges,

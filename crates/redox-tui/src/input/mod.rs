@@ -77,6 +77,8 @@ pub enum InputAction {
     EnterSearch,
     /// Open explorer surface (`<leader>e`).
     OpenExplorer,
+    /// Toggle undo tree surface (`<leader>u`).
+    ToggleUndoTree,
     /// Open the file finder popup (`<leader><leader>`).
     OpenFinder,
     ToggleDiagnosticsList,
@@ -271,6 +273,7 @@ enum PrefixFallback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SequenceAction {
     OpenExplorer,
+    ToggleUndoTree,
     OpenFinder,
     ToggleDiagnosticsList,
     TriggerCodeActions,
@@ -298,6 +301,11 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: " e",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::OpenExplorer),
+    },
+    SequenceBinding {
+        sequence: " u",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::ToggleUndoTree),
     },
     SequenceBinding {
         sequence: " c",
@@ -1245,6 +1253,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::OpenExplorer) => {
             state.reset_prefixes();
             InputAction::OpenExplorer
+        }
+        Some(SequenceAction::ToggleUndoTree) => {
+            state.reset_prefixes();
+            InputAction::ToggleUndoTree
         }
         Some(SequenceAction::OpenFinder) => {
             state.reset_prefixes();
@@ -2982,6 +2994,14 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('e'));
         assert_eq!(action, InputAction::OpenExplorer);
+    }
+
+    #[test]
+    fn normal_mode_leader_u_toggles_undo_tree() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
+        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
+        assert_eq!(action, InputAction::ToggleUndoTree);
     }
 
     #[test]

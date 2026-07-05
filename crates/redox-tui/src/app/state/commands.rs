@@ -97,6 +97,9 @@ impl EditorState {
             "perf" => {
                 self.command_perf(arg);
             }
+            "undo-tree" => {
+                self.command_toggle_undo_tree();
+            }
             "lsp" => {
                 self.command_lsp(arg);
             }

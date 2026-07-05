@@ -21,7 +21,7 @@ pub use text_buffer::{
     DelimiterKind, TextBuffer, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,
     VisualModeKind, VisualSelectionEditPlan,
 };
-pub use undo::{TextDiff, UndoCheckpoint, UndoHistory, UndoRecord};
+pub use undo::{TextDiff, UndoCheckpoint, UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry};
 
 #[cfg(test)]
 mod tests;
