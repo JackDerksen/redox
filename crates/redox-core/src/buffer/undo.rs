@@ -300,26 +300,23 @@ impl UndoHistory {
     }
 
     pub fn tree_entries(&self) -> Vec<UndoTreeEntry> {
-        let mut entries = Vec::new();
-        self.collect_entries(0, &mut entries);
-        entries
-    }
-
-    fn collect_entries(&self, node_id: UndoNodeId, entries: &mut Vec<UndoTreeEntry>) {
-        let Some(node) = self.nodes.get(node_id) else {
-            return;
-        };
-        entries.push(UndoTreeEntry {
-            id: node_id,
-            parent: node.parent,
-            sequence: node.sequence,
-            created_at_ms: node.created_at_ms,
-            is_current: node_id == self.current,
-            child_count: node.children.len(),
-        });
-        for child in &node.children {
-            self.collect_entries(*child, entries);
+        let mut entries = Vec::with_capacity(self.nodes.len());
+        let mut pending = vec![0];
+        while let Some(node_id) = pending.pop() {
+            let Some(node) = self.nodes.get(node_id) else {
+                continue;
+            };
+            entries.push(UndoTreeEntry {
+                id: node_id,
+                parent: node.parent,
+                sequence: node.sequence,
+                created_at_ms: node.created_at_ms,
+                is_current: node_id == self.current,
+                child_count: node.children.len(),
+            });
+            pending.extend(node.children.iter().rev().copied());
         }
+        entries
     }
 
     fn lowest_common_ancestor(&self, a: UndoNodeId, b: UndoNodeId) -> Option<UndoNodeId> {
