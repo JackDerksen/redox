@@ -28,6 +28,14 @@ fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     EditorState::new(session)
 }
 
+fn undo_history_of(state: &EditorState, buffer_id: BufferId) -> &UndoHistory {
+    &state
+        .views
+        .get(&buffer_id)
+        .expect("missing view")
+        .undo_history
+}
+
 #[test]
 fn split_popup_background_preserves_active_surface_buffer() {
     let _guard = global_test_state_lock().lock().unwrap();
@@ -2386,29 +2394,13 @@ fn reload_from_disk_clears_stale_undo_history() {
 
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     let active_id = state.session.active_id();
-    assert_eq!(
-        state
-            .views
-            .get(&active_id)
-            .expect("missing view")
-            .undo_history
-            .undo_len(),
-        1
-    );
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
 
     fs::write(&path, "disk").expect("failed to update test file");
     run_command(&mut state, "reload");
 
     assert_eq!(state.session.active_buffer().to_string(), "disk");
-    assert_eq!(
-        state
-            .views
-            .get(&active_id)
-            .expect("missing view")
-            .undo_history
-            .undo_len(),
-        0
-    );
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
 
     state.apply_input(InputAction::Undo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "disk");
@@ -2426,22 +2418,10 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     state.apply_input(InputAction::InsertChar('b'), 80, 24);
     state.apply_input(InputAction::InsertChar('c'), 80, 24);
     let active_id = state.session.active_id();
-    assert_eq!(
-        state
-            .views
-            .get(&active_id)
-            .expect("missing view")
-            .undo_history
-            .undo_len(),
-        0
-    );
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
-    let history = &state
-        .views
-        .get(&active_id)
-        .expect("missing view")
-        .undo_history;
+    let history = undo_history_of(&state, active_id);
     assert_eq!(history.undo_len(), 1);
     let record = history.last_undo_record().expect("missing undo record");
     assert_eq!(record.diff.deleted, "");
@@ -2468,15 +2448,7 @@ fn insert_mode_escape_does_not_snapshot_clean_buffer() {
 
     let active_id = state.session.active_id();
     assert_eq!(state.session.active_buffer().to_string(), "hello");
-    assert_eq!(
-        state
-            .views
-            .get(&active_id)
-            .expect("missing view")
-            .undo_history
-            .undo_len(),
-        0
-    );
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
 
     let _ = fs::remove_file(path);
 }
@@ -2502,11 +2474,7 @@ fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
     state.apply_input(InputAction::InsertChar('b'), 80, 24);
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
 
-    let history = &state
-        .views
-        .get(&active_id)
-        .expect("missing view")
-        .undo_history;
+    let history = undo_history_of(&state, active_id);
     assert_eq!(history.undo_len(), 2);
     assert_eq!(state.session.active_buffer().to_string(), "bahello");
 
