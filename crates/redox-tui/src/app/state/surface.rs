@@ -75,9 +75,11 @@ impl EditorState {
             self.about = None;
         }
 
+        /*
         if is_undo_tree {
             self.undo_tree = None;
         }
+        */
 
         if (is_explorer || is_about)
             && let Some(target) = return_to
