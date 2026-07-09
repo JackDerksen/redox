@@ -1038,9 +1038,11 @@ fn undo_tree_preview_change(
                 },
             )
         });
+    let (before, after) =
+        materialize_undo_preview_nodes(current_buffer, history, before_node, selected_node)?;
     Some(UndoTreePreviewChange {
-        before: materialize_undo_node(current_buffer, history, before_node)?,
-        after: materialize_undo_node(current_buffer, history, selected_node)?,
+        before,
+        after,
         diff,
     })
 }
@@ -1078,15 +1080,18 @@ fn undo_tree_entry(entries: &[UndoTreeEntry], node_id: UndoNodeId) -> Option<&Un
     entries.iter().find(|entry| entry.id == node_id)
 }
 
-fn materialize_undo_node(
+fn materialize_undo_preview_nodes(
     current_buffer: &TextBuffer,
     history: &UndoHistory,
-    node_id: UndoNodeId,
-) -> Option<TextBuffer> {
+    before_node: UndoNodeId,
+    after_node: UndoNodeId,
+) -> Option<(TextBuffer, TextBuffer)> {
     let mut history = history.clone();
     let mut buffer = current_buffer.clone();
-    history.restore(&mut buffer, node_id)?;
-    Some(buffer)
+    history.restore(&mut buffer, before_node)?;
+    let before = buffer.clone();
+    history.restore(&mut buffer, after_node)?;
+    Some((before, buffer))
 }
 
 fn undo_tree_diff_text(
