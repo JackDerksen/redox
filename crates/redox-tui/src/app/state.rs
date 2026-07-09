@@ -51,7 +51,7 @@ mod search;
 mod surface;
 mod undo_tree;
 use undo_tree::UndoTreeState;
-pub use undo_tree::UndoTreeSurfaceRole;
+pub use undo_tree::{UndoTreeLineRole, UndoTreeLineSpan, UndoTreeSurfaceRole};
 
 const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;

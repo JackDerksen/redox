@@ -1,6 +1,7 @@
 use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::app::state::{UndoTreeLineRole, UndoTreeLineSpan};
 use crate::ui::style::UndoTreeStyle;
 use crate::ui::widgets::popup::clip_text_to_cells;
 
@@ -11,12 +12,17 @@ pub fn draw_undo_tree_lines(
     width: u16,
     style: UndoTreeStyle,
     lines: &[String],
+    line_spans: &[Vec<UndoTreeLineSpan>],
     first_line: usize,
     selected_line: usize,
 ) -> Result<()> {
     for (row, line) in lines.iter().enumerate() {
         let is_selected = first_line.saturating_add(row) == selected_line;
-        draw_undo_tree_line(window, width, row as u16, line, style, is_selected)?;
+        let spans = line_spans
+            .get(first_line.saturating_add(row))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        draw_undo_tree_line(window, width, row as u16, line, spans, style, is_selected)?;
     }
     Ok(())
 }
@@ -39,6 +45,7 @@ fn draw_undo_tree_line(
     width: u16,
     row: u16,
     line: &str,
+    spans: &[UndoTreeLineSpan],
     style: UndoTreeStyle,
     is_selected: bool,
 ) -> Result<()> {
@@ -50,34 +57,20 @@ fn draw_undo_tree_line(
     fill_row(window, width, row, ColorPair::new(style.text.fg, bg))?;
 
     let line = clip_text_to_cells(line, width as usize);
-    let timestamp_start = line.find('(').unwrap_or(line.len());
-    let original_range = line
-        .find("original")
-        .map(|start| (start, start + "original".len()));
-    let selected_indicator = line
-        .find('>')
-        .and_then(|start| line[start..].find('<').map(|end| (start, start + end + 1)));
     let mut col = 0u16;
     for (byte_idx, ch) in line.char_indices() {
-        let is_original_label =
-            original_range.is_some_and(|(start, end)| byte_idx >= start && byte_idx < end);
-        let is_node_label = ch.is_ascii_digit() || is_original_label;
-        let is_selected_indicator =
-            selected_indicator.is_some_and(|(start, end)| byte_idx >= start && byte_idx < end);
-        let colors = if byte_idx >= timestamp_start {
-            with_bg(style.timestamp, bg)
-        } else if is_undo_tree_edge_glyph(ch) {
-            with_bg(style.edge, bg)
-        } else if matches!(ch, '{' | '}') {
-            with_bg(style.redo_marker, bg)
-        } else if is_node_label {
-            with_bg(style.node_label, bg)
-        } else if is_selected_indicator {
-            with_bg(style.selected_indicator, bg)
-        } else if matches!(ch, '*' | '●' | '⦿') {
-            with_bg(style.node, bg)
-        } else {
-            with_bg(style.text, bg)
+        let role = spans
+            .iter()
+            .find(|span| span.range.contains(&byte_idx))
+            .map(|span| span.role);
+        let colors = match role {
+            Some(UndoTreeLineRole::Timestamp) => with_bg(style.timestamp, bg),
+            Some(UndoTreeLineRole::Edge) => with_bg(style.edge, bg),
+            Some(UndoTreeLineRole::RedoMarker) => with_bg(style.redo_marker, bg),
+            Some(UndoTreeLineRole::NodeLabel) => with_bg(style.node_label, bg),
+            Some(UndoTreeLineRole::SelectedIndicator) => with_bg(style.selected_indicator, bg),
+            Some(UndoTreeLineRole::Node) => with_bg(style.node, bg),
+            None => with_bg(style.text, bg),
         };
         col = write_grapheme(window, width, row, col, &ch.to_string(), colors)?;
     }
@@ -163,13 +156,6 @@ fn fill_row(window: &mut dyn Window, width: u16, row: u16, colors: ColorPair) ->
 
 fn with_bg(colors: ColorPair, bg: Color) -> ColorPair {
     ColorPair::new(colors.fg, bg)
-}
-
-fn is_undo_tree_edge_glyph(ch: char) -> bool {
-    matches!(
-        ch,
-        '|' | '/' | '\\' | '│' | '─' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼'
-    )
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 use std::time::UNIX_EPOCH;
 
 use redox_core::{
@@ -15,6 +16,22 @@ pub enum UndoTreeSurfaceRole {
     Preview,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoTreeLineRole {
+    Edge,
+    Node,
+    NodeLabel,
+    RedoMarker,
+    SelectedIndicator,
+    Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoTreeLineSpan {
+    pub range: Range<usize>,
+    pub role: UndoTreeLineRole,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct UndoTreeState {
     pub(super) buffer_id: BufferId,
@@ -24,6 +41,7 @@ pub(super) struct UndoTreeState {
     pub(super) diff_pane_id: PaneId,
     pub(super) selected_node: UndoNodeId,
     pub(super) display_rows: Vec<Option<UndoNodeId>>,
+    line_spans: Vec<Vec<UndoTreeLineSpan>>,
     rendered_at_ms: u128,
 }
 
@@ -157,6 +175,11 @@ impl EditorState {
         }
     }
 
+    pub fn undo_tree_line_spans(&self, buffer_id: BufferId) -> Option<&[Vec<UndoTreeLineSpan>]> {
+        let tree = self.undo_tree.as_ref()?;
+        (tree.buffer_id == buffer_id).then_some(tree.line_spans.as_slice())
+    }
+
     pub fn pane_draws_as_active(&self, pane_id: PaneId) -> bool {
         if pane_id == self.active_pane {
             return true;
@@ -237,6 +260,7 @@ impl EditorState {
                 .map(|view| view.undo_history.current())
                 .unwrap_or(0),
             display_rows: Vec::new(),
+            line_spans: Vec::new(),
             rendered_at_ms: current_time_ms(),
         });
         self.refresh_undo_tree_surface(true);
@@ -314,6 +338,7 @@ impl EditorState {
         }
         if let Some(tree) = self.undo_tree.as_mut() {
             tree.display_rows = rendered.display_rows;
+            tree.line_spans = rendered.line_spans;
             tree.selected_node = selected_node;
             tree.rendered_at_ms = rendered_at_ms;
         }
@@ -456,6 +481,7 @@ fn undo_tree_scroll_top_for_row(
 struct RenderedUndoTree {
     text: String,
     display_rows: Vec<Option<UndoNodeId>>,
+    line_spans: Vec<Vec<UndoTreeLineSpan>>,
 }
 
 #[derive(Debug, Clone)]
@@ -495,6 +521,7 @@ fn render_undo_tree(entries: &[UndoTreeEntry], rendered_at_ms: u128) -> Rendered
         return RenderedUndoTree {
             text: String::new(),
             display_rows: Vec::new(),
+            line_spans: Vec::new(),
         };
     };
     order_undo_tree_render_node(&mut root);
@@ -531,22 +558,27 @@ fn render_undo_tree(entries: &[UndoTreeEntry], rendered_at_ms: u128) -> Rendered
         .unwrap_or(0);
     let mut lines = Vec::with_capacity(rows.len());
     let mut display_rows = Vec::with_capacity(rows.len());
+    let mut line_spans = Vec::with_capacity(rows.len());
     for (row, graph_row) in rows.into_iter().zip(graph_rows) {
         match row.entry {
             Some(entry) => {
                 let node_id = entry.id;
-                lines.push(undo_tree_node_line(
+                let (line, spans) = undo_tree_node_line(
                     &entry,
                     rendered_at_ms,
                     &graph_row,
                     tree_width,
                     redo_target,
                     label_width,
-                ));
+                );
+                lines.push(line);
+                line_spans.push(spans);
                 display_rows.push(Some(node_id));
             }
             None => {
-                lines.push(format_undo_tree_connector_line(&graph_row));
+                let (line, spans) = format_undo_tree_connector_line(&graph_row);
+                lines.push(line);
+                line_spans.push(spans);
                 display_rows.push(None);
             }
         }
@@ -555,6 +587,7 @@ fn render_undo_tree(entries: &[UndoTreeEntry], rendered_at_ms: u128) -> Rendered
     RenderedUndoTree {
         text: lines.join("\n") + if lines.is_empty() { "" } else { "\n" },
         display_rows,
+        line_spans,
     }
 }
 
@@ -815,7 +848,7 @@ fn undo_tree_node_line(
     tree_width: usize,
     redo_target: Option<UndoNodeId>,
     label_width: usize,
-) -> String {
+) -> (String, Vec<UndoTreeLineSpan>) {
     let label = undo_tree_node_label(entry, redo_target, label_width);
     let time = if entry.id == 0 {
         None
@@ -835,12 +868,31 @@ fn undo_tree_node_line(
             }
         })
         .unwrap_or_default();
-    format!("  {tree}{}{}{time}", " ".repeat(label_gap), label.text)
+    let mut line = format!("  {tree}{}", " ".repeat(label_gap));
+    let mut spans = undo_tree_graph_spans(tree, 2);
+    let label_start = line.len();
+    line.push_str(&label.text);
+    spans.extend(
+        label
+            .spans
+            .into_iter()
+            .map(|span| offset_undo_tree_span(span, label_start)),
+    );
+    if !time.is_empty() {
+        let timestamp_start = line.len() + time.find('(').unwrap_or(time.len());
+        line.push_str(&time);
+        spans.push(UndoTreeLineSpan {
+            range: timestamp_start..line.len(),
+            role: UndoTreeLineRole::Timestamp,
+        });
+    }
+    (line, spans)
 }
 
 struct UndoTreeNodeLabel {
     text: String,
     is_marked: bool,
+    spans: Vec<UndoTreeLineSpan>,
 }
 
 fn undo_tree_node_label(
@@ -853,11 +905,29 @@ fn undo_tree_node_label(
             UndoTreeNodeLabel {
                 text: ">original<".to_string(),
                 is_marked: true,
+                spans: vec![
+                    UndoTreeLineSpan {
+                        range: 0..1,
+                        role: UndoTreeLineRole::SelectedIndicator,
+                    },
+                    UndoTreeLineSpan {
+                        range: 1..9,
+                        role: UndoTreeLineRole::NodeLabel,
+                    },
+                    UndoTreeLineSpan {
+                        range: 9..10,
+                        role: UndoTreeLineRole::SelectedIndicator,
+                    },
+                ],
             }
         } else {
             UndoTreeNodeLabel {
                 text: "original".to_string(),
                 is_marked: false,
+                spans: vec![UndoTreeLineSpan {
+                    range: 0..8,
+                    role: UndoTreeLineRole::NodeLabel,
+                }],
             }
         };
     }
@@ -867,16 +937,31 @@ fn undo_tree_node_label(
         UndoTreeNodeLabel {
             text: undo_tree_marked_node_label(&number, label_width, '>', '<'),
             is_marked: true,
+            spans: undo_tree_marked_node_label_spans(
+                &number,
+                label_width,
+                UndoTreeLineRole::SelectedIndicator,
+            ),
         }
     } else if redo_target == Some(entry.id) {
         UndoTreeNodeLabel {
             text: undo_tree_marked_node_label(&number, label_width, '{', '}'),
             is_marked: true,
+            spans: undo_tree_marked_node_label_spans(
+                &number,
+                label_width,
+                UndoTreeLineRole::RedoMarker,
+            ),
         }
     } else {
+        let padding = label_width.saturating_sub(number.len());
         UndoTreeNodeLabel {
             text: format!("{number:>label_width$}"),
             is_marked: false,
+            spans: vec![UndoTreeLineSpan {
+                range: padding..padding + number.len(),
+                role: UndoTreeLineRole::NodeLabel,
+            }],
         }
     }
 }
@@ -891,8 +976,54 @@ fn undo_tree_marked_node_label(
     format!("{padding}{left_marker}{number}{right_marker}")
 }
 
-fn format_undo_tree_connector_line(tree: &str) -> String {
-    format!("  {}", tree.trim_end())
+fn undo_tree_marked_node_label_spans(
+    number: &str,
+    label_width: usize,
+    marker_role: UndoTreeLineRole,
+) -> Vec<UndoTreeLineSpan> {
+    let marker_start = label_width.saturating_sub(number.len());
+    vec![
+        UndoTreeLineSpan {
+            range: marker_start..marker_start + 1,
+            role: marker_role,
+        },
+        UndoTreeLineSpan {
+            range: marker_start + 1..marker_start + 1 + number.len(),
+            role: UndoTreeLineRole::NodeLabel,
+        },
+        UndoTreeLineSpan {
+            range: marker_start + 1 + number.len()..marker_start + 2 + number.len(),
+            role: marker_role,
+        },
+    ]
+}
+
+fn undo_tree_graph_spans(tree: &str, offset: usize) -> Vec<UndoTreeLineSpan> {
+    tree.char_indices()
+        .filter_map(|(start, ch)| {
+            let role = if ch == UNDO_TREE_NODE_GLYPH {
+                UndoTreeLineRole::Node
+            } else if ch != ' ' {
+                UndoTreeLineRole::Edge
+            } else {
+                return None;
+            };
+            Some(UndoTreeLineSpan {
+                range: offset + start..offset + start + ch.len_utf8(),
+                role,
+            })
+        })
+        .collect()
+}
+
+fn offset_undo_tree_span(mut span: UndoTreeLineSpan, offset: usize) -> UndoTreeLineSpan {
+    span.range = span.range.start + offset..span.range.end + offset;
+    span
+}
+
+fn format_undo_tree_connector_line(tree: &str) -> (String, Vec<UndoTreeLineSpan>) {
+    let tree = tree.trim_end();
+    (format!("  {tree}"), undo_tree_graph_spans(tree, 2))
 }
 
 #[cfg(test)]

@@ -1330,6 +1330,10 @@ fn draw_buffer_snapshot_for_id(
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 ) -> minui::Result<()> {
     let undo_tree_role = state.undo_tree_surface_role(buffer_id);
+    let undo_tree_line_spans = state
+        .undo_tree_line_spans(buffer_id)
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
     if undo_tree_role.is_none() {
         state.refresh_git_diff_for_buffer(buffer_id);
     }
@@ -1357,6 +1361,7 @@ fn draw_buffer_snapshot_for_id(
                     width,
                     style.undo_tree,
                     &lines,
+                    &undo_tree_line_spans,
                     first_line,
                     view.cursor.cursor.line,
                 ),
