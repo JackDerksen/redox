@@ -63,21 +63,26 @@ impl TextDiff {
         let after_len = after.len_chars();
         let min_len = before_len.min(after_len);
 
-        let mut prefix_len = 0;
-        while prefix_len < min_len
-            && before.rope().char(prefix_len) == after.rope().char(prefix_len)
-        {
-            prefix_len += 1;
-        }
+        let prefix_len = before
+            .rope()
+            .chars()
+            .zip(after.rope().chars())
+            .take(min_len)
+            .take_while(|(before_char, after_char)| before_char == after_char)
+            .count();
 
-        let mut suffix_len = 0;
-        while suffix_len < before_len.saturating_sub(prefix_len)
-            && suffix_len < after_len.saturating_sub(prefix_len)
-            && before.rope().char(before_len - suffix_len - 1)
-                == after.rope().char(after_len - suffix_len - 1)
-        {
-            suffix_len += 1;
-        }
+        let max_suffix_len = before_len
+            .saturating_sub(prefix_len)
+            .min(after_len.saturating_sub(prefix_len));
+
+        let suffix_len = before
+            .rope()
+            .chars_at(before_len)
+            .reversed()
+            .zip(after.rope().chars_at(after_len).reversed())
+            .take(max_suffix_len)
+            .take_while(|(before_char, after_char)| before_char == after_char)
+            .count();
 
         let before_changed_end = before_len - suffix_len;
         let after_changed_end = after_len - suffix_len;
