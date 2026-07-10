@@ -41,6 +41,7 @@ pub(super) struct UndoTreeState {
     pub(super) diff_pane_id: PaneId,
     pub(super) selected_node: UndoNodeId,
     pub(super) display_rows: Vec<Option<UndoNodeId>>,
+    diff_separator_row: Option<usize>,
     line_spans: Vec<Vec<UndoTreeLineSpan>>,
     rendered_at_ms: u128,
 }
@@ -180,6 +181,13 @@ impl EditorState {
         (tree.buffer_id == buffer_id).then_some(tree.line_spans.as_slice())
     }
 
+    pub fn undo_tree_preview_separator_row(&self, buffer_id: BufferId) -> Option<usize> {
+        let tree = self.undo_tree.as_ref()?;
+        (tree.diff_buffer_id == buffer_id)
+            .then_some(tree.diff_separator_row)
+            .flatten()
+    }
+
     pub fn pane_draws_as_active(&self, pane_id: PaneId) -> bool {
         if pane_id == self.active_pane {
             return true;
@@ -260,6 +268,7 @@ impl EditorState {
                 .map(|view| view.undo_history.current())
                 .unwrap_or(0),
             display_rows: Vec::new(),
+            diff_separator_row: None,
             line_spans: Vec::new(),
             rendered_at_ms: current_time_ms(),
         });
@@ -328,7 +337,8 @@ impl EditorState {
             .and_then(|buffer| {
                 undo_tree_preview_change(buffer, &source_view.undo_history, selected_node)
             });
-        let diff_text = undo_tree_diff_text(selected_node, preview_change.as_ref());
+        let (diff_text, diff_separator_row) =
+            undo_tree_diff_text(selected_node, preview_change.as_ref());
 
         if let Some(buffer) = self.session.buffer_mut(tree.buffer_id) {
             *buffer = TextBuffer::from_str(&rendered.text);
@@ -338,6 +348,7 @@ impl EditorState {
         }
         if let Some(tree) = self.undo_tree.as_mut() {
             tree.display_rows = rendered.display_rows;
+            tree.diff_separator_row = diff_separator_row;
             tree.line_spans = rendered.line_spans;
             tree.selected_node = selected_node;
             tree.rendered_at_ms = rendered_at_ms;
@@ -1091,7 +1102,10 @@ mod render_tests {
     fn original_preview_separates_title_from_empty_message() {
         assert_eq!(
             undo_tree_diff_text(0, None),
-            "Original state\n\nNo edit is recorded for this point.\n"
+            (
+                "Original state\n\nNo edit is recorded for this point.\n".to_string(),
+                None
+            )
         );
     }
 
@@ -1228,19 +1242,21 @@ fn materialize_undo_preview_nodes(
 fn undo_tree_diff_text(
     selected_node: UndoNodeId,
     preview_change: Option<&UndoTreePreviewChange>,
-) -> String {
+) -> (String, Option<usize>) {
     let mut text = String::new();
     if let Some(change) = preview_change {
         let (deleted_lines, inserted_lines) =
             diff_preview_lines(&change.before, &change.after, &change.diff);
         text.push_str(&format!("Node {selected_node}\n\n"));
         push_preview_lines(&mut text, &deleted_lines);
+        let separator_row = 2 + deleted_lines.len();
         text.push_str("---\n");
         push_preview_lines(&mut text, &inserted_lines);
+        return (text, Some(separator_row));
     } else {
         text.push_str("Original state\n\nNo edit is recorded for this point.\n");
     }
-    text
+    (text, None)
 }
 
 fn diff_preview_lines(

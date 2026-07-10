@@ -1341,6 +1341,7 @@ fn draw_buffer_snapshot_for_id(
         .undo_tree_line_spans(buffer_id)
         .map(<[_]>::to_vec)
         .unwrap_or_default();
+    let undo_tree_preview_separator_row = state.undo_tree_preview_separator_row(buffer_id);
     if undo_tree_role.is_none() {
         state.refresh_git_diff_for_buffer(buffer_id);
     }
@@ -1372,9 +1373,15 @@ fn draw_buffer_snapshot_for_id(
                     first_line,
                     view.cursor.cursor.line,
                 ),
-                UndoTreeSurfaceRole::Preview => {
-                    draw_undo_tree_preview_lines(window, width, style.undo_tree, &lines)
-                }
+                UndoTreeSurfaceRole::Preview => draw_undo_tree_preview_lines(
+                    window,
+                    width,
+                    style.undo_tree,
+                    &lines,
+                    undo_tree_preview_separator_row
+                        .and_then(|row| row.checked_sub(first_line))
+                        .filter(|row| *row < lines.len()),
+                ),
             };
         }
 

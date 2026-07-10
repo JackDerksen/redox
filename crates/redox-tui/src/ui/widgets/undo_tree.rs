@@ -32,8 +32,8 @@ pub fn draw_undo_tree_preview_lines(
     width: u16,
     style: UndoTreeStyle,
     lines: &[String],
+    separator_row: Option<usize>,
 ) -> Result<()> {
-    let separator_row = lines.iter().position(|line| line == "---");
     for (row, line) in lines.iter().enumerate() {
         draw_preview_line(window, width, row, line, style, separator_row)?;
     }
@@ -98,7 +98,7 @@ fn draw_preview_line(
 
     let colors = if line == "Original state" {
         style.preview_title
-    } else if line == "---" {
+    } else if separator_row == Some(row) {
         style.preview_label
     } else if separator_row.is_some_and(|separator| row > 1 && row < separator) {
         style.preview_deleted
@@ -260,7 +260,8 @@ mod tests {
         ];
         let mut window = ColorWindow::new(4, lines.len() as u16);
 
-        draw_undo_tree_preview_lines(&mut window, 4, style, &lines).expect("preview should render");
+        draw_undo_tree_preview_lines(&mut window, 4, style, &lines, None)
+            .expect("preview should render");
 
         assert_eq!(window.color_at(0, 0), Some(style.preview_label));
         assert_eq!(window.color_at(1, 0), Some(style.preview_title));
