@@ -6,6 +6,7 @@ use crate::ui::style::UndoTreeStyle;
 use crate::ui::widgets::popup::clip_text_to_cells;
 
 const UNDO_TREE_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
+const PREVIEW_HEADER_ROWS: usize = 2; // > 1
 
 pub fn draw_undo_tree_lines(
     window: &mut dyn Window,
@@ -100,7 +101,7 @@ fn draw_preview_line(
         style.preview_title
     } else if separator_row == Some(row) {
         style.preview_label
-    } else if separator_row.is_some_and(|separator| row > 1 && row < separator) {
+    } else if separator_row.is_some_and(|separator| row > PREVIEW_HEADER_ROWS && row < separator) {
         style.preview_deleted
     } else if separator_row.is_some_and(|separator| row > separator) {
         style.preview_inserted
