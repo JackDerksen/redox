@@ -268,4 +268,25 @@ mod tests {
         assert_eq!(window.color_at(1, 0), Some(style.preview_title));
         assert_eq!(window.color_at(3, 0), Some(style.preview_dim));
     }
+
+    #[test]
+    fn preview_diff_lines_use_explicit_separator_colours() {
+        let style = UndoTreeStyle::default();
+        let lines = vec![
+            "Node 12".to_string(),
+            String::new(),
+            "context".to_string(),
+            "-old".to_string(),
+            "---".to_string(),
+            "+new".to_string(),
+        ];
+        let mut window = ColorWindow::new(5, lines.len() as u16);
+
+        draw_undo_tree_preview_lines(&mut window, 5, style, &lines, Some(4))
+            .expect("preview should render");
+
+        assert_eq!(window.color_at(3, 0), Some(style.preview_deleted));
+        assert_eq!(window.color_at(4, 0), Some(style.preview_label));
+        assert_eq!(window.color_at(5, 0), Some(style.preview_inserted));
+    }
 }
