@@ -332,18 +332,14 @@ impl UndoHistory {
         base_buffer: &TextBuffer,
         target_buffer: &TextBuffer,
     ) -> Option<UndoNodeId> {
-        let mut candidates = (0..self.nodes.len()).collect::<Vec<_>>();
-        candidates.sort_by_key(|id| std::cmp::Reverse(self.nodes[*id].sequence));
-
-        for candidate in candidates {
-            if candidate == base_node {
-                continue;
-            }
+        let mut candidates = self.nodes.get(base_node)?.children.clone();
+        while let Some(candidate) = candidates.pop() {
             let mut candidate_buffer = base_buffer.clone();
             self.apply_path_between(&mut candidate_buffer, base_node, candidate)?;
             if candidate_buffer.rope() == target_buffer.rope() {
                 return Some(candidate);
             }
+            candidates.extend(self.nodes.get(candidate)?.children.iter().copied());
         }
         None
     }
