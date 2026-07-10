@@ -20,6 +20,7 @@ mod app;
 mod input;
 mod ui;
 
+use app::state::PaneId;
 use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
 use input::{InputAction, map_event_with_context};
 
@@ -194,10 +195,8 @@ fn draw_buffer_view(
     }
 
     let active_cursor_line = state.active_cursor_pos().line;
-    let total_lines = state.session.active_buffer().len_lines().max(1);
-    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
-    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let gutter = pane_gutter_layout(state, state.active_pane_id());
+    let content_x = gutter.content_x;
     let text_w = vw.saturating_sub(content_x);
     state.set_editor_area_size(vw as usize, text_h as usize);
     state.set_viewport_size(
@@ -211,15 +210,7 @@ fn draw_buffer_view(
             .into_iter()
             .find(|rect| rect.pane_id == state.active_pane_id())
         {
-            let options = state.pane_options(rect.pane_id);
-            let content_x = if options.has_line_numbers {
-                let total_lines = state.session.active_buffer().len_lines().max(1);
-                let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-                line_number_gutter_width(total_lines, show_git_marker_column)
-                    .saturating_add(GUTTER_CONTENT_PADDING)
-            } else {
-                0
-            };
+            let content_x = pane_content_x(state, rect.pane_id);
             let pane_text_w = rect.width.saturating_sub(content_x);
             state.set_viewport_size(
                 pane_text_w as usize,
@@ -371,17 +362,17 @@ fn draw_buffer_view(
         draw_relative_line_numbers(
             window,
             background_style,
-            gutter_w,
+            gutter.gutter_w,
             text_h,
-            show_git_marker_column,
+            gutter.show_git_marker_column,
             animation.first_line(),
             active_cursor_line,
-            total_lines,
+            gutter.total_lines,
         )?;
         draw_gutter_padding(
             window,
             background_style,
-            gutter_w,
+            gutter.gutter_w,
             text_h,
             GUTTER_CONTENT_PADDING,
             animation.first_line(),
@@ -435,17 +426,17 @@ fn draw_buffer_view(
     draw_relative_line_numbers(
         window,
         background_style,
-        gutter_w,
+        gutter.gutter_w,
         text_h,
-        show_git_marker_column,
+        gutter.show_git_marker_column,
         snapshot.first_line,
         active_cursor_line,
-        total_lines,
+        gutter.total_lines,
     )?;
     draw_gutter_padding(
         window,
         background_style,
-        gutter_w,
+        gutter.gutter_w,
         text_h,
         GUTTER_CONTENT_PADDING,
         snapshot.first_line,
@@ -1193,6 +1184,38 @@ fn draw_split_editor_panes(
     draw_pane_split_lines(window, style, &rects, width, height)
 }
 
+struct PaneGutterLayout {
+    content_x: u16,
+    gutter_w: u16,
+    total_lines: usize,
+    show_git_marker_column: bool,
+}
+
+fn pane_gutter_layout(state: &EditorState, pane_id: PaneId) -> PaneGutterLayout {
+    let options = state.pane_options(pane_id);
+    if !options.has_line_numbers {
+        return PaneGutterLayout {
+            content_x: 0,
+            gutter_w: 0,
+            total_lines: state.session.active_buffer().len_lines().max(1),
+            show_git_marker_column: false,
+        };
+    }
+    let total_lines = state.session.active_buffer().len_lines().max(1);
+    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+    PaneGutterLayout {
+        content_x: gutter_w.saturating_add(GUTTER_CONTENT_PADDING),
+        gutter_w,
+        total_lines,
+        show_git_marker_column,
+    }
+}
+
+fn pane_content_x(state: &EditorState, pane_id: PaneId) -> u16 {
+    pane_gutter_layout(state, pane_id).content_x
+}
+
 fn active_split_cursor(
     state: &mut EditorState,
     width: u16,
@@ -1202,15 +1225,7 @@ fn active_split_cursor(
         .pane_rects(width, height)
         .into_iter()
         .find(|rect| rect.pane_id == state.active_pane_id())?;
-    let options = state.pane_options(rect.pane_id);
-    let content_x = if options.has_line_numbers {
-        let total_lines = state.session.active_buffer().len_lines().max(1);
-        let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-        line_number_gutter_width(total_lines, show_git_marker_column)
-            .saturating_add(GUTTER_CONTENT_PADDING)
-    } else {
-        0
-    };
+    let content_x = pane_content_x(state, rect.pane_id);
     let text_w = rect.width.saturating_sub(content_x);
     let spec = state.with_active_buffer_view_mut(|buffer, view| {
         view.cursor
@@ -1241,15 +1256,7 @@ fn active_split_cursor_context(
         .pane_rects(width, height)
         .into_iter()
         .find(|rect| rect.pane_id == state.active_pane_id())?;
-    let options = state.pane_options(rect.pane_id);
-    let local_content_x = if options.has_line_numbers {
-        let total_lines = state.session.active_buffer().len_lines().max(1);
-        let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-        line_number_gutter_width(total_lines, show_git_marker_column)
-            .saturating_add(GUTTER_CONTENT_PADDING)
-    } else {
-        0
-    };
+    let local_content_x = pane_content_x(state, rect.pane_id);
     let content_x = rect.x.saturating_add(local_content_x);
     let text_w = rect.width.saturating_sub(local_content_x);
     let (spec, scroll_x) = state.with_active_buffer_view_mut(|buffer, view| {
