@@ -10,10 +10,12 @@ pub mod explorer;
 pub mod finder;
 pub mod lsp;
 pub mod marketplace;
+pub mod pane;
 pub mod perf;
 pub mod popup;
 pub mod status_bar;
 pub mod toast;
+pub mod undo_tree;
 
 pub use about::{about_popup_inner_size, draw_about_popup_view};
 pub use command_line::draw_command_line_popup;
@@ -25,6 +27,8 @@ pub use lsp::{
     draw_symbol_info_popup, symbol_info_content_width_limit,
 };
 pub use marketplace::{draw_lsp_marketplace_popup, lsp_marketplace_popup_inner_size};
+pub use pane::draw_pane_split_lines;
 pub use perf::{draw_perf_popup_view, perf_popup_layout};
 pub use status_bar::build_editor_status_bar;
 pub use toast::draw_status_toast;
+pub use undo_tree::{draw_undo_tree_lines, draw_undo_tree_preview_lines};

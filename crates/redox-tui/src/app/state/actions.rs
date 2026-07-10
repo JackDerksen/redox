@@ -17,6 +17,16 @@ impl EditorState {
         viewport_height_rows: usize,
     ) {
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+        if self
+            .undo_tree_surface_role(self.session.active_id())
+            .is_some()
+            && undo_tree_blocks_buffer_action(&action)
+        {
+            self.mode = EditorMode::Normal;
+            self.input.reset_prefixes();
+            return;
+        }
+
         let keep_insert_coalesce = self.mode == EditorMode::Insert
             && matches!(
                 &action,
@@ -25,7 +35,8 @@ impl EditorState {
                     | InputAction::Enter
                     | InputAction::Paste(_)
             );
-        if !keep_insert_coalesce {
+        let keep_pending_insert_undo = self.mode == EditorMode::Insert;
+        if !keep_insert_coalesce && !keep_pending_insert_undo {
             self.clear_active_insert_undo_coalesce();
         }
 
@@ -48,6 +59,9 @@ impl EditorState {
                 if is_char_search_motion(motion) {
                     self.remember_motion_search(motion, count);
                 }
+                if self.apply_undo_tree_motion(motion, count) {
+                    return;
+                }
                 let is_explorer = self.explorer_is_active();
                 let active_id = self.session.active_id();
                 let view = self.views.entry(active_id).or_default();
@@ -68,6 +82,9 @@ impl EditorState {
                     };
                     view.cursor.scroll_y_lines = view.cursor.scroll_y_lines.min(max_top);
                 }
+                if self.undo_tree_is_active() {
+                    self.clamp_undo_tree_cursor();
+                }
             }
 
             InputAction::SetMode(mode) => {
@@ -75,6 +92,7 @@ impl EditorState {
                 let leaving_insert_to_normal =
                     prev_mode == EditorMode::Insert && mode == InputMode::Normal;
                 if prev_mode == EditorMode::Insert && mode != InputMode::Insert {
+                    let _ = self.finalize_active_insert_undo_if_changed();
                     self.close_completion();
                     self.close_active_snippet();
                 }
@@ -615,8 +633,19 @@ impl EditorState {
                 }
             }
 
+            InputAction::ToggleUndoTree => {
+                if self.mode == EditorMode::Normal {
+                    self.close_completion();
+                    self.command_toggle_undo_tree();
+                }
+            }
+
             InputAction::SurfaceOpenSelected => {
                 if self.mode == EditorMode::Normal {
+                    if self.undo_tree_is_active() {
+                        self.undo_tree_open_selected(viewport_width_cells, text_vh);
+                        return;
+                    }
                     self.transient_origin_buffer_id = None;
                     self.transient_origin_dir = None;
                     self.surface_open_selected();
@@ -691,7 +720,7 @@ impl EditorState {
                         return;
                     }
                     self.close_completion();
-                    let before = self.capture_active_insert_coalesced_snapshot();
+                    let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let sel = Selection::empty(view.cursor.cursor);
@@ -755,7 +784,7 @@ impl EditorState {
                         return;
                     }
                     self.close_completion();
-                    let before = self.capture_active_insert_coalesced_snapshot();
+                    let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
                     let language = language_for_path(self.session.active_meta().path.as_deref());
@@ -1029,9 +1058,9 @@ impl EditorState {
         }
 
         let before = if coalesce_insert_mode {
-            self.capture_active_insert_coalesced_snapshot()
+            self.capture_active_insert_coalesced_checkpoint()
         } else {
-            self.capture_active_undo_snapshot()
+            self.capture_active_undo_checkpoint()
         };
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -1102,7 +1131,7 @@ impl EditorState {
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             }
             InsertCharBehaviour::InsertPair(close) => {
-                let before = self.capture_active_insert_coalesced_snapshot();
+                let before = self.capture_active_insert_coalesced_checkpoint();
                 let view = self.views.entry(active_id).or_default();
                 let insert_at_char = {
                     let buffer = self.session.active_buffer();
@@ -1412,4 +1441,43 @@ fn is_char_search_motion(motion: Motion) -> bool {
             | Motion::FindCharBefore(_)
             | Motion::TillCharBefore(_)
     )
+}
+
+fn undo_tree_blocks_buffer_action(action: &InputAction) -> bool {
+    match action {
+        InputAction::SetMode(mode) => matches!(
+            mode,
+            InputMode::Insert | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ),
+        InputAction::Paste(_)
+        | InputAction::EnterInsert(_)
+        | InputAction::OpenLineBelow
+        | InputAction::OpenLineAbove
+        | InputAction::Undo
+        | InputAction::Redo
+        | InputAction::YankSelectionPrivate
+        | InputAction::DeleteSelectionPrivate
+        | InputAction::ChangeSelectionPrivate
+        | InputAction::DeleteSelectionNoYank
+        | InputAction::OperateTarget { .. }
+        | InputAction::DeleteCurrentLinePrivate { .. }
+        | InputAction::YankCurrentLinePrivate { .. }
+        | InputAction::ChangeCurrentLinePrivate { .. }
+        | InputAction::YankSelectionSystem
+        | InputAction::PasteSystemClipboard
+        | InputAction::PasteSystemClipboardText(_)
+        | InputAction::PastePrivateRegister
+        | InputAction::PastePrivateRegisterBefore
+        | InputAction::DeleteCharNoYank
+        | InputAction::ToggleCase { .. }
+        | InputAction::ReplaceChar(_)
+        | InputAction::MoveVisualSelectionUp { .. }
+        | InputAction::MoveVisualSelectionDown { .. }
+        | InputAction::IndentVisualSelection { .. }
+        | InputAction::OutdentVisualSelection { .. }
+        | InputAction::InsertChar(_)
+        | InputAction::Backspace
+        | InputAction::Enter => true,
+        _ => false,
+    }
 }

@@ -39,6 +39,13 @@ impl EditorState {
             .about
             .as_ref()
             .is_some_and(|about| about.buffer_id == active_id);
+        let is_undo_tree = self
+            .undo_tree
+            .as_ref()
+            .is_some_and(|tree| tree.buffer_id == active_id || tree.diff_buffer_id == active_id);
+        if is_undo_tree && let Some(tree) = self.undo_tree.clone() {
+            return self.close_undo_tree_panel(tree);
+        }
 
         let return_to = self
             .explorer
@@ -67,6 +74,12 @@ impl EditorState {
         if is_about {
             self.about = None;
         }
+
+        /*
+        if is_undo_tree {
+            self.undo_tree = None;
+        }
+        */
 
         if (is_explorer || is_about)
             && let Some(target) = return_to

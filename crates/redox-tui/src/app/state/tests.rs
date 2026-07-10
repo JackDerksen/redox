@@ -28,6 +28,14 @@ fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     EditorState::new(session)
 }
 
+fn undo_history_of(state: &EditorState, buffer_id: BufferId) -> &UndoHistory {
+    &state
+        .views
+        .get(&buffer_id)
+        .expect("missing view")
+        .undo_history
+}
+
 #[test]
 fn split_popup_background_preserves_active_surface_buffer() {
     let _guard = global_test_state_lock().lock().unwrap();
@@ -2380,6 +2388,27 @@ fn redo_stack_is_cleared_after_new_edit_post_undo() {
 }
 
 #[test]
+fn reload_from_disk_clears_stale_undo_history() {
+    let path = temp_file_path("reload_clears_undo");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    let active_id = state.session.active_id();
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+
+    fs::write(&path, "disk").expect("failed to update test file");
+    run_command(&mut state, "reload");
+
+    assert_eq!(state.session.active_buffer().to_string(), "disk");
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "disk");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     let path = temp_file_path("insert_mode_undo_coalesce");
     let mut state = state_with_text(path.clone(), "hello");
@@ -2388,14 +2417,485 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
     state.apply_input(InputAction::InsertChar('b'), 80, 24);
     state.apply_input(InputAction::InsertChar('c'), 80, 24);
+    let active_id = state.session.active_id();
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
     state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
+    let history = undo_history_of(&state, active_id);
+    assert_eq!(history.undo_len(), 1);
+    let record = history.last_undo_record().expect("missing undo record");
+    assert_eq!(record.diff.deleted, "");
+    assert_eq!(record.diff.inserted, "abc");
 
     state.apply_input(InputAction::Undo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "hello");
 
     state.apply_input(InputAction::Redo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_mode_escape_does_not_snapshot_clean_buffer() {
+    let path = temp_file_path("insert_mode_clean_escape");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('a'), 80, 24);
+    state.apply_input(InputAction::Backspace, 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    let active_id = state.session.active_id();
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
+    assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
+    let path = temp_file_path("insert_mode_undo_separate_sessions");
+    let mut state = state_with_text(path.clone(), "hello");
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('a'), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    let active_id = state.session.active_id();
+    state
+        .views
+        .get_mut(&active_id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 0);
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    state.apply_input(InputAction::InsertChar('b'), 80, 24);
+    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+
+    let history = undo_history_of(&state, active_id);
+    assert_eq!(history.undo_len(), 2);
+    assert_eq!(state.session.active_buffer().to_string(), "bahello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "ahello");
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "hello");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
+    let path = temp_file_path("undo_tree_select_deep_history");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("c".to_string()), 80, 24);
+    let source_id = state.session.active_id();
+
+    run_command(&mut state, "undo-tree");
+
+    let tree = state.undo_tree.as_ref().expect("missing undo tree");
+    let tree_buffer_id = tree.buffer_id;
+    let diff_buffer_id = tree.diff_buffer_id;
+    assert_eq!(
+        tree.display_rows
+            .iter()
+            .filter_map(|row| *row)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1, 0]
+    );
+    let tree_text = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+    let lines = tree_text.lines().collect::<Vec<_>>();
+    assert!(lines[0].contains(">3<"));
+    assert!(lines[0].contains("●"));
+    assert!(lines[1].contains("2"));
+    assert!(lines[2].contains("1"));
+    assert!(lines[3].contains("original"));
+    let diff_text = state
+        .session
+        .buffer(diff_buffer_id)
+        .expect("missing undo tree diff buffer")
+        .to_string();
+    assert!(diff_text.starts_with("Node 3\n\n"));
+    assert!(diff_text.contains("---\n"));
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        1
+    );
+    let tree = state.undo_tree.as_ref().expect("missing undo tree");
+    let tree_text = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+    assert!(tree_text.contains(">3<"));
+    assert!(!tree_text.contains(">1<"));
+    let tree_pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == tree.pane_id)
+        .expect("missing undo tree pane");
+    assert_eq!(tree_pane.view.cursor.cursor.line, 2);
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+
+    assert_eq!(state.session.buffer(source_id).unwrap().to_string(), "a");
+    assert_eq!(state.session.active_id(), tree_buffer_id);
+    let tree_text = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+    assert!(tree_text.contains(">1<"));
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .display_rows
+            .iter()
+            .filter_map(|row| *row)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1, 0]
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_surface_ignores_editor_mutations() {
+    let path = temp_file_path("undo_tree_read_only_surface");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
+    run_command(&mut state, "undo-tree");
+
+    let tree_buffer_id = state
+        .undo_tree
+        .as_ref()
+        .expect("missing undo tree")
+        .buffer_id;
+    let before = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+
+    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+    assert_eq!(state.mode, EditorMode::Normal);
+    state.apply_input(InputAction::InsertChar('x'), 80, 24);
+    state.apply_input(InputAction::Paste("boom".to_string()), 80, 24);
+    state.apply_input(InputAction::Undo, 80, 24);
+
+    let after = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+    assert_eq!(after, before);
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_restore_then_edit_creates_branch_without_losing_future_nodes() {
+    let path = temp_file_path("undo_tree_restore_then_branch");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("c".to_string()), 80, 24);
+    let source_id = state.session.active_id();
+
+    run_command(&mut state, "undo-tree");
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+    assert_eq!(state.session.buffer(source_id).unwrap().to_string(), "a");
+
+    let source_pane_id = state
+        .panes
+        .iter()
+        .find(|pane| pane.buffer_id == source_id)
+        .expect("missing source pane")
+        .id;
+    let _ = state.activate_pane(source_pane_id);
+    state.apply_input(InputAction::Paste("d".to_string()), 80, 24);
+
+    let entries = state
+        .views
+        .get(&source_id)
+        .expect("missing source view")
+        .undo_history
+        .tree_entries();
+    let restored_node = entries
+        .iter()
+        .find(|entry| entry.id == 1)
+        .expect("missing restored node");
+    assert_eq!(restored_node.child_count, 2);
+    assert!(entries.iter().any(|entry| entry.id == 3));
+    assert!(entries.iter().any(|entry| entry.id == 4));
+    assert_eq!(fs::read_to_string(&path).expect("missing fixture"), "");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_navigation_moves_back_up_across_connector_rows() {
+    let path = temp_file_path("undo_tree_navigation_connector_rows");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("c".to_string()), 80, 24);
+    state.apply_input(InputAction::Undo, 80, 24);
+    state.apply_input(InputAction::Paste("d".to_string()), 80, 24);
+
+    run_command(&mut state, "undo-tree");
+
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        4
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        2
+    );
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Up,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        3
+    );
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Left,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        2
+    );
+
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Right,
+            count: 1,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        4
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_selection_tracks_source_history_changes() {
+    let path = temp_file_path("undo_tree_tracks_source_history");
+    let mut state = state_with_text(path.clone(), "");
+
+    state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
+    state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
+    let source_id = state.session.active_id();
+
+    run_command(&mut state, "undo-tree");
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        2
+    );
+    state.apply_input(
+        InputAction::Motion {
+            motion: Motion::Down,
+            count: 2,
+        },
+        80,
+        24,
+    );
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        0
+    );
+
+    let source_pane_id = state
+        .panes
+        .iter()
+        .find(|pane| pane.buffer_id == source_id)
+        .expect("missing source pane")
+        .id;
+    let _ = state.activate_pane(source_pane_id);
+    state.apply_input(InputAction::Undo, 80, 24);
+    let current = state
+        .views
+        .get(&source_id)
+        .expect("missing source view")
+        .undo_history
+        .current();
+
+    assert_eq!(
+        state
+            .undo_tree
+            .as_ref()
+            .expect("missing undo tree")
+            .selected_node,
+        current
+    );
+    assert_eq!(current, 1);
+    let tree_buffer_id = state
+        .undo_tree
+        .as_ref()
+        .expect("missing undo tree")
+        .buffer_id;
+    let tree_text = state
+        .session
+        .buffer(tree_buffer_id)
+        .expect("missing undo tree buffer")
+        .to_string();
+    assert!(tree_text.contains(">1<"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
+    let path = temp_file_path("undo_tree_ui_pane");
+    let mut state = state_with_text(path.clone(), "a");
+    state.set_editor_area_size(100, 20);
+
+    run_command(&mut state, "undo-tree");
+
+    let tree = state.undo_tree.as_ref().expect("missing undo tree");
+    let pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == tree.pane_id)
+        .expect("missing undo tree pane");
+    assert!(!pane.options.has_line_numbers);
+    assert!(!pane.options.resizable);
+    let diff_pane = state
+        .panes()
+        .iter()
+        .find(|pane| pane.id == tree.diff_pane_id)
+        .expect("missing undo tree diff pane");
+    assert!(!diff_pane.options.has_line_numbers);
+    assert!(!diff_pane.options.resizable);
+    assert!(!diff_pane.options.accessible);
+
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree.pane_id)
+        .expect("missing undo tree rect");
+    assert_eq!(tree_rect.width, 32);
+
+    let diff_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree.diff_pane_id)
+        .expect("missing undo tree diff rect");
+    assert_eq!(diff_rect.height, 8);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn split_focus_skips_inaccessible_panes() {
+    let path = temp_file_path("split_focus_inaccessible");
+    let mut state = state_with_text(path.clone(), "alpha");
+    state.set_editor_area_size(80, 20);
+    let original_pane = state.active_pane_id();
+
+    state.split_active_pane(SplitAxis::Vertical);
+    let active_after_split = state.active_pane_id();
+    state
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == original_pane)
+        .expect("missing original pane")
+        .options
+        .accessible = false;
+
+    state.focus_split(SplitDirection::Left);
+
+    assert_eq!(state.active_pane_id(), active_after_split);
 
     let _ = fs::remove_file(path);
 }

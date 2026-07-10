@@ -10,6 +10,7 @@
 mod edit;
 mod pos;
 pub mod text_buffer;
+mod undo;
 mod util;
 
 pub mod prelude;
@@ -20,6 +21,7 @@ pub use text_buffer::{
     DelimiterKind, TextBuffer, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,
     VisualModeKind, VisualSelectionEditPlan,
 };
+pub use undo::{TextDiff, UndoCheckpoint, UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry};
 
 #[cfg(test)]
 mod tests;

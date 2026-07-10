@@ -559,6 +559,63 @@ impl Default for LspMarketplaceStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct UndoTreeStyle {
+    pub width_percent: u16,
+    pub min_width: u16,
+    pub max_width: u16,
+    pub preview_height_percent: u16,
+    pub preview_min_height: u16,
+    pub preview_max_height: u16,
+    pub text: ColorPair,
+    pub selected: ColorPair,
+    pub selected_indicator: ColorPair,
+    pub node: ColorPair,
+    pub node_label: ColorPair,
+    pub redo_marker: ColorPair,
+    pub edge: ColorPair,
+    pub timestamp: ColorPair,
+    pub preview_title: ColorPair,
+    pub preview_label: ColorPair,
+    pub preview_text: ColorPair,
+    pub preview_dim: ColorPair,
+    pub preview_deleted: ColorPair,
+    pub preview_inserted: ColorPair,
+}
+
+impl UndoTreeStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            width_percent: 32,
+            min_width: 32,
+            max_width: 56,
+            preview_height_percent: 42,
+            preview_min_height: 8,
+            preview_max_height: 14,
+            text: ColorPair::new(theme.white, theme.bg),
+            selected: ColorPair::new(theme.white, theme.black),
+            selected_indicator: ColorPair::new(theme.orange, theme.bg),
+            node: ColorPair::new(theme.white, theme.bg),
+            node_label: ColorPair::new(theme.blue, theme.bg),
+            redo_marker: ColorPair::new(theme.purple, theme.bg),
+            edge: ColorPair::new(theme.light_gray, theme.bg),
+            timestamp: ColorPair::new(theme.dark_gray, theme.bg),
+            preview_title: ColorPair::new(theme.blue, theme.bg),
+            preview_label: ColorPair::new(theme.light_gray, theme.bg),
+            preview_text: ColorPair::new(theme.white, theme.bg),
+            preview_dim: ColorPair::new(theme.dark_gray, theme.bg),
+            preview_deleted: ColorPair::new(theme.red, theme.bg),
+            preview_inserted: ColorPair::new(theme.green, theme.bg),
+        }
+    }
+}
+
+impl Default for UndoTreeStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct PerfStyle {
     pub width_percent: u16,
     pub height_percent: u16,
@@ -748,6 +805,7 @@ pub struct UiStyle {
     pub lsp_marketplace: LspMarketplaceStyle,
     pub perf: PerfStyle,
     pub syntax: SyntaxStyle,
+    pub undo_tree: UndoTreeStyle,
 }
 
 impl Default for UiStyle {
@@ -766,6 +824,7 @@ impl Default for UiStyle {
             lsp_marketplace: LspMarketplaceStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
+            undo_tree: UndoTreeStyle::from_theme(theme),
         }
     }
 }
@@ -852,6 +911,7 @@ impl UiStyle {
             lsp_marketplace: LspMarketplaceStyle::from_theme(theme),
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
+            undo_tree: UndoTreeStyle::from_theme(theme),
         }
     }
 }

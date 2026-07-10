@@ -26,8 +26,9 @@ pub mod session;
 pub mod text;
 
 pub use buffer::{
-    DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextObjectEditPlan,
-    TextObjectKind, TextObjectScope, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextDiff,
+    TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec, UndoCheckpoint,
+    UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry, VisualModeKind, VisualSelectionEditPlan,
 };
 pub use fuzzy::{
     FuzzyMatch, FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges,

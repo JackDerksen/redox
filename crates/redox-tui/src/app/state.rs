@@ -10,14 +10,14 @@ use std::time::{Duration, Instant};
 use minui::{TabPolicy, cell_width};
 use redox_core::{
     BufferId, BufferKind, EditorSession, ExternalFileChangeKind, Pos, Selection, TextBuffer,
-    VisualModeKind,
+    UndoCheckpoint, UndoHistory, VisualModeKind,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
 use crate::input::{InputMode, InputState};
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::syntax::lexical_fallback_line_spans;
+use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
     GraphemeCache, RainAnimation, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
@@ -49,6 +49,9 @@ mod commands;
 mod editing;
 mod search;
 mod surface;
+mod undo_tree;
+use undo_tree::UndoTreeState;
+pub use undo_tree::{UndoTreeLineRole, UndoTreeLineSpan, UndoTreeSurfaceRole};
 
 const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
@@ -66,18 +69,6 @@ pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
 enum RegisterKind {
     CharWise,
     LineWise,
-}
-
-#[derive(Debug, Clone)]
-struct UndoSnapshot {
-    buffer: TextBuffer,
-    cursor: Pos,
-}
-
-#[derive(Debug, Default, Clone)]
-struct UndoHistory {
-    undo_stack: Vec<UndoSnapshot>,
-    redo_stack: Vec<UndoSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +177,7 @@ pub struct BufferViewState {
     pub visual_anchor: Option<Pos>,
     analysis_version: u64,
     undo_history: UndoHistory,
-    insert_mode_coalesce_base: Option<UndoSnapshot>,
+    pending_insert_undo: Option<UndoCheckpoint>,
 }
 
 impl Clone for BufferViewState {
@@ -199,7 +190,7 @@ impl Clone for BufferViewState {
             visual_anchor: self.visual_anchor,
             analysis_version: self.analysis_version,
             undo_history: self.undo_history.clone(),
-            insert_mode_coalesce_base: self.insert_mode_coalesce_base.clone(),
+            pending_insert_undo: self.pending_insert_undo.clone(),
         }
     }
 }
@@ -214,7 +205,7 @@ impl Default for BufferViewState {
             visual_anchor: None,
             analysis_version: 0,
             undo_history: UndoHistory::default(),
-            insert_mode_coalesce_base: None,
+            pending_insert_undo: None,
         }
     }
 }
@@ -270,6 +261,71 @@ pub enum SplitDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneOptions {
+    pub resizable: bool,
+    pub accessible: bool,
+    pub has_line_numbers: bool,
+}
+
+impl PaneOptions {
+    pub const fn editor() -> Self {
+        Self {
+            resizable: true,
+            accessible: true,
+            has_line_numbers: true,
+        }
+    }
+
+    pub const fn ui() -> Self {
+        Self {
+            resizable: false,
+            accessible: true,
+            has_line_numbers: false,
+        }
+    }
+}
+
+impl Default for PaneOptions {
+    fn default() -> Self {
+        Self::editor()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SplitSize {
+    pub first: Option<u16>,
+    pub second: Option<u16>,
+    pub first_percent: Option<u16>,
+    pub second_percent: Option<u16>,
+    pub min: Option<u16>,
+    pub max: Option<u16>,
+}
+
+impl SplitSize {
+    pub const fn first_percent(percent: u16, min: u16, max: u16) -> Self {
+        Self {
+            first: None,
+            second: None,
+            first_percent: Some(percent),
+            second_percent: None,
+            min: Some(min),
+            max: Some(max),
+        }
+    }
+
+    pub const fn second_percent(percent: u16, min: u16, max: u16) -> Self {
+        Self {
+            first: None,
+            second: None,
+            first_percent: None,
+            second_percent: Some(percent),
+            min: Some(min),
+            max: Some(max),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneId(usize);
 
 #[derive(Debug, Clone)]
@@ -278,6 +334,7 @@ pub struct EditorPane {
     pub buffer_id: BufferId,
     pub view: BufferViewState,
     pub last_used: u64,
+    pub options: PaneOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +342,7 @@ enum SplitNode {
     Pane(PaneId),
     Split {
         axis: SplitAxis,
+        size: SplitSize,
         first: Box<SplitNode>,
         second: Box<SplitNode>,
     },
@@ -306,6 +364,7 @@ pub struct EditorState {
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
     explorer: Option<ExplorerState>,
+    undo_tree: Option<UndoTreeState>,
     finder: Option<FinderState>,
     finder_index_worker: Option<FinderIndexWorker>,
     finder_index_files: Vec<finder::FinderFileCandidate>,
@@ -350,11 +409,6 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    #[inline]
-    fn buffers_equal(a: &TextBuffer, b: &TextBuffer) -> bool {
-        a.rope() == b.rope()
-    }
-
     pub fn new(session: EditorSession) -> Self {
         let active = session.active_id();
         let mut views = HashMap::new();
@@ -366,12 +420,14 @@ impl EditorState {
             buffer_id: active,
             view: initial_view.clone(),
             last_used: 1,
+            options: PaneOptions::editor(),
         };
         let state = Self {
             session,
             views,
             about: None,
             explorer: None,
+            undo_tree: None,
             finder: None,
             finder_index_worker: None,
             finder_index_files: Vec::new(),
@@ -550,6 +606,16 @@ impl EditorState {
     }
 
     pub fn split_active_pane(&mut self, axis: SplitAxis) {
+        let _ =
+            self.split_active_pane_with_options(axis, PaneOptions::editor(), SplitSize::default());
+    }
+
+    pub fn split_active_pane_with_options(
+        &mut self,
+        axis: SplitAxis,
+        new_pane_options: PaneOptions,
+        size: SplitSize,
+    ) -> Option<PaneId> {
         self.sync_active_pane_view();
         self.nudge_active_pane_cursor_before_split(axis);
         let Some(active) = self
@@ -558,7 +624,7 @@ impl EditorState {
             .find(|pane| pane.id == self.active_pane)
             .cloned()
         else {
-            return;
+            return None;
         };
         let new_id = PaneId(self.next_pane_id);
         self.next_pane_id = self.next_pane_id.saturating_add(1);
@@ -569,10 +635,15 @@ impl EditorState {
             buffer_id: active.buffer_id,
             view: new_view,
             last_used: 0,
+            options: new_pane_options,
         });
-        if replace_pane_with_split(&mut self.split_root, self.active_pane, axis, new_id) {
+        if replace_pane_with_split(&mut self.split_root, self.active_pane, axis, size, new_id) {
             let _ = self.activate_pane(new_id);
             self.refresh_active_split_viewport_size();
+            Some(new_id)
+        } else {
+            self.panes.retain(|pane| pane.id != new_id);
+            None
         }
     }
 
@@ -603,7 +674,12 @@ impl EditorState {
             .git
             .diff_for(buffer_id)
             .is_some_and(|diff| !diff.stats.is_empty());
-        let content_x = split_gutter_width(total_lines, show_git_marker_column).saturating_add(1);
+        let has_line_numbers = self.panes[pane_index].options.has_line_numbers;
+        let content_x = if has_line_numbers {
+            split_gutter_width(total_lines, show_git_marker_column).saturating_add(1)
+        } else {
+            0
+        };
         let view = &mut self.panes[pane_index].view;
         nudge_cursor_out_of_new_split_area(&buffer, view, axis, rect, content_x);
         let adjusted = view.clone();
@@ -652,6 +728,12 @@ impl EditorState {
         let candidate = rects
             .iter()
             .filter(|rect| rect.pane_id != self.active_pane)
+            .filter(|rect| {
+                self.panes
+                    .iter()
+                    .find(|pane| pane.id == rect.pane_id)
+                    .is_some_and(|pane| pane.options.accessible)
+            })
             .filter_map(|rect| {
                 let left = i32::from(rect.x);
                 let top = i32::from(rect.y);
@@ -754,6 +836,14 @@ impl EditorState {
         &self.panes
     }
 
+    pub fn pane_options(&self, pane_id: PaneId) -> PaneOptions {
+        self.panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .map(|pane| pane.options)
+            .unwrap_or_default()
+    }
+
     pub fn take_pending_system_clipboard(&mut self) -> Option<String> {
         self.pending_system_clipboard.take()
     }
@@ -839,6 +929,7 @@ impl EditorState {
             match change.kind {
                 ExternalFileChangeKind::Reloaded => {
                     reloaded = reloaded.saturating_add(1);
+                    self.clear_buffer_undo_history(change.id);
                     self.reset_buffer_render_caches(change.id);
                 }
                 ExternalFileChangeKind::Conflict => {
@@ -1025,33 +1116,77 @@ impl EditorState {
         view.visual_anchor = None;
     }
 
-    fn capture_active_undo_snapshot(&mut self) -> UndoSnapshot {
+    fn capture_active_undo_checkpoint(&mut self) -> UndoCheckpoint {
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let buffer = self.session.active_buffer().clone();
-        UndoSnapshot { buffer, cursor }
+        let view = self.views.entry(active_id).or_default();
+        view.undo_history.checkpoint(buffer, cursor)
     }
 
-    fn capture_active_insert_coalesced_snapshot(&mut self) -> UndoSnapshot {
+    fn capture_active_insert_coalesced_checkpoint(&mut self) -> UndoCheckpoint {
         let active_id = self.session.active_id();
-        if let Some(existing) = self
+        if let Some(checkpoint) = self
             .views
-            .get(&active_id)
-            .and_then(|view| view.insert_mode_coalesce_base.clone())
+            .entry(active_id)
+            .or_default()
+            .pending_insert_undo
+            .clone()
         {
-            return existing;
+            return checkpoint;
         }
-
-        let snapshot = self.capture_active_undo_snapshot();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let buffer = self.session.active_buffer().clone();
         let view = self.views.entry(active_id).or_default();
-        view.insert_mode_coalesce_base = Some(snapshot.clone());
-        snapshot
+        let checkpoint = view.undo_history.coalesced_checkpoint(buffer, cursor);
+        view.pending_insert_undo = Some(checkpoint.clone());
+        checkpoint
     }
 
     fn clear_active_insert_undo_coalesce(&mut self) {
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        view.insert_mode_coalesce_base = None;
+        view.pending_insert_undo = None;
+        view.undo_history.clear_coalesce();
+    }
+
+    fn finalize_active_insert_undo_if_changed(&mut self) -> bool {
+        let active_id = self.session.active_id();
+        let Some(before) = self
+            .views
+            .entry(active_id)
+            .or_default()
+            .pending_insert_undo
+            .take()
+        else {
+            return false;
+        };
+        if !self.session.meta(active_id).is_some_and(|meta| meta.dirty) {
+            self.views
+                .entry(active_id)
+                .or_default()
+                .undo_history
+                .clear_coalesce();
+            return false;
+        }
+        let after_buffer = self.session.active_buffer().clone();
+        let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let view = self.views.entry(active_id).or_default();
+        let changed = view
+            .undo_history
+            .record_if_changed(before, &after_buffer, after_cursor);
+        view.undo_history.clear_coalesce();
+        if changed {
+            self.refresh_undo_tree_for_buffer(active_id);
+        }
+        changed
+    }
+
+    fn clear_buffer_undo_history(&mut self, buffer_id: BufferId) {
+        let view = self.views.entry(buffer_id).or_default();
+        view.undo_history.clear();
+        view.pending_insert_undo = None;
+        self.refresh_undo_tree_for_buffer(buffer_id);
     }
 
     fn invalidate_active_render_caches(&mut self) {
@@ -1110,13 +1245,13 @@ impl EditorState {
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             view.invalidate_render_caches();
-            if syntax_language.is_some()
+            if let Some(syntax_language) = syntax_language
                 && let Some(buffer) = self.session.buffer(buffer_id)
             {
                 let line = buffer.clamp_line(view.cursor.cursor.line);
                 view.syntax_highlighter.replace_lexical_overlay(
                     line,
-                    lexical_fallback_line_spans(&buffer.line_string(line)),
+                    immediate_fallback_line_spans(&buffer.line_string(line), syntax_language),
                 );
             }
             view.analysis_version
@@ -1204,22 +1339,21 @@ impl EditorState {
         }
     }
 
-    fn record_active_undo_if_changed(&mut self, before: UndoSnapshot) -> bool {
-        let active_id = self.session.active_id();
-        let after_buffer = self.session.active_buffer();
-        if Self::buffers_equal(after_buffer, &before.buffer) {
+    fn record_active_undo_if_changed(&mut self, before: UndoCheckpoint) -> bool {
+        if before.is_coalesced() {
             return false;
         }
-
+        let active_id = self.session.active_id();
+        let after_buffer = self.session.active_buffer().clone();
+        let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let view = self.views.entry(active_id).or_default();
-        let duplicate_last = view.undo_history.undo_stack.last().is_some_and(|last| {
-            Self::buffers_equal(&last.buffer, &before.buffer) && last.cursor == before.cursor
-        });
-        if !duplicate_last {
-            view.undo_history.undo_stack.push(before);
+        let changed = view
+            .undo_history
+            .record_if_changed(before, &after_buffer, after_cursor);
+        if changed {
+            self.refresh_undo_tree_for_buffer(active_id);
         }
-        view.undo_history.redo_stack.clear();
-        true
+        changed
     }
 
     fn undo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1228,23 +1362,18 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let prev = {
+        let cursor = {
+            let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo_stack.pop()
+            view.undo_history.undo(buffer)
         };
 
-        let Some(prev) = prev else {
+        let Some(cursor) = cursor else {
             self.set_status("nothing to undo");
             return;
         };
 
-        let current = self.capture_active_undo_snapshot();
-        {
-            let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo_stack.push(current);
-        }
-
-        self.restore_active_snapshot(prev, viewport_width_cells, text_vh);
+        self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
     }
 
     fn redo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1253,50 +1382,41 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let next = {
+        let cursor = {
+            let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo_stack.pop()
+            view.undo_history.redo(buffer)
         };
 
-        let Some(next) = next else {
+        let Some(cursor) = cursor else {
             self.set_status("nothing to redo");
             return;
         };
 
-        let current = self.capture_active_undo_snapshot();
-        {
-            let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo_stack.push(current);
-        }
-
-        self.restore_active_snapshot(next, viewport_width_cells, text_vh);
+        self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
     }
 
-    fn restore_active_snapshot(
+    fn reconcile_active_after_undo_restore(
         &mut self,
-        mut snapshot: UndoSnapshot,
+        cursor: Pos,
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
         {
-            let buffer = self.session.active_buffer_mut();
-            *buffer = std::mem::take(&mut snapshot.buffer);
-        }
-
-        {
             let active_id = self.session.active_id();
             let view = self.views.entry(active_id).or_default();
             let buffer = self.session.active_buffer();
-            view.cursor.cursor = buffer.clamp_pos(snapshot.cursor);
+            view.cursor.cursor = buffer.clamp_pos(cursor);
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             view.visual_anchor = None;
-            view.insert_mode_coalesce_base = None;
+            view.undo_history.clear_coalesce();
         }
 
         self.mode = EditorMode::Normal;
         let _ = self.session.recompute_active_dirty();
         self.invalidate_active_render_caches();
+        self.refresh_undo_tree_for_buffer(self.session.active_id());
         self.clear_status();
     }
 }
@@ -1305,12 +1425,14 @@ fn replace_pane_with_split(
     node: &mut SplitNode,
     target: PaneId,
     axis: SplitAxis,
+    size: SplitSize,
     new_id: PaneId,
 ) -> bool {
     match node {
         SplitNode::Pane(id) if *id == target => {
             *node = SplitNode::Split {
                 axis,
+                size,
                 first: Box::new(SplitNode::Pane(target)),
                 second: Box::new(SplitNode::Pane(new_id)),
             };
@@ -1318,8 +1440,8 @@ fn replace_pane_with_split(
         }
         SplitNode::Pane(_) => false,
         SplitNode::Split { first, second, .. } => {
-            replace_pane_with_split(first, target, axis, new_id)
-                || replace_pane_with_split(second, target, axis, new_id)
+            replace_pane_with_split(first, target, axis, size, new_id)
+                || replace_pane_with_split(second, target, axis, size, new_id)
         }
     }
 }
@@ -1366,11 +1488,11 @@ fn collect_pane_rects(
         }),
         SplitNode::Split {
             axis: SplitAxis::Vertical,
+            size,
             first,
             second,
         } => {
-            let first_w = width / 2;
-            let second_w = width.saturating_sub(first_w).saturating_sub(1);
+            let (first_w, second_w) = split_lengths(width, *size);
             collect_pane_rects(first, x, y, first_w, height, rects);
             collect_pane_rects(
                 second,
@@ -1383,11 +1505,11 @@ fn collect_pane_rects(
         }
         SplitNode::Split {
             axis: SplitAxis::Horizontal,
+            size,
             first,
             second,
         } => {
-            let first_h = height / 2;
-            let second_h = height.saturating_sub(first_h).saturating_sub(1);
+            let (first_h, second_h) = split_lengths(height, *size);
             collect_pane_rects(first, x, y, width, first_h, rects);
             collect_pane_rects(
                 second,
@@ -1399,6 +1521,38 @@ fn collect_pane_rects(
             );
         }
     }
+}
+
+fn split_lengths(total: u16, size: SplitSize) -> (u16, u16) {
+    let available = total.saturating_sub(1);
+    if let Some(first) = size.first {
+        let first = first.min(available);
+        return (first, available.saturating_sub(first));
+    }
+    if let Some(second) = size.second {
+        let second = second.min(available);
+        return (available.saturating_sub(second), second);
+    }
+    if let Some(percent) = size.first_percent {
+        let first = split_percent_len(available, percent, size.min, size.max);
+        return (first, available.saturating_sub(first));
+    }
+    if let Some(percent) = size.second_percent {
+        let second = split_percent_len(available, percent, size.min, size.max);
+        return (available.saturating_sub(second), second);
+    }
+
+    let first = total / 2;
+    let second = total.saturating_sub(first).saturating_sub(1);
+    (first, second)
+}
+
+fn split_percent_len(available: u16, percent: u16, min: Option<u16>, max: Option<u16>) -> u16 {
+    let percent = percent.min(100);
+    let rounded = (u32::from(available) * u32::from(percent) + 50) / 100;
+    let min = min.unwrap_or(0).min(available);
+    let max = max.unwrap_or(available).min(available).max(min);
+    (rounded as u16).clamp(min, max)
 }
 
 fn nudge_cursor_out_of_new_split_area(

@@ -1243,6 +1243,128 @@ pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
     spans
 }
 
+pub fn immediate_fallback_line_spans(
+    source_line: &str,
+    language: SyntaxLanguage,
+) -> Vec<LineSyntaxSpan> {
+    match language {
+        SyntaxLanguage::Markdown => markdown_immediate_line_spans(source_line),
+        _ => lexical_fallback_line_spans(source_line),
+    }
+}
+
+fn markdown_immediate_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
+    let trimmed_start = source_line.trim_start_matches(' ');
+    let leading_spaces = source_line.len().saturating_sub(trimmed_start.len());
+    if leading_spaces <= 3 {
+        if let Some(span) = markdown_heading_span(source_line, trimmed_start, leading_spaces) {
+            return vec![span];
+        }
+        if let Some(span) = markdown_thematic_break_span(source_line, trimmed_start) {
+            return vec![span];
+        }
+        if let Some(span) = markdown_block_quote_span(trimmed_start, leading_spaces) {
+            return vec![span];
+        }
+        if let Some(span) = markdown_list_marker_span(trimmed_start, leading_spaces) {
+            return vec![span];
+        }
+    }
+
+    markdown_inline_fallback_line_spans(source_line)
+}
+
+fn markdown_heading_span(
+    source_line: &str,
+    trimmed_start: &str,
+    leading_spaces: usize,
+) -> Option<LineSyntaxSpan> {
+    let marker_len = trimmed_start
+        .bytes()
+        .take_while(|byte| *byte == b'#')
+        .count();
+    (1..=6).contains(&marker_len).then_some(()).filter(|_| {
+        trimmed_start
+            .as_bytes()
+            .get(marker_len)
+            .is_none_or(u8::is_ascii_whitespace)
+    })?;
+    Some(LineSyntaxSpan {
+        start_byte: leading_spaces,
+        end_byte: source_line.len(),
+        role: SyntaxRole::MarkdownHeading,
+        priority: 10,
+    })
+}
+
+fn markdown_thematic_break_span(source_line: &str, trimmed_start: &str) -> Option<LineSyntaxSpan> {
+    let marker = trimmed_start
+        .bytes()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    if !matches!(marker, b'-' | b'*' | b'_') {
+        return None;
+    }
+
+    let mut marker_count = 0usize;
+    for byte in trimmed_start.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        if byte != marker {
+            return None;
+        }
+        marker_count += 1;
+    }
+
+    (marker_count >= 3).then_some(LineSyntaxSpan {
+        start_byte: 0,
+        end_byte: source_line.len(),
+        role: SyntaxRole::MarkdownFrontmatter,
+        priority: 10,
+    })
+}
+
+fn markdown_block_quote_span(trimmed_start: &str, leading_spaces: usize) -> Option<LineSyntaxSpan> {
+    trimmed_start.starts_with('>').then_some(LineSyntaxSpan {
+        start_byte: leading_spaces,
+        end_byte: leading_spaces + 1,
+        role: SyntaxRole::MarkdownListMarker,
+        priority: 10,
+    })
+}
+
+fn markdown_list_marker_span(trimmed_start: &str, leading_spaces: usize) -> Option<LineSyntaxSpan> {
+    let bytes = trimmed_start.as_bytes();
+    let marker_len = match bytes {
+        [b'-' | b'*' | b'+', next, ..] if next.is_ascii_whitespace() => 1,
+        [first, ..] if first.is_ascii_digit() => {
+            let digit_len = bytes
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            match bytes.get(digit_len..digit_len.saturating_add(2)) {
+                Some([b'.' | b')', next]) if next.is_ascii_whitespace() => digit_len + 1,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    Some(LineSyntaxSpan {
+        start_byte: leading_spaces,
+        end_byte: leading_spaces + marker_len,
+        role: SyntaxRole::MarkdownListMarker,
+        priority: 10,
+    })
+}
+
+fn markdown_inline_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
+    lexical_fallback_line_spans(source_line)
+        .into_iter()
+        .filter(|span| span.role != SyntaxRole::Comment)
+        .collect()
+}
+
 // Merge cheap lexical spans into stale tree-sitter spans for display-only fallback.
 pub fn merge_line_spans_for_display(
     base: &[LineSyntaxSpan],
