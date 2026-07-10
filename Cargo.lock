@@ -852,7 +852,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "redox-core"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "ropey",
@@ -860,14 +860,14 @@ dependencies = [
 
 [[package]]
 name = "redox-editor"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "redox-tui",
 ]
 
 [[package]]
 name = "redox-tui"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "ignore",
