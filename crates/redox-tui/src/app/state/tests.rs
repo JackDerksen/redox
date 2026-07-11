@@ -5912,6 +5912,48 @@ fn normal_x_deletes_char_without_modifying_private_register() {
 }
 
 #[test]
+fn normal_j_joins_line_below_and_preserves_cursor() {
+    let path = temp_file_path("normal_join_line");
+    let mut state = state_with_text(path.clone(), "alpha\n    beta\ngamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(InputAction::JoinLineBelow, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha beta\ngamma\n"
+    );
+    assert_eq!(
+        state.views.get(&id).expect("missing view").cursor.cursor,
+        Pos::new(0, 2)
+    );
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha\n    beta\ngamma\n"
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_j_on_last_line_is_a_noop() {
+    let path = temp_file_path("normal_join_last_line");
+    let mut state = state_with_text(path.clone(), "alpha\n");
+
+    state.apply_input(InputAction::JoinLineBelow, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "alpha\n");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn visual_x_deletes_selection_without_modifying_private_register() {
     let path = temp_file_path("visual_x_no_yank");
     let mut state = state_with_text(path.clone(), "alpha\nbeta\n");

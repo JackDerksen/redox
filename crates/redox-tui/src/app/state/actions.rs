@@ -207,6 +207,12 @@ impl EditorState {
                 }
             }
 
+            InputAction::JoinLineBelow => {
+                if self.mode == EditorMode::Normal {
+                    self.join_line_below(viewport_width_cells, text_vh);
+                }
+            }
+
             InputAction::EnterCommand => {
                 self.close_completion();
                 self.clear_active_visual_anchor();
@@ -1453,6 +1459,7 @@ fn undo_tree_blocks_buffer_action(action: &InputAction) -> bool {
         | InputAction::EnterInsert(_)
         | InputAction::OpenLineBelow
         | InputAction::OpenLineAbove
+        | InputAction::JoinLineBelow
         | InputAction::Undo
         | InputAction::Redo
         | InputAction::YankSelectionPrivate

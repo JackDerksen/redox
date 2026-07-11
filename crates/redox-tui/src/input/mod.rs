@@ -70,6 +70,8 @@ pub enum InputAction {
     OpenLineBelow,
     /// Create a new line above current line and enter insert mode (`O`).
     OpenLineAbove,
+    /// Join the line below onto the current line (`J`).
+    JoinLineBelow,
 
     /// Enter command mode (like Vim's `:`).
     EnterCommand,
@@ -848,6 +850,10 @@ fn modal_char_action(
             InputAction::MoveVisualSelectionDown {
                 count: state.take_count_or_1(),
             }
+        }
+        'J' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            InputAction::JoinLineBelow
         }
         'K' if matches!(
             mode,
@@ -2244,6 +2250,22 @@ mod tests {
             action,
             InputAction::EnterInsert(InsertKind::InsertLineStart)
         );
+    }
+
+    #[test]
+    fn normal_mode_shift_j_joins_line_below() {
+        let mut state = InputState::new();
+        for key in [KeyKind::Char('J'), KeyKind::Char('j')] {
+            let action = map_event_with_state(
+                &mut state,
+                InputMode::Normal,
+                &Event::KeyWithModifiers(KeyWithModifiers {
+                    key,
+                    mods: KeyModifiers::shift(),
+                }),
+            );
+            assert_eq!(action, InputAction::JoinLineBelow);
+        }
     }
 
     #[test]
