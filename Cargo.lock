@@ -873,6 +873,7 @@ dependencies = [
  "ignore",
  "minui",
  "redox-core",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

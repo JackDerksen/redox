@@ -86,35 +86,88 @@ fn migrate_path(source: &Path, destination: &Path) -> io::Result<()> {
     if !source.exists() || destination.exists() {
         return Ok(());
     }
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let migration_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(parent.join(".redox-migration.lock"))?;
+    migration_lock.lock()?;
+
+    if !source.exists() || destination.exists() {
+        return Ok(());
     }
-    match fs::rename(source, destination) {
+    match rename_noreplace(source, destination) {
         Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(_) => {
             let name = destination
                 .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("state");
-            let temporary = destination.with_file_name(format!(".{name}.migration-tmp"));
-            if temporary.is_dir() {
-                fs::remove_dir_all(&temporary)?;
-            } else if temporary.exists() {
-                fs::remove_file(&temporary)?;
-            }
-            if source.is_dir() {
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_else(|| "state".into());
+            let prefix = format!(".{name}.migration-{}-", std::process::id());
+            let staging = tempfile::Builder::new()
+                .prefix(&prefix)
+                .tempdir_in(parent)?;
+            let temporary = staging.path().join("data");
+            let source_is_dir = source.is_dir();
+            if source_is_dir {
                 copy_directory(source, &temporary)?;
             } else {
                 fs::copy(source, &temporary)?;
             }
-            fs::rename(&temporary, destination)?;
-            if source.is_dir() {
+            match rename_noreplace(&temporary, destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+                Err(error) => return Err(error),
+            }
+            if source_is_dir {
                 fs::remove_dir_all(source)
             } else {
                 fs::remove_file(source)
             }
         }
     }
+}
+
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    target_os = "redox"
+))]
+fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        source,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(target_os = "windows")]
+fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    target_os = "redox",
+    target_os = "windows"
+)))]
+fn rename_noreplace(_source: &Path, _destination: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unsupported on this platform",
+    ))
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> io::Result<()> {
