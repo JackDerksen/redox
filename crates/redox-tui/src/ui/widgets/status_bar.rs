@@ -137,31 +137,19 @@ enum ClipMode {
 #[derive(Debug, Clone)]
 struct StatusModule {
     colors: StatusModuleColors,
+    status_bg: Color,
     content: String,
     content_align: Align,
-    separator_colors: Option<ColorPair>,
 }
 
 impl StatusModule {
-    fn new(content: impl Into<String>, colors: StatusModuleColors) -> Self {
+    fn new(content: impl Into<String>, colors: StatusModuleColors, status_bg: Color) -> Self {
         Self {
             colors,
+            status_bg,
             content: content.into(),
             content_align: Align::Left,
-            separator_colors: None,
         }
-    }
-
-    fn with_separator_color(mut self, colors: ColorPair) -> Self {
-        self.separator_colors = Some(colors);
-        self
-    }
-
-    fn wrapped_text(&self) -> String {
-        format!(
-            "{STATUS_MODULE_EDGE_LEFT}{}{STATUS_MODULE_EDGE_RIGHT}",
-            self.content
-        )
     }
 
     fn content_width(&self) -> u16 {
@@ -173,39 +161,28 @@ impl StatusModule {
     }
 
     fn into_segments(self) -> Vec<Segment> {
-        let content_width = self.content_width();
-        let parts = if let Some(separator_colors) = self.separator_colors {
-            let mut first = true;
-            let mut parts = Vec::new();
-            for part in self.content.split(STATUS_MODULE_SEPARATOR) {
-                if !first {
-                    parts.push(
-                        Segment::new(STATUS_MODULE_SEPARATOR)
-                            .with_color(separator_colors)
-                            .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
-                    );
-                }
-                if !part.is_empty() {
-                    parts.push(
-                        Segment::new(part)
-                            .with_color(self.colors.content)
-                            .with_align(self.content_align)
-                            .with_min_width(part.chars().count() as u16),
-                    );
-                }
-                first = false;
+        let mut first = true;
+        let mut parts = Vec::new();
+        for part in self.content.split(STATUS_MODULE_SEPARATOR) {
+            if !first {
+                parts.push(
+                    Segment::new(STATUS_MODULE_SEPARATOR)
+                        .with_color(self.colors.wrapper)
+                        .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
+                );
             }
-            parts
-        } else {
-            vec![
-                Segment::new(self.content)
-                    .with_color(self.colors.content)
-                    .with_align(self.content_align)
-                    .with_min_width(content_width),
-            ]
-        };
+            if !part.is_empty() {
+                parts.push(
+                    Segment::new(part)
+                        .with_color(self.colors.content)
+                        .with_align(self.content_align)
+                        .with_min_width(part.chars().count() as u16),
+                );
+            }
+            first = false;
+        }
 
-        status_module_segments(self.colors, parts)
+        status_module_segments(self.status_bg, self.colors, parts)
     }
 }
 
@@ -213,16 +190,24 @@ fn status_module_width(content_width: u16) -> u16 {
     content_width + (STATUS_MODULE_EDGE_WIDTH * 2)
 }
 
-fn status_module_segments(colors: StatusModuleColors, parts: Vec<Segment>) -> Vec<Segment> {
+fn status_module_segments(
+    status_bg: Color,
+    colors: StatusModuleColors,
+    parts: Vec<Segment>,
+) -> Vec<Segment> {
+    // `▌` paints its left half with the foreground and its right half with the
+    // background; `▐` does the reverse. Deriving this pair prevents themes from
+    // accidentally turning module edges into solid vertical blocks.
+    let edge_colors = ColorPair::new(status_bg, colors.content.bg);
     let mut segments = vec![
         Segment::new(STATUS_MODULE_EDGE_LEFT)
-            .with_color(colors.wrapper)
+            .with_color(edge_colors)
             .with_min_width(STATUS_MODULE_EDGE_WIDTH),
     ];
     segments.extend(parts);
     segments.push(
         Segment::new(STATUS_MODULE_EDGE_RIGHT)
-            .with_color(colors.wrapper)
+            .with_color(edge_colors)
             .with_min_width(STATUS_MODULE_EDGE_WIDTH),
     );
     segments
@@ -467,13 +452,14 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let (mode_label, mode_colors) =
         status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style);
 
-    let mode_module = StatusModule::new(mode_label, StatusModuleColors::solid(mode_colors));
-    let mode_text = mode_module.wrapped_text();
-    let mode_width = mode_text.chars().count() as u16;
-    let metadata_module = metadata_text(state, buffer_id).map(|text| {
-        StatusModule::new(text, style.status_line.metadata)
-            .with_separator_color(style.status_line.metadata.wrapper)
-    });
+    let mode_module = StatusModule::new(
+        mode_label,
+        StatusModuleColors::solid(mode_colors),
+        style.status_line.bar.bg,
+    );
+    let mode_width = mode_module.width();
+    let metadata_module = metadata_text(state, buffer_id)
+        .map(|text| StatusModule::new(text, style.status_line.metadata, style.status_line.bar.bg));
     let metadata_module_width = metadata_module
         .as_ref()
         .map(StatusModule::width)
@@ -506,7 +492,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         total_lines,
         style.status_line.minimap,
         style.status_line.minimap_alt,
-        style.status_line.minimap_module.wrapper.bg,
+        style.status_line.coords.content.bg,
     );
     let visual_col = visual_column(buffer.line_string(cursor.line).as_str(), cursor.col);
     let coords_text = format!("{}:{}", cursor.line + 1, visual_col + 1);
@@ -534,18 +520,13 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let status_bar = EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)
         .with_bg(style.status_line.bar)
-        .add_segment(
-            Segment::new(mode_text)
-                .with_color(mode_colors)
-                .with_align(Align::Left)
-                .with_min_width(mode_width),
-        );
+        .add_module(mode_module);
     let status_bar = if let Some(module) = metadata_module {
         status_bar.add_module(module)
     } else {
         status_bar
     };
-    let status_bar = status_bar
+    status_bar
         .add_segment(Segment::spacer(left_padding_width))
         .add_segment(
             Segment::new(center_text)
@@ -567,6 +548,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         })
         .add_segment(Segment::spacer(DIRTY_GAP_WIDTH))
         .add_segments(status_module_segments(
+            style.status_line.bar.bg,
             right_module_colors,
             vec![
                 Segment::new(coords_text)
@@ -574,15 +556,16 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                     .with_align(Align::Right)
                     .with_min_width(coords_width),
                 Segment::new(STATUS_MODULE_SEPARATOR)
-                    .with_color(right_module_colors.wrapper)
+                    .with_color(ColorPair::new(
+                        right_module_colors.wrapper.fg,
+                        right_module_colors.content.bg,
+                    ))
                     .with_min_width(STATUS_MODULE_SEPARATOR_WIDTH),
                 Segment::new(scroll_glyph)
                     .with_color(scroll_colors)
                     .with_min_width(scroll_width),
             ],
-        ));
-
-    status_bar
+        ))
 }
 
 fn visual_column(line: &str, char_col: usize) -> usize {
@@ -690,4 +673,50 @@ fn diagnostic_summary_text(state: &EditorState, buffer_id: redox_core::BufferId)
     }
 
     Some(parts.join(""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_edges_are_derived_and_separator_uses_the_wrapper() {
+        let status_bg = Color::Rgb { r: 1, g: 2, b: 3 };
+        let body_bg = Color::Rgb { r: 4, g: 5, b: 6 };
+        let accent = Color::Rgb { r: 7, g: 8, b: 9 };
+        let colors = StatusModuleColors {
+            // The wrapper is deliberately unrelated to both surrounding
+            // backgrounds so the separator assertion covers the complete pair.
+            wrapper: ColorPair::new(
+                accent,
+                Color::Rgb {
+                    r: 90,
+                    g: 91,
+                    b: 92,
+                },
+            ),
+            content: ColorPair::new(Color::White, body_bg),
+        };
+        let segments = StatusModule::new(
+            format!("left{STATUS_MODULE_SEPARATOR}right"),
+            colors,
+            status_bg,
+        )
+        .into_segments();
+
+        let edge = ColorPair::new(status_bg, body_bg);
+        assert_eq!(
+            segments.first().and_then(|segment| segment.colors),
+            Some(edge)
+        );
+        assert_eq!(
+            segments.last().and_then(|segment| segment.colors),
+            Some(edge)
+        );
+        let separator = segments
+            .iter()
+            .find(|segment| segment.text == STATUS_MODULE_SEPARATOR)
+            .expect("separator segment");
+        assert_eq!(separator.colors, Some(colors.wrapper));
+    }
 }

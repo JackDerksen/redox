@@ -319,11 +319,14 @@ fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindS
     fs::create_dir_all(&root).expect("failed to create temp root");
     let previous_cwd = std::env::current_dir().expect("failed to capture cwd");
     let previous_xdg = std::env::var_os("XDG_CONFIG_HOME");
+    let previous_xdg_state = std::env::var_os("XDG_STATE_HOME");
     let config_root = root.join("config");
+    let state_root = root.join("state");
 
     std::env::set_current_dir(&root).expect("failed to switch cwd");
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", &config_root);
+        std::env::set_var("XDG_STATE_HOME", &state_root);
     }
 
     let result = panic::catch_unwind(|| f(root.clone()));
@@ -335,6 +338,14 @@ fn with_isolated_launch_env<T>(tag: &str, f: impl FnOnce(PathBuf) -> T + UnwindS
         },
         None => unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
+        },
+    }
+    match previous_xdg_state {
+        Some(value) => unsafe {
+            std::env::set_var("XDG_STATE_HOME", value);
+        },
+        None => unsafe {
+            std::env::remove_var("XDG_STATE_HOME");
         },
     }
     let _ = fs::remove_dir_all(&root);
@@ -418,8 +429,8 @@ fn quick_pin_current_file_opens_selector_before_persisting() {
             std::slice::from_ref(&canonical)
         );
 
-        let config_path = root.join("config").join("redox").join("pinned_files.txt");
-        let saved = fs::read_to_string(config_path).expect("failed to read pin file");
+        let state_path = root.join("state").join("redox").join("pinned-files.json");
+        let saved = fs::read_to_string(state_path).expect("failed to read pin file");
         assert!(saved.contains(&canonical.display().to_string()));
         assert_eq!(state.mode, EditorMode::Normal);
     });
@@ -437,15 +448,15 @@ fn pinned_files_save_as_json_array_atomically() {
         state.apply_input(InputAction::AssignPinSlot { slot: 2 }, 80, 24);
 
         let canonical = fs::canonicalize(&file_path).expect("canonical path");
-        let config_file = root.join("config").join("redox").join("pinned_files.txt");
-        let saved = fs::read_to_string(&config_file).expect("failed to read pin file");
+        let state_file = root.join("state").join("redox").join("pinned-files.json");
+        let saved = fs::read_to_string(&state_file).expect("failed to read pin file");
         let slots: Vec<Option<String>> =
             serde_json::from_str(&saved).expect("pin file should be JSON");
         assert_eq!(slots.len(), 5);
         assert_eq!(slots[0], None);
         assert_eq!(slots[1], None);
         assert_eq!(slots[2], Some(canonical.display().to_string()));
-        assert!(!config_file.with_extension("tmp").exists());
+        assert!(!state_file.with_extension("tmp").exists());
 
         let session = EditorSession::open_initial_file(&file_path).expect("failed to reopen file");
         let reloaded = EditorState::new(session);
@@ -659,8 +670,8 @@ fn open_pinned_slot_from_visual_mode_clears_visual_state() {
 #[test]
 fn failed_pin_assignment_rolls_back_and_keeps_selector_open() {
     with_isolated_launch_env("pin_assignment_save_failure", |root| {
-        let config_blocker = root.join("config");
-        fs::write(&config_blocker, "not a directory\n").expect("failed to write config blocker");
+        let state_blocker = root.join("state");
+        fs::write(&state_blocker, "not a directory\n").expect("failed to write state blocker");
         let file_path = root.join("alpha.txt");
         fs::write(&file_path, "alpha\n").expect("failed to write file");
 
@@ -704,15 +715,15 @@ fn failed_pin_reorder_rolls_back_in_memory_slots() {
         state.apply_input(InputAction::PinSelectorAssign, 80, 24);
 
         let original_slots = state.pin_slots_for_test();
-        let config_file = root.join("config").join("redox").join("pinned_files.txt");
-        fs::remove_file(&config_file).expect("failed to remove pin file");
-        fs::remove_dir(config_file.parent().expect("pin config dir"))
-            .expect("failed to remove pin config dir");
+        let state_file = root.join("state").join("redox").join("pinned-files.json");
+        fs::remove_file(&state_file).expect("failed to remove pin file");
+        fs::remove_dir(state_file.parent().expect("pin state dir"))
+            .expect("failed to remove pin state dir");
         fs::write(
-            config_file.parent().expect("pin config dir"),
+            state_file.parent().expect("pin state dir"),
             "not a directory\n",
         )
-        .expect("failed to write config blocker");
+        .expect("failed to write state blocker");
 
         state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
         state.apply_input(InputAction::PinSelectorReorderUp, 80, 24);
@@ -3255,6 +3266,32 @@ fn command_perf_toggles_performance_popup() {
     run_command(&mut state, "perf");
 
     assert!(state.perf_popup().is_none());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn config_commands_request_runtime_actions() {
+    let path = temp_file_path("config_reload_command");
+    let mut state = state_with_text(path.clone(), "theme preview\n");
+
+    run_command(&mut state, "config");
+    assert!(state.take_config_open_request());
+    assert!(!state.take_config_open_request());
+
+    run_command(&mut state, "config reload");
+    assert!(state.take_config_reload_request());
+    assert!(!state.take_config_reload_request());
+
+    run_command(&mut state, "config nope");
+    assert_eq!(state.status_msg.as_deref(), Some("usage: config [reload]"));
+    assert!(!state.take_config_reload_request());
+
+    run_command(&mut state, "colorscheme vague");
+    assert_eq!(state.take_colorscheme_request().as_deref(), Some("vague"));
+
+    run_command(&mut state, "colorscheme");
+    assert_eq!(state.take_colorscheme_request().as_deref(), Some(""));
 
     let _ = fs::remove_file(path);
 }
@@ -5908,6 +5945,48 @@ fn normal_x_deletes_char_without_modifying_private_register() {
     assert_eq!(state.session.active_buffer().to_string(), "apha\n");
     assert_eq!(state.private_register, "keep");
     assert!(state.status_msg.is_none());
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_j_joins_line_below_and_preserves_cursor() {
+    let path = temp_file_path("normal_join_line");
+    let mut state = state_with_text(path.clone(), "alpha\n    beta\ngamma\n");
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 2);
+
+    state.apply_input(InputAction::JoinLineBelow, 80, 24);
+
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha beta\ngamma\n"
+    );
+    assert_eq!(
+        state.views.get(&id).expect("missing view").cursor.cursor,
+        Pos::new(0, 2)
+    );
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "alpha\n    beta\ngamma\n"
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn normal_j_on_last_line_is_a_noop() {
+    let path = temp_file_path("normal_join_last_line");
+    let mut state = state_with_text(path.clone(), "alpha\n");
+
+    state.apply_input(InputAction::JoinLineBelow, 80, 24);
+
+    assert_eq!(state.session.active_buffer().to_string(), "alpha\n");
     let _ = fs::remove_file(path);
 }
 

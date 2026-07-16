@@ -17,6 +17,62 @@ struct OperatorTargetPlan {
 }
 
 impl EditorState {
+    pub(super) fn join_line_below(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let active_id = self.session.active_id();
+        let original_cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let (line, line_end, next_content_start, separator) = {
+            let buffer = self.session.active_buffer();
+            let line = buffer.clamp_line(original_cursor.line);
+            if line + 1 >= buffer.len_lines() {
+                return;
+            }
+
+            let line_text = buffer.line_string(line);
+            let next_line = line + 1;
+            let next_text = buffer.line_string(next_line);
+            if next_line + 1 == buffer.len_lines() && next_text.is_empty() {
+                return;
+            }
+            let separator = if !line_text.is_empty()
+                && !line_text.chars().last().is_some_and(char::is_whitespace)
+                && !next_text.trim().is_empty()
+            {
+                " "
+            } else {
+                ""
+            };
+            (
+                line,
+                buffer.line_len_chars(line),
+                buffer.line_first_non_whitespace_col(next_line),
+                separator,
+            )
+        };
+
+        let before = self.capture_active_undo_checkpoint();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            let join_at = Pos::new(line, line_end);
+            let _ = buffer.delete_range(join_at, Pos::new(line + 1, next_content_start));
+            if !separator.is_empty() {
+                let _ = buffer.insert(join_at, separator);
+            }
+            view.cursor.cursor = original_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.clear_status();
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
     pub(super) fn register_kind_from_visual_mode(mode: VisualModeKind) -> RegisterKind {
         match mode {
             VisualModeKind::Line => RegisterKind::LineWise,

@@ -159,6 +159,7 @@ pub struct UndoHistory {
     current: UndoNodeId,
     next_sequence: u64,
     insert_mode_coalesce_base: Option<UndoCheckpoint>,
+    max_records: usize,
 }
 
 impl Default for UndoHistory {
@@ -174,6 +175,7 @@ impl Default for UndoHistory {
             current: 0,
             next_sequence: 1,
             insert_mode_coalesce_base: None,
+            max_records: usize::MAX,
         }
     }
 }
@@ -199,7 +201,19 @@ impl UndoHistory {
     }
 
     pub fn clear(&mut self) {
+        let max_records = self.max_records;
         *self = Self::default();
+        self.max_records = max_records;
+    }
+
+    pub fn set_max_records(&mut self, max_records: usize) -> bool {
+        self.max_records = max_records.max(1);
+        if self.nodes.len().saturating_sub(1) > self.max_records {
+            self.clear();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn current(&self) -> UndoNodeId {
@@ -212,7 +226,11 @@ impl UndoHistory {
         after_buffer: &TextBuffer,
         after_cursor: Pos,
     ) -> bool {
-        let base_node = before.base_node.min(self.nodes.len().saturating_sub(1));
+        let base_node = if before.base_node < self.nodes.len() {
+            before.base_node
+        } else {
+            0
+        };
         let base_buffer = before.buffer.clone();
         let Some(record) = UndoRecord::from_checkpoint(before, after_buffer, after_cursor) else {
             return false;
@@ -240,7 +258,14 @@ impl UndoHistory {
             return true;
         }
 
-        let parent = base_node;
+        let parent = if self.nodes.len().saturating_sub(1) >= self.max_records {
+            // Start a fresh tree whose root represents this edit's checkpoint. This keeps
+            // history strictly bounded without retaining full buffer snapshots in each node.
+            self.clear();
+            0
+        } else {
+            base_node
+        };
         let id = self.nodes.len();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -423,6 +448,25 @@ mod tests {
 
         let _ = patched.apply_edit(diff.reverse_edit());
         assert_eq!(patched.to_string(), before.to_string());
+    }
+
+    #[test]
+    fn history_limit_starts_a_fresh_bounded_tree() {
+        let mut history = UndoHistory::default();
+        history.set_max_records(2);
+        let mut buffer = TextBuffer::from_str("");
+        for value in ["a", "ab", "abc", "abcd"] {
+            let checkpoint = history.checkpoint(buffer.clone(), Pos::zero());
+            buffer = TextBuffer::from_str(value);
+            assert!(history.record_if_changed(checkpoint, &buffer, Pos::zero()));
+            assert!(history.tree_entries().len() <= 3);
+        }
+        assert_eq!(history.undo(&mut buffer), Some(Pos::zero()));
+        assert_eq!(buffer.to_string(), "abc");
+
+        assert!(history.set_max_records(1));
+        assert_eq!(history.tree_entries().len(), 1);
+        assert_eq!(history.undo(&mut buffer), None);
     }
 
     #[test]

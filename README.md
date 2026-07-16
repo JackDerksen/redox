@@ -34,24 +34,18 @@ redox/
     ├── redox-core/
     │   └── src/
     │       ├── buffer/         # Rope-backed text buffer, selections, edits, text objects
+    │       ├── logic/          # Shared editor logic helpers
+    │       ├── session/        # Multi-buffer session model and background loading
+    │       ├── text/           # Shared text indexing and clamp helpers
     │       ├── fuzzy.rs        # Fuzzy matching and path ranking helpers
     │       ├── io.rs           # File read/write helpers
-    │       ├── logic/          # Shared editor logic helpers
     │       ├── motion.rs       # Vim-style motion logic
-    │       ├── session/        # Multi-buffer session model and background loading
-    │       └── text/           # Shared text indexing and clamp helpers
+    │       └── lib.rs          # Shared editor library helpers
     └── redox-tui/
         └── src/
-            ├── app/
-            │   ├── state.rs    # Main editor state and mode model
-            │   └── state/      # Commands, editing, explorer, finder, LSP, perf, search, etc.
+            ├── app/            # Main editor state and mode model
             ├── input/          # Key/event mapping, counts, operators, cursor controller
-            └── ui/
-                ├── syntax/     # Tree-sitter language adapters and highlighting
-                ├── widgets/    # About, command line, explorer, finder, LSP, etc.
-                ├── overlays.rs # Indent guides, delimiter highlights, colour column
-                ├── render.rs   # Text snapshot/render helpers
-                └── style.rs    # Theme and colour definitions
+            └── ui/             # UI rendering, widgets, animations, styling
 ```
 
 This split keeps buffer operations, indexing, motions, fuzzy scoring, and session behaviour easy to test without needing a terminal. The frontend can then evolve the interface without pulling UI details into `redox-core`.
@@ -97,6 +91,26 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 ## Usage guide
 
+### Configuration
+
+Redox was designed from the ground-up to be pleasant without the need for configuration, but 
+it is highly configurable, should you choose to modify the default behaviour or appearance.
+
+It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.toml`, or
+`~/.config/redox/config.toml` (in that order). A different file can be selected with
+`redox --config /path/to/config.toml`.
+
+Configuration supports features like named themes, the complete base palette, every syntax role,
+UI colour pairs, background dimming, popup dimensions, colour-column position, undo-tree history
+size, the leader character, and mode-specific keybindings. See the
+[`config.example.toml`](config.example.toml) starter file and the complete
+[`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
+defaults.
+
+Editor-managed data (such as undo history and LSP metadata) lives separately under 
+`$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the configuration directory for
+`config.toml` alone. Existing legacy state is migrated automatically.
+
 <details>
 <summary>Command, navigation, editing, and search reference</summary>
 
@@ -127,6 +141,9 @@ Enter command mode with `:`.
 | `:wq` | Write the current buffer, then quit when all buffers are clean. |
 | `:e <path>` | Open or switch to a file buffer. |
 | `:e!` / `:reload` | Reload the active file from disk. |
+| `:config` | Open the active configuration file, creating its parent directory when needed. |
+| `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
 | `:ls` | Show a compact summary of open buffers. |
@@ -272,6 +289,7 @@ Other language tool commands:
 | `i` / `I` | Insert before the cursor / at first non-whitespace. |
 | `a` / `A` | Insert after the cursor / at line end. |
 | `o` / `O` | Open a line below / above. |
+| `J` | Join the line below onto the current line. |
 | `x` | Delete the character under the cursor without touching the private register. |
 | `r` | Replace the character under the cursor. |
 | `dd` / `cc` / `yy` | Delete, change, or yank the current line. |
@@ -377,6 +395,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Basic git integration (diff stats)
 - [x] In-editor splits
 - [x] Undo-tree UI
+- [x] Custom configuration support
 - [ ] Grep-based finder for searching text patterns across files
 - [ ] More extendable leader key system with "whichkey" functionality
 - [ ] A dashboard screen with similar functionality to nvim dashboards

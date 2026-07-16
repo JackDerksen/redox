@@ -7,7 +7,7 @@ use std::time::Instant;
 use redox_core::{BufferId, EditorSession, TextBuffer};
 
 use minui::KeybindAction;
-use minui::input::Clipboard;
+use minui::input::{Clipboard, KeyboardHandler};
 use minui::prelude::{
     input::{Event, KeyKind},
     render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
@@ -17,12 +17,14 @@ use minui::widgets::WindowView;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
+mod config;
 mod input;
+mod storage;
 mod ui;
 
 use app::state::PaneId;
 use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
-use input::{InputAction, map_event_with_context};
+use input::{InputAction, InputState, map_event_with_context};
 
 use crate::ui::helpers::apply_color_column;
 use ui::overlays::{
@@ -49,7 +51,6 @@ pub(crate) const SOFT_TAB_WIDTH: usize = 4;
 pub(crate) const SOFT_TAB: &str = "    ";
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
-const COLOR_COLUMN: usize = 79;
 const ANIMATION_FRAME_RATE_HZ: u64 = 60;
 const ANIMATION_FRAME_INTERVAL: Duration =
     Duration::from_nanos(1_000_000_000 / ANIMATION_FRAME_RATE_HZ);
@@ -60,6 +61,11 @@ enum LaunchTarget {
     Empty,
     File(PathBuf),
     Explorer(PathBuf),
+}
+
+struct LaunchOptions {
+    target: LaunchTarget,
+    config_path: Option<PathBuf>,
 }
 
 fn draw_buffer_view(
@@ -1538,7 +1544,12 @@ fn draw_snapshot_lines(
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     lexical_fallback_enabled: bool,
 ) -> minui::Result<()> {
-    let color_column = visible_color_column(scroll_x, text_w, style.theme.color_column);
+    let color_column = visible_color_column(
+        scroll_x,
+        text_w,
+        style.layout.color_column,
+        style.theme.color_column,
+    );
     for row in 0..snapshot.lines.len() {
         let line_idx = snapshot.first_line + row;
         let visible_line = snapshot.lines.get(row).map(String::as_str).unwrap_or("");
@@ -2498,11 +2509,16 @@ fn draw_visible_ascii_plain_line(
     )
 }
 
-fn visible_color_column(scroll_x: usize, text_w: usize, bg: Color) -> Option<(usize, Color)> {
-    if COLOR_COLUMN < scroll_x {
+fn visible_color_column(
+    scroll_x: usize,
+    text_w: usize,
+    color_column: usize,
+    bg: Color,
+) -> Option<(usize, Color)> {
+    if color_column < scroll_x {
         return None;
     }
-    let visible_col = COLOR_COLUMN - scroll_x;
+    let visible_col = color_column - scroll_x;
     (visible_col < text_w).then_some((visible_col, bg))
 }
 
@@ -2705,18 +2721,270 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn runtime_config_reload_applies_valid_changes_and_rejects_invalid_ones() {
+        let dir = temp_dir_path("config_reload");
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r##"
+theme = "live"
+leader = ","
+
+[keybindings.normal]
+open_finder = "<leader>f"
+undo = "<ctrl-g>"
+
+[keybindings.insert]
+completion = "<ctrl-g>"
+
+[themes.live.palette]
+background = "#010203"
+"##,
+        )
+        .expect("failed to write valid config");
+
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        let mut keyboard = KeyboardHandler::new();
+        let mut style = UiStyle::default();
+        let mut active_config = config::Config::default();
+        let mut active_theme = active_config.theme.clone();
+        let mut theme_override = None;
+        state.request_config_reload();
+        reload_runtime_config(
+            &mut state,
+            &mut keyboard,
+            &mut style,
+            &mut active_config,
+            &mut active_theme,
+            &mut theme_override,
+            Some(&config_path),
+        );
+
+        assert_eq!(style.theme.bg, Color::Rgb { r: 1, g: 2, b: 3 });
+        assert!(
+            keyboard.keybinds().values().any(|action| {
+                action == &KeybindAction::Custom("redox-key:<ctrl-g>".to_string())
+            })
+        );
+        assert_eq!(
+            map_event_with_context(
+                &mut state.input,
+                input::InputMode::Normal,
+                false,
+                &Event::Character(','),
+            ),
+            InputAction::None
+        );
+        assert_eq!(
+            map_event_with_context(
+                &mut state.input,
+                input::InputMode::Normal,
+                false,
+                &Event::Character('f'),
+            ),
+            InputAction::OpenFinder
+        );
+
+        fs::write(&config_path, "background_dimming = 2.0\n")
+            .expect("failed to write invalid config");
+        let previous_style = style;
+        state.request_config_reload();
+        reload_runtime_config(
+            &mut state,
+            &mut keyboard,
+            &mut style,
+            &mut active_config,
+            &mut active_theme,
+            &mut theme_override,
+            Some(&config_path),
+        );
+
+        assert_eq!(style.theme, previous_style.theme);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|message| message.starts_with("configuration reload failed:"))
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn config_command_opens_explicit_path_and_creates_its_parent() {
+        let dir = temp_dir_path("config_open");
+        let config_path = dir.join("nested/config.toml");
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        state.request_config_open();
+        open_runtime_config(&mut state, Some(&config_path));
+
+        assert_eq!(
+            state.session.active_meta().path.as_deref(),
+            Some(config_path.as_path())
+        );
+        assert!(config_path.parent().is_some_and(std::path::Path::is_dir));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn colorscheme_command_applies_named_theme_for_current_session() {
+        let config: config::Config = toml::from_str(
+            r##"
+[themes.vague.palette]
+background = "#141415"
+"##,
+        )
+        .unwrap();
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        let mut style = config.style().unwrap();
+        let mut active_theme = config.theme.clone();
+        let mut theme_override = None;
+
+        state.request_colorscheme("vague");
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
+        assert_eq!(active_theme, "vague");
+        assert_eq!(theme_override.as_deref(), Some("vague"));
+        assert_eq!(
+            style.theme.bg,
+            Color::Rgb {
+                r: 20,
+                g: 20,
+                b: 21
+            }
+        );
+
+        state.request_colorscheme("");
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
+        assert_eq!(state.status_msg.as_deref(), Some("colorscheme: vague"));
+
+        state.request_colorscheme("missing");
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
+        assert_eq!(active_theme, "vague");
+        assert_eq!(
+            state.status_msg.as_deref(),
+            Some("unknown colorscheme \"missing\"")
+        );
+    }
+
+    #[test]
+    fn config_reload_preserves_available_session_colorscheme() {
+        let dir = temp_dir_path("colorscheme_reload");
+        fs::create_dir(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            "[themes.vague.palette]\nbackground = \"#141415\"\n",
+        )
+        .unwrap();
+        let (mut config, _) = config::Config::load(Some(&config_path)).unwrap();
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        let mut keyboard = KeyboardHandler::new();
+        let mut style = config.style().unwrap();
+        let mut active_theme = config.theme.clone();
+        let mut theme_override = None;
+        state.request_colorscheme("vague");
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
+
+        fs::write(
+            &config_path,
+            "[themes.vague.palette]\nbackground = \"#202122\"\n",
+        )
+        .unwrap();
+        state.request_config_reload();
+        reload_runtime_config(
+            &mut state,
+            &mut keyboard,
+            &mut style,
+            &mut config,
+            &mut active_theme,
+            &mut theme_override,
+            Some(&config_path),
+        );
+
+        assert_eq!(active_theme, "vague");
+        assert_eq!(theme_override.as_deref(), Some("vague"));
+        assert_eq!(
+            style.theme.bg,
+            Color::Rgb {
+                r: 32,
+                g: 33,
+                b: 34
+            }
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
 }
 
-fn parse_path_arg() -> anyhow::Result<LaunchTarget> {
+fn parse_launch_options() -> anyhow::Result<LaunchOptions> {
     let mut args = env::args().skip(1);
-    let Some(raw) = args.next() else {
-        return Ok(LaunchTarget::Empty);
-    };
-    let path = PathBuf::from(&raw);
-    if path.is_dir() {
-        return Ok(LaunchTarget::Explorer(path));
+    let mut config_path = None;
+    let mut target_path = None;
+    let mut parse_options = true;
+    while let Some(raw) = args.next() {
+        if parse_options && raw == "--" {
+            parse_options = false;
+        } else if parse_options && raw == "--config" {
+            config_path =
+                Some(PathBuf::from(args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--config requires a path")
+                })?));
+        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
+            config_path = Some(PathBuf::from(path));
+        } else if parse_options && raw.starts_with('-') {
+            anyhow::bail!("unknown option: {raw}");
+        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
+            anyhow::bail!("only one file or directory may be opened at launch");
+        }
     }
-    Ok(LaunchTarget::File(path))
+    let Some(path) = target_path else {
+        return Ok(LaunchOptions {
+            target: LaunchTarget::Empty,
+            config_path,
+        });
+    };
+    if path.is_dir() {
+        return Ok(LaunchOptions {
+            target: LaunchTarget::Explorer(path),
+            config_path,
+        });
+    }
+    Ok(LaunchOptions {
+        target: LaunchTarget::File(path),
+        config_path,
+    })
 }
 
 fn is_cancel_event(event: &Event) -> bool {
@@ -2799,59 +3067,165 @@ fn handle_editor_event(
     !state.should_quit
 }
 
-pub fn run() -> minui::Result<()> {
-    let launch = parse_path_arg().expect("failed to parse launch target");
+fn install_keyboard_bindings(
+    keyboard: &mut KeyboardHandler,
+    input: &InputState,
+) -> minui::Result<()> {
+    keyboard.clear_keybinds();
+
+    let symbol_info = KeybindAction::Custom("trigger-symbol-info".to_string());
+    keyboard.add_keybind("ctrl-i", symbol_info)?;
+    let completion = KeybindAction::Custom("trigger-completion".to_string());
+    keyboard.add_keybind("ctrl-shift-k", completion)?;
+
+    for key in input.special_keys() {
+        let binding = key
+            .strip_prefix('<')
+            .and_then(|key| key.strip_suffix('>'))
+            .expect("configured special keys are normalized");
+        keyboard.add_keybind(binding, KeybindAction::Custom(format!("redox-key:{key}")))?;
+    }
+    Ok(())
+}
+
+fn configured_input(config: &config::Config) -> anyhow::Result<InputState> {
+    let mut input = InputState::new();
+    input.configure(config.leader(), &config.keybindings)?;
+    install_keyboard_bindings(&mut KeyboardHandler::new(), &input)?;
+    Ok(input)
+}
+
+fn open_runtime_config(state: &mut EditorState, explicit_path: Option<&std::path::Path>) {
+    if !state.take_config_open_request() {
+        return;
+    }
+
+    let path = config::Config::path(explicit_path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        state.set_status(format!(
+            "cannot create configuration directory {}: {error}",
+            parent.display()
+        ));
+        return;
+    }
+    state.open_config_file(&path);
+}
+
+fn reload_runtime_config(
+    state: &mut EditorState,
+    keyboard: &mut KeyboardHandler,
+    style: &mut UiStyle,
+    active_config: &mut config::Config,
+    active_theme: &mut String,
+    theme_override: &mut Option<String>,
+    explicit_path: Option<&std::path::Path>,
+) {
+    if !state.take_config_reload_request() {
+        return;
+    }
+
+    let result = (|| -> anyhow::Result<(config::Config, UiStyle, String, Option<PathBuf>)> {
+        let (candidate, loaded_path) = config::Config::load(explicit_path)?;
+        let candidate_theme = theme_override
+            .as_ref()
+            .filter(|name| candidate.has_theme(name))
+            .cloned()
+            .unwrap_or_else(|| candidate.theme.clone());
+        let candidate_style = candidate.style_for_theme(&candidate_theme)?;
+        let candidate_input = configured_input(&candidate)?;
+        install_keyboard_bindings(keyboard, &candidate_input)?;
+        state.configure(candidate_input, candidate.undo_tree_history_size);
+        Ok((candidate, candidate_style, candidate_theme, loaded_path))
+    })();
+
+    match result {
+        Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
+            *active_config = candidate;
+            *style = candidate_style;
+            *active_theme = candidate_theme;
+            if theme_override
+                .as_ref()
+                .is_some_and(|name| !active_config.has_theme(name))
+            {
+                *theme_override = None;
+            }
+            match loaded_path {
+                Some(path) => {
+                    state.set_status(format!("configuration reloaded: {}", path.display()))
+                }
+                None => state.set_status(
+                    "configuration reloaded with built-in defaults (no config file found)",
+                ),
+            }
+        }
+        Err(error) => state.set_status(format!("configuration reload failed: {error:#}")),
+    }
+}
+
+fn apply_runtime_colorscheme(
+    state: &mut EditorState,
+    style: &mut UiStyle,
+    config: &config::Config,
+    active_theme: &mut String,
+    theme_override: &mut Option<String>,
+) {
+    let Some(name) = state.take_colorscheme_request() else {
+        return;
+    };
+    if name.is_empty() {
+        state.set_status(format!("colorscheme: {active_theme}"));
+        return;
+    }
+    match config.style_for_theme(&name) {
+        Ok(candidate) => {
+            *style = candidate;
+            *active_theme = name.clone();
+            *theme_override = Some(name);
+            state.set_status(format!("colorscheme set to {active_theme}"));
+        }
+        Err(error) => state.set_status(error.to_string()),
+    }
+}
+
+pub fn run() -> anyhow::Result<()> {
+    if let Err(error) = storage::migrate_legacy_state() {
+        eprintln!("warning: could not migrate legacy Redox state: {error}");
+    }
+    let options = parse_launch_options()?;
+    let explicit_config_path = options.config_path.clone();
+    let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
+    let input = configured_input(&config)?;
+    let mut style = config.style()?;
+    let mut active_theme = config.theme.clone();
+    let mut theme_override = None;
+    let launch = options.target;
     let launch_empty = matches!(&launch, LaunchTarget::Empty);
     let launch_explorer_dir = match &launch {
         LaunchTarget::Explorer(dir) => Some(dir.clone()),
         LaunchTarget::Empty | LaunchTarget::File(_) => None,
     };
     let session = match launch {
-        LaunchTarget::Empty => {
-            EditorSession::open_initial_unnamed().expect("failed to open unnamed session")
-        }
-        LaunchTarget::File(path) => {
-            EditorSession::open_initial_file(path).expect("failed to open initial file")
-        }
-        LaunchTarget::Explorer(_) => {
-            EditorSession::open_initial_unnamed().expect("failed to open unnamed session")
-        }
+        LaunchTarget::Empty | LaunchTarget::Explorer(_) => EditorSession::open_initial_unnamed()?,
+        LaunchTarget::File(path) => EditorSession::open_initial_file(path)?,
     };
 
     let mut state = EditorState::new(session);
+    state.configure(input, config.undo_tree_history_size);
     if let Some(dir_path) = launch_explorer_dir {
-        state
-            .open_explorer_at_path(dir_path)
-            .expect("failed to open explorer directory");
+        state.open_explorer_at_path(dir_path)?;
     }
     if launch_empty {
         state.command_open_about();
     }
 
     let mut window = TerminalWindow::new()?;
-    let symbol_info_keybind = KeybindAction::Custom("trigger-symbol-info".to_string());
-    if window
-        .keyboard_mut()
-        .add_keybind("ctrl-i", symbol_info_keybind.clone())
-        .is_err()
-    {
-        let _ = window
-            .keyboard_mut()
-            .add_keybind("ctrl+i", symbol_info_keybind);
-    }
-    let completion_keybind = KeybindAction::Custom("trigger-completion".to_string());
-    if window
-        .keyboard_mut()
-        .add_keybind("ctrl-shift-k", completion_keybind.clone())
-        .is_err()
-    {
-        let _ = window
-            .keyboard_mut()
-            .add_keybind("ctrl+shift+k", completion_keybind);
-    }
+    install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
-    let style = UiStyle::default();
 
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
@@ -2884,6 +3258,23 @@ pub fn run() -> minui::Result<()> {
         }
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
+        open_runtime_config(&mut state, explicit_config_path.as_deref());
+        reload_runtime_config(
+            &mut state,
+            window.keyboard_mut(),
+            &mut style,
+            &mut config,
+            &mut active_theme,
+            &mut theme_override,
+            explicit_config_path.as_deref(),
+        );
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
         if event_count > 0 {
             active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
         }

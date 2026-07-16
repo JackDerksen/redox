@@ -48,7 +48,7 @@ pub enum SyntaxRole {
     PunctuationSpecial,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct BaseTheme {
     pub bg: Color,
@@ -302,6 +302,7 @@ impl Default for StatusLinePalette {
 pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
+    pub color_column: usize,
 }
 
 impl Default for Layout {
@@ -309,6 +310,7 @@ impl Default for Layout {
         Self {
             status_left_min_width: 12,
             status_right_min_width: 18,
+            color_column: 79,
         }
     }
 }
@@ -806,11 +808,17 @@ pub struct UiStyle {
     pub perf: PerfStyle,
     pub syntax: SyntaxStyle,
     pub undo_tree: UndoTreeStyle,
+    pub dim_amount: f32,
 }
 
 impl Default for UiStyle {
     fn default() -> Self {
-        let theme = BaseTheme::default();
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+impl UiStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             theme,
             git: GitStyle::from_theme(theme),
@@ -825,14 +833,14 @@ impl Default for UiStyle {
             perf: PerfStyle::from_theme(theme),
             syntax: SyntaxStyle::from_theme(theme),
             undo_tree: UndoTreeStyle::from_theme(theme),
+            dim_amount: 0.301,
         }
     }
 }
 
-fn dim_foreground_color(color: Color, bg: Color) -> Color {
-    const FOREGROUND_WEIGHT: u16 = 699;
-    const BACKGROUND_WEIGHT: u16 = 301;
-
+fn dim_foreground_color(color: Color, bg: Color, amount: f32) -> Color {
+    let background_weight = (amount.clamp(0.0, 1.0) * 1_000.0).round() as u16;
+    let foreground_weight = 1_000u16.saturating_sub(background_weight);
     match color {
         Color::Rgb { r, g, b } => {
             let Color::Rgb {
@@ -844,9 +852,9 @@ fn dim_foreground_color(color: Color, bg: Color) -> Color {
                 return color;
             };
             Color::Rgb {
-                r: blend_channel(r, bg_r, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
-                g: blend_channel(g, bg_g, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
-                b: blend_channel(b, bg_b, FOREGROUND_WEIGHT, BACKGROUND_WEIGHT),
+                r: blend_channel(r, bg_r, foreground_weight, background_weight),
+                g: blend_channel(g, bg_g, foreground_weight, background_weight),
+                b: blend_channel(b, bg_b, foreground_weight, background_weight),
             }
         }
         Color::Transparent => Color::Transparent,
@@ -867,51 +875,349 @@ fn blend_channel(fg: u8, bg: u8, fg_weight: u16, bg_weight: u16) -> u8 {
 }
 
 impl BaseTheme {
-    pub fn dimmed(self) -> Self {
+    pub fn dimmed(self, amount: f32) -> Self {
         Self {
             bg: self.bg,
             color_column: self.color_column,
             scope: self.scope,
             selection_bg: self.selection_bg,
-            selection_fg: dim_foreground_color(self.selection_fg, self.bg),
-            white: dim_foreground_color(self.white, self.bg),
-            black: dim_foreground_color(self.black, self.bg),
-            red: dim_foreground_color(self.red, self.bg),
-            green: dim_foreground_color(self.green, self.bg),
-            yellow: dim_foreground_color(self.yellow, self.bg),
-            blue: dim_foreground_color(self.blue, self.bg),
-            purple: dim_foreground_color(self.purple, self.bg),
-            orange: dim_foreground_color(self.orange, self.bg),
-            light_red: dim_foreground_color(self.light_red, self.bg),
-            light_green: dim_foreground_color(self.light_green, self.bg),
-            light_yellow: dim_foreground_color(self.light_yellow, self.bg),
-            light_blue: dim_foreground_color(self.light_blue, self.bg),
-            light_purple: dim_foreground_color(self.light_purple, self.bg),
-            light_orange: dim_foreground_color(self.light_orange, self.bg),
-            dark_gray: dim_foreground_color(self.dark_gray, self.bg),
-            mid_gray: dim_foreground_color(self.mid_gray, self.bg),
-            light_gray: dim_foreground_color(self.light_gray, self.bg),
+            selection_fg: dim_foreground_color(self.selection_fg, self.bg, amount),
+            white: dim_foreground_color(self.white, self.bg, amount),
+            black: dim_foreground_color(self.black, self.bg, amount),
+            red: dim_foreground_color(self.red, self.bg, amount),
+            green: dim_foreground_color(self.green, self.bg, amount),
+            yellow: dim_foreground_color(self.yellow, self.bg, amount),
+            blue: dim_foreground_color(self.blue, self.bg, amount),
+            purple: dim_foreground_color(self.purple, self.bg, amount),
+            orange: dim_foreground_color(self.orange, self.bg, amount),
+            light_red: dim_foreground_color(self.light_red, self.bg, amount),
+            light_green: dim_foreground_color(self.light_green, self.bg, amount),
+            light_yellow: dim_foreground_color(self.light_yellow, self.bg, amount),
+            light_blue: dim_foreground_color(self.light_blue, self.bg, amount),
+            light_purple: dim_foreground_color(self.light_purple, self.bg, amount),
+            light_orange: dim_foreground_color(self.light_orange, self.bg, amount),
+            dark_gray: dim_foreground_color(self.dark_gray, self.bg, amount),
+            mid_gray: dim_foreground_color(self.mid_gray, self.bg, amount),
+            light_gray: dim_foreground_color(self.light_gray, self.bg, amount),
         }
+    }
+}
+
+fn dim_style_colour(
+    colour: Color,
+    theme: BaseTheme,
+    dimmed: BaseTheme,
+    bg: Color,
+    amount: f32,
+    is_foreground: bool,
+) -> Color {
+    let theme_colours = [
+        (theme.bg, dimmed.bg),
+        (theme.color_column, dimmed.color_column),
+        (theme.scope, dimmed.scope),
+        (theme.selection_bg, dimmed.selection_bg),
+        (theme.selection_fg, dimmed.selection_fg),
+        (theme.white, dimmed.white),
+        (theme.black, dimmed.black),
+        (theme.red, dimmed.red),
+        (theme.green, dimmed.green),
+        (theme.yellow, dimmed.yellow),
+        (theme.blue, dimmed.blue),
+        (theme.purple, dimmed.purple),
+        (theme.orange, dimmed.orange),
+        (theme.light_red, dimmed.light_red),
+        (theme.light_green, dimmed.light_green),
+        (theme.light_yellow, dimmed.light_yellow),
+        (theme.light_blue, dimmed.light_blue),
+        (theme.light_purple, dimmed.light_purple),
+        (theme.light_orange, dimmed.light_orange),
+        (theme.dark_gray, dimmed.dark_gray),
+        (theme.mid_gray, dimmed.mid_gray),
+        (theme.light_gray, dimmed.light_gray),
+    ];
+    if is_foreground
+        && let Some((_, replacement)) = theme_colours
+            .iter()
+            .find(|(original, _)| *original == colour)
+    {
+        return *replacement;
+    }
+    if is_foreground {
+        dim_foreground_color(colour, bg, amount)
+    } else {
+        colour
     }
 }
 
 impl UiStyle {
     pub fn dimmed(self) -> Self {
-        let theme = self.theme.dimmed();
-        Self {
-            theme,
-            git: GitStyle::from_theme(theme),
-            status_line: StatusLinePalette::from_theme(theme),
-            layout: self.layout,
-            about: AboutStyle::from_theme(theme),
-            command_line: CommandLineStyle::from_theme(theme),
-            diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
-            explorer: ExplorerStyle::from_theme(theme),
-            finder: FinderStyle::from_theme(theme),
-            lsp_marketplace: LspMarketplaceStyle::from_theme(theme),
-            perf: PerfStyle::from_theme(theme),
-            syntax: SyntaxStyle::from_theme(theme),
-            undo_tree: UndoTreeStyle::from_theme(theme),
+        let mut style = self;
+        let bg = self.theme.bg;
+        let dimmed_theme = self.theme.dimmed(self.dim_amount);
+        style.theme = dimmed_theme;
+        macro_rules! dim {
+            ($($pair:expr),+ $(,)?) => { $(
+                $pair.fg = dim_style_colour(
+                    $pair.fg, self.theme, dimmed_theme, bg, self.dim_amount, true,
+                );
+                $pair.bg = dim_style_colour(
+                    $pair.bg, self.theme, dimmed_theme, bg, self.dim_amount, false,
+                );
+            )+ };
+        }
+        dim!(
+            style.git.added,
+            style.git.modified,
+            style.git.conflict,
+            style.git.removed,
+            style.status_line.bar,
+            style.status_line.path,
+            style.status_line.dirty,
+            style.status_line.mode_normal,
+            style.status_line.mode_insert,
+            style.status_line.mode_command,
+            style.status_line.mode_visual,
+            style.status_line.metadata.wrapper,
+            style.status_line.metadata.content,
+            style.status_line.coords.wrapper,
+            style.status_line.coords.content,
+            style.status_line.minimap_module.wrapper,
+            style.status_line.minimap_module.content,
+            style.status_line.minimap,
+            style.status_line.minimap_alt,
+            style.about.border,
+            style.about.title,
+            style.about.text,
+            style.about.logo_red,
+            style.about.logo_white,
+            style.about.logo_blue,
+            style.command_line.border,
+            style.command_line.title,
+            style.command_line.text,
+            style.command_line.prompt,
+            style.diagnostic_inline.error,
+            style.diagnostic_inline.warning,
+            style.diagnostic_inline.information,
+            style.diagnostic_inline.hint,
+            style.explorer.border,
+            style.explorer.title,
+            style.explorer.file,
+            style.explorer.directory,
+            style.explorer.executable,
+            style.explorer.hidden,
+            style.finder.border,
+            style.finder.title,
+            style.finder.text,
+            style.finder.prompt,
+            style.finder.query_title,
+            style.finder.dim,
+            style.finder.match_highlight,
+            style.finder.selected,
+            style.finder.pinned_bg,
+            style.finder.pinned_marker,
+            style.finder.hotkey,
+            style.finder.preview_title,
+            style.finder.preview_path,
+            style.perf.border,
+            style.perf.title,
+            style.perf.text,
+            style.perf.label,
+            style.perf.value,
+            style.perf.dim,
+            style.perf.good,
+            style.perf.warn,
+            style.perf.hot,
+            style.perf.bar_bg,
+            style.undo_tree.text,
+            style.undo_tree.selected,
+            style.undo_tree.selected_indicator,
+            style.undo_tree.node,
+            style.undo_tree.node_label,
+            style.undo_tree.redo_marker,
+            style.undo_tree.edge,
+            style.undo_tree.timestamp,
+            style.undo_tree.preview_title,
+            style.undo_tree.preview_label,
+            style.undo_tree.preview_text,
+            style.undo_tree.preview_dim,
+            style.undo_tree.preview_deleted,
+            style.undo_tree.preview_inserted,
+            style.syntax.markdown_code,
+            style.syntax.markdown_emphasis,
+            style.syntax.markdown_frontmatter,
+            style.syntax.markdown_heading,
+            style.syntax.markdown_highlight,
+            style.syntax.markdown_link,
+            style.syntax.markdown_list_marker,
+            style.syntax.markdown_strong,
+            style.syntax.variable_builtin,
+            style.syntax.variable_parameter,
+            style.syntax.keyword,
+            style.syntax.keyword_operator,
+            style.syntax.keyword_import,
+            style.syntax.type_name,
+            style.syntax.type_builtin,
+            style.syntax.type_definition,
+            style.syntax.function,
+            style.syntax.function_macro,
+            style.syntax.function_method,
+            style.syntax.string,
+            style.syntax.string_escape,
+            style.syntax.character,
+            style.syntax.number,
+            style.syntax.boolean,
+            style.syntax.float,
+            style.syntax.comment,
+            style.syntax.constant,
+            style.syntax.constant_builtin,
+            style.syntax.constant_macro,
+            style.syntax.constructor,
+            style.syntax.attribute,
+            style.syntax.property,
+            style.syntax.operator,
+            style.syntax.punctuation_delimiter,
+            style.syntax.punctuation_bracket,
+            style.syntax.punctuation_special,
+        );
+        style
+    }
+
+    pub fn set_syntax_colour(&mut self, name: &str, colour: ColorPair) -> anyhow::Result<()> {
+        let target = match name {
+            "markdown_code" => &mut self.syntax.markdown_code,
+            "markdown_emphasis" => &mut self.syntax.markdown_emphasis,
+            "markdown_frontmatter" => &mut self.syntax.markdown_frontmatter,
+            "markdown_heading" => &mut self.syntax.markdown_heading,
+            "markdown_highlight" => &mut self.syntax.markdown_highlight,
+            "markdown_link" => &mut self.syntax.markdown_link,
+            "markdown_list_marker" => &mut self.syntax.markdown_list_marker,
+            "markdown_strong" => &mut self.syntax.markdown_strong,
+            "variable_builtin" => &mut self.syntax.variable_builtin,
+            "variable_parameter" => &mut self.syntax.variable_parameter,
+            "keyword" => &mut self.syntax.keyword,
+            "keyword_operator" => &mut self.syntax.keyword_operator,
+            "keyword_import" => &mut self.syntax.keyword_import,
+            "type" | "type_name" => &mut self.syntax.type_name,
+            "type_builtin" => &mut self.syntax.type_builtin,
+            "type_definition" => &mut self.syntax.type_definition,
+            "function" => &mut self.syntax.function,
+            "function_macro" => &mut self.syntax.function_macro,
+            "function_method" => &mut self.syntax.function_method,
+            "string" => &mut self.syntax.string,
+            "string_escape" => &mut self.syntax.string_escape,
+            "character" => &mut self.syntax.character,
+            "number" => &mut self.syntax.number,
+            "boolean" => &mut self.syntax.boolean,
+            "float" => &mut self.syntax.float,
+            "comment" => &mut self.syntax.comment,
+            "constant" => &mut self.syntax.constant,
+            "constant_builtin" => &mut self.syntax.constant_builtin,
+            "constant_macro" => &mut self.syntax.constant_macro,
+            "constructor" => &mut self.syntax.constructor,
+            "attribute" => &mut self.syntax.attribute,
+            "property" => &mut self.syntax.property,
+            "operator" => &mut self.syntax.operator,
+            "punctuation_delimiter" => &mut self.syntax.punctuation_delimiter,
+            "punctuation_bracket" => &mut self.syntax.punctuation_bracket,
+            "punctuation_special" => &mut self.syntax.punctuation_special,
+            _ => anyhow::bail!("unknown syntax colour {name:?}"),
+        };
+        *target = colour;
+        Ok(())
+    }
+
+    pub fn set_ui_colour(&mut self, name: &str, colour: ColorPair) -> anyhow::Result<()> {
+        macro_rules! colour_target {
+            ($($name:literal => $target:expr),+ $(,)?) => {
+                match name { $($name => &mut $target,)+ _ => anyhow::bail!("unknown UI colour {name:?}"), }
+            };
+        }
+        let target = colour_target! {
+            "git.added" => self.git.added, "git.modified" => self.git.modified,
+            "git.conflict" => self.git.conflict, "git.removed" => self.git.removed,
+            "status.bar" => self.status_line.bar, "status.path" => self.status_line.path,
+            "status.dirty" => self.status_line.dirty, "status.mode_normal" => self.status_line.mode_normal,
+            "status.mode_insert" => self.status_line.mode_insert, "status.mode_command" => self.status_line.mode_command,
+            "status.mode_visual" => self.status_line.mode_visual, "status.metadata_wrapper" => self.status_line.metadata.wrapper,
+            "status.metadata_content" => self.status_line.metadata.content, "status.coords_wrapper" => self.status_line.coords.wrapper,
+            "status.coords_content" => self.status_line.coords.content, "status.minimap_wrapper" => self.status_line.minimap_module.wrapper,
+            "status.minimap_content" => self.status_line.minimap_module.content, "status.minimap" => self.status_line.minimap,
+            "status.minimap_alt" => self.status_line.minimap_alt,
+            "about.border" => self.about.border, "about.title" => self.about.title, "about.text" => self.about.text,
+            "about.logo_red" => self.about.logo_red, "about.logo_white" => self.about.logo_white, "about.logo_blue" => self.about.logo_blue,
+            "command_line.border" => self.command_line.border, "command_line.title" => self.command_line.title,
+            "command_line.text" => self.command_line.text, "command_line.prompt" => self.command_line.prompt,
+            "diagnostic.error" => self.diagnostic_inline.error, "diagnostic.warning" => self.diagnostic_inline.warning,
+            "diagnostic.information" => self.diagnostic_inline.information, "diagnostic.hint" => self.diagnostic_inline.hint,
+            "explorer.border" => self.explorer.border, "explorer.title" => self.explorer.title, "explorer.file" => self.explorer.file,
+            "explorer.directory" => self.explorer.directory, "explorer.executable" => self.explorer.executable, "explorer.hidden" => self.explorer.hidden,
+            "finder.border" => self.finder.border, "finder.title" => self.finder.title, "finder.text" => self.finder.text,
+            "finder.prompt" => self.finder.prompt, "finder.query_title" => self.finder.query_title, "finder.dim" => self.finder.dim,
+            "finder.match_highlight" => self.finder.match_highlight, "finder.selected" => self.finder.selected,
+            "finder.pinned_bg" => self.finder.pinned_bg, "finder.pinned_marker" => self.finder.pinned_marker,
+            "finder.hotkey" => self.finder.hotkey, "finder.preview_title" => self.finder.preview_title, "finder.preview_path" => self.finder.preview_path,
+            "perf.border" => self.perf.border, "perf.title" => self.perf.title, "perf.text" => self.perf.text,
+            "perf.label" => self.perf.label, "perf.value" => self.perf.value, "perf.dim" => self.perf.dim,
+            "perf.good" => self.perf.good, "perf.warn" => self.perf.warn, "perf.hot" => self.perf.hot, "perf.bar_bg" => self.perf.bar_bg,
+            "undo_tree.text" => self.undo_tree.text, "undo_tree.selected" => self.undo_tree.selected,
+            "undo_tree.selected_indicator" => self.undo_tree.selected_indicator, "undo_tree.node" => self.undo_tree.node,
+            "undo_tree.node_label" => self.undo_tree.node_label, "undo_tree.redo_marker" => self.undo_tree.redo_marker,
+            "undo_tree.edge" => self.undo_tree.edge, "undo_tree.timestamp" => self.undo_tree.timestamp,
+            "undo_tree.preview_title" => self.undo_tree.preview_title, "undo_tree.preview_label" => self.undo_tree.preview_label,
+            "undo_tree.preview_text" => self.undo_tree.preview_text, "undo_tree.preview_dim" => self.undo_tree.preview_dim,
+            "undo_tree.preview_deleted" => self.undo_tree.preview_deleted, "undo_tree.preview_inserted" => self.undo_tree.preview_inserted
+        };
+        *target = colour;
+        Ok(())
+    }
+
+    pub fn set_popup_size(
+        &mut self,
+        name: &str,
+        width: Option<u16>,
+        height: Option<u16>,
+        min_width: Option<u16>,
+        min_height: Option<u16>,
+    ) {
+        macro_rules! apply {
+            ($popup:expr) => {{
+                if let Some(v) = width {
+                    $popup.width_percent = v;
+                }
+                if let Some(v) = height {
+                    $popup.height_percent = v;
+                }
+                if let Some(v) = min_width {
+                    $popup.min_width = v;
+                }
+                if let Some(v) = min_height {
+                    $popup.min_height = v;
+                }
+            }};
+        }
+        match name {
+            "about" => apply!(self.about),
+            "explorer" => apply!(self.explorer),
+            "finder" | "diagnostics" | "code_actions" => apply!(self.finder),
+            "lsp_marketplace" => apply!(self.lsp_marketplace),
+            "perf" => apply!(self.perf),
+            "command_line" => {
+                if let Some(v) = width {
+                    self.command_line.width_percent = v;
+                }
+                if let Some(v) = min_width {
+                    self.command_line.min_width = v;
+                }
+            }
+            "undo_tree" => {
+                if let Some(v) = width {
+                    self.undo_tree.width_percent = v;
+                }
+                if let Some(v) = min_width {
+                    self.undo_tree.min_width = v;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -919,6 +1225,28 @@ impl UiStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_status_modules_keep_the_original_dark_palette() {
+        let style = UiStyle::default();
+
+        assert_eq!(
+            style.status_line.metadata.wrapper.fg,
+            style.status_line.bar.bg
+        );
+        assert_eq!(
+            style.status_line.metadata.content,
+            ColorPair::new(style.theme.black, style.theme.dark_gray)
+        );
+        assert_eq!(
+            style.status_line.coords.wrapper.fg,
+            style.status_line.bar.bg
+        );
+        assert_eq!(
+            style.status_line.coords.content,
+            ColorPair::new(style.theme.black, style.theme.dark_gray)
+        );
+    }
 
     #[test]
     fn dimmed_style_fades_foreground_without_changing_background() {
@@ -939,6 +1267,31 @@ mod tests {
                 r: 134,
                 g: 140,
                 b: 186,
+            }
+        );
+    }
+
+    #[test]
+    fn dimmed_style_preserves_matching_backgrounds_and_fades_custom_foregrounds() {
+        let mut style = UiStyle::default();
+        let background = style.theme.purple;
+        style.finder.selected = ColorPair::new(
+            Color::Rgb {
+                r: 200,
+                g: 100,
+                b: 50,
+            },
+            background,
+        );
+        style.dim_amount = 0.5;
+        let dimmed = style.dimmed();
+        assert_eq!(dimmed.finder.selected.bg, background);
+        assert_eq!(
+            dimmed.finder.selected.fg,
+            Color::Rgb {
+                r: 113,
+                g: 63,
+                b: 39
             }
         );
     }
