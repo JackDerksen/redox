@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 const APP_DIR: &str = "redox";
 
 pub fn state_root() -> PathBuf {
-    if let Some(root) = env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(root).join(APP_DIR);
+    if let Some(root) = xdg_root("XDG_STATE_HOME") {
+        return root.join(APP_DIR);
     }
     if let Some(home) = env::var_os("HOME") {
         return PathBuf::from(home).join(".local/state").join(APP_DIR);
@@ -21,8 +21,8 @@ pub fn state_root() -> PathBuf {
 }
 
 pub fn config_root() -> PathBuf {
-    if let Some(root) = env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(root).join(APP_DIR);
+    if let Some(root) = xdg_root("XDG_CONFIG_HOME") {
+        return root.join(APP_DIR);
     }
     if let Some(home) = env::var_os("HOME") {
         return PathBuf::from(home).join(".config").join(APP_DIR);
@@ -31,6 +31,12 @@ pub fn config_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".config")
         .join(APP_DIR)
+}
+
+fn xdg_root(variable: &str) -> Option<PathBuf> {
+    env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
 }
 
 pub fn pinned_files_path() -> PathBuf {
