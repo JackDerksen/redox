@@ -226,7 +226,11 @@ impl UndoHistory {
         after_buffer: &TextBuffer,
         after_cursor: Pos,
     ) -> bool {
-        let base_node = before.base_node.min(self.nodes.len().saturating_sub(1));
+        let base_node = if before.base_node < self.nodes.len() {
+            before.base_node
+        } else {
+            0
+        };
         let base_buffer = before.buffer.clone();
         let Some(record) = UndoRecord::from_checkpoint(before, after_buffer, after_cursor) else {
             return false;
