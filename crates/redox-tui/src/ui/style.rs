@@ -935,9 +935,10 @@ fn dim_style_colour(
         (theme.mid_gray, dimmed.mid_gray),
         (theme.light_gray, dimmed.light_gray),
     ];
-    if let Some((_, replacement)) = theme_colours
-        .iter()
-        .find(|(original, _)| *original == colour)
+    if is_foreground
+        && let Some((_, replacement)) = theme_colours
+            .iter()
+            .find(|(original, _)| *original == colour)
     {
         return *replacement;
     }
@@ -1271,30 +1272,20 @@ mod tests {
     }
 
     #[test]
-    fn dimmed_style_preserves_custom_role_backgrounds() {
+    fn dimmed_style_preserves_matching_backgrounds_and_fades_custom_foregrounds() {
         let mut style = UiStyle::default();
+        let background = style.theme.purple;
         style.finder.selected = ColorPair::new(
             Color::Rgb {
                 r: 200,
                 g: 100,
                 b: 50,
             },
-            Color::Rgb {
-                r: 10,
-                g: 20,
-                b: 30,
-            },
+            background,
         );
         style.dim_amount = 0.5;
         let dimmed = style.dimmed();
-        assert_eq!(
-            dimmed.finder.selected.bg,
-            Color::Rgb {
-                r: 10,
-                g: 20,
-                b: 30
-            }
-        );
+        assert_eq!(dimmed.finder.selected.bg, background);
         assert_eq!(
             dimmed.finder.selected.fg,
             Color::Rgb {
