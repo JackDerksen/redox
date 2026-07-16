@@ -76,6 +76,12 @@ impl EditorState {
             "e!" | "reload" => {
                 self.command_reload_active();
             }
+            "config" => match arg {
+                "" => self.request_config_open(),
+                "reload" => self.request_config_reload(),
+                _ => self.set_status("usage: config [reload]"),
+            },
+            "colorscheme" => self.request_colorscheme(arg),
             "bn" | "bnext" => {
                 self.command_buffer_cycle_next();
             }

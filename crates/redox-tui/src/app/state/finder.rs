@@ -1022,24 +1022,7 @@ impl EditorState {
 }
 
 fn pinned_files_storage_path() -> PathBuf {
-    if let Some(xdg_config) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg_config)
-            .join("redox")
-            .join("pinned_files.txt");
-    }
-
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join(".config")
-            .join("redox")
-            .join("pinned_files.txt");
-    }
-
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".config")
-        .join("redox")
-        .join("pinned_files.txt")
+    crate::storage::pinned_files_path()
 }
 
 fn filter_file_result(

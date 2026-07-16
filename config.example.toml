@@ -1,0 +1,186 @@
+# Redox reads $REDOX_CONFIG, then $XDG_CONFIG_HOME/redox/config.toml, then
+# ~/.config/redox/config.toml. Every setting is optional.
+# Run `:config reload` after saving to apply changes without restarting Redox.
+
+theme = "default"
+background_dimming = 0.5 # 0.0 disables popup background dimming; 1.0 is fully dimmed
+undo_tree_history_size = 1000
+color_column = 79 # Renders on top of cl=80
+leader = " "
+
+[popups.finder]
+width_percent = 65
+height_percent = 60
+min_width = 52
+min_height = 14
+
+[popups.explorer]
+width_percent = 65
+height_percent = 60
+
+# Other popup names: about, command_line, diagnostics, code_actions,
+# lsp_marketplace, perf, and undo_tree.
+
+[keybindings.normal]
+open_finder = "<leader><leader>"
+open_explorer = "<leader>e"
+toggle_undo_tree = "<leader>u"
+toggle_diagnostics = "<leader>x"
+code_actions = "<leader>ca"
+goto_definition = "gd"
+close_split = "<ctrl-w>"
+
+[keybindings.insert]
+completion = "<ctrl-shift-k>"
+
+[keybindings.visual]
+yank_system = "<leader>y"
+
+# Available actions include open_explorer, toggle_undo_tree, open_finder,
+# toggle_diagnostics, code_actions, goto_definition, symbol_info, completion,
+# undo, redo, movement and insert actions, clipboard operations, splits and
+# focus, popup navigation, and surface navigation. Unknown action names are
+# rejected at startup instead of being silently ignored.
+
+# Define any number of named themes, then select one with `theme` above. A
+# foreground-only colour inherits the editor background. Use { fg, bg } when
+# both sides should be explicit. Colours are #RRGGBB or "transparent".
+[themes.vague.palette]
+background = "#141415"
+color_column = "#252530"
+scope = "#252530"
+selection_bg = "#333738"
+selection_fg = "#cdcdcd"
+white = "#cdcdcd"
+black = "#1c1c24"
+red = "#d8647e"
+green = "#7fa563"
+yellow = "#f3be7c"
+blue = "#7e98e8"
+purple = "#aeaed1"
+orange = "#e0a363"
+light_red = "#c48282"
+light_green = "#b4d4cf"
+light_yellow = "#e8b589"
+light_blue = "#9bb4bc"
+light_purple = "#bb9dbd"
+light_orange = "#f3be7c"
+dark_gray = "#606079"
+mid_gray = "#878787"
+light_gray = "#c3c3d5"
+
+[themes.vague.syntax]
+markdown_code = "#aeaed1"
+markdown_emphasis = "#bb9dbd"
+markdown_frontmatter = "#606079"
+markdown_heading = "#6e94b2"
+markdown_highlight = { fg = "#cdcdcd", bg = "#405065" }
+markdown_link = "#c48282"
+markdown_list_marker = "#c48282"
+markdown_strong = "#c48282"
+variable_builtin = "#b4d4cf"
+variable_parameter = "#bb9dbd"
+keyword = "#6e94b2"
+keyword_operator = "#90a0b5"
+keyword_import = "#6e94b2"
+type = "#9bb4bc"
+type_builtin = "#b4d4cf"
+type_definition = "#aeaed1"
+function = "#c48282"
+function_macro = "#c48282"
+function_method = "#9bb4bc"
+string = "#e8b589"
+string_escape = "#b4d4cf"
+character = "#e8b589"
+number = "#e0a363"
+boolean = "#e0a363"
+float = "#e0a363"
+comment = "#606079"
+constant = "#aeaed1"
+constant_builtin = "#e0a363"
+constant_macro = "#b4d4cf"
+constructor = "#aeaed1"
+attribute = "#aeaed1"
+property = "#c3c3d5"
+operator = "#90a0b5"
+punctuation_delimiter = "#cdcdcd"
+punctuation_bracket = "#cdcdcd"
+punctuation_special = "#b4d4cf"
+
+[themes.vague.ui]
+"git.added" = { fg = "#7fa563", bg = "#141415" }
+"git.modified" = { fg = "#f3be7c", bg = "#141415" }
+"git.conflict" = { fg = "#f3be7c", bg = "#141415" }
+"git.removed" = { fg = "#d8647e", bg = "#141415" }
+"status.bar" = { fg = "#cdcdcd", bg = "#1c1c24" }
+"status.path" = { fg = "#878787", bg = "#1c1c24" }
+"status.dirty" = { fg = "#f3be7c", bg = "#1c1c24" }
+"status.mode_normal" = { fg = "#141415", bg = "#9bb4bc" }
+"status.mode_insert" = { fg = "#141415", bg = "#7fa563" }
+"status.mode_command" = { fg = "#141415", bg = "#c48282" }
+"status.mode_visual" = { fg = "#141415", bg = "#bb9dbd" }
+"status.metadata_wrapper" = { fg = "#1c1c24", bg = "#252530" }
+"status.metadata_content" = { fg = "#cdcdcd", bg = "#252530" }
+"status.coords_wrapper" = { fg = "#1c1c24", bg = "#252530" }
+"status.coords_content" = { fg = "#cdcdcd", bg = "#252530" }
+"status.minimap_wrapper" = { fg = "#1c1c24", bg = "#252530" }
+"status.minimap_content" = { fg = "#cdcdcd", bg = "#252530" }
+"status.minimap" = { fg = "#606079", bg = "transparent" }
+"status.minimap_alt" = { fg = "transparent", bg = "#878787" }
+"about.border" = "#878787"
+"about.title" = "#c3c3d5"
+"about.text" = "#cdcdcd"
+"about.logo_red" = "#d8647e"
+"about.logo_white" = "#cdcdcd"
+"about.logo_blue" = "#7e98e8"
+"command_line.border" = "#878787"
+"command_line.title" = "#c48282"
+"command_line.text" = "#cdcdcd"
+"command_line.prompt" = "#e8b589"
+"diagnostic.error" = { fg = "#d8647e", bg = "#2b1c22" }
+"diagnostic.warning" = { fg = "#f3be7c", bg = "#30281d" }
+"diagnostic.information" = { fg = "#7e98e8", bg = "#202635" }
+"diagnostic.hint" = { fg = "#9bb4bc", bg = "#20292b" }
+"explorer.border" = "#878787"
+"explorer.title" = "#c3c3d5"
+"explorer.file" = "#cdcdcd"
+"explorer.directory" = "#7e98e8"
+"explorer.executable" = "#7fa563"
+"explorer.hidden" = "#606079"
+"finder.border" = "#878787"
+"finder.title" = "#c3c3d5"
+"finder.text" = "#cdcdcd"
+"finder.prompt" = "#aeaed1"
+"finder.query_title" = "#bb9dbd"
+"finder.dim" = "#606079"
+"finder.match_highlight" = "#e8b589"
+"finder.selected" = { fg = "#cdcdcd", bg = "#333738" }
+"finder.pinned_bg" = { fg = "#cdcdcd", bg = "#252530" }
+"finder.pinned_marker" = { fg = "#aeaed1", bg = "#252530" }
+"finder.hotkey" = { fg = "#bb9dbd", bg = "#252530" }
+"finder.preview_title" = "#9bb4bc"
+"finder.preview_path" = "#606079"
+"perf.border" = "#878787"
+"perf.title" = "#c3c3d5"
+"perf.text" = "#cdcdcd"
+"perf.label" = "#606079"
+"perf.value" = "#c3c3d5"
+"perf.dim" = "#606079"
+"perf.good" = "#7fa563"
+"perf.warn" = "#f3be7c"
+"perf.hot" = "#d8647e"
+"perf.bar_bg" = { fg = "#606079", bg = "#252530" }
+"undo_tree.text" = "#cdcdcd"
+"undo_tree.selected" = { fg = "#cdcdcd", bg = "#333738" }
+"undo_tree.selected_indicator" = "#bb9dbd"
+"undo_tree.node" = "#c3c3d5"
+"undo_tree.node_label" = "#9bb4bc"
+"undo_tree.redo_marker" = "#aeaed1"
+"undo_tree.edge" = "#878787"
+"undo_tree.timestamp" = "#606079"
+"undo_tree.preview_title" = "#9bb4bc"
+"undo_tree.preview_label" = "#878787"
+"undo_tree.preview_text" = "#cdcdcd"
+"undo_tree.preview_dim" = "#606079"
+"undo_tree.preview_deleted" = "#d8647e"
+"undo_tree.preview_inserted" = "#7fa563"

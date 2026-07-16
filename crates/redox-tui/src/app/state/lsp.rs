@@ -34,7 +34,6 @@ pub use types::{
     SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
 };
 
-const INSTALLED_LSPS_FILE: &str = "installed_lsps.json";
 const INITIALIZE_REQUEST_ID: i64 = 1;
 const FIRST_DYNAMIC_REQUEST_ID: i64 = 2;
 const LSP_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -4802,7 +4801,7 @@ fn cached_file_lines<'a>(
 }
 
 fn load_installed_tools() -> HashMap<MarketplaceItemId, InstalledToolRecord> {
-    let path = installed_lsps_storage_path();
+    let path = installed_tools_storage_path();
     let Ok(contents) = fs::read_to_string(path) else {
         return HashMap::new();
     };
@@ -4851,7 +4850,7 @@ fn load_installed_tools() -> HashMap<MarketplaceItemId, InstalledToolRecord> {
 fn save_installed_tools(
     installed: &HashMap<MarketplaceItemId, InstalledToolRecord>,
 ) -> io::Result<()> {
-    let path = installed_lsps_storage_path();
+    let path = installed_tools_storage_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -4959,25 +4958,8 @@ fn reconcile_marketplace_scroll(
     state.scroll = state.scroll.min(max_scroll);
 }
 
-fn installed_lsps_storage_path() -> PathBuf {
-    if let Some(xdg_config) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg_config)
-            .join("redox")
-            .join(INSTALLED_LSPS_FILE);
-    }
-
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join(".config")
-            .join("redox")
-            .join(INSTALLED_LSPS_FILE);
-    }
-
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".config")
-        .join("redox")
-        .join(INSTALLED_LSPS_FILE)
+fn installed_tools_storage_path() -> PathBuf {
+    crate::storage::installed_tools_path()
 }
 
 fn executable_on_path(executable: &str) -> bool {

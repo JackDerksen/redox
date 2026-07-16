@@ -406,6 +406,10 @@ pub struct EditorState {
     next_pane_id: usize,
     pane_use_tick: u64,
     next_external_file_check_at: Instant,
+    undo_history_size: usize,
+    config_open_requested: bool,
+    config_reload_requested: bool,
+    colorscheme_request: Option<String>,
 }
 
 impl EditorState {
@@ -469,11 +473,57 @@ impl EditorState {
             next_pane_id: 1,
             pane_use_tick: 1,
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
+            undo_history_size: usize::MAX,
+            config_open_requested: false,
+            config_reload_requested: false,
+            colorscheme_request: None,
         };
         let mut state = state;
         state.request_analysis(active, 0);
         state.initialise_lsp_state();
         state
+    }
+
+    pub fn configure(&mut self, input: InputState, undo_history_size: usize) {
+        self.input = input;
+        self.undo_history_size = undo_history_size.max(1);
+        self.enforce_undo_history_size();
+    }
+
+    pub fn request_config_reload(&mut self) {
+        self.config_reload_requested = true;
+    }
+
+    pub fn request_config_open(&mut self) {
+        self.config_open_requested = true;
+    }
+
+    pub fn take_config_open_request(&mut self) -> bool {
+        std::mem::take(&mut self.config_open_requested)
+    }
+
+    pub fn take_config_reload_request(&mut self) -> bool {
+        std::mem::take(&mut self.config_reload_requested)
+    }
+
+    pub fn request_colorscheme(&mut self, name: impl Into<String>) {
+        self.colorscheme_request = Some(name.into());
+    }
+
+    pub fn take_colorscheme_request(&mut self) -> Option<String> {
+        self.colorscheme_request.take()
+    }
+
+    pub fn open_config_file(&mut self, path: &std::path::Path) {
+        self.command_edit(&path.to_string_lossy());
+    }
+
+    pub fn enforce_undo_history_size(&mut self) {
+        for view in self.views.values_mut() {
+            if view.undo_history.set_max_records(self.undo_history_size) {
+                view.pending_insert_undo = None;
+            }
+        }
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -1121,6 +1171,7 @@ impl EditorState {
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let buffer = self.session.active_buffer().clone();
         let view = self.views.entry(active_id).or_default();
+        view.undo_history.set_max_records(self.undo_history_size);
         view.undo_history.checkpoint(buffer, cursor)
     }
 
@@ -1138,6 +1189,7 @@ impl EditorState {
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let buffer = self.session.active_buffer().clone();
         let view = self.views.entry(active_id).or_default();
+        view.undo_history.set_max_records(self.undo_history_size);
         let checkpoint = view.undo_history.coalesced_checkpoint(buffer, cursor);
         view.pending_insert_undo = Some(checkpoint.clone());
         checkpoint
@@ -1172,6 +1224,7 @@ impl EditorState {
         let after_buffer = self.session.active_buffer().clone();
         let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let view = self.views.entry(active_id).or_default();
+        view.undo_history.set_max_records(self.undo_history_size);
         let changed = view
             .undo_history
             .record_if_changed(before, &after_buffer, after_cursor);
