@@ -565,7 +565,15 @@ pub fn map_event_with_context(
     confirm_explorer_delete: bool,
     event: &Event,
 ) -> InputAction {
-    if let Event::Character(c) = event
+    let custom_character = match event {
+        Event::Character(c) => Some(*c),
+        Event::KeyWithModifiers(KeyWithModifiers {
+            key: KeyKind::Char(c),
+            mods,
+        }) if text_mods(*mods) => Some(replacement_char_from_key(*c, *mods)),
+        _ => None,
+    };
+    if let Some(c) = custom_character
         && !matches!(
             mode,
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
