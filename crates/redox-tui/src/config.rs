@@ -83,7 +83,7 @@ impl Config {
     pub fn load(explicit_path: Option<&Path>) -> anyhow::Result<(Self, Option<PathBuf>)> {
         let path = Self::path(explicit_path);
         if !path.exists() {
-            if explicit_path.is_some() {
+            if explicit_path.is_some() || env::var_os("REDOX_CONFIG").is_some() {
                 bail!("configuration file does not exist: {}", path.display());
             }
             return Ok((Self::default(), None));
