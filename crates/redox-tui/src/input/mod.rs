@@ -660,9 +660,12 @@ pub fn map_event_with_context(
 
         Event::Keybind(KeybindAction::Custom(action)) if action.starts_with("redox-key:") => {
             let key = action.trim_start_matches("redox-key:");
-            custom_special_action(state, mode, key)
-                .map(|action| finish_custom_action(state, action))
-                .unwrap_or(InputAction::None)
+            if let Some(action) = custom_special_action(state, mode, key) {
+                finish_custom_action(state, action)
+            } else {
+                state.reset_prefixes();
+                InputAction::None
+            }
         }
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
