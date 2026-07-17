@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <img width="2374" height="1339" alt="Redox Demo" src="assets/redox-demo.png" />
+    <img width="2227" height="1424" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
 ## Project structure
@@ -101,8 +101,8 @@ It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.to
 `redox --config /path/to/config.toml`.
 
 Configuration supports features like named themes, the complete base palette, every syntax role,
-UI colour pairs, background dimming, popup dimensions, colour-column position, undo-tree history
-size, the leader character, and mode-specific keybindings. See the
+UI colour pairs, optional Nerd Font icons, background dimming, popup dimensions, colour-column
+position, undo-tree history size, the leader character, and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
 defaults.

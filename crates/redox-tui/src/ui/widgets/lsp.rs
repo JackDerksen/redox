@@ -8,13 +8,14 @@ use crate::app::state::{
     SymbolInfoKind, SymbolInfoPopup,
 };
 use crate::ui::UiStyle;
+use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, PopupKind, popup_title};
 use crate::ui::syntax::{
     LineSyntaxSpan, SyntaxLanguage, language_for_name, lexical_fallback_line_spans,
     line_spans_for_source, syntax_color_for_range,
 };
 use crate::ui::widgets::popup::{
     PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_frame_at,
-    popup_inner_size, popup_window_view, wrap_text_to_cells,
+    draw_popup_view_divider, popup_inner_size, popup_window_view, wrap_text_to_cells,
 };
 
 const DIAGNOSTICS_TITLE: &str = "Diagnostics";
@@ -65,13 +66,14 @@ pub fn draw_symbol_info_popup(
     } else {
         cursor_y.saturating_sub(inner_h.saturating_add(2))
     };
+    let title = popup_title(PopupKind::Information, popup.title, style.icons_enabled);
     let layout = draw_popup_frame_at(
         window,
         x,
         y,
         content_width,
         inner_h,
-        &popup.title,
+        &title,
         PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
@@ -614,13 +616,18 @@ pub fn draw_diagnostics_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
+    let title = popup_title(
+        PopupKind::Diagnostics,
+        DIAGNOSTICS_TITLE,
+        style.icons_enabled,
+    );
     let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
         inner_w,
         inner_h,
-        DIAGNOSTICS_TITLE,
+        &title,
         PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
@@ -694,7 +701,7 @@ pub fn draw_diagnostics_popup(
         let marker = if selected { "› " } else { "  " };
         let location = format!("{}:{}", entry.line + 1, entry.col + 1);
         let location = format!("{location:>location_width$}");
-        let glyph = severity_glyph(entry.severity);
+        let glyph = severity_glyph(entry.severity, style.icons_enabled);
         let prefix_w = text_width(marker)
             .saturating_add(location_width)
             .saturating_add(1)
@@ -745,8 +752,7 @@ pub fn draw_diagnostics_popup(
         }
     } else if detail_rows > 0 {
         if separator_row < view.height {
-            let divider = "─".repeat(view.width as usize);
-            view.write_str_colored(separator_row, 0, &divider, style.finder.dim)?;
+            draw_popup_view_divider(&mut view, separator_row, style.finder.dim)?;
         }
 
         if let Some(selected) = popup.entries.get(popup.selected) {
@@ -754,7 +760,7 @@ pub fn draw_diagnostics_popup(
             if title_row < view.height {
                 let title = format!(
                     "{} {}:{}",
-                    severity_glyph(selected.severity),
+                    severity_glyph(selected.severity, style.icons_enabled),
                     selected.line + 1,
                     selected.col + 1
                 );
@@ -800,13 +806,18 @@ pub fn draw_code_actions_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
+    let title = popup_title(
+        PopupKind::CodeActions,
+        CODE_ACTIONS_TITLE,
+        style.icons_enabled,
+    );
     let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
         inner_w,
         inner_h,
-        CODE_ACTIONS_TITLE,
+        &title,
         PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
@@ -846,8 +857,7 @@ fn draw_diagnostics_code_actions_split(
     if separator_row >= view.height {
         return Ok(());
     }
-    let divider = "─".repeat(view.width as usize);
-    view.write_str_colored(separator_row, 0, &divider, style.finder.dim)?;
+    draw_popup_view_divider(view, separator_row, style.finder.dim)?;
     let title_row = separator_row.saturating_add(1);
     if title_row >= view.height {
         return Ok(());
@@ -962,13 +972,13 @@ fn draw_section_header(
     Ok(row.saturating_add(1))
 }
 
-fn severity_glyph(severity: DiagnosticSeverity) -> &'static str {
-    match severity {
-        DiagnosticSeverity::Error => "×",
-        DiagnosticSeverity::Warning => "△",
-        DiagnosticSeverity::Information => "•",
-        DiagnosticSeverity::Hint => "⚬",
-    }
+fn severity_glyph(severity: DiagnosticSeverity, icons_enabled: bool) -> &'static str {
+    let glyphs = if icons_enabled {
+        DIAGNOSTIC_ICONS
+    } else {
+        DIAGNOSTIC_FALLBACKS
+    };
+    glyphs[severity.sort_rank() as usize]
 }
 
 fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> ColorPair {
@@ -1001,9 +1011,14 @@ fn text_width(text: &str) -> usize {
 mod tests {
     use super::{
         build_symbol_info_display_lines, markdown_render_lines, plain_text_render_lines,
-        symbol_info_line_spans, wrap_code_line_to_cells,
+        severity_glyph, symbol_info_line_spans, wrap_code_line_to_cells,
     };
-    use crate::app::state::{SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind};
+    use crate::app::state::{
+        DiagnosticSeverity, SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind,
+    };
+    use crate::ui::icons::{
+        DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
+    };
     use crate::ui::syntax::SyntaxLanguage;
 
     #[test]

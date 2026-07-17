@@ -5,6 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
+use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, filetype_icon};
 use crate::ui::style::StatusModuleColors;
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -452,19 +453,27 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let (mode_label, mode_colors) =
         status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style);
 
+    let lsp_icon = if style.icons_enabled && state.lsp_provider_installed_for_buffer(buffer_id) {
+        meta.path.as_deref().and_then(filetype_icon)
+    } else {
+        None
+    };
+    let lsp_icon_width = u16::from(lsp_icon.is_some());
     let mode_module = StatusModule::new(
         mode_label,
         StatusModuleColors::solid(mode_colors),
         style.status_line.bar.bg,
     );
     let mode_width = mode_module.width();
-    let metadata_module = metadata_text(state, buffer_id)
+    let metadata_module = metadata_text(state, buffer_id, style.icons_enabled)
         .map(|text| StatusModule::new(text, style.status_line.metadata, style.status_line.bar.bg));
     let metadata_module_width = metadata_module
         .as_ref()
         .map(StatusModule::width)
         .unwrap_or(0);
-    let left_text_width = mode_width.saturating_add(metadata_module_width);
+    let left_text_width = mode_width
+        .saturating_add(metadata_module_width)
+        .saturating_add(lsp_icon_width);
 
     let center_text = if let Some(label) = state.statusline_popup_label() {
         format!(" {label} ")
@@ -519,10 +528,19 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
 
     let status_bar = EditorStatusBar::new()
         .with_height(STATUS_BAR_HEIGHT_CELLS)
-        .with_bg(style.status_line.bar)
-        .add_module(mode_module);
+        .with_bg(style.status_line.bar);
+    let status_bar = status_bar.add_module(mode_module);
     let status_bar = if let Some(module) = metadata_module {
         status_bar.add_module(module)
+    } else {
+        status_bar
+    };
+    let status_bar = if let Some(icon) = lsp_icon {
+        status_bar.add_segment(
+            Segment::new(icon)
+                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+                .with_min_width(lsp_icon_width),
+        )
     } else {
         status_bar
     };
@@ -617,10 +635,14 @@ fn status_bar_mode_presentation(
     }
 }
 
-fn metadata_text(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+fn metadata_text(
+    state: &EditorState,
+    buffer_id: redox_core::BufferId,
+    icons_enabled: bool,
+) -> Option<String> {
     match (
-        git_diff_summary(state, buffer_id),
-        diagnostic_summary_text(state, buffer_id),
+        git_diff_summary(state, buffer_id, icons_enabled),
+        diagnostic_summary_text(state, buffer_id, icons_enabled),
     ) {
         (Some(git), Some(diagnostics)) => {
             Some(format!("{git}{STATUS_MODULE_SEPARATOR}{diagnostics}"))
@@ -631,7 +653,11 @@ fn metadata_text(state: &EditorState, buffer_id: redox_core::BufferId) -> Option
     }
 }
 
-fn git_diff_summary(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+fn git_diff_summary(
+    state: &EditorState,
+    buffer_id: redox_core::BufferId,
+    icons_enabled: bool,
+) -> Option<String> {
     let Some(diff) = state.git_diff_for_buffer(buffer_id) else {
         return None;
     };
@@ -650,21 +676,35 @@ fn git_diff_summary(state: &EditorState, buffer_id: redox_core::BufferId) -> Opt
         parts.push(format!("-{}", diff.stats.removed));
     }
 
-    Some(parts.join(""))
+    let summary = parts.join("");
+    Some(if icons_enabled {
+        format!("{GIT_BRANCH} {summary}")
+    } else {
+        summary
+    })
 }
 
-fn diagnostic_summary_text(state: &EditorState, buffer_id: redox_core::BufferId) -> Option<String> {
+fn diagnostic_summary_text(
+    state: &EditorState,
+    buffer_id: redox_core::BufferId,
+    icons_enabled: bool,
+) -> Option<String> {
     let summary = state.diagnostic_summary_for_buffer(buffer_id);
     if summary.is_empty() {
         return None;
     }
 
     let mut parts = Vec::new();
+    let glyphs = if icons_enabled {
+        DIAGNOSTIC_ICONS
+    } else {
+        DIAGNOSTIC_FALLBACKS
+    };
     for (count, glyph) in [
-        (summary.errors, "×"),
-        (summary.warnings, "△"),
-        (summary.information, "•"),
-        (summary.hints, "⚬"),
+        (summary.errors, glyphs[0]),
+        (summary.warnings, glyphs[1]),
+        (summary.information, glyphs[2]),
+        (summary.hints, glyphs[3]),
     ] {
         if count == 0 {
             continue;

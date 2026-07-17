@@ -33,6 +33,7 @@ pub struct FinderPopup {
 
 #[derive(Debug, Clone)]
 pub struct FinderPopupEntry {
+    pub path: PathBuf,
     pub label: String,
     pub highlights: Vec<Range<usize>>,
     pub is_pinned: bool,
@@ -162,6 +163,7 @@ impl FinderState {
                 .combined_entries
                 .iter()
                 .map(|entry| FinderPopupEntry {
+                    path: entry.path.clone(),
                     label: entry.label.clone(),
                     highlights: entry.highlights.clone(),
                     is_pinned: matches!(entry.kind, FinderCombinedKind::Pinned { .. }),

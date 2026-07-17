@@ -2536,7 +2536,7 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(diff_buffer_id)
         .expect("missing undo tree diff buffer")
         .to_string();
-    assert!(diff_text.starts_with("Node 3\n\n"));
+    assert!(diff_text.starts_with("Node: 3\n\n"));
     assert!(diff_text.contains("---\n"));
 
     state.apply_input(

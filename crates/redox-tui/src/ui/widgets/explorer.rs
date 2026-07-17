@@ -7,6 +7,7 @@ use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
+use crate::ui::icons::{PREFIX_WIDTH, PopupKind, file_icon, folder_icon, popup_title};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
@@ -40,13 +41,14 @@ pub fn draw_explorer_popup_view(
         x,
         y,
     } = layout;
+    let title = popup_title(PopupKind::Explorer, &popup.title, style.icons_enabled);
     let layout = draw_popup_frame_at(
         window,
         x,
         y,
         inner_w,
         inner_h,
-        &popup.title,
+        &title,
         PopupChrome::explorer(style),
     )?;
     let mut view = popup_window_view(window, layout);
@@ -64,10 +66,13 @@ pub fn draw_explorer_popup_view(
                 inner_w,
                 reconcile_inner_h,
                 show_git_status_column,
+                style.icons_enabled,
             );
             let total_lines = buffer.len_lines().max(1);
             let gutter_w = line_number_gutter_width(total_lines, show_git_status_column);
-            let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+            let content_x = gutter_w
+                .saturating_add(GUTTER_CONTENT_PADDING)
+                .saturating_add(if style.icons_enabled { PREFIX_WIDTH } else { 0 });
             let text_w = inner_w.saturating_sub(content_x);
             let (scroll_x, scroll_y) = explorer_view.cursor.viewport_scroll();
             let viewport = TextViewport {
@@ -98,7 +103,8 @@ pub fn draw_explorer_popup_view(
         .collect::<Vec<_>>();
 
     let gutter_w = line_number_gutter_width(total_lines, show_git_status_column);
-    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let icon_col = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let content_x = icon_col.saturating_add(if style.icons_enabled { PREFIX_WIDTH } else { 0 });
     draw_relative_line_numbers(
         &mut view,
         style,
@@ -116,6 +122,12 @@ pub fn draw_explorer_popup_view(
             git_status: None,
         });
         let line_idx = snapshot.first_line + row;
+        let source_line = state.session.active_buffer().line_string(line_idx);
+        if style.icons_enabled
+            && let Some(icon) = explorer_entry_icon(&popup.dir_path, &source_line)
+        {
+            view.write_str_colored(row as u16, icon_col, icon, row_style.text)?;
+        }
         if let Some((selection, mode)) = visual_selection {
             if let Some(sel_range) = state
                 .session
@@ -162,14 +174,34 @@ fn reconcile_explorer_cursor_for_popup(
     inner_w: u16,
     inner_h: u16,
     show_git_status_column: bool,
+    icons_enabled: bool,
 ) {
     let gutter_w = line_number_gutter_width(buffer.len_lines().max(1), show_git_status_column);
-    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let content_x = gutter_w
+        .saturating_add(GUTTER_CONTENT_PADDING)
+        .saturating_add(if icons_enabled { PREFIX_WIDTH } else { 0 });
     let text_w = inner_w.saturating_sub(content_x) as usize;
 
     cursor.follow.top_margin_rows = 0;
     cursor.follow.bottom_margin_rows = 0;
     cursor.reconcile_after_edit(buffer, text_w, inner_h as usize);
+}
+
+fn explorer_entry_icon(dir_path: &Path, source_line: &str) -> Option<&'static str> {
+    let line = source_line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    if line == ".." {
+        return Some(folder_icon(true));
+    }
+    let is_dir = line.ends_with('/');
+    let name = line.strip_suffix('/').unwrap_or(line);
+    Some(if is_dir {
+        folder_icon(false)
+    } else {
+        file_icon(&dir_path.join(name))
+    })
 }
 
 pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
@@ -296,7 +328,7 @@ mod tests {
         let mut cursor = CursorController::default();
         cursor.cursor = Pos::new(11, 0);
 
-        reconcile_explorer_cursor_for_popup(&mut cursor, &buffer, 20, 5, false);
+        reconcile_explorer_cursor_for_popup(&mut cursor, &buffer, 20, 5, false, false);
 
         assert_eq!(cursor.scroll_y_lines, 7);
         let spec: CursorSpec = cursor.cursor_spec(&buffer, 17, 5);

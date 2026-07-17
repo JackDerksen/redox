@@ -3,8 +3,10 @@
 # Run `:config reload` after saving to apply changes without restarting Redox.
 
 theme = "default"
+icons_enabled = false # Requires a Nerd Font in the terminal
 background_dimming = 0.5 # 0.0 disables popup background dimming; 1.0 is fully dimmed
 undo_tree_history_size = 1000
+scrolloff = 5 # Keeps this many rows visible above and below the cursor while scrolling
 color_column = 79 # Renders on top of cl=80
 leader = " "
 
@@ -170,6 +172,7 @@ punctuation_special = "#b4d4cf"
 "perf.warn" = "#f3be7c"
 "perf.hot" = "#d8647e"
 "perf.bar_bg" = { fg = "#606079", bg = "#252530" }
+"undo_tree.title" = "#9bb4bc"
 "undo_tree.text" = "#cdcdcd"
 "undo_tree.selected" = { fg = "#cdcdcd", bg = "#333738" }
 "undo_tree.selected_indicator" = "#bb9dbd"
@@ -182,5 +185,6 @@ punctuation_special = "#b4d4cf"
 "undo_tree.preview_label" = "#878787"
 "undo_tree.preview_text" = "#cdcdcd"
 "undo_tree.preview_dim" = "#606079"
+"undo_tree.preview_separator" = "#878787"
 "undo_tree.preview_deleted" = "#d8647e"
 "undo_tree.preview_inserted" = "#7fa563"

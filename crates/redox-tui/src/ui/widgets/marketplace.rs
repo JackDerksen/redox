@@ -4,8 +4,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
 use crate::ui::UiStyle;
+use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, popup_inner_size, popup_window_view,
+    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_view_divider,
+    popup_inner_size, popup_window_view,
 };
 
 const LSP_TITLE: &str = "Language Tools"; // Maybe someday this will become a paid DLC
@@ -19,13 +21,14 @@ pub fn draw_lsp_marketplace_popup(
 ) -> minui::Result<()> {
     let (term_w, term_h) = window.get_size();
     let (inner_w, inner_h) = lsp_marketplace_popup_inner_size(term_w, term_h, style);
+    let title = popup_title(PopupKind::LanguageTools, LSP_TITLE, style.icons_enabled);
     let layout = draw_anchored_popup_frame(
         window,
         term_w,
         term_h,
         inner_w,
         inner_h,
-        LSP_TITLE,
+        &title,
         PopupChrome::finder(style),
     )?;
     let mut view = popup_window_view(window, layout);
@@ -100,8 +103,7 @@ fn draw_marketplace_entries(
         }
 
         if has_separator && virtual_idx == installed_count {
-            let divider = "─".repeat(window.width.saturating_sub(0) as usize);
-            window.write_str_colored(row, 0, &divider, style.finder.dim)?;
+            draw_popup_view_divider(window, row, style.finder.dim)?;
             row = row.saturating_add(1);
             continue;
         }

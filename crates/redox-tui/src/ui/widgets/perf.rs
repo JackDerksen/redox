@@ -1,6 +1,7 @@
 use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
+use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view,
@@ -34,13 +35,14 @@ pub fn draw_perf_popup_view(
     let frame = perf_popup_layout(vw, vh, style);
     let inner_w = frame.inner_w;
     let inner_h = frame.inner_h;
+    let title = popup_title(PopupKind::Performance, "performance", style.icons_enabled);
     let layout = draw_popup_frame_at(
         window,
         frame.x,
         frame.y,
         inner_w,
         inner_h,
-        "performance",
+        &title,
         PopupChrome::perf(style),
     )?;
     let mut view = popup_window_view(window, layout);

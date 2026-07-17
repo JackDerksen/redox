@@ -31,4 +31,4 @@ pub use pane::draw_pane_split_lines;
 pub use perf::{draw_perf_popup_view, perf_popup_layout};
 pub use status_bar::build_editor_status_bar;
 pub use toast::draw_status_toast;
-pub use undo_tree::{draw_undo_tree_lines, draw_undo_tree_preview_lines};
+pub use undo_tree::{UNDO_TREE_HEADER_ROWS, draw_undo_tree_lines, draw_undo_tree_preview_lines};
