@@ -114,7 +114,6 @@ fn draw_buffer_view(
         );
         let cursor_spec =
             draw_explorer_popup_view(state, style, window, popup, popup_layout, inner_h)?;
-        let toast_layout = draw_status_toast(state, style, window)?;
         if matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
@@ -122,7 +121,13 @@ fn draw_buffer_view(
             if !draw_command_line_below_popup(state, style, window, stack_layout)? {
                 hide_cursor(window);
             }
-        } else if let Some(cursor) = cursor_spec {
+        }
+        let toast_layout = draw_notification_toast(state, style, window)?;
+        if !matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) && let Some(cursor) = cursor_spec
+        {
             let cursor_hidden_by_toast = toast_layout
                 .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             if cursor_hidden_by_toast {
@@ -156,6 +161,7 @@ fn draw_buffer_view(
         if !draw_command_line_below_popup(state, style, window, stack_layout)? {
             hide_cursor(window);
         }
+        let _ = draw_notification_toast(state, style, window)?;
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
@@ -174,6 +180,7 @@ fn draw_buffer_view(
             inner_size,
         )?;
         draw_lsp_marketplace_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
@@ -193,6 +200,7 @@ fn draw_buffer_view(
             inner_size,
         )?;
         draw_diagnostics_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
@@ -212,6 +220,7 @@ fn draw_buffer_view(
             inner_size,
         )?;
         draw_code_actions_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
@@ -356,12 +365,7 @@ fn draw_buffer_view(
         } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
             cursor_spec = Some(cursor);
         }
-        let toast_layout = draw_status_toast(state, style, window)?;
-        let toast_layout = if toast_layout.is_some() {
-            toast_layout
-        } else {
-            draw_lsp_loading_toast(state, style, window)?
-        };
+        let toast_layout = draw_notification_toast(state, style, window)?;
         if force_hide_cursor {
             hide_cursor(window);
         } else if let Some(cursor) = cursor_spec {
@@ -658,10 +662,7 @@ fn draw_buffer_view(
         }
     }
 
-    let toast_layout = draw_status_toast(state, style, window)?;
-    if toast_layout.is_none() {
-        let _ = draw_lsp_loading_toast(state, style, window)?;
-    }
+    let toast_layout = draw_notification_toast(state, style, window)?;
 
     if let Some(cursor) = cursor_spec {
         let cursor_hidden_by_perf = perf_popup_layout
@@ -729,6 +730,19 @@ fn draw_lsp_loading_toast(
     let mut view = ui::widgets::popup::popup_window_view(window, layout);
     view.write_str_colored(0, 1, &message, style.command_line.text)?;
     Ok(Some(layout))
+}
+
+fn draw_notification_toast(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<Option<PopupLayout>> {
+    let layout = draw_status_toast(state, style, window)?;
+    if layout.is_some() {
+        Ok(layout)
+    } else {
+        draw_lsp_loading_toast(state, style, window)
+    }
 }
 
 fn draw_gutter_padding(
