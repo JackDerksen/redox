@@ -63,6 +63,7 @@ legacy data is preserved rather than deleted.
 ```toml
 theme = "default"
 icons_enabled = false
+scrolloff = 5 
 background_dimming = 0.5
 undo_tree_history_size = 1000
 color_column = 79 # Renders on top of cl=80
@@ -73,6 +74,7 @@ leader = " "
 | --- | --- | --- | --- |
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
 | `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
+| `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
