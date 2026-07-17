@@ -119,7 +119,7 @@ fn draw_buffer_view(
             app::EditorMode::Command | app::EditorMode::Search
         ) {
             if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-                hide_cursor(window);
+                draw_command_line_popup(state, style, window)?;
             }
         }
         let toast_layout = draw_notification_toast(state, style, window)?;
@@ -159,7 +159,14 @@ fn draw_buffer_view(
         );
         draw_about_popup_view(state, style, window, popup, popup_layout)?;
         if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-            hide_cursor(window);
+            if matches!(
+                state.mode,
+                app::EditorMode::Command | app::EditorMode::Search
+            ) {
+                draw_command_line_popup(state, style, window)?;
+            } else {
+                hide_cursor(window);
+            }
         }
         let _ = draw_notification_toast(state, style, window)?;
         draw_perf_corners(state, style, window, vw, vh)?;
