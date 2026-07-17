@@ -8,7 +8,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
 use crate::ui::widgets::popup::{
-    PopupChrome, anchored_popup_origin, draw_popup_frame_at, popup_inner_size, popup_window_view,
+    PopupChrome, PopupLayout, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
 
@@ -22,15 +22,24 @@ struct ExplorerRowStyle {
     git_status: Option<GitFileStatusKind>,
 }
 
+/// Draws the Explorer popup and returns its requested cursor position.
+///
+/// `reconcile_inner_h` retains the popup's original unshrunk inner height separately from
+/// `layout.inner_h`, preventing abrupt scrolling when the command line stacks below the popup.
 pub fn draw_explorer_popup_view(
     state: &mut EditorState,
     style: UiStyle,
     window: &mut dyn Window,
     popup: ExplorerPopup,
+    layout: PopupLayout,
+    reconcile_inner_h: u16,
 ) -> minui::Result<Option<CursorSpec>> {
-    let (vw, vh) = window.get_size();
-    let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
-    let (x, y) = anchored_popup_origin(vw, vh, inner_w, inner_h);
+    let PopupLayout {
+        inner_w,
+        inner_h,
+        x,
+        y,
+    } = layout;
     let layout = draw_popup_frame_at(
         window,
         x,
@@ -53,7 +62,7 @@ pub fn draw_explorer_popup_view(
                 &mut explorer_view.cursor,
                 buffer,
                 inner_w,
-                inner_h,
+                reconcile_inner_h,
                 show_git_status_column,
             );
             let total_lines = buffer.len_lines().max(1);

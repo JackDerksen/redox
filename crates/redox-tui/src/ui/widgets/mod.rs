@@ -18,7 +18,7 @@ pub mod toast;
 pub mod undo_tree;
 
 pub use about::{about_popup_inner_size, draw_about_popup_view};
-pub use command_line::draw_command_line_popup;
+pub use command_line::{draw_command_line_popup, draw_command_line_popup_below};
 pub use completion::{draw_completion_popup, draw_completion_preview};
 pub use explorer::{draw_explorer_popup_view, explorer_popup_inner_size};
 pub use finder::{draw_finder_popup, draw_pin_selector_popup};

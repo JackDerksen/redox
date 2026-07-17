@@ -2,11 +2,11 @@ use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
-use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{
-    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
-    popup_window_view,
+    PopupChrome, PopupLayout, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at,
+    popup_inner_size, popup_window_view,
 };
+use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const COMMAND_PROMPT: &str = "❯";
 const COMMAND_TITLE: &str = "Command";
@@ -19,10 +19,30 @@ pub fn draw_command_line_popup(
     style: UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
+    let _ = draw_command_line_popup_after(state, style, window, None)?;
+    Ok(())
+}
+
+pub fn draw_command_line_popup_below(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    popup: PopupLayout,
+    stacked_padding: u16,
+) -> minui::Result<bool> {
+    draw_command_line_popup_after(state, style, window, Some((popup, stacked_padding)))
+}
+
+fn draw_command_line_popup_after(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    popup: Option<(PopupLayout, u16)>,
+) -> minui::Result<bool> {
     let (title, prompt) = match state.mode {
         EditorMode::Command => (COMMAND_TITLE, COMMAND_PROMPT),
         EditorMode::Search => (SEARCH_TITLE, SEARCH_PROMPT),
-        _ => return Ok(()),
+        _ => return Ok(false),
     };
 
     let (term_w, term_h) = window.get_size();
@@ -35,7 +55,20 @@ pub fn draw_command_line_popup(
         style.command_line.min_width,
         inner_h.saturating_add(2),
     );
-    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    let (x, anchored_y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    let y = if let Some((popup, stacked_padding)) = popup {
+        let y = popup
+            .y
+            .saturating_add(popup.outer_h())
+            .saturating_add(stacked_padding);
+        let available_h = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
+        if y.saturating_add(inner_h.saturating_add(2)) > available_h {
+            return Ok(false);
+        }
+        y
+    } else {
+        anchored_y
+    };
 
     let layout = draw_popup_frame_at(
         window,
@@ -70,7 +103,7 @@ pub fn draw_command_line_popup(
         visible: true,
     });
 
-    Ok(())
+    Ok(true)
 }
 
 fn command_text_width(text: &str) -> usize {

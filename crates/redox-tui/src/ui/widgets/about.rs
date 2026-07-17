@@ -3,7 +3,7 @@ use minui::widgets::Widget;
 
 use crate::app::AboutPopup;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, popup_inner_size,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view, wrap_text_to_cells,
 };
 use crate::ui::{UiStyle, build_editor_status_bar};
@@ -13,20 +13,20 @@ pub fn draw_about_popup_view(
     style: UiStyle,
     window: &mut dyn Window,
     popup: AboutPopup,
+    layout: PopupLayout,
 ) -> minui::Result<()> {
-    let (vw, vh) = window.get_size();
-    let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
-    let layout = draw_anchored_popup_frame(
+    let layout = draw_popup_frame_at(
         window,
-        vw,
-        vh,
-        inner_w,
-        inner_h,
+        layout.x,
+        layout.y,
+        layout.inner_w,
+        layout.inner_h,
         &popup.title,
         PopupChrome::about(style),
     )?;
     let mut view = popup_window_view(window, layout);
 
+    let inner_w = layout.inner_w;
     let left = 2u16.min(inner_w.saturating_sub(1));
     let max_line_w = inner_w.saturating_sub(left);
     write_line(&mut view, 1, left, "┏━┓", style.about.logo_red, max_line_w)?;

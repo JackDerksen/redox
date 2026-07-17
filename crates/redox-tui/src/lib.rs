@@ -35,12 +35,12 @@ use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
     merge_line_spans_for_display, scope_guides_enabled, syntax_color_for_range,
 };
-use ui::widgets::popup::popup_occludes_cursor;
+use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
-    draw_command_line_popup, draw_completion_popup, draw_completion_preview,
-    draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
+    draw_command_line_popup, draw_command_line_popup_below, draw_completion_popup,
+    draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_pane_split_lines, draw_perf_popup_view,
     draw_pin_selector_popup, draw_status_toast, draw_symbol_info_popup, draw_undo_tree_lines,
     draw_undo_tree_preview_lines, explorer_popup_inner_size, language_for_path,
@@ -106,13 +106,28 @@ fn draw_buffer_view(
             fallback_id,
         )?;
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
+        let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
+        let popup_layout = stack_layout.popup;
         state.set_viewport_size(
-            inner_w as usize,
-            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+            popup_layout.inner_w as usize,
+            popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        let cursor_spec = draw_explorer_popup_view(state, style, window, popup)?;
-        let toast_layout = draw_status_toast(state, style, window)?;
-        if let Some(cursor) = cursor_spec {
+        let cursor_spec =
+            draw_explorer_popup_view(state, style, window, popup, popup_layout, inner_h)?;
+        if matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) {
+            if !draw_command_line_below_popup(state, style, window, stack_layout)? {
+                draw_command_line_popup(state, style, window)?;
+            }
+        }
+        let toast_layout = draw_notification_toast(state, style, window)?;
+        if !matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) && let Some(cursor) = cursor_spec
+        {
             let cursor_hidden_by_toast = toast_layout
                 .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             if cursor_hidden_by_toast {
@@ -136,17 +151,30 @@ fn draw_buffer_view(
             state.about_background_buffer_id(),
         )?;
         let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
+        let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
+        let popup_layout = stack_layout.popup;
         state.set_viewport_size(
-            inner_w as usize,
-            inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+            popup_layout.inner_w as usize,
+            popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        draw_about_popup_view(state, style, window, popup)?;
-        hide_cursor(window);
+        draw_about_popup_view(state, style, window, popup, popup_layout)?;
+        if !draw_command_line_below_popup(state, style, window, stack_layout)? {
+            if matches!(
+                state.mode,
+                app::EditorMode::Command | app::EditorMode::Search
+            ) {
+                draw_command_line_popup(state, style, window)?;
+            } else {
+                hide_cursor(window);
+            }
+        }
+        let _ = draw_notification_toast(state, style, window)?;
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
     if let Some(popup) = state.lsp_marketplace_popup() {
+        let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
             style,
@@ -156,15 +184,17 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            lsp_marketplace_popup_inner_size(vw, vh, style),
+            inner_size,
         )?;
         draw_lsp_marketplace_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
     if let Some(popup) = state.diagnostics_popup() {
+        let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
             style,
@@ -174,15 +204,17 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            finder_popup_inner_size(vw, vh, style),
+            inner_size,
         )?;
         draw_diagnostics_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
     if let Some(popup) = state.code_actions_popup() {
+        let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
             style,
@@ -192,9 +224,10 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            finder_popup_inner_size(vw, vh, style),
+            inner_size,
         )?;
         draw_code_actions_popup(&popup, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
@@ -339,12 +372,7 @@ fn draw_buffer_view(
         } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
             cursor_spec = Some(cursor);
         }
-        let toast_layout = draw_status_toast(state, style, window)?;
-        let toast_layout = if toast_layout.is_some() {
-            toast_layout
-        } else {
-            draw_lsp_loading_toast(state, style, window)?
-        };
+        let toast_layout = draw_notification_toast(state, style, window)?;
         if force_hide_cursor {
             hide_cursor(window);
         } else if let Some(cursor) = cursor_spec {
@@ -641,10 +669,7 @@ fn draw_buffer_view(
         }
     }
 
-    let toast_layout = draw_status_toast(state, style, window)?;
-    if toast_layout.is_none() {
-        let _ = draw_lsp_loading_toast(state, style, window)?;
-    }
+    let toast_layout = draw_notification_toast(state, style, window)?;
 
     if let Some(cursor) = cursor_spec {
         let cursor_hidden_by_perf = perf_popup_layout
@@ -712,6 +737,19 @@ fn draw_lsp_loading_toast(
     let mut view = ui::widgets::popup::popup_window_view(window, layout);
     view.write_str_colored(0, 1, &message, style.command_line.text)?;
     Ok(Some(layout))
+}
+
+fn draw_notification_toast(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+) -> minui::Result<Option<PopupLayout>> {
+    let layout = draw_status_toast(state, style, window)?;
+    if layout.is_some() {
+        Ok(layout)
+    } else {
+        draw_lsp_loading_toast(state, style, window)
+    }
 }
 
 fn draw_gutter_padding(
@@ -1010,6 +1048,91 @@ fn hide_cursor(window: &mut dyn Window) {
         y: 0,
         visible: false,
     });
+}
+
+#[derive(Clone, Copy)]
+struct PopupStackLayout {
+    popup: PopupLayout,
+    command_padding: Option<u16>,
+}
+
+fn anchored_popup_layout(window: &dyn Window, inner_size: (u16, u16)) -> PopupLayout {
+    let (term_w, term_h) = window.get_size();
+    let (inner_w, inner_h) = inner_size;
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    PopupLayout {
+        inner_w,
+        inner_h,
+        x,
+        y,
+    }
+}
+
+fn popup_stack_layout(
+    state: &EditorState,
+    style: UiStyle,
+    window: &dyn Window,
+    inner_size: (u16, u16),
+) -> PopupStackLayout {
+    let (_, term_h) = window.get_size();
+    let (_, inner_h) = inner_size;
+    let popup = anchored_popup_layout(window, inner_size);
+    if !matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    ) {
+        return PopupStackLayout {
+            popup,
+            command_padding: None,
+        };
+    }
+
+    let available_h = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
+    if popup.y.saturating_add(popup.outer_h()) > available_h {
+        return PopupStackLayout {
+            popup,
+            command_padding: None,
+        };
+    }
+
+    const MIN_POPUP_INNER_HEIGHT: u16 = 1;
+    let command_outer_h = style
+        .command_line
+        .inner_height_rows
+        .max(1)
+        .saturating_add(2);
+    let required_inner_h = command_outer_h.saturating_add(MIN_POPUP_INNER_HEIGHT);
+    if inner_h < required_inner_h {
+        return PopupStackLayout {
+            popup,
+            command_padding: None,
+        };
+    }
+
+    let max_padding = inner_h.saturating_sub(required_inner_h);
+    let command_padding = style.command_line.stacked_padding.min(max_padding);
+    let popup = PopupLayout {
+        inner_h: inner_h
+            .saturating_sub(command_outer_h)
+            .saturating_sub(command_padding),
+        ..popup
+    };
+    PopupStackLayout {
+        popup,
+        command_padding: Some(command_padding),
+    }
+}
+
+fn draw_command_line_below_popup(
+    state: &EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    stack_layout: PopupStackLayout,
+) -> minui::Result<bool> {
+    let Some(command_padding) = stack_layout.command_padding else {
+        return Ok(false);
+    };
+    draw_command_line_popup_below(state, style, window, stack_layout.popup, command_padding)
 }
 
 fn draw_modal_popup_background(
@@ -2718,6 +2841,63 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(screen.contains("explorer write failed"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn draw_buffer_view_shrinks_explorer_to_stack_command_line() {
+        let _lock = app::state::global_test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_dir_path("explorer_command_line");
+        fs::create_dir(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("alpha.txt"), "alpha").expect("failed to write fixture");
+
+        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .open_explorer_at_path(dir.clone())
+            .expect("failed to open explorer");
+        state.apply_input(InputAction::EnterCommand, 80, 24);
+        for character in "write".chars() {
+            state.apply_input(InputAction::CommandChar(character), 80, 24);
+        }
+
+        let style = UiStyle::default();
+        let (inner_w, inner_h) = explorer_popup_inner_size(80, 24, style);
+        let (_, popup_y) = anchored_popup_origin(80, 24, inner_w, inner_h);
+        let command_outer_h = style
+            .command_line
+            .inner_height_rows
+            .max(1)
+            .saturating_add(2);
+        let command_y = popup_y
+            .saturating_add(inner_h)
+            .saturating_add(2)
+            .saturating_sub(command_outer_h);
+        let mut window = TestWindow::new(80, 24);
+        let mut perf = FramePerfSample::default();
+        let stacked = popup_stack_layout(&state, style, &window, (inner_w, inner_h));
+        assert_eq!(stacked.popup.inner_h, inner_h - command_outer_h);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).expect("draw should succeed");
+
+        assert!(window.row_text(command_y.saturating_sub(1)).contains('╰'));
+        assert!(window.row_text(command_y).contains("Command"));
+        assert!(
+            window
+                .row_text(command_y.saturating_add(1))
+                .contains("write")
+        );
+
+        let mut cramped_window = TestWindow::new(80, 8);
+        draw_buffer_view(&mut state, style, &mut cramped_window, &mut perf)
+            .expect("cramped draw should succeed");
+        assert!((0..8).any(|row| cramped_window.row_text(row).contains("Command")));
+
+        state.apply_input(InputAction::CommandCancel, 80, 24);
+        let expanded = popup_stack_layout(&state, style, &window, (inner_w, inner_h));
+        assert_eq!(expanded.popup.inner_h, inner_h);
 
         let _ = fs::remove_dir_all(dir);
     }
