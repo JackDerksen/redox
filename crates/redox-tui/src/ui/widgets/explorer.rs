@@ -28,6 +28,7 @@ pub fn draw_explorer_popup_view(
     window: &mut dyn Window,
     popup: ExplorerPopup,
     layout: PopupLayout,
+    reconcile_inner_h: u16,
 ) -> minui::Result<Option<CursorSpec>> {
     let PopupLayout {
         inner_w,
@@ -57,7 +58,7 @@ pub fn draw_explorer_popup_view(
                 &mut explorer_view.cursor,
                 buffer,
                 inner_w,
-                inner_h,
+                reconcile_inner_h,
                 show_git_status_column,
             );
             let total_lines = buffer.len_lines().max(1);

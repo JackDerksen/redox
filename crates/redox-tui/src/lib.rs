@@ -112,7 +112,8 @@ fn draw_buffer_view(
             popup_layout.inner_w as usize,
             popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        let cursor_spec = draw_explorer_popup_view(state, style, window, popup, popup_layout)?;
+        let cursor_spec =
+            draw_explorer_popup_view(state, style, window, popup, popup_layout, inner_h)?;
         let toast_layout = draw_status_toast(state, style, window)?;
         if matches!(
             state.mode,
@@ -161,8 +162,6 @@ fn draw_buffer_view(
 
     if let Some(popup) = state.lsp_marketplace_popup() {
         let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
-        let stack_layout = popup_stack_layout(state, style, window, inner_size);
-        let popup_layout = stack_layout.popup;
         draw_modal_popup_background(
             state,
             style,
@@ -172,20 +171,16 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            (popup_layout.inner_w, popup_layout.inner_h),
+            inner_size,
         )?;
-        draw_lsp_marketplace_popup(&popup, style, window, popup_layout)?;
-        if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-            hide_cursor(window);
-        }
+        draw_lsp_marketplace_popup(&popup, style, window)?;
+        hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
     if let Some(popup) = state.diagnostics_popup() {
         let inner_size = finder_popup_inner_size(vw, vh, style);
-        let stack_layout = popup_stack_layout(state, style, window, inner_size);
-        let popup_layout = stack_layout.popup;
         draw_modal_popup_background(
             state,
             style,
@@ -195,20 +190,16 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            (popup_layout.inner_w, popup_layout.inner_h),
+            inner_size,
         )?;
-        draw_diagnostics_popup(&popup, style, window, popup_layout)?;
-        if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-            hide_cursor(window);
-        }
+        draw_diagnostics_popup(&popup, style, window)?;
+        hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
     if let Some(popup) = state.code_actions_popup() {
         let inner_size = finder_popup_inner_size(vw, vh, style);
-        let stack_layout = popup_stack_layout(state, style, window, inner_size);
-        let popup_layout = stack_layout.popup;
         draw_modal_popup_background(
             state,
             style,
@@ -218,12 +209,10 @@ fn draw_buffer_view(
             text_h,
             editor_text,
             Some(state.session.active_id()),
-            (popup_layout.inner_w, popup_layout.inner_h),
+            inner_size,
         )?;
-        draw_code_actions_popup(&popup, style, window, popup_layout)?;
-        if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-            hide_cursor(window);
-        }
+        draw_code_actions_popup(&popup, style, window)?;
+        hide_cursor(window);
         draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
@@ -1046,21 +1035,27 @@ struct PopupStackLayout {
     command_padding: Option<u16>,
 }
 
+fn anchored_popup_layout(window: &dyn Window, inner_size: (u16, u16)) -> PopupLayout {
+    let (term_w, term_h) = window.get_size();
+    let (inner_w, inner_h) = inner_size;
+    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
+    PopupLayout {
+        inner_w,
+        inner_h,
+        x,
+        y,
+    }
+}
+
 fn popup_stack_layout(
     state: &EditorState,
     style: UiStyle,
     window: &dyn Window,
     inner_size: (u16, u16),
 ) -> PopupStackLayout {
-    let (term_w, term_h) = window.get_size();
-    let (inner_w, inner_h) = inner_size;
-    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
-    let popup = PopupLayout {
-        inner_w,
-        inner_h,
-        x,
-        y,
-    };
+    let (_, term_h) = window.get_size();
+    let (_, inner_h) = inner_size;
+    let popup = anchored_popup_layout(window, inner_size);
     if !matches!(
         state.mode,
         app::EditorMode::Command | app::EditorMode::Search
@@ -1072,7 +1067,7 @@ fn popup_stack_layout(
     }
 
     let available_h = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
-    if y.saturating_add(popup.outer_h()) > available_h {
+    if popup.y.saturating_add(popup.outer_h()) > available_h {
         return PopupStackLayout {
             popup,
             command_padding: None,
