@@ -217,7 +217,9 @@ impl BufferViewState {
     }
 
     fn reset_pane_position(&mut self) {
+        let follow = self.cursor.follow;
         self.cursor = CursorController::new();
+        self.cursor.follow = follow;
         self.visual_anchor = None;
     }
 
@@ -407,6 +409,7 @@ pub struct EditorState {
     pane_use_tick: u64,
     next_external_file_check_at: Instant,
     undo_history_size: usize,
+    scrolloff_rows: usize,
     config_open_requested: bool,
     config_reload_requested: bool,
     colorscheme_request: Option<String>,
@@ -474,6 +477,7 @@ impl EditorState {
             pane_use_tick: 1,
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
             undo_history_size: usize::MAX,
+            scrolloff_rows: crate::input::cursor::DEFAULT_SCROLLOFF_ROWS,
             config_open_requested: false,
             config_reload_requested: false,
             colorscheme_request: None,
@@ -484,10 +488,54 @@ impl EditorState {
         state
     }
 
-    pub fn configure(&mut self, input: InputState, undo_history_size: usize) {
+    pub fn configure(
+        &mut self,
+        input: InputState,
+        undo_history_size: usize,
+        scrolloff_rows: usize,
+    ) {
         self.input = input;
         self.undo_history_size = undo_history_size.max(1);
+        self.scrolloff_rows = scrolloff_rows;
+        let buffer_ids = self.views.keys().copied().collect::<Vec<_>>();
+        for buffer_id in buffer_ids {
+            self.apply_configured_scrolloff(buffer_id);
+        }
+        let pane_scrolloffs = self
+            .panes
+            .iter()
+            .map(|pane| self.configured_scrolloff_for_buffer(pane.buffer_id))
+            .collect::<Vec<_>>();
+        for (pane, scrolloff_rows) in self.panes.iter_mut().zip(pane_scrolloffs) {
+            pane.view.cursor.set_scrolloff_rows(scrolloff_rows);
+        }
         self.enforce_undo_history_size();
+    }
+
+    fn configured_scrolloff_for_buffer(&self, buffer_id: BufferId) -> usize {
+        if self
+            .about
+            .as_ref()
+            .is_some_and(|about| about.buffer_id == buffer_id)
+            || self
+                .explorer
+                .as_ref()
+                .is_some_and(|explorer| explorer.buffer_id == buffer_id)
+            || self.undo_tree_surface_role(buffer_id).is_some()
+        {
+            0
+        } else {
+            self.scrolloff_rows
+        }
+    }
+
+    fn apply_configured_scrolloff(&mut self, buffer_id: BufferId) {
+        let rows = self.configured_scrolloff_for_buffer(buffer_id);
+        self.views
+            .entry(buffer_id)
+            .or_default()
+            .cursor
+            .set_scrolloff_rows(rows);
     }
 
     pub fn request_config_reload(&mut self) {
@@ -582,6 +630,7 @@ impl EditorState {
 
     pub fn sync_active_pane_view(&mut self) {
         let active_id = self.session.active_id();
+        self.apply_configured_scrolloff(active_id);
         if self
             .session
             .meta(active_id)
@@ -1134,11 +1183,13 @@ impl EditorState {
         f: impl FnOnce(&TextBuffer, &mut BufferViewState) -> R,
     ) -> R {
         let active_id = self.session.active_id();
+        let scrolloff_rows = self.configured_scrolloff_for_buffer(active_id);
         let buffer = self
             .session
             .buffer(active_id)
             .expect("active buffer must exist in session map");
         let view = self.views.entry(active_id).or_default();
+        view.cursor.set_scrolloff_rows(scrolloff_rows);
         f(buffer, view)
     }
 
@@ -1147,8 +1198,10 @@ impl EditorState {
         id: BufferId,
         f: impl FnOnce(&TextBuffer, &mut BufferViewState) -> R,
     ) -> Option<R> {
+        let scrolloff_rows = self.configured_scrolloff_for_buffer(id);
         let buffer = self.session.buffer(id)?;
         let view = self.views.entry(id).or_default();
+        view.cursor.set_scrolloff_rows(scrolloff_rows);
         Some(f(buffer, view))
     }
 

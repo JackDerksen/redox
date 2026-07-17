@@ -9,6 +9,7 @@ use anyhow::{Context, bail};
 use minui::{Color, ColorPair};
 use serde::Deserialize;
 
+use crate::input::cursor::DEFAULT_SCROLLOFF_ROWS;
 use crate::ui::UiStyle;
 
 pub const DEFAULT_DIM_AMOUNT: f32 = 0.301;
@@ -20,6 +21,7 @@ pub struct Config {
     pub theme: String,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
+    pub scrolloff: usize,
     pub color_column: usize,
     pub leader: String,
     pub popups: BTreeMap<String, PopupSize>,
@@ -33,6 +35,7 @@ impl Default for Config {
             theme: "default".to_string(),
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
+            scrolloff: DEFAULT_SCROLLOFF_ROWS,
             color_column: 79,
             leader: " ".to_string(),
             popups: BTreeMap::new(),
@@ -279,8 +282,15 @@ mod tests {
     #[test]
     fn omitted_configuration_preserves_current_defaults() {
         let config: Config = toml::from_str("").expect("empty configuration should parse");
+        assert_eq!(config.scrolloff, DEFAULT_SCROLLOFF_ROWS);
         assert_eq!(config.color_column, 79);
         assert_eq!(config.leader(), ' ');
         assert_eq!(config.style().unwrap().theme, UiStyle::default().theme);
+    }
+
+    #[test]
+    fn scrolloff_is_configurable() {
+        let config: Config = toml::from_str("scrolloff = 2").expect("scrolloff should parse");
+        assert_eq!(config.scrolloff, 2);
     }
 }

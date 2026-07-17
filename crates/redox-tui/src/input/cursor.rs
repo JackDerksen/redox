@@ -12,6 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 const LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS: usize = 8 * 1024;
 const LONG_LINE_CURSOR_FAST_PATH_MAX_DELTA_CHARS: usize = 4 * 1024;
+pub const DEFAULT_SCROLLOFF_ROWS: usize = 5;
 
 /// How the viewport should follow the cursor.
 #[derive(Debug, Clone, Copy)]
@@ -30,8 +31,8 @@ pub struct FollowConfig {
 impl Default for FollowConfig {
     fn default() -> Self {
         Self {
-            top_margin_rows: 5,
-            bottom_margin_rows: 5,
+            top_margin_rows: DEFAULT_SCROLLOFF_ROWS,
+            bottom_margin_rows: DEFAULT_SCROLLOFF_ROWS,
             horizontal_follow: true,
         }
     }
@@ -73,6 +74,11 @@ impl Default for CursorController {
 impl CursorController {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_scrolloff_rows(&mut self, rows: usize) {
+        self.follow.top_margin_rows = rows;
+        self.follow.bottom_margin_rows = rows;
     }
 
     /// Reconcile cursor + viewport after an edit.

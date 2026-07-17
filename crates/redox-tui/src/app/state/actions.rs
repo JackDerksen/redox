@@ -16,6 +16,7 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
+        self.apply_configured_scrolloff(self.session.active_id());
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
         if self
             .undo_tree_surface_role(self.session.active_id())

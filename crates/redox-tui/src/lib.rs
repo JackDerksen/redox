@@ -3318,7 +3318,11 @@ fn reload_runtime_config(
         let candidate_style = candidate.style_for_theme(&candidate_theme)?;
         let candidate_input = configured_input(&candidate)?;
         install_keyboard_bindings(keyboard, &candidate_input)?;
-        state.configure(candidate_input, candidate.undo_tree_history_size);
+        state.configure(
+            candidate_input,
+            candidate.undo_tree_history_size,
+            candidate.scrolloff,
+        );
         Ok((candidate, candidate_style, candidate_theme, loaded_path))
     })();
 
@@ -3394,7 +3398,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let mut state = EditorState::new(session);
-    state.configure(input, config.undo_tree_history_size);
+    state.configure(input, config.undo_tree_history_size, config.scrolloff);
     if let Some(dir_path) = launch_explorer_dir {
         state.open_explorer_at_path(dir_path)?;
     }
