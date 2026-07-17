@@ -8,6 +8,7 @@ use redox_core::{
 };
 
 use super::{BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitSize};
+use crate::ui::UNDO_TREE_HEADER_ROWS;
 use crate::ui::style::UndoTreeStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,7 +369,8 @@ impl EditorState {
                 .map(|view| view.cursor.scroll_y_lines)
                 .unwrap_or(0),
             selected_row,
-            self.undo_tree_pane_height(tree.pane_id),
+            self.undo_tree_pane_height(tree.pane_id)
+                .saturating_sub(UNDO_TREE_HEADER_ROWS as usize),
             self.undo_tree
                 .as_ref()
                 .map(|tree| tree.display_rows.len())
@@ -1247,7 +1249,7 @@ fn undo_tree_diff_text(
     if let Some(change) = preview_change {
         let (deleted_lines, inserted_lines) =
             diff_preview_lines(&change.before, &change.after, &change.diff);
-        text.push_str(&format!("Node {selected_node}\n\n"));
+        text.push_str(&format!("Node: {selected_node}\n\n"));
         push_preview_lines(&mut text, &deleted_lines);
         let separator_row = 2 + deleted_lines.len();
         text.push_str("---\n");

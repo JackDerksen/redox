@@ -124,9 +124,9 @@ impl Default for BaseTheme {
                 b: (146),
             },
             yellow: Color::Rgb {
-                r: (243),
-                g: (228),
-                b: (140),
+                r: (249),
+                g: (214),
+                b: (119),
             },
             blue: Color::Rgb {
                 r: (155),
@@ -154,9 +154,9 @@ impl Default for BaseTheme {
                 b: (194),
             },
             light_yellow: Color::Rgb {
-                r: (245),
-                g: (232),
-                b: (175),
+                r: (239),
+                g: (214),
+                b: (128),
             },
             light_blue: Color::Rgb {
                 r: (187),
@@ -570,6 +570,7 @@ pub struct UndoTreeStyle {
     pub preview_height_percent: u16,
     pub preview_min_height: u16,
     pub preview_max_height: u16,
+    pub title: ColorPair,
     pub text: ColorPair,
     pub selected: ColorPair,
     pub selected_indicator: ColorPair,
@@ -582,6 +583,7 @@ pub struct UndoTreeStyle {
     pub preview_label: ColorPair,
     pub preview_text: ColorPair,
     pub preview_dim: ColorPair,
+    pub preview_separator: ColorPair,
     pub preview_deleted: ColorPair,
     pub preview_inserted: ColorPair,
 }
@@ -595,18 +597,20 @@ impl UndoTreeStyle {
             preview_height_percent: 42,
             preview_min_height: 8,
             preview_max_height: 14,
+            title: ColorPair::new(theme.blue, theme.bg),
             text: ColorPair::new(theme.white, theme.bg),
             selected: ColorPair::new(theme.white, theme.black),
             selected_indicator: ColorPair::new(theme.orange, theme.bg),
             node: ColorPair::new(theme.white, theme.bg),
-            node_label: ColorPair::new(theme.blue, theme.bg),
+            node_label: ColorPair::new(theme.light_gray, theme.bg),
             redo_marker: ColorPair::new(theme.purple, theme.bg),
             edge: ColorPair::new(theme.light_gray, theme.bg),
             timestamp: ColorPair::new(theme.dark_gray, theme.bg),
-            preview_title: ColorPair::new(theme.blue, theme.bg),
+            preview_title: ColorPair::new(theme.light_gray, theme.bg),
             preview_label: ColorPair::new(theme.light_gray, theme.bg),
             preview_text: ColorPair::new(theme.white, theme.bg),
             preview_dim: ColorPair::new(theme.dark_gray, theme.bg),
+            preview_separator: ColorPair::new(theme.dark_gray, theme.bg),
             preview_deleted: ColorPair::new(theme.red, theme.bg),
             preview_inserted: ColorPair::new(theme.green, theme.bg),
         }
@@ -798,6 +802,7 @@ impl Default for SyntaxStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
+    pub icons_enabled: bool,
     pub git: GitStyle,
     pub status_line: StatusLinePalette,
     pub layout: Layout,
@@ -823,6 +828,7 @@ impl UiStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             theme,
+            icons_enabled: false,
             git: GitStyle::from_theme(theme),
             status_line: StatusLinePalette::from_theme(theme),
             layout: Layout::default(),
@@ -1030,6 +1036,7 @@ impl UiStyle {
             style.perf.warn,
             style.perf.hot,
             style.perf.bar_bg,
+            style.undo_tree.title,
             style.undo_tree.text,
             style.undo_tree.selected,
             style.undo_tree.selected_indicator,
@@ -1042,6 +1049,7 @@ impl UiStyle {
             style.undo_tree.preview_label,
             style.undo_tree.preview_text,
             style.undo_tree.preview_dim,
+            style.undo_tree.preview_separator,
             style.undo_tree.preview_deleted,
             style.undo_tree.preview_inserted,
             style.syntax.markdown_code,
@@ -1161,13 +1169,14 @@ impl UiStyle {
             "perf.border" => self.perf.border, "perf.title" => self.perf.title, "perf.text" => self.perf.text,
             "perf.label" => self.perf.label, "perf.value" => self.perf.value, "perf.dim" => self.perf.dim,
             "perf.good" => self.perf.good, "perf.warn" => self.perf.warn, "perf.hot" => self.perf.hot, "perf.bar_bg" => self.perf.bar_bg,
-            "undo_tree.text" => self.undo_tree.text, "undo_tree.selected" => self.undo_tree.selected,
+            "undo_tree.title" => self.undo_tree.title, "undo_tree.text" => self.undo_tree.text, "undo_tree.selected" => self.undo_tree.selected,
             "undo_tree.selected_indicator" => self.undo_tree.selected_indicator, "undo_tree.node" => self.undo_tree.node,
             "undo_tree.node_label" => self.undo_tree.node_label, "undo_tree.redo_marker" => self.undo_tree.redo_marker,
             "undo_tree.edge" => self.undo_tree.edge, "undo_tree.timestamp" => self.undo_tree.timestamp,
             "undo_tree.preview_title" => self.undo_tree.preview_title, "undo_tree.preview_label" => self.undo_tree.preview_label,
             "undo_tree.preview_text" => self.undo_tree.preview_text, "undo_tree.preview_dim" => self.undo_tree.preview_dim,
-            "undo_tree.preview_deleted" => self.undo_tree.preview_deleted, "undo_tree.preview_inserted" => self.undo_tree.preview_inserted
+            "undo_tree.preview_separator" => self.undo_tree.preview_separator, "undo_tree.preview_deleted" => self.undo_tree.preview_deleted,
+            "undo_tree.preview_inserted" => self.undo_tree.preview_inserted
         };
         *target = colour;
         Ok(())

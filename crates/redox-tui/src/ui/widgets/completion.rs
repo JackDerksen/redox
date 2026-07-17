@@ -3,7 +3,8 @@ use minui::{ColorPair, TabPolicy, Window, cell_width};
 use crate::app::{CompletionEntry, CompletionPopup};
 use crate::ui::style::SyntaxRole;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_popup_frame_at, wrap_text_to_cells,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_divider, draw_popup_frame_at,
+    wrap_text_to_cells,
 };
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -71,7 +72,7 @@ pub fn draw_completion_popup(
     };
     let x = anchor_x.min(term_w.saturating_sub(width));
 
-    draw_popup_frame_at(
+    let popup_layout = draw_popup_frame_at(
         window,
         x,
         y,
@@ -82,7 +83,7 @@ pub fn draw_completion_popup(
     )?;
     draw_entries(window, popup, style, x, y, layout, capacity)?;
     if !documentation.is_empty() {
-        draw_documentation(window, &documentation, style, x, y, width, capacity)?;
+        draw_documentation(window, &documentation, style, popup_layout, x, y, capacity)?;
     }
     Ok(())
 }
@@ -323,14 +324,13 @@ fn draw_documentation(
     window: &mut dyn Window,
     lines: &[String],
     style: UiStyle,
+    layout: PopupLayout,
     x: u16,
     y: u16,
-    width: u16,
     capacity: usize,
 ) -> minui::Result<()> {
     let row = y + capacity as u16 + 1;
-    let separator = "─".repeat(width.saturating_sub(2) as usize);
-    window.write_str_colored(row, x + 1, &separator, style.finder.border)?;
+    draw_popup_divider(window, layout, capacity as u16, style.finder.border)?;
     let color = ColorPair::new(style.theme.light_gray, style.finder.text.bg);
     for (idx, line) in lines.iter().enumerate() {
         window.write_str_colored(row + 1 + idx as u16, x + 2, line, color)?;

@@ -24,7 +24,7 @@ Run `:config` to open the active configuration file directly. Redox creates its 
 when needed, so this also works before the file exists. Run `:config reload` to apply saved changes
 without restarting Redox. A successful reload updates the active theme, all UI and syntax colours,
 dimming, popup sizes, the colour column, undo-history limits, the leader, and both character and
-modified-key bindings.
+modified-key bindings. It also updates Nerd Font icon rendering immediately.
 
 Reloading is transactional: if the file cannot be read or contains an invalid option, colour,
 theme, mode, action, or key combination, Redox displays the error and keeps the active
@@ -62,6 +62,7 @@ legacy data is preserved rather than deleted.
 
 ```toml
 theme = "default"
+icons_enabled = false
 background_dimming = 0.5
 undo_tree_history_size = 1000
 color_column = 79 # Renders on top of cl=80
@@ -71,6 +72,7 @@ leader = " "
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
+| `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
@@ -252,11 +254,11 @@ to control both sides of a syntax or UI role.
   `finder.preview_path`
 - Performance popup: `perf.border`, `perf.title`, `perf.text`, `perf.label`, `perf.value`,
   `perf.dim`, `perf.good`, `perf.warn`, `perf.hot`, `perf.bar_bg`
-- Undo tree: `undo_tree.text`, `undo_tree.selected`, `undo_tree.selected_indicator`,
+- Undo tree: `undo_tree.title`, `undo_tree.text`, `undo_tree.selected`, `undo_tree.selected_indicator`,
   `undo_tree.node`, `undo_tree.node_label`, `undo_tree.redo_marker`, `undo_tree.edge`,
   `undo_tree.timestamp`, `undo_tree.preview_title`, `undo_tree.preview_label`,
-  `undo_tree.preview_text`, `undo_tree.preview_dim`, `undo_tree.preview_deleted`,
-  `undo_tree.preview_inserted`
+  `undo_tree.preview_text`, `undo_tree.preview_dim`, `undo_tree.preview_separator`,
+  `undo_tree.preview_deleted`, `undo_tree.preview_inserted`
 
 For status modules, each `*_content` pair controls the text foreground and the complete module
 background. The corresponding `*_wrapper` pair styles internal separators. Half-cell outer edges

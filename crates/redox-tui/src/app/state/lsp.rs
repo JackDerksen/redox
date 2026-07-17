@@ -1218,6 +1218,26 @@ impl EditorState {
         summary
     }
 
+    pub fn lsp_provider_installed_for_buffer(&self, buffer_id: BufferId) -> bool {
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return false;
+        };
+        if meta.kind != BufferKind::File {
+            return false;
+        }
+        let Some(language) = language_for_path(meta.path.as_deref()) else {
+            return false;
+        };
+
+        PROVIDERS.iter().copied().any(|provider| {
+            provider.matches_language(language)
+                && self
+                    .lsp
+                    .installed
+                    .contains_key(&MarketplaceItemId::Provider(provider.id))
+        })
+    }
+
     fn replace_diagnostics_for_source(
         &mut self,
         uri: String,

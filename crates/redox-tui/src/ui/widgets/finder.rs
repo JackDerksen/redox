@@ -1,11 +1,13 @@
 use minui::widgets::WindowView;
 use minui::{Color, ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
 use std::ops::Range;
+use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{FinderPopup, FinderPreview, PinSelectorPopup};
 use crate::ui::UiStyle;
 use crate::ui::helpers::clip_path_with_filename;
+use crate::ui::icons::{PREFIX_WIDTH, PopupKind, file_icon, popup_title};
 use crate::ui::style::FinderStyle;
 use crate::ui::widgets::popup::{
     PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
@@ -107,7 +109,7 @@ pub fn draw_finder_popup(
         PopupChrome::finder(style),
     )?;
     let mut list_view = popup_window_view(window, list_layout);
-    draw_entries(&mut list_view, popup, style.finder)?;
+    draw_entries(&mut list_view, popup, style.finder, style.icons_enabled)?;
 
     if let Some(preview_frame) = layout.preview {
         let preview_layout = draw_popup_frame_at(
@@ -116,7 +118,7 @@ pub fn draw_finder_popup(
             preview_frame.y,
             preview_frame.inner_w,
             preview_frame.inner_h,
-            PREVIEW_TITLE,
+            &popup_title(PopupKind::FilePreview, PREVIEW_TITLE, style.icons_enabled),
             PopupChrome::finder_preview(style),
         )?;
         let mut preview_view = popup_window_view(window, preview_layout);
@@ -131,7 +133,7 @@ pub fn draw_finder_popup(
         layout.query.y,
         layout.query.inner_w,
         layout.query.inner_h,
-        QUERY_TITLE,
+        &popup_title(PopupKind::Finder, QUERY_TITLE, style.icons_enabled),
         PopupChrome::finder_query(style),
     )?;
     let mut query_view = popup_window_view(window, query_layout);
@@ -253,7 +255,7 @@ pub fn draw_pin_selector_popup(
         y,
         inner_w,
         inner_h,
-        PIN_SELECTOR_TITLE,
+        &popup_title(PopupKind::Pinboard, PIN_SELECTOR_TITLE, style.icons_enabled),
         PopupChrome::new(
             style.finder.border,
             style.finder.title,
@@ -299,8 +301,14 @@ pub fn draw_pin_selector_popup(
         let hotkey_col = inner_w
             .saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING)
             .saturating_sub(hotkey_w);
+        let icon_w = if style.icons_enabled && slot.path_label.is_some() {
+            PREFIX_WIDTH
+        } else {
+            0
+        };
+        let value_col = ENTRY_LABEL_COL.saturating_add(icon_w);
         let value_w = hotkey_col
-            .saturating_sub(ENTRY_LABEL_COL)
+            .saturating_sub(value_col)
             .saturating_sub(1)
             .max(1) as usize;
         let value = if slot.path_label.is_some() {
@@ -308,7 +316,12 @@ pub fn draw_pin_selector_popup(
         } else {
             clip_text_to_cells(value, value_w)
         };
-        view.write_str_colored(row, ENTRY_LABEL_COL, &value, bg)?;
+        if style.icons_enabled
+            && let Some(path) = slot.path_label.as_deref()
+        {
+            view.write_str_colored(row, ENTRY_LABEL_COL, file_icon(Path::new(path)), bg)?;
+        }
+        view.write_str_colored(row, value_col, &value, bg)?;
         if hotkey_w.saturating_add(PIN_SELECTOR_HORIZONTAL_PADDING) < inner_w {
             let hotkey_color = if selected {
                 bg
@@ -333,6 +346,7 @@ fn draw_entries(
     view: &mut WindowView<'_>,
     popup: &FinderPopup,
     style: FinderStyle,
+    icons_enabled: bool,
 ) -> minui::Result<()> {
     if popup.entries.is_empty() {
         view.write_str_colored(0, 0, "<no matches>", style.dim)?;
@@ -399,16 +413,21 @@ fn draw_entries(
             )?;
         }
 
+        let icon_w = if icons_enabled { PREFIX_WIDTH } else { 0 };
+        if icons_enabled {
+            view.write_str_colored(row, ENTRY_LABEL_COL, file_icon(&entry.path), base)?;
+        }
+        let label_col = ENTRY_LABEL_COL.saturating_add(icon_w);
         let text_w = view
             .width
-            .saturating_sub(ENTRY_LABEL_COL)
+            .saturating_sub(label_col)
             .saturating_sub(hotkey_w)
             .max(1) as usize;
         draw_highlighted_text(
             view,
             HighlightedText {
                 row,
-                col: ENTRY_LABEL_COL,
+                col: label_col,
                 text: &entry.label,
                 highlights: &entry.highlights,
                 max_cells: text_w,

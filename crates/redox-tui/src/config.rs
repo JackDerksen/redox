@@ -19,6 +19,7 @@ pub const DEFAULT_UNDO_HISTORY_SIZE: usize = usize::MAX;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub theme: String,
+    pub icons_enabled: bool,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
     pub scrolloff: usize,
@@ -33,6 +34,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: "default".to_string(),
+            icons_enabled: false,
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
             scrolloff: DEFAULT_SCROLLOFF_ROWS,
@@ -163,6 +165,7 @@ impl Config {
             bail!("unknown colorscheme {name:?}");
         }
         let mut style = UiStyle::default();
+        style.icons_enabled = self.icons_enabled;
         style.layout.color_column = self.color_column;
         let Some(theme) = self.themes.get(name) else {
             self.apply_popup_sizes(&mut style);
@@ -173,6 +176,7 @@ impl Config {
         apply_palette(&mut style, &theme.palette)?;
         // Re-derive every default role after changing the base palette.
         style = UiStyle::from_theme(style.theme);
+        style.icons_enabled = self.icons_enabled;
         style.layout.color_column = self.color_column;
         for (name, value) in &theme.syntax {
             let pair = colour_pair(value, style.theme.bg)
@@ -284,6 +288,7 @@ mod tests {
         let config: Config = toml::from_str("").expect("empty configuration should parse");
         assert_eq!(config.scrolloff, DEFAULT_SCROLLOFF_ROWS);
         assert_eq!(config.color_column, 79);
+        assert!(!config.icons_enabled);
         assert_eq!(config.leader(), ' ');
         assert_eq!(config.style().unwrap().theme, UiStyle::default().theme);
     }
@@ -292,5 +297,12 @@ mod tests {
     fn scrolloff_is_configurable() {
         let config: Config = toml::from_str("scrolloff = 2").expect("scrolloff should parse");
         assert_eq!(config.scrolloff, 2);
+    }
+
+    #[test]
+    fn nerd_font_icons_are_opt_in() {
+        let config: Config = toml::from_str("icons_enabled = true").expect("icons should parse");
+        assert!(config.icons_enabled);
+        assert!(config.style().unwrap().icons_enabled);
     }
 }

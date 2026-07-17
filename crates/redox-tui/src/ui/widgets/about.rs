@@ -2,6 +2,7 @@ use minui::Window;
 use minui::widgets::Widget;
 
 use crate::app::AboutPopup;
+use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view, wrap_text_to_cells,
@@ -15,13 +16,14 @@ pub fn draw_about_popup_view(
     popup: AboutPopup,
     layout: PopupLayout,
 ) -> minui::Result<()> {
+    let title = popup_title(PopupKind::About, &popup.title, style.icons_enabled);
     let layout = draw_popup_frame_at(
         window,
         layout.x,
         layout.y,
         layout.inner_w,
         layout.inner_h,
-        &popup.title,
+        &title,
         PopupChrome::about(style),
     )?;
     let mut view = popup_window_view(window, layout);

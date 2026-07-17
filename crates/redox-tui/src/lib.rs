@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
@@ -27,6 +28,9 @@ use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
 use input::{InputAction, InputState, map_event_with_context};
 
 use crate::ui::helpers::apply_color_column;
+use crate::ui::icons::{
+    DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
+};
 use ui::overlays::{
     active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
     draw_indent_guides,
@@ -37,7 +41,7 @@ use ui::syntax::{
 };
 use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
 use ui::{
-    STATUS_BAR_HEIGHT_CELLS, TextViewport, UiStyle, about_popup_inner_size,
+    STATUS_BAR_HEIGHT_CELLS, TextViewport, UNDO_TREE_HEADER_ROWS, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
     draw_command_line_popup, draw_command_line_popup_below, draw_completion_popup,
     draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
@@ -772,13 +776,21 @@ fn draw_gutter_padding(
             window.write_str_colored(row, gutter_w, &pad, color)?;
         }
         let line_idx = first_line.saturating_add(row as usize);
-        let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) else {
-            continue;
-        };
-        let (glyph, colors) = style.git.gutter_marker(kind);
-        window.write_str_colored(row, 0, glyph, colors)?;
+        if let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
+            let (glyph, colors) = style.git.gutter_marker(kind);
+            window.write_str_colored(row, 0, glyph, colors)?;
+        }
     }
     Ok(())
+}
+
+fn diagnostic_icon(severity: app::DiagnosticSeverity) -> &'static str {
+    match severity {
+        app::DiagnosticSeverity::Error => DIAGNOSTIC_ERROR,
+        app::DiagnosticSeverity::Warning => DIAGNOSTIC_WARNING,
+        app::DiagnosticSeverity::Information => DIAGNOSTIC_INFORMATION,
+        app::DiagnosticSeverity::Hint => DIAGNOSTIC_HINT,
+    }
 }
 
 fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
@@ -1491,26 +1503,35 @@ fn draw_buffer_snapshot_for_id(
     let Some(result) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
         if let Some(role) = undo_tree_role {
-            let (first_line, lines) = visible_buffer_lines(buffer, scroll_y, height as usize);
             return match role {
-                UndoTreeSurfaceRole::Tree => draw_undo_tree_lines(
-                    window,
-                    width,
-                    style.undo_tree,
-                    &lines,
-                    &undo_tree_line_spans,
-                    first_line,
-                    view.cursor.cursor.line,
-                ),
-                UndoTreeSurfaceRole::Preview => draw_undo_tree_preview_lines(
-                    window,
-                    width,
-                    style.undo_tree,
-                    &lines,
-                    undo_tree_preview_separator_row
-                        .and_then(|row| row.checked_sub(first_line))
-                        .filter(|row| *row < lines.len()),
-                ),
+                UndoTreeSurfaceRole::Tree => {
+                    let content_height = height.saturating_sub(UNDO_TREE_HEADER_ROWS);
+                    let (first_line, lines) =
+                        visible_buffer_lines(buffer, scroll_y, content_height as usize);
+                    draw_undo_tree_lines(
+                        window,
+                        width,
+                        style.undo_tree,
+                        &lines,
+                        &undo_tree_line_spans,
+                        first_line,
+                        view.cursor.cursor.line,
+                        style.icons_enabled,
+                    )
+                }
+                UndoTreeSurfaceRole::Preview => {
+                    let (first_line, lines) =
+                        visible_buffer_lines(buffer, scroll_y, height as usize);
+                    draw_undo_tree_preview_lines(
+                        window,
+                        width,
+                        style.undo_tree,
+                        &lines,
+                        undo_tree_preview_separator_row
+                            .and_then(|row| row.checked_sub(first_line))
+                            .filter(|row| *row < lines.len()),
+                    )
+                }
             };
         }
 
@@ -2253,7 +2274,12 @@ fn draw_inline_diagnostic_shifted(
         return Ok(());
     };
     let available = text_w.saturating_sub(start_cell);
-    let inline_text = ui::widgets::popup::clip_text_to_cells(&diagnostic.inline_text, available);
+    let inline_text = inline_diagnostic_text(
+        &diagnostic.inline_text,
+        diagnostic.severity,
+        style.icons_enabled,
+    );
+    let inline_text = ui::widgets::popup::clip_text_to_cells(&inline_text, available);
     if inline_text.is_empty() {
         return Ok(());
     }
@@ -2266,6 +2292,20 @@ fn draw_inline_diagnostic_shifted(
         &inline_text,
         colors,
     )
+}
+
+fn inline_diagnostic_text(
+    text: &str,
+    severity: app::DiagnosticSeverity,
+    icons_enabled: bool,
+) -> Cow<'_, str> {
+    if !icons_enabled {
+        return Cow::Borrowed(text);
+    }
+    let Some(message) = text.strip_prefix("▌ ") else {
+        return Cow::Borrowed(text);
+    };
+    Cow::Owned(format!("▌ {} {message}", diagnostic_icon(severity)))
 }
 
 fn inline_diagnostic_start_cell(
@@ -2912,6 +2952,7 @@ mod tests {
             r##"
 theme = "live"
 leader = ","
+icons_enabled = true
 
 [keybindings.normal]
 open_finder = "<leader>f"
@@ -2945,6 +2986,7 @@ background = "#010203"
         );
 
         assert_eq!(style.theme.bg, Color::Rgb { r: 1, g: 2, b: 3 });
+        assert!(style.icons_enabled);
         assert!(
             keyboard.keybinds().values().any(|action| {
                 action == &KeybindAction::Custom("redox-key:<ctrl-g>".to_string())

@@ -105,7 +105,7 @@ pub fn popup_inner_size(
     min_width: u16,
     min_height: u16,
 ) -> (u16, u16) {
-    let popup_w = compute_popup_dim(term_w, width_percent, min_width);
+    let popup_w = centered_popup_width(term_w, width_percent, min_width);
     let popup_h = compute_popup_dim(term_h, height_percent, min_height);
     (popup_w.saturating_sub(2), popup_h.saturating_sub(2))
 }
@@ -207,6 +207,43 @@ pub fn popup_window_view<'a>(window: &'a mut dyn Window, layout: PopupLayout) ->
     }
 }
 
+pub fn draw_popup_divider(
+    window: &mut dyn Window,
+    layout: PopupLayout,
+    inner_row: u16,
+    colors: ColorPair,
+) -> minui::Result<()> {
+    if inner_row >= layout.inner_h {
+        return Ok(());
+    }
+    window.write_str_colored(
+        layout.y.saturating_add(1).saturating_add(inner_row),
+        layout.x,
+        &popup_divider_text(layout.inner_w),
+        colors,
+    )
+}
+
+pub fn draw_popup_view_divider(
+    view: &mut WindowView<'_>,
+    inner_row: u16,
+    colors: ColorPair,
+) -> minui::Result<()> {
+    if inner_row >= view.height {
+        return Ok(());
+    }
+    view.window.write_str_colored(
+        view.y_offset.saturating_add(inner_row),
+        view.x_offset.saturating_sub(1),
+        &popup_divider_text(view.width),
+        colors,
+    )
+}
+
+fn popup_divider_text(inner_w: u16) -> String {
+    format!("├{}┤", "─".repeat(inner_w as usize))
+}
+
 pub fn wrap_text_to_cells(text: &str, max_cells: usize) -> Vec<String> {
     if max_cells == 0 {
         return Vec::new();
@@ -255,6 +292,23 @@ fn compute_popup_dim(total: u16, percent: u16, min: u16) -> u16 {
     let floor = min.min(total);
     let ceiling = if total > 2 { total - 2 } else { total };
     desired.max(floor).min(ceiling.max(floor))
+}
+
+fn centered_popup_width(total: u16, percent: u16, min: u16) -> u16 {
+    let width = compute_popup_dim(total, percent, min);
+    if total.saturating_sub(width).is_multiple_of(2) {
+        return width;
+    }
+
+    let floor = min.min(total);
+    let ceiling = if total > 2 { total - 2 } else { total }.max(floor);
+    if width < ceiling {
+        width + 1
+    } else if width > floor {
+        width - 1
+    } else {
+        width
+    }
 }
 
 fn popup_anchor_top_padding(term_h: u16) -> u16 {

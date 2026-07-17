@@ -2,6 +2,7 @@ use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
+use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at,
     popup_inner_size, popup_window_view,
@@ -40,8 +41,14 @@ fn draw_command_line_popup_after(
     popup: Option<(PopupLayout, u16)>,
 ) -> minui::Result<bool> {
     let (title, prompt) = match state.mode {
-        EditorMode::Command => (COMMAND_TITLE, COMMAND_PROMPT),
-        EditorMode::Search => (SEARCH_TITLE, SEARCH_PROMPT),
+        EditorMode::Command => (
+            popup_title(PopupKind::Command, COMMAND_TITLE, style.icons_enabled),
+            COMMAND_PROMPT,
+        ),
+        EditorMode::Search => (
+            popup_title(PopupKind::Search, SEARCH_TITLE, style.icons_enabled),
+            SEARCH_PROMPT,
+        ),
         _ => return Ok(false),
     };
 
@@ -76,7 +83,7 @@ fn draw_command_line_popup_after(
         y,
         inner_w,
         inner_h,
-        title,
+        &title,
         PopupChrome::command_line(style),
     )?;
     let mut view = popup_window_view(window, layout);
