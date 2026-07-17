@@ -22,6 +22,10 @@ struct ExplorerRowStyle {
     git_status: Option<GitFileStatusKind>,
 }
 
+/// Draws the Explorer popup and returns its requested cursor position.
+///
+/// `reconcile_inner_h` retains the popup's original unshrunk inner height separately from
+/// `layout.inner_h`, preventing abrupt scrolling when the command line stacks below the popup.
 pub fn draw_explorer_popup_view(
     state: &mut EditorState,
     style: UiStyle,
