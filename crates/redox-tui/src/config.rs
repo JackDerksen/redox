@@ -49,6 +49,7 @@ pub struct PopupSize {
     pub height_percent: Option<u16>,
     pub min_width: Option<u16>,
     pub min_height: Option<u16>,
+    pub stacked_padding: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -193,6 +194,7 @@ impl Config {
                 size.height_percent,
                 size.min_width,
                 size.min_height,
+                size.stacked_padding,
             );
         }
     }

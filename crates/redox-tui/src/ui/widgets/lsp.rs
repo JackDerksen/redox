@@ -13,8 +13,8 @@ use crate::ui::syntax::{
     line_spans_for_source, syntax_color_for_range,
 };
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_frame_at,
-    popup_inner_size, popup_window_view, wrap_text_to_cells,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
+    wrap_text_to_cells,
 };
 
 const DIAGNOSTICS_TITLE: &str = "Diagnostics";
@@ -604,22 +604,14 @@ pub fn draw_diagnostics_popup(
     popup: &DiagnosticsPopup,
     style: UiStyle,
     window: &mut dyn Window,
+    layout: PopupLayout,
 ) -> minui::Result<()> {
-    let (term_w, term_h) = window.get_size();
-    let (inner_w, inner_h) = popup_inner_size(
-        term_w,
-        term_h,
-        style.finder.width_percent,
-        style.finder.height_percent,
-        style.finder.min_width,
-        style.finder.min_height,
-    );
-    let layout = draw_anchored_popup_frame(
+    let layout = draw_popup_frame_at(
         window,
-        term_w,
-        term_h,
-        inner_w,
-        inner_h,
+        layout.x,
+        layout.y,
+        layout.inner_w,
+        layout.inner_h,
         DIAGNOSTICS_TITLE,
         PopupChrome::finder(style),
     )?;
@@ -790,22 +782,14 @@ pub fn draw_code_actions_popup(
     popup: &CodeActionPopup,
     style: UiStyle,
     window: &mut dyn Window,
+    layout: PopupLayout,
 ) -> minui::Result<()> {
-    let (term_w, term_h) = window.get_size();
-    let (inner_w, inner_h) = popup_inner_size(
-        term_w,
-        term_h,
-        style.finder.width_percent,
-        style.finder.height_percent,
-        style.finder.min_width,
-        style.finder.min_height,
-    );
-    let layout = draw_anchored_popup_frame(
+    let layout = draw_popup_frame_at(
         window,
-        term_w,
-        term_h,
-        inner_w,
-        inner_h,
+        layout.x,
+        layout.y,
+        layout.inner_w,
+        layout.inner_h,
         CODE_ACTIONS_TITLE,
         PopupChrome::finder(style),
     )?;

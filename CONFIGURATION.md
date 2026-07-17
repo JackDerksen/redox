@@ -79,7 +79,9 @@ leader = " "
 ## Popup sizes
 
 Popup sections accept `width_percent`, `height_percent`, `min_width`, and `min_height`. Percentage
-values must be from `1` through `100`; minimum dimensions use terminal cells.
+values must be from `1` through `100`; minimum dimensions use terminal cells. The `command_line`
+popup also accepts `stacked_padding`, the preferred number of rows between it and another open
+popup. On very short terminals, this padding shrinks as needed to preserve both popup bodies.
 
 ```toml
 [popups.finder]
@@ -98,7 +100,7 @@ min_height = 16
 | `code_actions` | Finder sizing | Alias for the shared finder-style layout. |
 | `lsp_marketplace` | `65 × 60`, `52 × 12` | Supports all four size fields. |
 | `perf` | `44 × 34`, `40 × 12` | Supports all four size fields. |
-| `command_line` | `65` wide, minimum `24` | Uses `width_percent` and `min_width`; its content is always one row high. |
+| `command_line` | `65` wide, minimum `24` | Uses `width_percent` and `min_width`; `stacked_padding` defaults to `0`; its content is always one row high. |
 | `undo_tree` | `32` wide, minimum `32` | Uses `width_percent` and `min_width`; it is a pane rather than a modal popup. |
 
 Because `finder`, `diagnostics`, and `code_actions` share one layout style,

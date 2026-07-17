@@ -29,6 +29,15 @@ impl EditorState {
         self.close_active_surface_buffer_inner(true)
     }
 
+    pub(super) fn close_active_surfaces_for_command(&mut self) -> bool {
+        while self.active_buffer_is_surface() {
+            if !self.close_active_surface_buffer_without_quit() {
+                return false;
+            }
+        }
+        true
+    }
+
     fn close_active_surface_buffer_inner(&mut self, suppress_quit_after_close: bool) -> bool {
         let active_id = self.session.active_id();
         let is_explorer = self

@@ -5,7 +5,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
 use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, popup_inner_size, popup_window_view,
+    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
+    popup_window_view,
 };
 
 const LSP_TITLE: &str = "Language Tools"; // Maybe someday this will become a paid DLC
@@ -16,15 +17,14 @@ pub fn draw_lsp_marketplace_popup(
     popup: &LspMarketplacePopup,
     style: UiStyle,
     window: &mut dyn Window,
+    layout: PopupLayout,
 ) -> minui::Result<()> {
-    let (term_w, term_h) = window.get_size();
-    let (inner_w, inner_h) = lsp_marketplace_popup_inner_size(term_w, term_h, style);
-    let layout = draw_anchored_popup_frame(
+    let layout = draw_popup_frame_at(
         window,
-        term_w,
-        term_h,
-        inner_w,
-        inner_h,
+        layout.x,
+        layout.y,
+        layout.inner_w,
+        layout.inner_h,
         LSP_TITLE,
         PopupChrome::finder(style),
     )?;

@@ -110,19 +110,6 @@ pub fn popup_inner_size(
     (popup_w.saturating_sub(2), popup_h.saturating_sub(2))
 }
 
-pub fn draw_anchored_popup_frame(
-    window: &mut dyn Window,
-    term_w: u16,
-    term_h: u16,
-    inner_w: u16,
-    inner_h: u16,
-    title: &str,
-    chrome: PopupChrome,
-) -> minui::Result<PopupLayout> {
-    let (x, y) = anchored_popup_origin(term_w, term_h, inner_w, inner_h);
-    draw_popup_frame_at(window, x, y, inner_w, inner_h, title, chrome)
-}
-
 pub fn anchored_popup_origin(term_w: u16, term_h: u16, inner_w: u16, inner_h: u16) -> (u16, u16) {
     let popup_w = inner_w.saturating_add(2);
     let x = term_w.saturating_sub(popup_w) / 2;

@@ -394,6 +394,7 @@ pub struct CommandLineStyle {
     pub width_percent: u16,
     pub min_width: u16,
     pub inner_height_rows: u16,
+    pub stacked_padding: u16,
     pub border: ColorPair,
     pub title: ColorPair,
     pub text: ColorPair,
@@ -406,6 +407,7 @@ impl CommandLineStyle {
             width_percent: 65,
             min_width: 24,
             inner_height_rows: 1,
+            stacked_padding: 0,
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.red, theme.bg),
             text: ColorPair::new(theme.white, theme.bg),
@@ -1178,6 +1180,7 @@ impl UiStyle {
         height: Option<u16>,
         min_width: Option<u16>,
         min_height: Option<u16>,
+        stacked_padding: Option<u16>,
     ) {
         macro_rules! apply {
             ($popup:expr) => {{
@@ -1207,6 +1210,9 @@ impl UiStyle {
                 }
                 if let Some(v) = min_width {
                     self.command_line.min_width = v;
+                }
+                if let Some(v) = stacked_padding {
+                    self.command_line.stacked_padding = v;
                 }
             }
             "undo_tree" => {

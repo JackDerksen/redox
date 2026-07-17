@@ -38,6 +38,11 @@ impl EditorState {
         let cmd = parts.next().unwrap_or("");
         let arg = parts.next().map(str::trim).unwrap_or("");
 
+        if self.command_uses_editor_context(cmd, arg) && !self.close_active_surfaces_for_command() {
+            self.set_status("cannot return to an editor buffer");
+            return;
+        }
+
         match cmd {
             "w" => {
                 self.write_current_file();
@@ -120,6 +125,19 @@ impl EditorState {
             "" | "popup" => self.command_toggle_perf(),
             "corners" => self.command_toggle_perf_corners(),
             _ => self.set_status("usage: perf popup|corners"),
+        }
+    }
+
+    fn command_uses_editor_context(&self, cmd: &str, arg: &str) -> bool {
+        match cmd {
+            "w" | "wq" => self.active_buffer_is_surface() && !self.explorer_is_active(),
+            "e" => !arg.is_empty(),
+            "e!" | "reload" | "bn" | "bnext" | "bp" | "bprev" | "rain" => true,
+            "config" => arg.is_empty(),
+            "perf" => matches!(arg, "" | "popup"),
+            "undo-tree" => !self.undo_tree_is_active(),
+            "lsp" => matches!(arg, "list" | "status"),
+            _ => false,
         }
     }
 
