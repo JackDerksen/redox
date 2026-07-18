@@ -948,6 +948,7 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
         exact: Option<String>,
         group: Option<String>,
         has_children: bool,
+        exact_precedes_children: bool,
     }
 
     fn add_mapping(
@@ -955,6 +956,7 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
         remainder: &str,
         description: &str,
         is_group: bool,
+        exact_precedes_children: bool,
     ) {
         let Some(next) = remainder.chars().next() else {
             return;
@@ -968,6 +970,7 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
             }
         } else {
             node.exact = Some(description.to_string());
+            node.exact_precedes_children = exact_precedes_children;
         }
     }
 
@@ -985,6 +988,7 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
             remainder,
             sequence_action_description(binding),
             binding.action.is_none(),
+            false,
         );
     }
     for binding in &state.custom_bindings {
@@ -1000,12 +1004,14 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
         if remainder.is_empty() {
             continue;
         }
-        add_mapping(&mut nodes, remainder, &binding.description, false);
+        add_mapping(&mut nodes, remainder, &binding.description, false, true);
     }
     nodes
         .into_iter()
         .filter_map(|(key, node)| {
-            let description = if node.has_children {
+            let description = if node.exact_precedes_children {
+                node.exact?
+            } else if node.has_children {
                 node.group.unwrap_or_else(|| "+prefix".to_string())
             } else {
                 node.exact?
