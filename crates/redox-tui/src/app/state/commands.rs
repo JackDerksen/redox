@@ -20,6 +20,7 @@ impl EditorState {
     pub(super) fn execute_configured_command(&mut self, command: String) {
         self.command_line = command;
         self.command_line_cursor = self.command_line.len();
+        self.clear_active_visual_anchor();
         self.mode = EditorMode::Command;
         self.execute_command_line();
     }

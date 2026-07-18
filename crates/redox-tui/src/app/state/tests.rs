@@ -272,6 +272,9 @@ fn configured_motion_sequence_is_replayed_through_editor_actions() {
 fn configured_command_is_executed_through_command_line_parser() {
     let path = temp_file_path("configured_command");
     let mut state = state_with_text(path.clone(), "hello\n");
+    let active_id = state.session.active_id();
+    state.mode = EditorMode::Visual;
+    state.views.entry(active_id).or_default().visual_anchor = Some(Pos::zero());
     let display_name = state
         .session
         .summaries()
@@ -283,6 +286,12 @@ fn configured_command_is_executed_through_command_line_parser() {
     state.apply_input(InputAction::RunCommand("ls".to_string()), 80, 24);
 
     assert_eq!(state.mode, EditorMode::Normal);
+    assert!(
+        state
+            .views
+            .get(&active_id)
+            .is_some_and(|view| view.visual_anchor.is_none())
+    );
     assert!(
         state
             .status_msg
