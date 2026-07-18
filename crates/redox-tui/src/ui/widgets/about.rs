@@ -31,10 +31,22 @@ pub fn draw_about_popup_view(
     let inner_w = layout.inner_w;
     let left = 2u16.min(inner_w.saturating_sub(1));
     let max_line_w = inner_w.saturating_sub(left);
-    write_line(&mut view, 1, left, "┏━┓", style.about.logo_red, max_line_w)?;
+    let repo_line = format!("GitHub: {}", popup.repo_url);
+    let crates_line = format!("Crates.io: {}", popup.crates_url);
+    let content_height = about_content_height(max_line_w, &popup.message, &repo_line, &crates_line);
+    let top = layout.inner_h.saturating_sub(content_height) / 2;
+
     write_line(
         &mut view,
-        2,
+        top,
+        left,
+        "┏━┓",
+        style.about.logo_red,
+        max_line_w,
+    )?;
+    write_line(
+        &mut view,
+        top.saturating_add(1),
         left,
         "Redox",
         style.about.logo_white,
@@ -42,22 +54,22 @@ pub fn draw_about_popup_view(
     )?;
     write_line(
         &mut view,
-        2,
-        left.saturating_add(7),
-        &format!("v{}", popup.version),
+        top.saturating_add(1),
+        left.saturating_add(6),
+        &format!("- v{}", popup.version),
         style.about.text,
         inner_w.saturating_sub(left.saturating_add(7)),
     )?;
     write_line(
         &mut view,
-        3,
+        top.saturating_add(2),
         left,
         "  ┗━┛",
         style.about.logo_blue,
         max_line_w,
     )?;
 
-    let mut row = 5u16;
+    let mut row = top.saturating_add(4);
     row = write_wrapped_block(
         &mut view,
         row,
@@ -72,7 +84,7 @@ pub fn draw_about_popup_view(
         row,
         left,
         max_line_w,
-        &format!("GitHub: {}", popup.repo_url),
+        &repo_line,
         style.about.text,
     )?;
     let _ = write_wrapped_block(
@@ -80,7 +92,7 @@ pub fn draw_about_popup_view(
         row,
         left,
         max_line_w,
-        &format!("Crates.io: {}", popup.crates_url),
+        &crates_line,
         style.about.text,
     )?;
 
@@ -88,6 +100,15 @@ pub fn draw_about_popup_view(
     status.draw(window)?;
 
     Ok(())
+}
+
+fn about_content_height(width: u16, message: &str, repo_line: &str, crates_line: &str) -> u16 {
+    [message, repo_line, crates_line]
+        .into_iter()
+        .map(|text| wrap_text_to_cells(text, width as usize).len())
+        .fold(5u16, |height, lines| {
+            height.saturating_add(lines.min(u16::MAX as usize) as u16)
+        })
 }
 
 pub fn about_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
