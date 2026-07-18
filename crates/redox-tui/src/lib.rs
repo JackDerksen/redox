@@ -25,7 +25,9 @@ mod ui;
 
 use app::state::PaneId;
 use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
-use input::{InputAction, InputState, map_event_with_context};
+use input::{
+    ConfiguredBinding, ConfiguredBindingTarget, InputAction, InputState, map_event_with_context,
+};
 
 use crate::ui::helpers::apply_color_column;
 use crate::ui::icons::{
@@ -47,8 +49,9 @@ use ui::{
     draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_pane_split_lines, draw_perf_popup_view,
     draw_pin_selector_popup, draw_status_toast, draw_symbol_info_popup, draw_undo_tree_lines,
-    draw_undo_tree_preview_lines, explorer_popup_inner_size, language_for_path,
-    lsp_marketplace_popup_inner_size, perf_popup_layout, snapshot_lines_wrapped_cached,
+    draw_undo_tree_preview_lines, draw_which_key_popup, explorer_popup_inner_size,
+    language_for_path, lsp_marketplace_popup_inner_size, perf_popup_layout,
+    snapshot_lines_wrapped_cached,
 };
 
 pub(crate) const SOFT_TAB_WIDTH: usize = 4;
@@ -79,9 +82,11 @@ fn draw_buffer_view(
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
+    let which_key_popup = state.which_key_popup(Instant::now());
     let popup_overlay_active = state.mode.has_popup_overlay()
         || state.explorer_popup().is_some()
-        || state.about_popup().is_some();
+        || state.about_popup().is_some()
+        || which_key_popup.is_some();
     let background_style = if popup_overlay_active {
         style.dimmed()
     } else {
@@ -376,6 +381,11 @@ fn draw_buffer_view(
         } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
             cursor_spec = Some(cursor);
         }
+        let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
+            draw_which_key_popup(popup, style, window)?
+        } else {
+            None
+        };
         let toast_layout = draw_notification_toast(state, style, window)?;
         if force_hide_cursor {
             hide_cursor(window);
@@ -384,7 +394,9 @@ fn draw_buffer_view(
                 .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
             let cursor_hidden_by_toast = toast_layout
                 .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-            if cursor_hidden_by_perf || cursor_hidden_by_toast {
+            let cursor_hidden_by_which_key =
+                which_key_layout.is_some_and(|layout| layout.occludes(cursor.x, cursor.y));
+            if cursor_hidden_by_perf || cursor_hidden_by_toast || cursor_hidden_by_which_key {
                 hide_cursor(window);
             } else {
                 window.request_cursor(cursor);
@@ -673,6 +685,11 @@ fn draw_buffer_view(
         }
     }
 
+    let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
+        draw_which_key_popup(popup, style, window)?
+    } else {
+        None
+    };
     let toast_layout = draw_notification_toast(state, style, window)?;
 
     if let Some(cursor) = cursor_spec {
@@ -680,7 +697,9 @@ fn draw_buffer_view(
             .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
         let cursor_hidden_by_toast =
             toast_layout.is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-        if cursor_hidden_by_perf || cursor_hidden_by_toast {
+        let cursor_hidden_by_which_key =
+            which_key_layout.is_some_and(|layout| layout.occludes(cursor.x, cursor.y));
+        if cursor_hidden_by_perf || cursor_hidden_by_toast || cursor_hidden_by_which_key {
             hide_cursor(window);
         } else {
             window.request_cursor(cursor);
@@ -3313,6 +3332,32 @@ fn install_keyboard_bindings(
 fn configured_input(config: &config::Config) -> anyhow::Result<InputState> {
     let mut input = InputState::new();
     input.configure(config.leader(), &config.keybindings)?;
+    let custom_bindings = config
+        .bind
+        .iter()
+        .filter(|binding| !binding.keys.is_empty())
+        .map(|binding| {
+            let target = match (&binding.sequence, &binding.command) {
+                (Some(sequence), None) => ConfiguredBindingTarget::Sequence(sequence.clone()),
+                (None, Some(command)) => ConfiguredBindingTarget::Command(command.clone()),
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "custom binding {:?} must set exactly one of sequence or command",
+                    binding.keys
+                ),
+                (None, None) => anyhow::bail!(
+                    "custom binding {:?} must set either sequence or command",
+                    binding.keys
+                ),
+            };
+            Ok(ConfiguredBinding {
+                mode: binding.mode.clone(),
+                keys: binding.keys.clone(),
+                target,
+                description: binding.desc.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    input.configure_custom_bindings(&custom_bindings)?;
     install_keyboard_bindings(&mut KeyboardHandler::new(), &input)?;
     Ok(input)
 }
@@ -3364,6 +3409,8 @@ fn reload_runtime_config(
             candidate_input,
             candidate.undo_tree_history_size,
             candidate.scrolloff,
+            candidate.which_key.enabled,
+            Duration::from_millis(candidate.which_key.delay_ms),
         );
         Ok((candidate, candidate_style, candidate_theme, loaded_path))
     })();
@@ -3440,7 +3487,13 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let mut state = EditorState::new(session);
-    state.configure(input, config.undo_tree_history_size, config.scrolloff);
+    state.configure(
+        input,
+        config.undo_tree_history_size,
+        config.scrolloff,
+        config.which_key.enabled,
+        Duration::from_millis(config.which_key.delay_ms),
+    );
     if let Some(dir_path) = launch_explorer_dir {
         state.open_explorer_at_path(dir_path)?;
     }

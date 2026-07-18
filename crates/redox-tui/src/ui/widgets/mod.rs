@@ -16,6 +16,7 @@ pub mod popup;
 pub mod status_bar;
 pub mod toast;
 pub mod undo_tree;
+pub mod which_key;
 
 pub use about::{about_popup_inner_size, draw_about_popup_view};
 pub use command_line::{draw_command_line_popup, draw_command_line_popup_below};
@@ -32,3 +33,4 @@ pub use perf::{draw_perf_popup_view, perf_popup_layout};
 pub use status_bar::build_editor_status_bar;
 pub use toast::draw_status_toast;
 pub use undo_tree::{UNDO_TREE_HEADER_ROWS, draw_undo_tree_lines, draw_undo_tree_preview_lines};
+pub use which_key::draw_which_key_popup;

@@ -14,6 +14,7 @@ use crate::ui::UiStyle;
 
 pub const DEFAULT_DIM_AMOUNT: f32 = 0.301;
 pub const DEFAULT_UNDO_HISTORY_SIZE: usize = usize::MAX;
+pub const DEFAULT_WHICH_KEY_DELAY_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -25,8 +26,10 @@ pub struct Config {
     pub scrolloff: usize,
     pub color_column: usize,
     pub leader: String,
+    pub which_key: WhichKeyConfig,
     pub popups: BTreeMap<String, PopupSize>,
     pub keybindings: BTreeMap<String, BTreeMap<String, String>>,
+    pub bind: Vec<BindConfig>,
     pub themes: BTreeMap<String, ThemeConfig>,
 }
 
@@ -40,9 +43,37 @@ impl Default for Config {
             scrolloff: DEFAULT_SCROLLOFF_ROWS,
             color_column: 79,
             leader: " ".to_string(),
+            which_key: WhichKeyConfig::default(),
             popups: BTreeMap::new(),
             keybindings: BTreeMap::new(),
+            bind: Vec::new(),
             themes: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BindConfig {
+    pub mode: String,
+    pub keys: String,
+    pub sequence: Option<String>,
+    pub command: Option<String>,
+    pub desc: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WhichKeyConfig {
+    pub enabled: bool,
+    pub delay_ms: u64,
+}
+
+impl Default for WhichKeyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay_ms: DEFAULT_WHICH_KEY_DELAY_MS,
         }
     }
 }
@@ -290,7 +321,11 @@ mod tests {
         assert_eq!(config.color_column, 79);
         assert!(!config.icons_enabled);
         assert_eq!(config.leader(), ' ');
-        assert_eq!(config.style().unwrap().theme, UiStyle::default().theme);
+        assert!(config.which_key.enabled);
+        assert_eq!(config.which_key.delay_ms, DEFAULT_WHICH_KEY_DELAY_MS);
+        let style = config.style().unwrap();
+        assert_eq!(style.theme, UiStyle::default().theme);
+        assert_eq!(style.which_key.edge, UiStyle::default().which_key.edge);
     }
 
     #[test]

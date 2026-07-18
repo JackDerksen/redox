@@ -396,8 +396,8 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] In-editor splits
 - [x] Undo-tree UI
 - [x] Custom configuration support
+- [x] More extendable leader key system with "whichkey" functionality
 - [ ] Grep-based finder for searching text patterns across files
-- [ ] More extendable leader key system with "whichkey" functionality
 - [ ] A dashboard screen with similar functionality to nvim dashboards
 - [ ] More persistent project/session state
 - [ ] Broader fuzzy finder indexing and async refresh for very large repositories

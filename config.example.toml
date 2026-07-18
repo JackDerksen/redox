@@ -10,6 +10,31 @@ scrolloff = 5 # Keeps this many rows visible above and below the cursor while sc
 color_column = 79 # Renders on top of cl=80
 leader = " "
 
+[which_key]
+enabled = true
+delay_ms = 3000
+
+# Custom bindings use exactly one of `sequence` or `command`. Their descriptions
+# are shown in which-key for multi-key normal- and visual-mode triggers.
+# Use an empty `keys = ""` in an entry to keep it disabled.
+[[bind]]
+mode = "normal"
+keys = "<leader>j"
+sequence = "10j"
+desc = "Move down 10 lines"
+
+[[bind]]
+mode = "normal"
+keys = "<leader>w"
+command = "w"
+desc = "Write current file"
+
+[[bind]]
+mode = "normal"
+keys = "<leader>rc"
+command = ":config reload"
+desc = "Reload configuration file"
+
 [popups.finder]
 width_percent = 65
 height_percent = 60
@@ -139,6 +164,12 @@ punctuation_special = "#b4d4cf"
 "command_line.title" = "#c48282"
 "command_line.text" = "#cdcdcd"
 "command_line.prompt" = "#e8b589"
+"which_key.background" = "#252530"
+"which_key.edge" = "#f3be7c"
+"which_key.prefix" = "#bb9dbd"
+"which_key.key" = "#9bb4bc"
+"which_key.arrow" = "#c3c3d5"
+"which_key.text" = "#cdcdcd"
 "diagnostic.error" = { fg = "#d8647e", bg = "#2b1c22" }
 "diagnostic.warning" = { fg = "#f3be7c", bg = "#30281d" }
 "diagnostic.information" = { fg = "#7e98e8", bg = "#202635" }

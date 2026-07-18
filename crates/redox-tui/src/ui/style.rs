@@ -423,6 +423,35 @@ impl Default for CommandLineStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct WhichKeyStyle {
+    pub background: Color,
+    pub edge: Color,
+    pub prefix: Color,
+    pub key: Color,
+    pub arrow: Color,
+    pub text: Color,
+}
+
+impl WhichKeyStyle {
+    pub fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            background: theme.color_column,
+            edge: theme.light_purple,
+            prefix: theme.light_purple,
+            key: theme.light_blue,
+            arrow: theme.light_gray,
+            text: theme.white,
+        }
+    }
+}
+
+impl Default for WhichKeyStyle {
+    fn default() -> Self {
+        Self::from_theme(BaseTheme::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct DiagnosticInlineStyle {
     pub error: ColorPair,
     pub warning: ColorPair,
@@ -808,6 +837,7 @@ pub struct UiStyle {
     pub layout: Layout,
     pub about: AboutStyle,
     pub command_line: CommandLineStyle,
+    pub which_key: WhichKeyStyle,
     pub diagnostic_inline: DiagnosticInlineStyle,
     pub explorer: ExplorerStyle,
     pub finder: FinderStyle,
@@ -834,6 +864,7 @@ impl UiStyle {
             layout: Layout::default(),
             about: AboutStyle::from_theme(theme),
             command_line: CommandLineStyle::from_theme(theme),
+            which_key: WhichKeyStyle::from_theme(theme),
             diagnostic_inline: DiagnosticInlineStyle::from_theme(theme),
             explorer: ExplorerStyle::from_theme(theme),
             finder: FinderStyle::from_theme(theme),
@@ -1137,6 +1168,19 @@ impl UiStyle {
     }
 
     pub fn set_ui_colour(&mut self, name: &str, colour: ColorPair) -> anyhow::Result<()> {
+        let which_key_target = match name {
+            "which_key.background" => Some(&mut self.which_key.background),
+            "which_key.edge" => Some(&mut self.which_key.edge),
+            "which_key.prefix" => Some(&mut self.which_key.prefix),
+            "which_key.key" => Some(&mut self.which_key.key),
+            "which_key.arrow" => Some(&mut self.which_key.arrow),
+            "which_key.text" => Some(&mut self.which_key.text),
+            _ => None,
+        };
+        if let Some(target) = which_key_target {
+            *target = colour.fg;
+            return Ok(());
+        }
         macro_rules! colour_target {
             ($($name:literal => $target:expr),+ $(,)?) => {
                 match name { $($name => &mut $target,)+ _ => anyhow::bail!("unknown UI colour {name:?}"), }
