@@ -88,6 +88,7 @@ pub fn draw_which_key_popup(
 
     let content_width = width.saturating_sub(2) as usize;
     let column_width = (content_width / columns).max(1);
+    let key_widths = column_key_widths(&entries, body_rows, column_width);
     for (index, entry) in entries.iter().enumerate() {
         let column = index / body_rows;
         let row = index % body_rows;
@@ -103,10 +104,30 @@ pub fn draw_which_key_popup(
             entry_x,
             entry_y,
             column_width,
+            key_widths[column],
         )?;
     }
 
     Ok(Some(layout))
+}
+
+fn column_key_widths(
+    entries: &[WhichKeyEntry],
+    body_rows: usize,
+    column_width: usize,
+) -> Vec<usize> {
+    let max_key_width = KEY_WIDTH.min(column_width.saturating_sub(3));
+    entries
+        .chunks(body_rows.max(1))
+        .map(|column| {
+            column
+                .iter()
+                .map(|entry| cell_width(&entry.key, minui::TabPolicy::Fixed(4)) as usize)
+                .max()
+                .unwrap_or_default()
+                .min(max_key_width)
+        })
+        .collect()
 }
 
 fn visible_entries(entries: &[WhichKeyEntry], capacity: usize) -> Vec<WhichKeyEntry> {
@@ -134,16 +155,25 @@ fn draw_entry(
     x: u16,
     y: u16,
     width: usize,
+    key_width: usize,
 ) -> minui::Result<()> {
     if width < 4 {
         return Ok(());
     }
-    let key_width = KEY_WIDTH.min(width.saturating_sub(3));
     let key = clip_text_to_cells(&entry.key, key_width);
     window.write_str_colored(y, x, &key, ColorPair::new(style.which_key.key, popup_bg))?;
 
     let key_cells = cell_width(&key, minui::TabPolicy::Fixed(4));
-    let arrow_x = x.saturating_add(key_cells as u16);
+    let key_padding = key_width.saturating_sub(key_cells as usize);
+    if key_padding > 0 {
+        window.write_str_colored(
+            y,
+            x.saturating_add(key_cells as u16),
+            &" ".repeat(key_padding),
+            ColorPair::new(style.which_key.key, popup_bg),
+        )?;
+    }
+    let arrow_x = x.saturating_add(key_width as u16);
     window.write_str_colored(
         y,
         arrow_x,
@@ -151,7 +181,7 @@ fn draw_entry(
         ColorPair::new(style.which_key.arrow, popup_bg),
     )?;
 
-    let description_width = width.saturating_sub(key_cells as usize).saturating_sub(3);
+    let description_width = width.saturating_sub(key_width).saturating_sub(3);
     let description = clip_text_to_cells(&entry.description, description_width);
     window.write_str_colored(
         y,
