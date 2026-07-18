@@ -1129,7 +1129,9 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
 
 fn operator_prefix(operator: PendingOperator, sequence: &str) -> String {
     let mut prefix = count_prefix(operator.count, operator.count_explicit);
-    prefix.push(operator_key(operator.operator));
+    if operator.operator != TextObjectOperator::Select {
+        prefix.push(operator_key(operator.operator));
+    }
     if let Some(scope) = operator.scope {
         prefix.push(match scope {
             TextObjectScope::Inner => 'i',
