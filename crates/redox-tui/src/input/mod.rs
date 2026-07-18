@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashSet},
+    time::{Duration, Instant},
 };
 
 use minui::KeybindAction;
@@ -108,6 +109,10 @@ pub enum InputAction {
     ViewportUpCenter,
     /// Centre current cursor line in viewport (`zz` in normal mode).
     CenterCursorLine,
+    /// Resolve and apply a configured sequence of motion inputs.
+    ReplaySequence(String),
+    /// Execute a configured editor command without opening the command line.
+    RunCommand(String),
     SplitFocusLeft,
     SplitFocusDown,
     SplitFocusUp,
@@ -271,6 +276,20 @@ pub enum TextObjectOperator {
     Yank,
 }
 
+pub const DEFAULT_WHICH_KEY_DELAY: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhichKeyEntry {
+    pub key: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhichKeyPopup {
+    pub prefix: String,
+    pub entries: Vec<WhichKeyEntry>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefixFallback {
     Consume,
@@ -383,6 +402,7 @@ pub struct InputState {
     pending_operator: Option<PendingOperator>,
     pending_search_motion: Option<PendingSearchMotion>,
     pending_replace: bool,
+    which_key_started_at: Option<Instant>,
     leader: char,
     custom_bindings: Vec<CustomBinding>,
 }
@@ -392,6 +412,21 @@ struct CustomBinding {
     mode: InputMode,
     key: CustomKey,
     action: InputAction,
+    description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredBinding {
+    pub mode: String,
+    pub keys: String,
+    pub target: ConfiguredBindingTarget,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfiguredBindingTarget {
+    Sequence(String),
+    Command(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -408,6 +443,7 @@ impl Default for InputState {
             pending_operator: None,
             pending_search_motion: None,
             pending_replace: false,
+            which_key_started_at: None,
             leader: ' ',
             custom_bindings: Vec::new(),
         }
@@ -418,6 +454,7 @@ impl Default for InputState {
 struct PendingOperator {
     operator: TextObjectOperator,
     count: usize,
+    count_explicit: bool,
     scope: Option<TextObjectScope>,
 }
 
@@ -425,6 +462,7 @@ struct PendingOperator {
 struct PendingSearchMotion {
     operator: Option<PendingOperator>,
     count: usize,
+    count_explicit: bool,
     kind: SearchMotionKind,
 }
 
@@ -434,6 +472,35 @@ enum SearchMotionKind {
     Till,
     FindBefore,
     TillBefore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingInput {
+    sequence: String,
+    count: Option<usize>,
+    operator: Option<PendingOperator>,
+    search_motion: Option<PendingSearchMotion>,
+    replace: bool,
+}
+
+impl PendingInput {
+    fn typed_prefix(&self) -> String {
+        if let Some(search) = self.search_motion {
+            return search_motion_prefix(search);
+        }
+        if self.replace {
+            return "r".to_string();
+        }
+        if let Some(operator) = self.operator {
+            return operator_prefix(operator, &self.sequence);
+        }
+        if !self.sequence.is_empty() {
+            return self.sequence.clone();
+        }
+        self.count
+            .map(|count| count.to_string())
+            .unwrap_or_default()
+    }
 }
 
 impl InputState {
@@ -452,11 +519,16 @@ impl InputState {
             let mode = input_mode_from_name(mode_name)
                 .ok_or_else(|| anyhow::anyhow!("unknown keybinding mode {mode_name:?}"))?;
             for (action, keys) in entries {
-                let action = configured_action(action)?;
+                let (action, description) = configured_action(action)?;
                 if !keys.contains("<leader>") && keys.starts_with('<') && keys.ends_with('>') {
                     let key = CustomKey::Special(normalize_special_key(keys)?);
                     ensure_unique_binding(&mut configured_keys, mode, &key)?;
-                    custom_bindings.push(CustomBinding { mode, key, action });
+                    custom_bindings.push(CustomBinding {
+                        mode,
+                        key,
+                        action,
+                        description: description.to_string(),
+                    });
                     continue;
                 }
                 let sequence = keys.replace("<leader>", &leader.to_string());
@@ -475,13 +547,143 @@ impl InputState {
                 }
                 let key = CustomKey::Sequence(sequence);
                 ensure_unique_binding(&mut configured_keys, mode, &key)?;
-                custom_bindings.push(CustomBinding { mode, key, action });
+                custom_bindings.push(CustomBinding {
+                    mode,
+                    key,
+                    action,
+                    description: description.to_string(),
+                });
             }
         }
         reject_ambiguous_sequence_prefixes(&custom_bindings)?;
         self.leader = leader;
         self.custom_bindings = custom_bindings;
         Ok(())
+    }
+
+    pub fn configure_custom_bindings(
+        &mut self,
+        bindings: &[ConfiguredBinding],
+    ) -> anyhow::Result<()> {
+        let mut next_bindings = self.custom_bindings.clone();
+        let mut configured_keys = next_bindings
+            .iter()
+            .map(|binding| (binding.mode, binding.key.clone()))
+            .collect::<HashSet<_>>();
+
+        for binding in bindings {
+            if binding.keys.is_empty() {
+                continue;
+            }
+            let mode = input_mode_from_name(&binding.mode)
+                .ok_or_else(|| anyhow::anyhow!("unknown custom binding mode {:?}", binding.mode))?;
+            if !modal_sequence_mode(mode) {
+                anyhow::bail!(
+                    "custom binding mode {:?} must be a modal mode",
+                    binding.mode
+                );
+            }
+            let description = binding.description.trim();
+            if description.is_empty() {
+                anyhow::bail!("custom binding description cannot be empty");
+            }
+
+            let keys = binding.keys.replace("<leader>", &self.leader.to_string());
+            if keys.contains('<') || keys.contains('>') {
+                anyhow::bail!(
+                    "custom binding {:?} must be a character sequence",
+                    binding.keys
+                );
+            }
+            let key = CustomKey::Sequence(keys);
+            ensure_unique_binding(&mut configured_keys, mode, &key)?;
+
+            let action = match &binding.target {
+                ConfiguredBindingTarget::Sequence(sequence) => {
+                    let sequence = sequence.replace("<leader>", &self.leader.to_string());
+                    if sequence.is_empty() {
+                        anyhow::bail!("custom binding sequence cannot be empty");
+                    }
+                    if sequence.contains('<') || sequence.contains('>') {
+                        anyhow::bail!(
+                            "custom binding target {:?} must be a character sequence",
+                            sequence
+                        );
+                    }
+                    InputAction::ReplaySequence(sequence)
+                }
+                ConfiguredBindingTarget::Command(command) => {
+                    let command = command.trim().trim_start_matches(':').trim();
+                    if command.is_empty() {
+                        anyhow::bail!("custom binding command cannot be empty");
+                    }
+                    InputAction::RunCommand(command.to_string())
+                }
+            };
+            next_bindings.push(CustomBinding {
+                mode,
+                key,
+                action,
+                description: description.to_string(),
+            });
+        }
+
+        reject_ambiguous_sequence_prefixes(&next_bindings)?;
+        let mut validator = self.clone();
+        validator.custom_bindings = next_bindings.clone();
+        for binding in &next_bindings {
+            if let InputAction::ReplaySequence(sequence) = &binding.action {
+                validator.expand_replay_sequence(binding.mode, sequence)?;
+            }
+        }
+        self.custom_bindings = next_bindings;
+        Ok(())
+    }
+
+    pub fn expand_replay_sequence(
+        &self,
+        mode: InputMode,
+        sequence: &str,
+    ) -> anyhow::Result<Vec<InputAction>> {
+        self.expand_replay_sequence_inner(mode, sequence, &mut Vec::new())
+    }
+
+    fn expand_replay_sequence_inner(
+        &self,
+        mode: InputMode,
+        sequence: &str,
+        stack: &mut Vec<String>,
+    ) -> anyhow::Result<Vec<InputAction>> {
+        let marker = format!("{mode:?}:{sequence}");
+        if stack.contains(&marker) {
+            anyhow::bail!("custom binding sequence contains a cycle at {sequence:?}");
+        }
+        stack.push(marker);
+
+        let mut parser = self.clone();
+        parser.reset_prefixes();
+        let mut actions = Vec::new();
+        for key in sequence.chars() {
+            let action = map_event_with_state(&mut parser, mode, &Event::Character(key));
+            match action {
+                InputAction::None => {}
+                InputAction::ReplaySequence(nested) => {
+                    actions.extend(self.expand_replay_sequence_inner(mode, &nested, stack)?);
+                }
+                action if replayable_motion_action(&action) => actions.push(action),
+                action => anyhow::bail!(
+                    "custom binding sequence {sequence:?} resolves to non-motion action {action:?}"
+                ),
+            }
+        }
+        if parser.pending_input().is_some() {
+            anyhow::bail!("custom binding sequence {sequence:?} is incomplete");
+        }
+        let _ = stack.pop();
+        if actions.is_empty() {
+            anyhow::bail!("custom binding sequence {sequence:?} does not perform a motion");
+        }
+        Ok(actions)
     }
 
     pub fn special_keys(&self) -> impl Iterator<Item = &str> {
@@ -503,6 +705,39 @@ impl InputState {
         self.pending_operator = None;
         self.pending_search_motion = None;
         self.pending_replace = false;
+        self.which_key_started_at = None;
+    }
+
+    fn pending_input(&self) -> Option<PendingInput> {
+        let pending = PendingInput {
+            sequence: self.pending_sequence.clone(),
+            count: self.pending_count,
+            operator: self.pending_operator,
+            search_motion: self.pending_search_motion,
+            replace: self.pending_replace,
+        };
+        (!pending.sequence.is_empty()
+            || pending.count.is_some()
+            || pending.operator.is_some()
+            || pending.search_motion.is_some()
+            || pending.replace)
+            .then_some(pending)
+    }
+
+    fn update_which_key_timer(&mut self, previous: Option<PendingInput>) {
+        let current = self.pending_input();
+        if current.is_none() {
+            self.which_key_started_at = None;
+        } else if self.which_key_started_at.is_none()
+            || !previous
+                .as_ref()
+                .zip(current.as_ref())
+                .is_some_and(|(previous, current)| {
+                    current.typed_prefix().starts_with(&previous.typed_prefix())
+                })
+        {
+            self.which_key_started_at = Some(Instant::now());
+        }
     }
 
     fn push_count_digit(&mut self, d: u8) {
@@ -513,9 +748,13 @@ impl InputState {
     }
 
     fn take_count_or_1(&mut self) -> usize {
+        self.take_count().0
+    }
+
+    fn take_count(&mut self) -> (usize, bool) {
         match self.pending_count.take() {
-            Some(0) | None => 1,
-            Some(n) => n,
+            Some(0) | None => (1, false),
+            Some(n) => (n, true),
         }
     }
 
@@ -540,6 +779,7 @@ impl InputState {
         operator: Option<PendingOperator>,
         kind: SearchMotionKind,
         count: usize,
+        count_explicit: bool,
     ) {
         self.pending_sequence.clear();
         self.pending_count = None;
@@ -548,8 +788,384 @@ impl InputState {
         self.pending_search_motion = Some(PendingSearchMotion {
             operator,
             count: count.max(1),
+            count_explicit,
             kind,
         });
+    }
+
+    fn begin_operator(&mut self, operator: TextObjectOperator, scope: Option<TextObjectScope>) {
+        let (count, count_explicit) = self.take_count();
+        self.pending_operator = Some(PendingOperator {
+            operator,
+            count,
+            count_explicit,
+            scope,
+        });
+    }
+
+    fn backspace_pending(&mut self) -> bool {
+        if self.pending_input().is_none() {
+            return false;
+        }
+
+        if self.pending_sequence.pop().is_some() {
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        if let Some(search) = self.pending_search_motion.take() {
+            if let Some(operator) = search.operator {
+                self.pending_operator = Some(operator);
+            } else if search.count_explicit {
+                self.pending_count = Some(search.count);
+            }
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        if self.pending_replace {
+            self.pending_replace = false;
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        if self.pending_operator.is_some_and(|operator| {
+            operator.operator == TextObjectOperator::Select && operator.scope.is_some()
+        }) {
+            let operator = self
+                .pending_operator
+                .take()
+                .expect("checked pending operator");
+            if operator.count_explicit {
+                self.pending_count = Some(operator.count);
+            }
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        if let Some(operator) = self.pending_operator.as_mut()
+            && operator.scope.take().is_some()
+        {
+            return true;
+        }
+        if let Some(operator) = self.pending_operator.take() {
+            if operator.count_explicit {
+                self.pending_count = Some(operator.count);
+            }
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        if let Some(count) = self.pending_count {
+            self.pending_count = (count >= 10).then_some(count / 10);
+            self.clear_which_key_timer_if_complete();
+            return true;
+        }
+        false
+    }
+
+    fn clear_which_key_timer_if_complete(&mut self) {
+        if self.pending_input().is_none() {
+            self.which_key_started_at = None;
+        }
+    }
+
+    pub fn which_key_popup(
+        &self,
+        mode: InputMode,
+        now: Instant,
+        delay: Duration,
+    ) -> Option<WhichKeyPopup> {
+        let started_at = self.which_key_started_at?;
+        if now.saturating_duration_since(started_at) < delay {
+            return None;
+        }
+
+        let (prefix, entries) = self.which_key_contents(mode)?;
+        (!entries.is_empty()).then_some(WhichKeyPopup { prefix, entries })
+    }
+
+    fn which_key_contents(&self, mode: InputMode) -> Option<(String, Vec<WhichKeyEntry>)> {
+        if let Some(search) = self.pending_search_motion {
+            let description = match search.kind {
+                SearchMotionKind::Find => "Find character forwards",
+                SearchMotionKind::Till => "Until character forwards",
+                SearchMotionKind::FindBefore => "Find character backwards",
+                SearchMotionKind::TillBefore => "Until character backwards",
+            };
+            return Some((
+                search_motion_prefix(search),
+                vec![which_key_entry("<char>", description)],
+            ));
+        }
+
+        if self.pending_replace {
+            return Some((
+                "r".to_string(),
+                vec![which_key_entry("<char>", "Replace character")],
+            ));
+        }
+
+        if let Some(operator) = self.pending_operator {
+            let prefix = operator_prefix(operator, &self.pending_sequence);
+            let entries = if operator.scope.is_some() {
+                text_object_entries()
+            } else if self.pending_sequence.is_empty() {
+                operator_entries(operator.operator)
+            } else {
+                vec![which_key_entry("g", "Start of file")]
+            };
+            return Some((prefix, entries));
+        }
+
+        if !self.pending_sequence.is_empty() {
+            return Some((
+                display_sequence(&self.pending_sequence, self.leader),
+                sequence_entries(self, mode, &self.pending_sequence),
+            ));
+        }
+
+        self.pending_count
+            .map(|count| (count.to_string(), count_entries(mode)))
+    }
+}
+
+fn which_key_entry(key: impl Into<String>, description: impl Into<String>) -> WhichKeyEntry {
+    WhichKeyEntry {
+        key: key.into(),
+        description: description.into(),
+    }
+}
+
+fn replayable_motion_action(action: &InputAction) -> bool {
+    matches!(
+        action,
+        InputAction::Motion { .. }
+            | InputAction::ViewportDownCenter
+            | InputAction::ViewportUpCenter
+            | InputAction::CenterCursorLine
+    )
+}
+
+fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<WhichKeyEntry> {
+    #[derive(Default)]
+    struct Node {
+        exact: Option<String>,
+        group: Option<String>,
+        has_children: bool,
+    }
+
+    fn add_mapping(
+        nodes: &mut BTreeMap<String, Node>,
+        remainder: &str,
+        description: &str,
+        is_group: bool,
+    ) {
+        let Some(next) = remainder.chars().next() else {
+            return;
+        };
+        let next_len = next.len_utf8();
+        let node = nodes.entry(next.to_string()).or_default();
+        if remainder.len() > next_len || is_group {
+            node.has_children = true;
+            if is_group {
+                node.group = Some(description.to_string());
+            }
+        } else {
+            node.exact = Some(description.to_string());
+        }
+    }
+
+    let mut nodes = BTreeMap::<String, Node>::new();
+    for binding in sequence_bindings_for_mode(mode) {
+        let sequence = builtin_sequence(binding.sequence, state.leader());
+        let Some(remainder) = sequence.strip_prefix(prefix) else {
+            continue;
+        };
+        if remainder.is_empty() {
+            continue;
+        }
+        add_mapping(
+            &mut nodes,
+            remainder,
+            sequence_action_description(binding),
+            binding.action.is_none(),
+        );
+    }
+    for binding in &state.custom_bindings {
+        let CustomKey::Sequence(sequence) = &binding.key else {
+            continue;
+        };
+        if binding.mode != mode {
+            continue;
+        }
+        let Some(remainder) = sequence.strip_prefix(prefix) else {
+            continue;
+        };
+        if remainder.is_empty() {
+            continue;
+        }
+        add_mapping(&mut nodes, remainder, &binding.description, false);
+    }
+    nodes
+        .into_iter()
+        .filter_map(|(key, node)| {
+            let description = if node.has_children {
+                node.group.unwrap_or_else(|| "+prefix".to_string())
+            } else {
+                node.exact?
+            };
+            Some(which_key_entry(
+                display_sequence(&key, state.leader()),
+                description,
+            ))
+        })
+        .collect()
+}
+
+fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
+    match binding.action {
+        Some(SequenceAction::OpenExplorer) => "Open explorer",
+        Some(SequenceAction::ToggleUndoTree) => "Toggle undo tree",
+        Some(SequenceAction::OpenFinder) => "Find files",
+        Some(SequenceAction::ToggleDiagnosticsList) => "Toggle diagnostics",
+        Some(SequenceAction::TriggerCodeActions) => "Code actions",
+        Some(SequenceAction::GotoDefinition) => "Go to definition",
+        Some(SequenceAction::YankSelectionSystem) => "Yank to system clipboard",
+        Some(SequenceAction::PasteSystemClipboard) => "Paste system clipboard",
+        Some(SequenceAction::FileStart) => "Start of file",
+        Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
+        None if binding.sequence.ends_with('c') => "+code",
+        None => "+prefix",
+    }
+}
+
+fn operator_entries(operator: TextObjectOperator) -> Vec<WhichKeyEntry> {
+    let repeat_description = match operator {
+        TextObjectOperator::Delete => "Delete current line",
+        TextObjectOperator::Change => "Change current line",
+        TextObjectOperator::Yank => "Yank current line",
+        TextObjectOperator::Select => "Select current line",
+    };
+    let mut entries = vec![which_key_entry(operator_key(operator), repeat_description)];
+    entries.extend([
+        which_key_entry("0", "Start of line"),
+        which_key_entry("_", "First non-blank"),
+        which_key_entry("$", "End of line"),
+        which_key_entry("h", "Move left"),
+        which_key_entry("j", "Move down"),
+        which_key_entry("k", "Move up"),
+        which_key_entry("l", "Move right"),
+        which_key_entry("w", "Next word"),
+        which_key_entry("b", "Previous word"),
+        which_key_entry("e", "End of word"),
+        which_key_entry("G", "End of file"),
+        which_key_entry("g", "+go to"),
+        which_key_entry("%", "Matching delimiter"),
+        which_key_entry("f", "Find character forwards"),
+        which_key_entry("t", "Until character forwards"),
+        which_key_entry("F", "Find character backwards"),
+        which_key_entry("T", "Until character backwards"),
+        which_key_entry("i", "+inside text object"),
+        which_key_entry("a", "+around text object"),
+    ]);
+    entries
+}
+
+fn text_object_entries() -> Vec<WhichKeyEntry> {
+    [
+        ("w", "Word"),
+        ("W", "Whitespace-delimited word"),
+        ("p", "Paragraph"),
+        ("(", "Parentheses"),
+        (")", "Parentheses"),
+        ("b", "Parentheses"),
+        ("[", "Brackets"),
+        ("]", "Brackets"),
+        ("{", "Braces"),
+        ("}", "Braces"),
+        ("B", "Braces"),
+        ("'", "Single quotes"),
+        ("\"", "Double quotes"),
+        ("`", "Backticks"),
+    ]
+    .into_iter()
+    .map(|(key, description)| which_key_entry(key, description))
+    .collect()
+}
+
+fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
+    let mut entries = [
+        ("h", "Move left"),
+        ("j", "Move down"),
+        ("k", "Move up"),
+        ("l", "Move right"),
+        ("w", "Next word"),
+        ("b", "Previous word"),
+        ("e", "End of word"),
+        ("_", "First non-blank"),
+        ("$", "End of line"),
+        ("G", "End of file"),
+        ("g", "+go to"),
+        ("%", "Matching delimiter"),
+        ("f", "Find character forwards"),
+        ("t", "Until character forwards"),
+        ("F", "Find character backwards"),
+        ("T", "Until character backwards"),
+    ]
+    .into_iter()
+    .map(|(key, description)| which_key_entry(key, description))
+    .collect::<Vec<_>>();
+    if mode == InputMode::Normal {
+        entries.extend([
+            which_key_entry("d", "+delete"),
+            which_key_entry("c", "+change"),
+            which_key_entry("y", "+yank"),
+        ]);
+    }
+    entries
+}
+
+fn operator_prefix(operator: PendingOperator, sequence: &str) -> String {
+    let mut prefix = count_prefix(operator.count, operator.count_explicit);
+    prefix.push(operator_key(operator.operator));
+    if let Some(scope) = operator.scope {
+        prefix.push(match scope {
+            TextObjectScope::Inner => 'i',
+            TextObjectScope::Around => 'a',
+        });
+    }
+    prefix.push_str(sequence);
+    prefix
+}
+
+fn search_motion_prefix(search: PendingSearchMotion) -> String {
+    let mut prefix = search
+        .operator
+        .map(|operator| operator_prefix(operator, ""))
+        .unwrap_or_else(|| count_prefix(search.count, search.count_explicit));
+    prefix.push(match search.kind {
+        SearchMotionKind::Find => 'f',
+        SearchMotionKind::Till => 't',
+        SearchMotionKind::FindBefore => 'F',
+        SearchMotionKind::TillBefore => 'T',
+    });
+    prefix
+}
+
+fn count_prefix(count: usize, explicit: bool) -> String {
+    explicit.then(|| count.to_string()).unwrap_or_default()
+}
+
+fn operator_key(operator: TextObjectOperator) -> char {
+    match operator {
+        TextObjectOperator::Delete => 'd',
+        TextObjectOperator::Change => 'c',
+        TextObjectOperator::Yank => 'y',
+        TextObjectOperator::Select => 'v',
+    }
+}
+
+fn display_sequence(sequence: &str, leader: char) -> String {
+    if sequence.starts_with(leader) {
+        sequence.replacen(leader, "<leader>", 1)
+    } else {
+        sequence.to_string()
     }
 }
 
@@ -560,6 +1176,44 @@ pub fn map_event_with_state(state: &mut InputState, mode: InputMode, event: &Eve
 }
 
 pub fn map_event_with_context(
+    state: &mut InputState,
+    mode: InputMode,
+    confirm_explorer_delete: bool,
+    event: &Event,
+) -> InputAction {
+    if modal_sequence_mode(mode) && state.pending_input().is_some() {
+        if pending_escape_event(event) {
+            state.reset_prefixes();
+            return InputAction::None;
+        }
+        if pending_backspace_event(event) && state.backspace_pending() {
+            return InputAction::None;
+        }
+    }
+
+    let previous = state.pending_input();
+    let action = map_event_with_context_inner(state, mode, confirm_explorer_delete, event);
+    state.update_which_key_timer(previous);
+    action
+}
+
+fn pending_escape_event(event: &Event) -> bool {
+    matches!(event, Event::Escape)
+        || matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
+            key: KeyKind::Escape,
+            mods,
+        }) if unmodified(*mods))
+}
+
+fn pending_backspace_event(event: &Event) -> bool {
+    matches!(event, Event::Backspace)
+        || matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
+            key: KeyKind::Backspace,
+            mods,
+        }) if unmodified(*mods))
+}
+
+fn map_event_with_context_inner(
     state: &mut InputState,
     mode: InputMode,
     confirm_explorer_delete: bool,
@@ -836,11 +1490,7 @@ fn modal_char_action(
             InputAction::DeleteSelectionPrivate
         }
         'd' if mode == InputMode::Normal => {
-            state.pending_operator = Some(PendingOperator {
-                operator: TextObjectOperator::Delete,
-                count: state.take_count_or_1(),
-                scope: None,
-            });
+            state.begin_operator(TextObjectOperator::Delete, None);
             InputAction::None
         }
         'y' if mode == InputMode::Normal && confirm_explorer_delete => {
@@ -848,11 +1498,7 @@ fn modal_char_action(
             InputAction::ConfirmExplorerDelete
         }
         'y' if mode == InputMode::Normal => {
-            state.pending_operator = Some(PendingOperator {
-                operator: TextObjectOperator::Yank,
-                count: state.take_count_or_1(),
-                scope: None,
-            });
+            state.begin_operator(TextObjectOperator::Yank, None);
             InputAction::None
         }
         'i' if matches!(
@@ -860,11 +1506,7 @@ fn modal_char_action(
             InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            state.pending_operator = Some(PendingOperator {
-                operator: TextObjectOperator::Select,
-                count: state.take_count_or_1(),
-                scope: Some(TextObjectScope::Inner),
-            });
+            state.begin_operator(TextObjectOperator::Select, Some(TextObjectScope::Inner));
             InputAction::None
         }
         'a' if matches!(
@@ -872,11 +1514,7 @@ fn modal_char_action(
             InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            state.pending_operator = Some(PendingOperator {
-                operator: TextObjectOperator::Select,
-                count: state.take_count_or_1(),
-                scope: Some(TextObjectScope::Around),
-            });
+            state.begin_operator(TextObjectOperator::Select, Some(TextObjectScope::Around));
             InputAction::None
         }
         'c' if matches!(
@@ -888,11 +1526,7 @@ fn modal_char_action(
             InputAction::ChangeSelectionPrivate
         }
         'c' if mode == InputMode::Normal => {
-            state.pending_operator = Some(PendingOperator {
-                operator: TextObjectOperator::Change,
-                count: state.take_count_or_1(),
-                scope: None,
-            });
+            state.begin_operator(TextObjectOperator::Change, None);
             InputAction::None
         }
         'x' if matches!(
@@ -921,8 +1555,8 @@ fn modal_char_action(
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            let count = state.take_count_or_1();
-            state.begin_search_motion(None, SearchMotionKind::Find, count);
+            let (count, count_explicit) = state.take_count();
+            state.begin_search_motion(None, SearchMotionKind::Find, count, count_explicit);
             InputAction::None
         }
         't' if matches!(
@@ -930,8 +1564,8 @@ fn modal_char_action(
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            let count = state.take_count_or_1();
-            state.begin_search_motion(None, SearchMotionKind::Till, count);
+            let (count, count_explicit) = state.take_count();
+            state.begin_search_motion(None, SearchMotionKind::Till, count, count_explicit);
             InputAction::None
         }
         'F' if matches!(
@@ -939,8 +1573,8 @@ fn modal_char_action(
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            let count = state.take_count_or_1();
-            state.begin_search_motion(None, SearchMotionKind::FindBefore, count);
+            let (count, count_explicit) = state.take_count();
+            state.begin_search_motion(None, SearchMotionKind::FindBefore, count, count_explicit);
             InputAction::None
         }
         'T' if matches!(
@@ -948,8 +1582,8 @@ fn modal_char_action(
             InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
         ) =>
         {
-            let count = state.take_count_or_1();
-            state.begin_search_motion(None, SearchMotionKind::TillBefore, count);
+            let (count, count_explicit) = state.take_count();
+            state.begin_search_motion(None, SearchMotionKind::TillBefore, count, count_explicit);
             InputAction::None
         }
         'r' if matches!(
@@ -1142,19 +1776,39 @@ fn resolve_pending_operator(
             },
         }),
         (_, None, 'f') => {
-            state.begin_search_motion(Some(pending), SearchMotionKind::Find, pending.count);
+            state.begin_search_motion(
+                Some(pending),
+                SearchMotionKind::Find,
+                pending.count,
+                pending.count_explicit,
+            );
             Some(InputAction::None)
         }
         (_, None, 't') => {
-            state.begin_search_motion(Some(pending), SearchMotionKind::Till, pending.count);
+            state.begin_search_motion(
+                Some(pending),
+                SearchMotionKind::Till,
+                pending.count,
+                pending.count_explicit,
+            );
             Some(InputAction::None)
         }
         (_, None, 'F') => {
-            state.begin_search_motion(Some(pending), SearchMotionKind::FindBefore, pending.count);
+            state.begin_search_motion(
+                Some(pending),
+                SearchMotionKind::FindBefore,
+                pending.count,
+                pending.count_explicit,
+            );
             Some(InputAction::None)
         }
         (_, None, 'T') => {
-            state.begin_search_motion(Some(pending), SearchMotionKind::TillBefore, pending.count);
+            state.begin_search_motion(
+                Some(pending),
+                SearchMotionKind::TillBefore,
+                pending.count,
+                pending.count_explicit,
+            );
             Some(InputAction::None)
         }
         (_, None, 'i') => {
@@ -1551,8 +2205,8 @@ fn input_mode_from_name(name: &str) -> Option<InputMode> {
     }
 }
 
-fn configured_action(name: &str) -> anyhow::Result<InputAction> {
-    Ok(match name {
+fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> {
+    let action = match name {
         "open_explorer" => InputAction::OpenExplorer,
         "toggle_undo_tree" => InputAction::ToggleUndoTree,
         "open_finder" => InputAction::OpenFinder,
@@ -1659,7 +2313,104 @@ fn configured_action(name: &str) -> anyhow::Result<InputAction> {
         "symbol_info_next" => InputAction::SymbolInfoMoveNext,
         "symbol_info_previous" => InputAction::SymbolInfoMovePrev,
         _ => anyhow::bail!("unknown keybinding action {name:?}"),
-    })
+    };
+    let description = input_action_description(&action);
+    Ok((action, description))
+}
+
+fn input_action_description(action: &InputAction) -> &'static str {
+    match action {
+        // 🤮
+        InputAction::OpenExplorer => "Open explorer",
+        InputAction::ToggleUndoTree => "Toggle undo tree",
+        InputAction::OpenFinder => "Find files",
+        InputAction::ToggleDiagnosticsList => "Toggle diagnostics",
+        InputAction::TriggerCodeActions => "Code actions",
+        InputAction::GotoDefinition => "Go to definition",
+        InputAction::TriggerSymbolInfo => "Symbol information",
+        InputAction::TriggerCompletion => "Completion",
+        InputAction::Undo => "Undo",
+        InputAction::Redo => "Redo",
+        InputAction::Motion { motion, .. } => motion_description(motion),
+        InputAction::EnterInsert(InsertKind::Insert) => "Insert",
+        InputAction::EnterInsert(InsertKind::Append) => "Append",
+        InputAction::EnterInsert(InsertKind::InsertLineStart) => "Insert at line start",
+        InputAction::EnterInsert(InsertKind::AppendLineEnd) => "Append at line end",
+        InputAction::OpenLineBelow => "Open line below",
+        InputAction::OpenLineAbove => "Open line above",
+        InputAction::DeleteCharNoYank => "Delete character",
+        InputAction::YankSelectionPrivate => "Yank selection",
+        InputAction::DeleteSelectionPrivate => "Delete selection",
+        InputAction::PasteSystemClipboard => "Paste system clipboard",
+        InputAction::YankSelectionSystem => "Yank to system clipboard",
+        InputAction::PastePrivateRegister => "Paste",
+        InputAction::PastePrivateRegisterBefore => "Paste before",
+        InputAction::EnterCommand => "Command line",
+        InputAction::EnterSearch => "Search",
+        InputAction::SplitHorizontal => "Split horizontally",
+        InputAction::SplitVertical => "Split vertically",
+        InputAction::CloseSplit => "Close split",
+        InputAction::SplitFocusLeft => "Focus split left",
+        InputAction::SplitFocusDown => "Focus split down",
+        InputAction::SplitFocusUp => "Focus split up",
+        InputAction::SplitFocusRight => "Focus split right",
+        InputAction::CenterCursorLine => "Centre cursor line",
+        InputAction::ViewportDownCenter => "Viewport down",
+        InputAction::ViewportUpCenter => "Viewport up",
+        InputAction::CompletionMoveNext => "Next completion",
+        InputAction::CompletionMovePrev => "Previous completion",
+        InputAction::CompletionAccept => "Accept completion",
+        InputAction::CompletionCancel => "Cancel completion",
+        InputAction::FinderMoveNext => "Next result",
+        InputAction::FinderMovePrev => "Previous result",
+        InputAction::FinderEnter => "Open result",
+        InputAction::FinderCancel => "Close finder",
+        InputAction::SurfaceOpenSelected => "Open selection",
+        InputAction::SurfaceGoParent => "Go to parent",
+        InputAction::SetMode(InputMode::Visual) => "Visual mode",
+        InputAction::SetMode(InputMode::VisualLine) => "Visual line mode",
+        InputAction::SetMode(InputMode::VisualBlock) => "Visual block mode",
+        InputAction::PinSelectorMoveNext => "Next pin",
+        InputAction::PinSelectorMovePrev => "Previous pin",
+        InputAction::PinSelectorOpenSelected => "Open pin",
+        InputAction::PinSelectorAssign => "Assign pin",
+        InputAction::PinSelectorDeleteSelected => "Delete pin",
+        InputAction::LspMarketplaceMoveNext => "Next server",
+        InputAction::LspMarketplaceMovePrev => "Previous server",
+        InputAction::LspMarketplaceInstallSelected => "Install server",
+        InputAction::LspMarketplaceUninstallSelected => "Uninstall server",
+        InputAction::DiagnosticsListMoveNext => "Next diagnostic",
+        InputAction::DiagnosticsListMovePrev => "Previous diagnostic",
+        InputAction::DiagnosticsListOpenSelected => "Open diagnostic",
+        InputAction::CodeActionsMoveNext => "Next code action",
+        InputAction::CodeActionsMovePrev => "Previous code action",
+        InputAction::CodeActionsApplySelected => "Apply code action",
+        InputAction::SymbolInfoMoveNext => "Next symbol",
+        InputAction::SymbolInfoMovePrev => "Previous symbol",
+        _ => "Command",
+    }
+}
+
+fn motion_description(motion: &Motion) -> &'static str {
+    match motion {
+        Motion::Left => "Move left",
+        Motion::Down => "Move down",
+        Motion::Up => "Move up",
+        Motion::Right => "Move right",
+        Motion::WordStartAfter => "Next word",
+        Motion::WordStartBefore => "Previous word",
+        Motion::WordEndAfter => "End of word",
+        Motion::LineStart => "Start of line",
+        Motion::LineFirstNonWhitespace => "First non-blank",
+        Motion::LineEnd => "End of line",
+        Motion::FileStart => "Start of file",
+        Motion::FileEnd => "End of file",
+        Motion::MatchDelimiter => "Matching delimiter",
+        Motion::FindChar(_) => "Find character forwards",
+        Motion::TillChar(_) => "Until character forwards",
+        Motion::FindCharBefore(_) => "Find character backwards",
+        Motion::TillCharBefore(_) => "Until character backwards",
+    }
 }
 
 fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) -> InputAction {
@@ -3055,7 +3806,7 @@ mod tests {
         let escape = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Escape);
         let after_escape =
             map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('q'));
-        assert_eq!(escape, InputAction::ClearSearch);
+        assert_eq!(escape, InputAction::None);
         assert_eq!(after_escape, InputAction::None);
 
         let mut backspace_state = InputState::new();
@@ -4112,6 +4863,26 @@ mod tests {
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
         let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
         assert_eq!(action, InputAction::YankSelectionSystem);
+    }
+
+    #[test]
+    fn which_key_uses_visual_bindings_in_visual_mode() {
+        let mut state = InputState::new();
+        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
+
+        let popup = state
+            .which_key_popup(
+                InputMode::Visual,
+                Instant::now() + DEFAULT_WHICH_KEY_DELAY,
+                DEFAULT_WHICH_KEY_DELAY,
+            )
+            .expect("visual which-key popup");
+
+        assert!(
+            popup.entries.iter().any(|entry| {
+                entry.key == "y" && entry.description == "Yank to system clipboard"
+            })
+        );
     }
 
     #[test]

@@ -32,6 +32,6 @@ pub use widgets::{
     draw_completion_preview, draw_diagnostics_popup, draw_explorer_popup_view, draw_finder_popup,
     draw_lsp_marketplace_popup, draw_pane_split_lines, draw_perf_popup_view,
     draw_pin_selector_popup, draw_status_toast, draw_symbol_info_popup, draw_undo_tree_lines,
-    draw_undo_tree_preview_lines, explorer_popup_inner_size, lsp_marketplace_popup_inner_size,
-    perf_popup_layout, symbol_info_content_width_limit,
+    draw_undo_tree_preview_lines, draw_which_key_popup, explorer_popup_inner_size,
+    lsp_marketplace_popup_inner_size, perf_popup_layout, symbol_info_content_width_limit,
 };

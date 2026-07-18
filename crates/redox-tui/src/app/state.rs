@@ -15,7 +15,7 @@ use redox_core::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
-use crate::input::{InputMode, InputState};
+use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
 use crate::ui::overlays::DelimiterPairCache;
 use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
@@ -410,6 +410,8 @@ pub struct EditorState {
     next_external_file_check_at: Instant,
     undo_history_size: usize,
     scrolloff_rows: usize,
+    which_key_enabled: bool,
+    which_key_delay: Duration,
     config_open_requested: bool,
     config_reload_requested: bool,
     colorscheme_request: Option<String>,
@@ -478,6 +480,8 @@ impl EditorState {
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
             undo_history_size: usize::MAX,
             scrolloff_rows: crate::input::cursor::DEFAULT_SCROLLOFF_ROWS,
+            which_key_enabled: true,
+            which_key_delay: DEFAULT_WHICH_KEY_DELAY,
             config_open_requested: false,
             config_reload_requested: false,
             colorscheme_request: None,
@@ -493,10 +497,14 @@ impl EditorState {
         input: InputState,
         undo_history_size: usize,
         scrolloff_rows: usize,
+        which_key_enabled: bool,
+        which_key_delay: Duration,
     ) {
         self.input = input;
         self.undo_history_size = undo_history_size.max(1);
         self.scrolloff_rows = scrolloff_rows;
+        self.which_key_enabled = which_key_enabled;
+        self.which_key_delay = which_key_delay;
         let buffer_ids = self.views.keys().copied().collect::<Vec<_>>();
         for buffer_id in buffer_ids {
             self.apply_configured_scrolloff(buffer_id);
@@ -510,6 +518,26 @@ impl EditorState {
             pane.view.cursor.set_scrolloff_rows(scrolloff_rows);
         }
         self.enforce_undo_history_size();
+    }
+
+    pub fn which_key_popup(&self, now: Instant) -> Option<WhichKeyPopup> {
+        if !self.which_key_enabled
+            || !matches!(
+                self.mode,
+                EditorMode::Normal
+                    | EditorMode::Visual
+                    | EditorMode::VisualLine
+                    | EditorMode::VisualBlock
+            )
+            || self.explorer.is_some()
+            || self.about.is_some()
+            || self.rain_animation.is_some()
+            || self.perf_visible
+        {
+            return None;
+        }
+        self.input
+            .which_key_popup(self.mode.as_input_mode(), now, self.which_key_delay)
     }
 
     fn configured_scrolloff_for_buffer(&self, buffer_id: BufferId) -> usize {

@@ -42,6 +42,22 @@ impl EditorState {
         }
 
         match action {
+            InputAction::ReplaySequence(sequence) => {
+                match self
+                    .input
+                    .expand_replay_sequence(self.mode.as_input_mode(), &sequence)
+                {
+                    Ok(actions) => {
+                        for action in actions {
+                            self.apply_input(action, viewport_width_cells, viewport_height_rows);
+                        }
+                    }
+                    Err(error) => self.set_status(error.to_string()),
+                }
+            }
+            InputAction::RunCommand(command) => {
+                self.execute_configured_command(command);
+            }
             InputAction::Motion { motion, count } => {
                 if self.mode == EditorMode::Insert {
                     let handled_completion = match motion {

@@ -24,7 +24,8 @@ Run `:config` to open the active configuration file directly. Redox creates its 
 when needed, so this also works before the file exists. Run `:config reload` to apply saved changes
 without restarting Redox. A successful reload updates the active theme, all UI and syntax colours,
 dimming, popup sizes, the colour column, undo-history limits, the leader, and both character and
-modified-key bindings. It also updates Nerd Font icon rendering immediately.
+modified-key bindings. It also updates which-key behaviour and Nerd Font icon rendering
+immediately.
 
 Reloading is transactional: if the file cannot be read or contains an invalid option, colour,
 theme, mode, action, or key combination, Redox displays the error and keeps the active
@@ -79,6 +80,58 @@ leader = " "
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
+
+## Which-key
+
+Which-key lists the valid continuations whenever normal or visual mode is waiting for more input.
+This includes character-, line-, and block-visual modes. It combines the built-in sequence tree
+with configured bindings for the active mode, including movements moved onto multi-key sequences.
+Single-key actions execute immediately and therefore never open the popup.
+
+```toml
+[which_key]
+enabled = true
+delay_ms = 3000
+```
+
+The delay starts with the first key in a pending sequence. Once visible, the popup remains visible
+and updates immediately as deeper keys are entered. Set `delay_ms = 0` to show it immediately, or
+set `enabled = false` to disable it.
+
+While a normal- or visual-mode sequence is pending, Backspace removes its most recent key and
+Escape cancels the sequence. This editing behaviour belongs to the input system and remains
+available when the popup is disabled.
+
+### Custom motion and command bindings
+
+Use `[[bind]]` to give a normal- or visual-mode character sequence a custom description
+and make it perform either another motion sequence or an editor command:
+
+```toml
+[[bind]]
+mode = "normal"
+keys = "<leader>j"
+sequence = "10j"
+desc = "Move down 10 lines"
+
+[[bind]]
+mode = "normal"
+keys = "<leader>w"
+command = "w"
+desc = "Write current file"
+```
+
+Each entry must set exactly one of `sequence` or `command`. A `sequence` is interpreted by the same
+motion resolver as typed input, so it supports counts and can invoke another custom motion binding.
+It must resolve completely to one or more motions; cycles, incomplete input, and non-motion actions
+are rejected when configuration is loaded. A command uses the existing command-line parser and may
+optionally include its leading `:`.
+
+`keys` is a character sequence and may contain `<leader>`; modified-key tokens are not supported in
+custom bindings. Set `keys = ""` to disable an entry entirely. A disabled entry is ignored before
+its other fields are validated, so `[[bind]]` followed by only `keys = ""` is valid. Multi-key
+entries in normal and visual modes appear in which-key using their `desc`. Single-key entries
+execute immediately and therefore do not open the popup.
 
 ## Popup sizes
 
@@ -136,7 +189,12 @@ sequence. One action can have one configured assignment per mode.
 
 Configured bindings take precedence over built-in bindings that use the same input. Bindings do
 not remove unrelated defaults. Duplicate bindings and ambiguous prefixes such as `g` plus `gg` in
-the same mode are rejected.
+the same mode are rejected. Configured multi-key normal-mode bindings are automatically included in
+the which-key tree one key at a time.
+
+The `[keybindings.<mode>]` tables remap named built-in actions. Use `[[bind]]` when a key
+sequence should replay a motion sequence or execute an editor command with its own which-key
+description.
 
 ### Keybinding modes
 
@@ -210,6 +268,9 @@ Colours use six-digit hexadecimal notation (`#RRGGBB`). `"transparent"` is also 
 string sets the foreground and inherits the active theme background. Use `{ fg = ..., bg = ... }`
 to control both sides of a syntax or UI role.
 
+Which-key roles are individual colours rather than foreground/background pairs, so plain colour
+strings are recommended for all six roles; `which_key.background` controls the popup fill directly.
+
 ### Base palette keys
 
 - `background` (`bg` is an alias)
@@ -246,6 +307,8 @@ to control both sides of a syntax or UI role.
   `about.logo_blue`
 - Command line: `command_line.border`, `command_line.title`, `command_line.text`,
   `command_line.prompt`
+- Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`, `which_key.key`,
+  `which_key.arrow`, `which_key.text`
 - Inline diagnostics: `diagnostic.error`, `diagnostic.warning`, `diagnostic.information`,
   `diagnostic.hint`
 - Explorer: `explorer.border`, `explorer.title`, `explorer.file`, `explorer.directory`,

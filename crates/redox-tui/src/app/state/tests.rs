@@ -10,7 +10,11 @@ use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
+use minui::prelude::input::Event;
+
+use crate::input::{
+    InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator, map_event_with_state,
+};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::syntax::SyntaxLanguage;
 
@@ -26,6 +30,21 @@ fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     fs::write(&path, text).expect("failed to write test file");
     let session = EditorSession::open_initial_file(&path).expect("failed to open session");
     EditorState::new(session)
+}
+
+#[test]
+fn visual_mode_exposes_the_which_key_popup() {
+    let path = temp_file_path("visual_which_key");
+    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
+    state.mode = EditorMode::Visual;
+    let _ = map_event_with_state(&mut state.input, InputMode::Visual, &Event::Character(' '));
+
+    let popup = state
+        .which_key_popup(Instant::now() + Duration::from_secs(10))
+        .expect("visual which-key popup");
+
+    assert!(popup.entries.iter().any(|entry| entry.key == "y"));
+    let _ = fs::remove_file(path);
 }
 
 fn undo_history_of(state: &EditorState, buffer_id: BufferId) -> &UndoHistory {
@@ -236,6 +255,41 @@ fn run_command(state: &mut EditorState, cmd: &str) {
     state.mode = EditorMode::Command;
     state.command_line = cmd.to_string();
     state.apply_input(InputAction::CommandEnter, 80, 24);
+}
+
+#[test]
+fn configured_motion_sequence_is_replayed_through_editor_actions() {
+    let path = temp_file_path("configured_motion_sequence");
+    let mut state = state_with_text(path.clone(), &large_text(20));
+
+    state.apply_input(InputAction::ReplaySequence("10j".to_string()), 80, 24);
+
+    assert_eq!(state.active_cursor_pos(), Pos::new(10, 0));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn configured_command_is_executed_through_command_line_parser() {
+    let path = temp_file_path("configured_command");
+    let mut state = state_with_text(path.clone(), "hello\n");
+    let display_name = state
+        .session
+        .summaries()
+        .into_iter()
+        .next()
+        .expect("buffer summary")
+        .display_name;
+
+    state.apply_input(InputAction::RunCommand("ls".to_string()), 80, 24);
+
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|message| message.contains(&display_name))
+    );
+    let _ = fs::remove_file(path);
 }
 
 fn enter_command_mode(state: &mut EditorState) {
