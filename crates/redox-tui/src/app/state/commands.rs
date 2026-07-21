@@ -350,7 +350,12 @@ impl EditorState {
             Err(error) => {
                 let _ = self.session.recompute_active_dirty();
                 self.mark_git_repo_statuses_stale();
-                self.set_status(format!("written (format failed: {error})"));
+                match self.persist_active_undo_history() {
+                    Ok(()) => self.set_status(format!("written (format failed: {error})")),
+                    Err(history_error) => self.set_status(format!(
+                        "written (format failed: {error}; undo history save failed: {history_error})"
+                    )),
+                }
                 return true;
             }
         };
@@ -361,9 +366,19 @@ impl EditorState {
         let _ = self.session.recompute_active_dirty();
 
         self.mark_git_repo_statuses_stale();
-        match self.notify_active_lsp_did_save() {
-            Ok(()) => self.set_status("written"),
-            Err(error) => self.set_status(format!("written (LSP save sync failed: {error})")),
+        let history_result = self.persist_active_undo_history();
+        let lsp_result = self.notify_active_lsp_did_save();
+        match (history_result, lsp_result) {
+            (Ok(()), Ok(())) => self.set_status("written"),
+            (Err(error), Ok(())) => {
+                self.set_status(format!("written (undo history save failed: {error})"))
+            }
+            (Ok(()), Err(error)) => {
+                self.set_status(format!("written (LSP save sync failed: {error})"))
+            }
+            (Err(history_error), Err(lsp_error)) => self.set_status(format!(
+                "written (undo history save failed: {history_error}; LSP save sync failed: {lsp_error})"
+            )),
         }
         true
     }

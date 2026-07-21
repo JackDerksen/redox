@@ -46,7 +46,7 @@ impl UndoCheckpoint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TextDiff {
     pub start_char: usize,
     pub deleted: String,
@@ -108,7 +108,7 @@ impl TextDiff {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UndoRecord {
     pub diff: TextDiff,
     pub before_cursor: Pos,
@@ -134,7 +134,7 @@ impl UndoRecord {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UndoNode {
     parent: Option<UndoNodeId>,
     children: Vec<UndoNodeId>,
@@ -153,12 +153,14 @@ pub struct UndoTreeEntry {
     pub child_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UndoHistory {
     nodes: Vec<UndoNode>,
     current: UndoNodeId,
     next_sequence: u64,
+    #[serde(skip)]
     insert_mode_coalesce_base: Option<UndoCheckpoint>,
+    #[serde(skip, default = "unbounded_max_records")]
     max_records: usize,
 }
 
@@ -181,6 +183,64 @@ impl Default for UndoHistory {
 }
 
 impl UndoHistory {
+    /// Validate deserialised tree links and restore runtime-only settings.
+    pub fn prepare_after_load(&mut self, max_records: usize) -> bool {
+        if self.nodes.is_empty() || self.current >= self.nodes.len() {
+            return false;
+        }
+        if self.nodes[0].parent.is_some() || self.nodes[0].record.is_some() {
+            return false;
+        }
+
+        let mut incoming = vec![0usize; self.nodes.len()];
+        for (node_id, node) in self.nodes.iter().enumerate() {
+            if node_id > 0 {
+                let Some(parent) = node.parent else {
+                    return false;
+                };
+                if parent >= self.nodes.len() || parent == node_id || node.record.is_none() {
+                    return false;
+                }
+            }
+            for &child in &node.children {
+                if child >= self.nodes.len() || self.nodes[child].parent != Some(node_id) {
+                    return false;
+                }
+                incoming[child] = incoming[child].saturating_add(1);
+            }
+        }
+        if incoming[0] != 0 || incoming.iter().skip(1).any(|&count| count != 1) {
+            return false;
+        }
+
+        let mut visited = vec![false; self.nodes.len()];
+        let mut pending = vec![0];
+        while let Some(node_id) = pending.pop() {
+            if visited[node_id] {
+                return false;
+            }
+            visited[node_id] = true;
+            pending.extend(self.nodes[node_id].children.iter().copied());
+        }
+        if visited.iter().any(|seen| !seen) {
+            return false;
+        }
+
+        let max_sequence = self
+            .nodes
+            .iter()
+            .map(|node| node.sequence)
+            .max()
+            .unwrap_or(0);
+        if self.next_sequence <= max_sequence {
+            return false;
+        }
+
+        self.insert_mode_coalesce_base = None;
+        self.set_max_records(max_records);
+        true
+    }
+
     pub fn checkpoint(&self, buffer: TextBuffer, cursor: Pos) -> UndoCheckpoint {
         UndoCheckpoint::new(buffer, cursor, self.current)
     }
@@ -419,6 +479,10 @@ impl UndoHistory {
             .map(|record| record.after_cursor)
             .unwrap_or_else(Pos::zero)
     }
+}
+
+fn unbounded_max_records() -> usize {
+    usize::MAX
 }
 
 fn now_ms() -> u128 {

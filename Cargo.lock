@@ -856,6 +856,7 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "ropey",
+ "serde",
 ]
 
 [[package]]

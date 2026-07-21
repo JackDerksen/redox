@@ -93,7 +93,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 ### Configuration
 
-Redox was designed from the ground-up to be pleasant without the need for configuration, but 
+Redox was designed from the ground-up to be pleasant without the need for configuration, but
 it is highly configurable, should you choose to modify the default behaviour or appearance.
 
 It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.toml`, or
@@ -107,7 +107,7 @@ position, undo-tree history size, the leader character, and mode-specific keybin
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
 defaults.
 
-Editor-managed data (such as undo history and LSP metadata) lives separately under 
+Editor-managed data (such as undo history and LSP metadata) lives separately under
 `$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the configuration directory for
 `config.toml` alone. Existing legacy state is migrated automatically.
 

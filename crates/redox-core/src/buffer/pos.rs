@@ -7,7 +7,9 @@
 ///
 /// Both fields are zero-based. `col` is a character offset within the line,
 /// not a byte offset or terminal-cell column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Pos {
     pub line: usize,
     pub col: usize,

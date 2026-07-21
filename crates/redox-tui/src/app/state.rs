@@ -3,7 +3,7 @@
 //! This module keeps UI-facing state (mode, command line, status, cursor viewport
 //! reconciliation) while delegating text editing primitives to `redox-core`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
 use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
+use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
 use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
@@ -408,6 +409,7 @@ pub struct EditorState {
     next_pane_id: usize,
     pane_use_tick: u64,
     next_external_file_check_at: Instant,
+    undo_history_load_attempted: HashSet<BufferId>,
     undo_history_size: usize,
     scrolloff_rows: usize,
     which_key_enabled: bool,
@@ -478,6 +480,7 @@ impl EditorState {
             next_pane_id: 1,
             pane_use_tick: 1,
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
+            undo_history_load_attempted: HashSet::new(),
             undo_history_size: usize::MAX,
             scrolloff_rows: crate::input::cursor::DEFAULT_SCROLLOFF_ROWS,
             which_key_enabled: true,
@@ -487,6 +490,8 @@ impl EditorState {
             colorscheme_request: None,
         };
         let mut state = state;
+        state.ensure_buffer_undo_history_loaded(active);
+        state.sync_active_pane_view();
         state.request_analysis(active, 0);
         state.initialise_lsp_state();
         state
@@ -1034,6 +1039,7 @@ impl EditorState {
         if self.session.active_buffer().len_chars() != before_len_chars {
             self.invalidate_active_render_caches();
         }
+        self.ensure_buffer_undo_history_loaded(active_id);
     }
 
     pub fn poll_external_file_changes(&mut self, now: Instant) {
@@ -1093,6 +1099,7 @@ impl EditorState {
                 if self.session.active_buffer().len_chars() != before_len_chars {
                     self.invalidate_active_render_caches();
                 }
+                self.ensure_buffer_undo_history_loaded(active_id);
                 true
             }
             Err(e) => {
@@ -1317,10 +1324,63 @@ impl EditorState {
     }
 
     fn clear_buffer_undo_history(&mut self, buffer_id: BufferId) {
+        if let Some(path) = self
+            .session
+            .meta(buffer_id)
+            .and_then(|meta| meta.path.as_deref())
+        {
+            let _ = storage::remove_undo_history(path);
+        }
         let view = self.views.entry(buffer_id).or_default();
         view.undo_history.clear();
         view.pending_insert_undo = None;
         self.refresh_undo_tree_for_buffer(buffer_id);
+    }
+
+    fn ensure_buffer_undo_history_loaded(&mut self, buffer_id: BufferId) {
+        if self.undo_history_load_attempted.contains(&buffer_id)
+            || !self
+                .session
+                .buffer_is_fully_loaded(buffer_id)
+                .unwrap_or(false)
+        {
+            return;
+        }
+        self.undo_history_load_attempted.insert(buffer_id);
+
+        let Some(meta) = self.session.meta(buffer_id) else {
+            return;
+        };
+        if meta.kind != BufferKind::File || meta.dirty || meta.is_new_file {
+            return;
+        }
+        let Some(path) = meta.path.clone() else {
+            return;
+        };
+        let Some(buffer) = self.session.buffer(buffer_id) else {
+            return;
+        };
+        let Ok(Some(history)) = storage::load_undo_history(&path, buffer, self.undo_history_size)
+        else {
+            return;
+        };
+        self.views.entry(buffer_id).or_default().undo_history = history;
+        self.refresh_undo_tree_for_buffer(buffer_id);
+    }
+
+    fn persist_active_undo_history(&self) -> std::io::Result<()> {
+        let active_id = self.session.active_id();
+        let meta = self.session.active_meta();
+        if meta.kind != BufferKind::File || meta.dirty {
+            return Ok(());
+        }
+        let Some(path) = meta.path.as_deref() else {
+            return Ok(());
+        };
+        let Some(view) = self.views.get(&active_id) else {
+            return Ok(());
+        };
+        storage::save_undo_history(path, self.session.active_buffer(), &view.undo_history)
     }
 
     fn invalidate_active_render_caches(&mut self) {

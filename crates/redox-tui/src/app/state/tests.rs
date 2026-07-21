@@ -2442,6 +2442,57 @@ fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
 }
 
 #[test]
+fn undo_and_redo_survive_reopening_a_saved_file() {
+    let path = temp_file_path("undo_redo_across_sessions");
+    let mut state = state_with_text(path.clone(), "hello\n");
+
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "Ahello\n");
+    state.apply_input(InputAction::Undo, 80, 24);
+    state.apply_input(InputAction::Paste("B".to_string()), 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "Bhello\n");
+    run_command(&mut state, "w");
+    drop(state);
+
+    let session = EditorSession::open_initial_file(&path).expect("failed to reopen session");
+    let mut reopened = EditorState::new(session);
+    let active_id = reopened.session.active_id();
+    assert_eq!(undo_history_of(&reopened, active_id).undo_len(), 1);
+    assert_eq!(
+        undo_history_of(&reopened, active_id).tree_entries().len(),
+        3
+    );
+
+    reopened.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(reopened.session.active_buffer().to_string(), "hello\n");
+    reopened.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(reopened.session.active_buffer().to_string(), "Bhello\n");
+
+    let _ = crate::storage::remove_undo_history(&path);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn persisted_undo_history_is_ignored_when_disk_content_changes() {
+    let path = temp_file_path("undo_history_content_guard");
+    let mut state = state_with_text(path.clone(), "hello\n");
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    run_command(&mut state, "w");
+    drop(state);
+
+    fs::write(&path, "external\n").expect("failed to replace file");
+    let session = EditorSession::open_initial_file(&path).expect("failed to reopen session");
+    let mut reopened = EditorState::new(session);
+    reopened.apply_input(InputAction::Undo, 80, 24);
+
+    assert_eq!(reopened.session.active_buffer().to_string(), "external\n");
+    assert_eq!(reopened.status_msg.as_deref(), Some("nothing to undo"));
+
+    let _ = crate::storage::remove_undo_history(&path);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn redo_stack_is_cleared_after_new_edit_post_undo() {
     let path = temp_file_path("redo_cleared_after_new_edit");
     let mut state = state_with_text(path.clone(), "hello");

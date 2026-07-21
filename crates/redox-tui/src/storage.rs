@@ -2,10 +2,23 @@
 
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use redox_core::{TextBuffer, UndoHistory};
+use serde::{Deserialize, Serialize};
+
 const APP_DIR: &str = "redox";
+const UNDO_HISTORY_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct UndoHistorySnapshot {
+    version: u32,
+    path: String,
+    content_hash: u64,
+    content_len_chars: usize,
+    history: UndoHistory,
+}
 
 pub fn state_root() -> PathBuf {
     if let Some(root) = xdg_root("XDG_STATE_HOME") {
@@ -59,6 +72,98 @@ pub fn installed_tools_path() -> PathBuf {
     } else {
         legacy
     }
+}
+
+pub fn undo_history_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        return env::temp_dir().join(format!("redox-test-undo-history-{}", std::process::id()));
+    }
+
+    #[cfg(not(test))]
+    state_root().join("undo-history")
+}
+
+pub fn load_undo_history(
+    path: &Path,
+    buffer: &TextBuffer,
+    max_records: usize,
+) -> io::Result<Option<UndoHistory>> {
+    let snapshot_path = undo_history_path(path);
+    let bytes = match fs::read(snapshot_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let snapshot: UndoHistorySnapshot = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    let content = buffer.to_string();
+    if snapshot.version != UNDO_HISTORY_VERSION
+        || snapshot.path != path.to_string_lossy()
+        || snapshot.content_len_chars != buffer.len_chars()
+        || snapshot.content_hash != stable_hash(content.as_bytes())
+    {
+        return Ok(None);
+    }
+
+    let mut history = snapshot.history;
+    if !history.prepare_after_load(max_records) {
+        return Ok(None);
+    }
+    Ok(Some(history))
+}
+
+pub fn save_undo_history(
+    path: &Path,
+    buffer: &TextBuffer,
+    history: &UndoHistory,
+) -> io::Result<()> {
+    if history.tree_entries().len() <= 1 {
+        return remove_undo_history(path);
+    }
+
+    let root = undo_history_root();
+    fs::create_dir_all(&root)?;
+    let content = buffer.to_string();
+    let snapshot = UndoHistorySnapshot {
+        version: UNDO_HISTORY_VERSION,
+        path: path.to_string_lossy().into_owned(),
+        content_hash: stable_hash(content.as_bytes()),
+        content_len_chars: buffer.len_chars(),
+        history: history.clone(),
+    };
+    let destination = undo_history_path(path);
+    let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+    serde_json::to_writer(&mut temporary, &snapshot).map_err(io::Error::other)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(destination)
+        .map_err(|error| error.error)?;
+    Ok(())
+}
+
+pub fn remove_undo_history(path: &Path) -> io::Result<()> {
+    match fs::remove_file(undo_history_path(path)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn undo_history_path(path: &Path) -> PathBuf {
+    undo_history_root().join(format!(
+        "{:016x}.json",
+        stable_hash(path.to_string_lossy().as_bytes())
+    ))
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Move every known legacy state entry out of the user configuration directory.
