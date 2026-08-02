@@ -124,9 +124,9 @@ impl Default for BaseTheme {
                 b: (146),
             },
             yellow: Color::Rgb {
-                r: (249),
-                g: (214),
-                b: (119),
+                r: (255),
+                g: (218),
+                b: (132),
             },
             blue: Color::Rgb {
                 r: (155),
@@ -154,9 +154,9 @@ impl Default for BaseTheme {
                 b: (194),
             },
             light_yellow: Color::Rgb {
-                r: (239),
-                g: (214),
-                b: (128),
+                r: (255),
+                g: (233),
+                b: (162),
             },
             light_blue: Color::Rgb {
                 r: (187),
