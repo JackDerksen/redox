@@ -861,14 +861,14 @@ dependencies = [
 
 [[package]]
 name = "redox-editor"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "redox-tui",
 ]
 
 [[package]]
 name = "redox-tui"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "ignore",
