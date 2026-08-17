@@ -151,7 +151,6 @@ Enter command mode with `:`.
 | `:about` | Toggle the about popup. |
 | `:rain` | Toggle rain mode. |
 | `:perf` / `:perf popup` | Toggle the performance metrics popup. |
-| `:perf corners` | Toggle performance corner markers. |
 | `:undo-tree` | Toggle the undo tree pane. |
 | `:lsp list` | Open the language tools marketplace. |
 | `:lsp status` | Show the active buffer's detected language tools. |

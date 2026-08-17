@@ -3367,7 +3367,7 @@ fn command_rain_captures_and_stop_clears_animation_state() {
 }
 
 #[test]
-fn command_perf_toggles_performance_popup() {
+fn command_perf_accepts_popup_spellings_and_rejects_other_arguments() {
     let path = temp_file_path("perf_popup");
     let mut state = state_with_text(path.clone(), "let perf = true;\n");
 
@@ -3377,9 +3377,14 @@ fn command_perf_toggles_performance_popup() {
     assert!(state.perf_popup().is_some());
     assert_eq!(state.mode, EditorMode::Normal);
 
-    run_command(&mut state, "perf");
+    run_command(&mut state, "perf popup");
 
     assert!(state.perf_popup().is_none());
+
+    run_command(&mut state, "perf corners");
+
+    assert!(state.perf_popup().is_none());
+    assert_eq!(state.status_msg.as_deref(), Some("usage: perf [popup]"));
 
     let _ = fs::remove_file(path);
 }

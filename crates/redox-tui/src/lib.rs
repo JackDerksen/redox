@@ -145,7 +145,6 @@ fn draw_buffer_view(
                 window.request_cursor(cursor);
             }
         }
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -178,7 +177,6 @@ fn draw_buffer_view(
             }
         }
         let _ = draw_notification_toast(state, style, window)?;
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -198,7 +196,6 @@ fn draw_buffer_view(
         draw_lsp_marketplace_popup(&popup, style, window)?;
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -218,7 +215,6 @@ fn draw_buffer_view(
         draw_diagnostics_popup(&popup, style, window)?;
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -238,7 +234,6 @@ fn draw_buffer_view(
         draw_code_actions_popup(&popup, style, window)?;
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -402,7 +397,6 @@ fn draw_buffer_view(
                 window.request_cursor(cursor);
             }
         }
-        draw_perf_corners(state, style, window, vw, vh)?;
         return Ok(());
     }
 
@@ -706,28 +700,6 @@ fn draw_buffer_view(
         }
     }
 
-    draw_perf_corners(state, style, window, vw, vh)?;
-    Ok(())
-}
-
-fn draw_perf_corners(
-    state: &EditorState,
-    style: UiStyle,
-    window: &mut dyn Window,
-    width: u16,
-    height: u16,
-) -> minui::Result<()> {
-    if !state.perf_corners_visible() || width == 0 || height == 0 {
-        return Ok(());
-    }
-
-    let colors = ColorPair::new(style.theme.black, style.theme.light_blue);
-    let max_x = width.saturating_sub(1);
-    let max_y = height.saturating_sub(1);
-    window.write_str_colored(0, 0, " ", colors)?;
-    window.write_str_colored(0, max_x, " ", colors)?;
-    window.write_str_colored(max_y, 0, " ", colors)?;
-    window.write_str_colored(max_y, max_x, " ", colors)?;
     Ok(())
 }
 
