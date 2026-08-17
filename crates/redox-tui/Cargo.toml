@@ -1,6 +1,6 @@
 [package]
 name = "redox-tui"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 description = "TUI frontend runtime for redox-editor"
 license = "MIT"
