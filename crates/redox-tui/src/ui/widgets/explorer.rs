@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn popup_reconcile_keeps_selected_entry_visible() {
         let buffer =
-            TextBuffer::from_str("../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt");
+            TextBuffer::from_text("../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt");
         let mut cursor = CursorController::default();
         cursor.cursor = Pos::new(11, 0);
 

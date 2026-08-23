@@ -1,9 +1,4 @@
-//! Position conversion and cursor movement helpers for `TextBuffer`.
-//!
-//! - Positions are logical `(line, col)` in **char units** (Unicode scalar values),
-//!   matching Ropey's indexing model.
-//! - Methods clamp inputs defensively, so higher-level code can stay simpler.
-//! - Visual columns and grapheme clusters belong to UI layers.
+//! Clamped conversion and movement for logical `(line, column)` positions.
 
 use std::cmp::min;
 
@@ -11,10 +6,6 @@ use super::TextBuffer;
 use crate::buffer::Pos;
 
 impl TextBuffer {
-    /// Clamp a position to a valid location in the buffer.
-    ///
-    /// - Line is clamped to `[0, len_lines - 1]`
-    /// - Column is clamped to `[0, line_len_chars(line)]`
     #[inline]
     pub fn clamp_pos(&self, pos: Pos) -> Pos {
         let line = self.clamp_line(pos.line);
@@ -23,16 +14,14 @@ impl TextBuffer {
         Pos { line, col }
     }
 
-    /// Convert `Pos` to an absolute char index in the rope.
+    /// Convert a position to an absolute character index.
     #[inline]
     pub fn pos_to_char(&self, pos: Pos) -> usize {
         let pos = self.clamp_pos(pos);
         self.rope.line_to_char(pos.line) + pos.col
     }
 
-    /// Convert absolute char index to `Pos` (line+col).
-    ///
-    /// `char_idx` is clamped to `[0, len_chars]`.
+    /// Convert a clamped character index to a position.
     #[inline]
     pub fn char_to_pos(&self, char_idx: usize) -> Pos {
         let c = min(char_idx, self.len_chars());
@@ -40,7 +29,6 @@ impl TextBuffer {
         let line_start = self.rope.line_to_char(line);
         let col = c - line_start;
 
-        // If `c` points at a newline, clamp col to `line_len` (ie. end of the line).
         let max_col = self.line_len_chars(line);
         Pos {
             line,
@@ -48,7 +36,6 @@ impl TextBuffer {
         }
     }
 
-    /// Move position left by one char, staying within buffer.
     #[inline]
     pub fn move_left(&self, pos: Pos) -> Pos {
         let c = self.pos_to_char(pos);
@@ -58,7 +45,6 @@ impl TextBuffer {
         self.char_to_pos(c - 1)
     }
 
-    /// Move position right by one char, staying within buffer.
     #[inline]
     pub fn move_right(&self, pos: Pos) -> Pos {
         let c = self.pos_to_char(pos);
@@ -69,7 +55,6 @@ impl TextBuffer {
         self.char_to_pos(c + 1)
     }
 
-    /// Move up one line, preserving column as much as possible.
     #[inline]
     pub fn move_up(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);
@@ -81,7 +66,6 @@ impl TextBuffer {
         Pos::new(new_line, new_col)
     }
 
-    /// Move down one line, preserving column as much as possible.
     #[inline]
     pub fn move_down(&self, pos: Pos) -> Pos {
         let pos = self.clamp_pos(pos);
@@ -94,7 +78,7 @@ impl TextBuffer {
         Pos::new(new_line, new_col)
     }
 
-    /// Get the char at a position, if it's within the line's content (not including newline).
+    /// Return the character at a position, excluding line-ending newlines.
     #[inline]
     pub fn char_at(&self, pos: Pos) -> Option<char> {
         let pos = self.clamp_pos(pos);
@@ -106,7 +90,6 @@ impl TextBuffer {
         Some(self.rope.char(idx))
     }
 
-    /// Get the char before a position, if one exists.
     #[inline]
     pub fn char_before(&self, pos: Pos) -> Option<char> {
         let c = self.pos_to_char(pos);

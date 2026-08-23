@@ -440,7 +440,7 @@ impl EditorState {
     ) {
         {
             let buffer = self.session.active_buffer_mut();
-            *buffer = TextBuffer::from_str(text);
+            *buffer = TextBuffer::from_text(text);
         }
 
         let active_id = self.session.active_id();

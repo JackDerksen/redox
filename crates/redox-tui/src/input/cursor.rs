@@ -389,13 +389,11 @@ impl CursorController {
             if delta <= LONG_LINE_CURSOR_FAST_PATH_MAX_DELTA_CHARS {
                 let mut x = cache.x_cells;
                 if target_col > cache.col {
-                    for col in cache.col..target_col {
-                        let ch = buffer.rope().char(line_start + col);
+                    for ch in buffer.chars(line_start + cache.col..line_start + target_col) {
                         x = x.saturating_add(cell_width_for_char(ch, self.tab_policy));
                     }
                 } else {
-                    for col in target_col..cache.col {
-                        let ch = buffer.rope().char(line_start + col);
+                    for ch in buffer.chars(line_start + target_col..line_start + cache.col) {
                         x = x.saturating_sub(cell_width_for_char(ch, self.tab_policy));
                     }
                 }
@@ -410,8 +408,7 @@ impl CursorController {
         }
 
         let mut x = 0usize;
-        for col in 0..target_col {
-            let ch = buffer.rope().char(line_start + col);
+        for ch in buffer.chars(line_start..line_start + target_col) {
             x = x.saturating_add(cell_width_for_char(ch, self.tab_policy));
         }
 
@@ -472,7 +469,7 @@ mod tests {
 
     #[test]
     fn vertical_motion_keeps_preferred_column() {
-        let buffer = TextBuffer::from_str("aaaa\nb\ncccccc\n");
+        let buffer = TextBuffer::from_text("aaaa\nb\ncccccc\n");
         let mut cursor = CursorController::new();
         cursor.cursor = Pos::new(0, 3);
 
@@ -485,7 +482,7 @@ mod tests {
 
     #[test]
     fn horizontal_motion_clears_preferred_column() {
-        let buffer = TextBuffer::from_str("aaaa\nb\ncccccc\n");
+        let buffer = TextBuffer::from_text("aaaa\nb\ncccccc\n");
         let mut cursor = CursorController::new();
         cursor.cursor = Pos::new(0, 3);
 
@@ -505,7 +502,7 @@ mod tests {
             "{}\t字",
             "a".repeat(LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 64)
         );
-        let buffer = TextBuffer::from_str(&long);
+        let buffer = TextBuffer::from_text(&long);
         let mut cursor = CursorController::new();
 
         cursor.cursor = Pos::new(0, LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS + 63);

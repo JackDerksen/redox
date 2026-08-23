@@ -1266,9 +1266,9 @@ fn command_history_skips_consecutive_duplicates() {
 #[test]
 fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_result() {
     let mut view = BufferViewState::default();
-    let before = TextBuffer::from_str("{ alpha }");
-    let after = TextBuffer::from_str("plain text");
-    let rust_buffer = TextBuffer::from_str("fn main() {\n    answer();\n}\n");
+    let before = TextBuffer::from_text("{ alpha }");
+    let after = TextBuffer::from_text("plain text");
+    let rust_buffer = TextBuffer::from_text("fn main() {\n    answer();\n}\n");
 
     view.delimiter_pair_cache
         .install(crate::ui::overlays::compute_delimiter_analysis(&before));
@@ -1376,9 +1376,9 @@ fn stale_analysis_results_are_dropped() {
     state.apply_analysis_result(analysis::AnalysisResult::Delimiters {
         buffer_id: active_id,
         version: current_version.saturating_sub(1),
-        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(&TextBuffer::from_str(
-            "{ stale }",
-        )),
+        delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(
+            &TextBuffer::from_text("{ stale }"),
+        ),
     });
 
     let view = state
@@ -3820,7 +3820,7 @@ fn explorer_write_applies_rename_and_create() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nrenamed.txt\ncreated.txt");
+        *buffer = TextBuffer::from_text("../\nrenamed.txt\ncreated.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -3859,7 +3859,7 @@ fn explorer_write_creates_nested_paths() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nfolder/nested.txt\ndeep/tree/");
+        *buffer = TextBuffer::from_text("../\nfolder/nested.txt\ndeep/tree/");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -3898,7 +3898,7 @@ fn explorer_preserves_unsaved_directory_draft_across_navigation() {
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+        *buffer = TextBuffer::from_text("../\nchild/\nopen.txt\nroot_new.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -3952,7 +3952,7 @@ fn explorer_write_applies_cached_drafts_from_multiple_directories() {
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt\nroot_new.txt");
+        *buffer = TextBuffer::from_text("../\nchild/\nopen.txt\nroot_new.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -3974,7 +3974,7 @@ fn explorer_write_applies_cached_drafts_from_multiple_directories() {
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nkeep.txt\nchild_new.txt");
+        *buffer = TextBuffer::from_text("../\nkeep.txt\nchild_new.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4010,7 +4010,7 @@ fn explorer_write_insert_in_middle_preserves_existing_file_contents() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\na.txt\nnew.txt\nb.txt");
+        *buffer = TextBuffer::from_text("../\na.txt\nnew.txt\nb.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4055,7 +4055,7 @@ fn explorer_write_requires_confirmation_for_deletes() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\na_keep.txt");
+        *buffer = TextBuffer::from_text("../\na_keep.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4123,7 +4123,7 @@ fn explorer_write_delete_file_and_create_directory_still_requires_delete_confirm
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nkeep.txt\nfresh/");
+        *buffer = TextBuffer::from_text("../\nkeep.txt\nfresh/");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4172,7 +4172,7 @@ fn explorer_write_recursively_deletes_non_empty_directory_after_confirmation() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\na_keep.txt");
+        *buffer = TextBuffer::from_text("../\na_keep.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4224,7 +4224,7 @@ fn explorer_write_multi_directory_delete_confirmation_includes_directory_context
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\nchild/\nopen.txt");
+        *buffer = TextBuffer::from_text("../\nchild/\nopen.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4246,7 +4246,7 @@ fn explorer_write_multi_directory_delete_confirmation_includes_directory_context
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../");
+        *buffer = TextBuffer::from_text("../");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4298,7 +4298,7 @@ fn explorer_write_preserves_cursor_line_when_still_in_range() {
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\na.txt\nrenamed.txt\nopen.txt");
+        *buffer = TextBuffer::from_text("../\na.txt\nrenamed.txt\nopen.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4350,7 +4350,7 @@ fn explorer_write_clamps_cursor_to_bottom_when_lines_are_removed() {
 
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\na.txt");
+        *buffer = TextBuffer::from_text("../\na.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4399,7 +4399,7 @@ fn explorer_rename_updates_hidden_buffer_path_for_bprev() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\ncurrent.txt\nrenamed.txt");
+        *buffer = TextBuffer::from_text("../\ncurrent.txt\nrenamed.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4448,7 +4448,7 @@ fn explorer_delete_removes_hidden_buffer_from_mru() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../\ncurrent.txt");
+        *buffer = TextBuffer::from_text("../\ncurrent.txt");
     }
     let _ = state.session.recompute_active_dirty();
 
@@ -4486,7 +4486,7 @@ fn explorer_delete_of_return_target_creates_placeholder_buffer() {
     run_command(&mut state, "explorer");
     {
         let buffer = state.session.active_buffer_mut();
-        *buffer = TextBuffer::from_str("../");
+        *buffer = TextBuffer::from_text("../");
     }
     let _ = state.session.recompute_active_dirty();
 

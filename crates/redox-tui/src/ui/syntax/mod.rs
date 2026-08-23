@@ -406,7 +406,7 @@ impl SyntaxHighlighter {
             .cache
             .as_ref()
             .filter(|cache| cache.language == language)?;
-        let cursor_byte = buffer.rope().char_to_byte(cursor_char);
+        let cursor_byte = buffer.char_to_byte(cursor_char);
         let root = cache.tree.root_node();
         let scope = root
             .named_descendant_for_byte_range(cursor_byte, cursor_byte)
@@ -550,10 +550,7 @@ fn node_scope_pair(buffer: &TextBuffer, node: Node<'_>) -> Option<SyntaxScopePai
 }
 
 fn byte_to_pos(buffer: &TextBuffer, byte_idx: usize) -> Option<Pos> {
-    if byte_idx > buffer.rope().len_bytes() {
-        return None;
-    }
-    let char_idx = buffer.rope().byte_to_char(byte_idx);
+    let char_idx = buffer.byte_to_char(byte_idx)?;
     Some(buffer.char_to_pos(char_idx))
 }
 
@@ -1877,7 +1874,7 @@ mod tests {
     #[test]
     fn comments_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("// comment\n");
+        let buffer = TextBuffer::from_text("// comment\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Rust,
@@ -1894,7 +1891,7 @@ mod tests {
     #[test]
     fn string_quotes_are_highlighted_as_string() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("let s = \"hello\";\n");
+        let buffer = TextBuffer::from_text("let s = \"hello\";\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Rust,
@@ -1911,7 +1908,7 @@ mod tests {
     #[test]
     fn go_comments_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("// comment\n");
+        let buffer = TextBuffer::from_text("// comment\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Go,
@@ -1928,7 +1925,7 @@ mod tests {
     #[test]
     fn c_comments_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("// comment\n");
+        let buffer = TextBuffer::from_text("// comment\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, SyntaxLanguage::C));
         let spans = highlighter
             .visible_line_spans_cached(Some(SyntaxLanguage::C), 0, 1)
@@ -1942,7 +1939,7 @@ mod tests {
     #[test]
     fn cpp_uses_c_and_cpp_highlight_queries() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("auto value = nullptr; // comment\n");
+        let buffer = TextBuffer::from_text("auto value = nullptr; // comment\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Cpp,
@@ -1981,7 +1978,7 @@ mod tests {
 
         for (language, source) in cases {
             let mut highlighter = SyntaxHighlighter::default();
-            let buffer = TextBuffer::from_str(source);
+            let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let spans = highlighter
                 .visible_line_spans_cached(Some(language), 0, 1)
@@ -1997,7 +1994,7 @@ mod tests {
     #[test]
     fn typescript_combines_javascript_and_typescript_highlight_queries() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str(
+        let buffer = TextBuffer::from_text(
             "export type User = { name: string };\nconst label = format(user.name, \"ok\");\n",
         );
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
@@ -2025,7 +2022,7 @@ mod tests {
     #[test]
     fn markdown_headings_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("# Title\n\nBody\n");
+        let buffer = TextBuffer::from_text("# Title\n\nBody\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2042,7 +2039,7 @@ mod tests {
     #[test]
     fn markdown_inline_emphasis_is_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("This is *italic*, **bold**, and `code`.\n");
+        let buffer = TextBuffer::from_text("This is *italic*, **bold**, and `code`.\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2065,7 +2062,7 @@ mod tests {
     #[test]
     fn markdown_highlight_marks_equal_delimited_text() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("Keep ==this== bright, not `==this==`.\n");
+        let buffer = TextBuffer::from_text("Keep ==this== bright, not `==this==`.\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2169,7 +2166,7 @@ mod tests {
     #[test]
     fn markdown_code_blocks_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("```rust\nlet answer = 42;\n```\n");
+        let buffer = TextBuffer::from_text("```rust\nlet answer = 42;\n```\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2186,7 +2183,7 @@ mod tests {
     #[test]
     fn markdown_frontmatter_is_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("---\ntitle: Redox\n---\n\n# Title\n");
+        let buffer = TextBuffer::from_text("---\ntitle: Redox\n---\n\n# Title\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2210,7 +2207,7 @@ mod tests {
     #[test]
     fn markdown_links_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("[Redox](https://example.com)\n");
+        let buffer = TextBuffer::from_text("[Redox](https://example.com)\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2227,7 +2224,7 @@ mod tests {
     #[test]
     fn markdown_list_markers_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("* item\n- other\n");
+        let buffer = TextBuffer::from_text("* item\n- other\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,
@@ -2251,7 +2248,7 @@ mod tests {
     #[test]
     fn python_comments_are_highlighted() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("# comment\n");
+        let buffer = TextBuffer::from_text("# comment\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Python,
@@ -2268,7 +2265,7 @@ mod tests {
     #[test]
     fn active_scope_pair_uses_multiline_structural_node() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+        let buffer = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Rust,
@@ -2284,7 +2281,7 @@ mod tests {
     #[test]
     fn stale_active_scope_for_display_matches_cached_cursor_only() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+        let buffer = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Rust,
@@ -2322,7 +2319,7 @@ mod tests {
 
     #[test]
     fn stale_visible_line_spans_for_display_reuse_previous_cache() {
-        let buffer = TextBuffer::from_str("// note\n");
+        let buffer = TextBuffer::from_text("// note\n");
         let mut highlighter = SyntaxHighlighter::default();
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
@@ -2448,7 +2445,7 @@ mod tests {
 
         for (language, source, expected_start) in cases {
             let mut highlighter = SyntaxHighlighter::default();
-            let buffer = TextBuffer::from_str(source);
+            let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
                 .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
@@ -2462,7 +2459,7 @@ mod tests {
     #[test]
     fn lua_uses_tree_sitter_scope_nodes() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("function main()\n    print(\"hi\")\nend\n");
+        let buffer = TextBuffer::from_text("function main()\n    print(\"hi\")\nend\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Lua,
@@ -2494,7 +2491,7 @@ mod tests {
 
         for (language, source, expected_start, expected_end_line) in cases {
             let mut highlighter = SyntaxHighlighter::default();
-            let buffer = TextBuffer::from_str(source);
+            let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
                 .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
@@ -2508,7 +2505,7 @@ mod tests {
     #[test]
     fn python_active_scope_pair_uses_tree_sitter_node_range() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("def main():\n    print(\"hi\")\n    return 1\n");
+        let buffer = TextBuffer::from_text("def main():\n    print(\"hi\")\n    return 1\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Python,
@@ -2548,7 +2545,7 @@ mod tests {
 
         for (source, cursor, expected_start) in cases {
             let mut highlighter = SyntaxHighlighter::default();
-            let buffer = TextBuffer::from_str(source);
+            let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(
                 &buffer,
                 SyntaxLanguage::Python,
@@ -2565,7 +2562,7 @@ mod tests {
     #[test]
     fn markdown_active_scope_pair_uses_tree_sitter_section() {
         let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_str("# Title\n\nBody\n");
+        let buffer = TextBuffer::from_text("# Title\n\nBody\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
             &buffer,
             SyntaxLanguage::Markdown,

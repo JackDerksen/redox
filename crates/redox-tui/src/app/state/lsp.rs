@@ -5427,7 +5427,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("call(arg, arg)");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("call(arg, arg)");
         state.lsp.active_snippet = Some(ActiveSnippet {
             buffer_id,
             placeholders: vec![
@@ -5486,7 +5486,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("foo, foo, bar");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("foo, foo, bar");
         state.lsp.active_snippet = Some(ActiveSnippet {
             buffer_id,
             placeholders: vec![
@@ -5534,7 +5534,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("one, two, three");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("one, two, three");
         state.lsp.active_snippet = Some(ActiveSnippet {
             buffer_id,
             placeholders: vec![
@@ -5592,7 +5592,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("call(arg, arg)");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("call(arg, arg)");
         state.lsp.active_snippet = Some(ActiveSnippet {
             buffer_id,
             placeholders: vec![
@@ -5724,7 +5724,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("prin");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("prin");
         state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 4);
         state.lsp.completion = Some(CompletionState {
             selected: 0,
@@ -5756,7 +5756,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("foo bar");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("foo bar");
         state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 7);
         state.lsp.active_snippet = Some(ActiveSnippet {
             buffer_id,
@@ -5781,7 +5781,7 @@ mod tests {
             .expect("failed to open unnamed session");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_str("// comment");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("// comment");
         state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 10);
         state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {

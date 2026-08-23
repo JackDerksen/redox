@@ -7,6 +7,7 @@ use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
 use crate::ui::language_for_path;
 use crate::ui::syntax::desired_indent_for_line;
+use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -938,7 +939,7 @@ impl EditorState {
         let added_by_line = self
             .session
             .active_buffer_mut()
-            .indent_line_span(start_line, end_line, count);
+            .indent_line_span(start_line, end_line, count, SOFT_TAB);
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -975,10 +976,12 @@ impl EditorState {
         };
         let before = self.capture_active_undo_checkpoint();
 
-        let removed_by_line = self
-            .session
-            .active_buffer_mut()
-            .outdent_line_span(start_line, end_line, count);
+        let removed_by_line = self.session.active_buffer_mut().outdent_line_span(
+            start_line,
+            end_line,
+            count,
+            SOFT_TAB_WIDTH,
+        );
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();

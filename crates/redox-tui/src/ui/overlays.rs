@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn highlights_pair_when_cursor_is_on_opening_delimiter() {
-        let buffer = TextBuffer::from_str("(abc)");
+        let buffer = TextBuffer::from_text("(abc)");
         let analysis = compute_delimiter_analysis(&buffer);
         let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 0));
         assert_eq!(
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn highlights_pair_when_cursor_is_on_closing_delimiter() {
-        let buffer = TextBuffer::from_str("(abc)");
+        let buffer = TextBuffer::from_text("(abc)");
         let analysis = compute_delimiter_analysis(&buffer);
         let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 4));
         assert_eq!(
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn highlights_nearest_surrounding_pair_when_cursor_is_inside_nested_pairs() {
-        let buffer = TextBuffer::from_str("(\"  \")");
+        let buffer = TextBuffer::from_text("(\"  \")");
         let analysis = compute_delimiter_analysis(&buffer);
         let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 3));
         assert_eq!(
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn cursor_after_delimiter_still_counts_as_on_it() {
-        let buffer = TextBuffer::from_str("\"x\"");
+        let buffer = TextBuffer::from_text("\"x\"");
         let analysis = compute_delimiter_analysis(&buffer);
         let pair = analysis.active_delimiter_pair(&buffer, Pos::new(0, 1));
         assert_eq!(
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn active_scope_uses_structural_pair_outside_same_line_quotes() {
-        let buffer = TextBuffer::from_str("{\n\tprintln(\"hi\");\n}\n");
+        let buffer = TextBuffer::from_text("{\n\tprintln(\"hi\");\n}\n");
         let analysis = compute_delimiter_analysis(&buffer);
         let scope = analysis.active_scope_pair(&buffer, Pos::new(1, 11));
         assert_eq!(
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn active_scope_guide_cell_uses_the_inner_indent_column() {
-        let buffer = TextBuffer::from_str("if foo {\n\tif bar {\n\t\tbaz();\n\t}\n}\n");
+        let buffer = TextBuffer::from_text("if foo {\n\tif bar {\n\t\tbaz();\n\t}\n}\n");
         let analysis = compute_delimiter_analysis(&buffer);
         let scope = analysis
             .active_scope_pair(&buffer, Pos::new(2, 2))
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn active_scope_guides_use_tree_sitter_scope_without_delimiter_scan() {
-        let buffer = TextBuffer::from_str("{\n    answer();\n}\n");
+        let buffer = TextBuffer::from_text("{\n    answer();\n}\n");
         let guides = active_scope_indent_guides(
             Some(SyntaxScopePair {
                 start: Pos::new(0, 0),
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn active_scope_guides_include_exclusive_tree_sitter_scope_end() {
-        let buffer = TextBuffer::from_str("while True:\n    try:\n        answer()\n");
+        let buffer = TextBuffer::from_text("while True:\n    try:\n        answer()\n");
         let guides = active_scope_indent_guides(
             Some(SyntaxScopePair {
                 start: Pos::new(0, 0),
@@ -821,7 +821,8 @@ mod tests {
 
     #[test]
     fn active_scope_guides_reuse_cached_tree_sitter_scope_guide_cell() {
-        let buffer = TextBuffer::from_str("fn main() {\n    if ready {\n        go();\n    }\n}\n");
+        let buffer =
+            TextBuffer::from_text("fn main() {\n    if ready {\n        go();\n    }\n}\n");
         let analysis = compute_delimiter_analysis(&buffer);
         let scope = analysis
             .scope_pair_for_syntax_scope(

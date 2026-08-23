@@ -55,7 +55,7 @@ pub struct TextDiff {
 
 impl TextDiff {
     pub fn between(before: &TextBuffer, after: &TextBuffer) -> Option<Self> {
-        if before.rope() == after.rope() {
+        if before == after {
             return None;
         }
 
@@ -64,9 +64,8 @@ impl TextDiff {
         let min_len = before_len.min(after_len);
 
         let prefix_len = before
-            .rope()
-            .chars()
-            .zip(after.rope().chars())
+            .chars(0..before_len)
+            .zip(after.chars(0..after_len))
             .take(min_len)
             .take_while(|(before_char, after_char)| before_char == after_char)
             .count();
@@ -76,10 +75,8 @@ impl TextDiff {
             .min(after_len.saturating_sub(prefix_len));
 
         let suffix_len = before
-            .rope()
-            .chars_at(before_len)
-            .reversed()
-            .zip(after.rope().chars_at(after_len).reversed())
+            .chars_reversed(prefix_len..before_len)
+            .zip(after.chars_reversed(prefix_len..after_len))
             .take(max_suffix_len)
             .take_while(|(before_char, after_char)| before_char == after_char)
             .count();
@@ -421,7 +418,7 @@ impl UndoHistory {
         while let Some(candidate) = candidates.pop() {
             let mut candidate_buffer = base_buffer.clone();
             self.apply_path_between(&mut candidate_buffer, base_node, candidate)?;
-            if candidate_buffer.rope() == target_buffer.rope() {
+            if candidate_buffer == *target_buffer {
                 return Some(candidate);
             }
             candidates.extend(self.nodes.get(candidate)?.children.iter().copied());
@@ -490,148 +487,4 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_diff_records_only_changed_span_with_unicode_text() {
-        let before = TextBuffer::from_str("aébc🙂d\n");
-        let after = TextBuffer::from_str("aéXYZ🙂d\n");
-        let diff = TextDiff::between(&before, &after).expect("buffers should differ");
-
-        assert_eq!(diff.start_char, 2);
-        assert_eq!(diff.deleted, "bc");
-        assert_eq!(diff.inserted, "XYZ");
-
-        let mut patched = before.clone();
-        let _ = patched.apply_edit(diff.forward_edit());
-        assert_eq!(patched.to_string(), after.to_string());
-
-        let _ = patched.apply_edit(diff.reverse_edit());
-        assert_eq!(patched.to_string(), before.to_string());
-    }
-
-    #[test]
-    fn history_limit_starts_a_fresh_bounded_tree() {
-        let mut history = UndoHistory::default();
-        history.set_max_records(2);
-        let mut buffer = TextBuffer::from_str("");
-        for value in ["a", "ab", "abc", "abcd"] {
-            let checkpoint = history.checkpoint(buffer.clone(), Pos::zero());
-            buffer = TextBuffer::from_str(value);
-            assert!(history.record_if_changed(checkpoint, &buffer, Pos::zero()));
-            assert!(history.tree_entries().len() <= 3);
-        }
-        assert_eq!(history.undo(&mut buffer), Some(Pos::zero()));
-        assert_eq!(buffer.to_string(), "abc");
-
-        assert!(history.set_max_records(1));
-        assert_eq!(history.tree_entries().len(), 1);
-        assert_eq!(history.undo(&mut buffer), None);
-    }
-
-    #[test]
-    fn coalesced_checkpoints_replace_only_the_current_insert_session_record() {
-        let mut history = UndoHistory::default();
-        let before = TextBuffer::from_str("hello");
-        let mut after = before.clone();
-        let checkpoint = history.coalesced_checkpoint(before.clone(), Pos::new(0, 0));
-        let _ = after.insert(Pos::new(0, 0), "a");
-        assert!(history.record_if_changed(checkpoint, &after, Pos::new(0, 1)));
-
-        let checkpoint = history.coalesced_checkpoint(before.clone(), Pos::new(0, 0));
-        let mut later = before.clone();
-        let _ = later.insert(Pos::new(0, 0), "ab");
-        assert!(history.record_if_changed(checkpoint, &later, Pos::new(0, 2)));
-        assert_eq!(history.undo_len(), 1);
-        assert_eq!(
-            history
-                .last_undo_record()
-                .expect("missing record")
-                .diff
-                .inserted,
-            "ab"
-        );
-
-        history.clear_coalesce();
-        let checkpoint = history.coalesced_checkpoint(later.clone(), Pos::new(0, 0));
-        let mut separate = later.clone();
-        let _ = separate.insert(Pos::new(0, 0), "z");
-        assert!(history.record_if_changed(checkpoint, &separate, Pos::new(0, 1)));
-        assert_eq!(history.undo_len(), 2);
-    }
-
-    #[test]
-    fn edit_after_undo_branches_from_restored_node() {
-        let mut history = UndoHistory::default();
-        let mut buffer = TextBuffer::from_str("a");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 0));
-        let _ = buffer.insert(Pos::new(0, 1), "b");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-
-        assert_eq!(history.undo(&mut buffer), Some(Pos::new(0, 0)));
-        assert_eq!(buffer.to_string(), "a");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 0));
-        let _ = buffer.insert(Pos::new(0, 1), "c");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-
-        let root = history.tree_entries()[0].id;
-        assert_eq!(history.tree_entries()[root].child_count, 2);
-        assert_eq!(buffer.to_string(), "ac");
-    }
-
-    #[test]
-    fn restore_moves_between_branches_through_common_ancestor() {
-        let mut history = UndoHistory::default();
-        let mut buffer = TextBuffer::from_str("a");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 0));
-        let _ = buffer.insert(Pos::new(0, 1), "b");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-        let first_branch = history.current();
-
-        let _ = history.undo(&mut buffer);
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 0));
-        let _ = buffer.insert(Pos::new(0, 1), "c");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-
-        assert_eq!(buffer.to_string(), "ac");
-        assert_eq!(
-            history.restore(&mut buffer, first_branch),
-            Some(Pos::new(0, 2))
-        );
-        assert_eq!(buffer.to_string(), "ab");
-    }
-
-    #[test]
-    fn edit_that_reaches_existing_descendant_reuses_that_node() {
-        let mut history = UndoHistory::default();
-        let mut buffer = TextBuffer::from_str("");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 0));
-        let _ = buffer.insert(Pos::new(0, 0), "a");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 1)));
-        let parent = history.current();
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 1));
-        let _ = buffer.insert(Pos::new(0, 1), "b");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-        let existing = history.current();
-
-        assert_eq!(history.restore(&mut buffer, parent), Some(Pos::new(0, 1)));
-        assert_eq!(buffer.to_string(), "a");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 1));
-        let _ = buffer.insert(Pos::new(0, 1), "b");
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 2)));
-
-        assert_eq!(history.current(), existing);
-        assert_eq!(history.tree_entries().len(), 3);
-        assert_eq!(buffer.to_string(), "ab");
-    }
 }

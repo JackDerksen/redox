@@ -284,8 +284,7 @@ fn render_line_window_fast(
     let mut used_cells = 0usize;
     let mut out = String::new();
 
-    for char_idx in range.start..range.end {
-        let ch = buffer.rope().char(char_idx);
+    for ch in buffer.chars(range) {
         let w = cell_width_for_char(ch);
 
         if skipped_cells < scroll_x_cells {
@@ -326,21 +325,21 @@ mod tests {
 
     #[test]
     fn fast_path_clips_and_scrolls_ascii_lines() {
-        let b = TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
+        let b = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz\n");
         let out = render_line_window_fast(&b, 0, 5, 4);
         assert_eq!(out, "fghi");
     }
 
     #[test]
     fn fast_path_handles_empty_and_short_ranges() {
-        let b = TextBuffer::from_str("\n");
+        let b = TextBuffer::from_text("\n");
         assert_eq!(render_line_window_fast(&b, 0, 0, 10), "");
         assert_eq!(render_line_window_fast(&b, 0, 5, 10), "");
     }
 
     #[test]
     fn tab_expands_to_spaces_for_rendering() {
-        let b = TextBuffer::from_str("\tab\n");
+        let b = TextBuffer::from_text("\tab\n");
         let mut cache = GraphemeCache::new(4);
         let snap = snapshot_lines_wrapped_cached(
             &b,

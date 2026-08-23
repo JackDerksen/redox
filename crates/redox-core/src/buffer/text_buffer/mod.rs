@@ -18,7 +18,7 @@ mod slicing;
 mod text_objects;
 mod words;
 
-pub use core::TextBuffer;
+pub use core::{TextBuffer, TextSlice};
 pub use selection::{VisualModeKind, VisualSelectionEditPlan};
 pub use text_objects::{
     DelimiterKind, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,

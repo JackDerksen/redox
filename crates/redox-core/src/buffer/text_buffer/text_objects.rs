@@ -270,7 +270,7 @@ impl TextBuffer {
         let mut same_line_pairs = Vec::new();
         let mut stack = Vec::new();
         for char_idx in 0..self.len_chars() {
-            let ch = self.rope().char(char_idx);
+            let ch = self.char_at_index(char_idx);
             if ch == open {
                 stack.push(char_idx);
             } else if ch == close
@@ -324,7 +324,7 @@ impl TextBuffer {
         let mut quote_chars = Vec::new();
 
         for char_idx in line_range.clone() {
-            if self.rope().char(char_idx) == delimiter && !self.char_is_escaped(char_idx) {
+            if self.char_at_index(char_idx) == delimiter && !self.char_is_escaped(char_idx) {
                 quote_chars.push(char_idx);
             }
         }
@@ -378,7 +378,7 @@ impl TextBuffer {
         }
 
         let clamped = cursor_char.min(maxc.saturating_sub(1));
-        if predicate(self.rope().char(clamped)) {
+        if predicate(self.char_at_index(clamped)) {
             return Some(clamped);
         }
 
@@ -386,7 +386,7 @@ impl TextBuffer {
             return Some(next);
         }
 
-        if clamped > 0 && predicate(self.rope().char(clamped - 1)) {
+        if clamped > 0 && predicate(self.char_at_index(clamped - 1)) {
             return Some(clamped - 1);
         }
 
@@ -394,14 +394,14 @@ impl TextBuffer {
     }
 
     fn run_start(&self, mut char_idx: usize, predicate: impl Fn(char) -> bool + Copy) -> usize {
-        while char_idx > 0 && predicate(self.rope().char(char_idx - 1)) {
+        while char_idx > 0 && predicate(self.char_at_index(char_idx - 1)) {
             char_idx -= 1;
         }
         char_idx
     }
 
     fn run_end(&self, mut char_idx: usize, predicate: impl Fn(char) -> bool + Copy) -> usize {
-        while char_idx < self.len_chars() && predicate(self.rope().char(char_idx)) {
+        while char_idx < self.len_chars() && predicate(self.char_at_index(char_idx)) {
             char_idx += 1;
         }
         char_idx
@@ -413,7 +413,7 @@ impl TextBuffer {
         predicate: impl Fn(char) -> bool + Copy,
     ) -> Option<usize> {
         while char_idx < self.len_chars() {
-            if predicate(self.rope().char(char_idx)) {
+            if predicate(self.char_at_index(char_idx)) {
                 return Some(char_idx);
             }
             char_idx += 1;
@@ -429,7 +429,7 @@ impl TextBuffer {
         char_idx = char_idx.min(self.len_chars());
         while char_idx > 0 {
             char_idx -= 1;
-            if predicate(self.rope().char(char_idx)) {
+            if predicate(self.char_at_index(char_idx)) {
                 return Some(self.run_start(char_idx, predicate));
             }
         }
@@ -437,21 +437,23 @@ impl TextBuffer {
     }
 
     fn scan_whitespace_forward(&self, mut char_idx: usize) -> usize {
-        while char_idx < self.len_chars() && self.rope().char(char_idx).is_whitespace() {
+        while char_idx < self.len_chars() && self.char_at_index(char_idx).is_whitespace() {
             char_idx += 1;
         }
         char_idx
     }
 
     fn scan_whitespace_backward(&self, mut char_idx: usize) -> usize {
-        while char_idx > 0 && self.rope().char(char_idx - 1).is_whitespace() {
+        while char_idx > 0 && self.char_at_index(char_idx - 1).is_whitespace() {
             char_idx -= 1;
         }
         char_idx
     }
 
     fn line_is_blank(&self, line_idx: usize) -> bool {
-        self.line_string(line_idx).trim().is_empty()
+        self.line_slice(line_idx)
+            .chars()
+            .all(|ch| ch.is_whitespace())
     }
 
     fn char_is_escaped(&self, char_idx: usize) -> bool {
@@ -459,7 +461,7 @@ impl TextBuffer {
         let mut idx = char_idx;
         while idx > 0 {
             idx -= 1;
-            if self.rope().char(idx) != '\\' {
+            if self.char_at_index(idx) != '\\' {
                 break;
             }
             backslashes += 1;
@@ -497,7 +499,7 @@ fn delimiter_pair_distance(start: usize, end_inclusive: usize, cursor_char: usiz
     if cursor_char < start {
         start - cursor_char
     } else if cursor_char > end_inclusive {
-        cursor_char - end_inclusive
+        cursor_char.saturating_sub(end_inclusive)
     } else {
         0
     }
