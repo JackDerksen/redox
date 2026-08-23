@@ -3,14 +3,14 @@
 mod loading;
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
+use tempfile::NamedTempFile;
 
 use self::loading::IncrementalFileLoader;
 use crate::TextBuffer;
@@ -793,14 +793,31 @@ impl EditorSession {
                     rec.buffer.append("\n");
                 }
 
-                let file = File::create(path)
+                let destination_directory = path.parent().unwrap_or_else(|| Path::new("."));
+                let mut temporary = NamedTempFile::new_in(destination_directory)
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
-                let mut writer = BufWriter::new(file);
                 rec.buffer
-                    .write_to(&mut writer)
+                    .write_to(temporary.as_file_mut())
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
-                writer
+                temporary
                     .flush()
+                    .with_context(|| format!("failed to write file: {}", path.display()))?;
+                match path.metadata() {
+                    Ok(metadata) => temporary
+                        .as_file()
+                        .set_permissions(metadata.permissions())
+                        .with_context(|| format!("failed to write file: {}", path.display()))?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => Err(error)
+                        .with_context(|| format!("failed to write file: {}", path.display()))?,
+                }
+                temporary
+                    .as_file()
+                    .sync_all()
+                    .with_context(|| format!("failed to write file: {}", path.display()))?;
+                temporary
+                    .persist(path)
+                    .map_err(|error| error.error)
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
 
                 let (fingerprint, normalized_len_chars) =
