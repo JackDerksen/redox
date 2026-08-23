@@ -1011,14 +1011,9 @@ fn text_width(text: &str) -> usize {
 mod tests {
     use super::{
         build_symbol_info_display_lines, markdown_render_lines, plain_text_render_lines,
-        severity_glyph, symbol_info_line_spans, wrap_code_line_to_cells,
+        symbol_info_line_spans, wrap_code_line_to_cells,
     };
-    use crate::app::state::{
-        DiagnosticSeverity, SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind,
-    };
-    use crate::ui::icons::{
-        DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
-    };
+    use crate::app::state::{SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind};
     use crate::ui::syntax::SyntaxLanguage;
 
     #[test]

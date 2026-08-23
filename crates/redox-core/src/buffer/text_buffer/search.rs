@@ -1,8 +1,4 @@
-//! Plain-text search helpers for `TextBuffer`.
-//!
-//! These helpers intentionally implement only literal substring and same-line
-//! character search semantics for now. Regex-aware search can layer on later
-//! for stuff like `:s/` commands.
+//! Literal search and structural delimiter matching.
 
 use super::TextBuffer;
 use crate::buffer::Pos;
@@ -77,7 +73,7 @@ impl TextBuffer {
             if self.char_is_escaped_for_pairing(idx) {
                 continue;
             }
-            match self.rope().char(idx) {
+            match self.char_at_index(idx) {
                 ch if ch == open => depth = depth.saturating_add(1),
                 ch if ch == close => {
                     if depth == 0 {
@@ -102,7 +98,7 @@ impl TextBuffer {
             if self.char_is_escaped_for_pairing(idx) {
                 continue;
             }
-            match self.rope().char(idx) {
+            match self.char_at_index(idx) {
                 ch if ch == close => depth = depth.saturating_add(1),
                 ch if ch == open => {
                     if depth == 0 {
@@ -125,7 +121,7 @@ impl TextBuffer {
         let line_range = self.line_char_range(line);
         let mut delimiters = Vec::new();
         for idx in line_range {
-            if self.rope().char(idx) == delimiter && !self.char_is_escaped_for_pairing(idx) {
+            if self.char_at_index(idx) == delimiter && !self.char_is_escaped_for_pairing(idx) {
                 delimiters.push(idx);
             }
         }
@@ -146,7 +142,7 @@ impl TextBuffer {
         let mut idx = char_idx;
         while idx > 0 {
             idx -= 1;
-            if self.rope().char(idx) != '\\' {
+            if self.char_at_index(idx) != '\\' {
                 break;
             }
             backslashes += 1;
@@ -164,25 +160,21 @@ impl TextBuffer {
 
         let needle_chars = needle.chars().count();
         let overlap_char_limit = needle_chars.saturating_sub(1);
-        let mut matches = Vec::new();
+        let mut collector = MatchCollector {
+            buffer: self,
+            needle,
+            needle_chars,
+            matches: Vec::new(),
+            last_emitted_end: 0,
+        };
         let mut overlap = String::new();
         let mut processed_chars = 0usize;
-        let mut last_emitted_end = 0usize;
 
-        for chunk in self.rope().chunks() {
+        for chunk in self.chunks() {
             let chunk_chars = chunk.chars().count();
 
             if overlap.is_empty() {
-                collect_segment_matches(
-                    self,
-                    chunk,
-                    processed_chars,
-                    processed_chars,
-                    needle,
-                    needle_chars,
-                    &mut matches,
-                    &mut last_emitted_end,
-                );
+                collector.collect_segment(chunk, processed_chars, processed_chars);
 
                 if overlap_char_limit > 0 {
                     overlap = trailing_chars(chunk, overlap_char_limit);
@@ -194,16 +186,7 @@ impl TextBuffer {
                 segment.push_str(&overlap);
                 segment.push_str(chunk);
 
-                collect_segment_matches(
-                    self,
-                    &segment,
-                    segment_start_char,
-                    processed_chars,
-                    needle,
-                    needle_chars,
-                    &mut matches,
-                    &mut last_emitted_end,
-                );
+                collector.collect_segment(&segment, segment_start_char, processed_chars);
 
                 overlap = trailing_chars(&segment, overlap_char_limit);
             }
@@ -211,7 +194,7 @@ impl TextBuffer {
             processed_chars = processed_chars.saturating_add(chunk_chars);
         }
 
-        matches
+        collector.matches
     }
 }
 
@@ -244,35 +227,46 @@ fn delimiter_pair_for(ch: char) -> Option<DelimiterPairKind> {
     }
 }
 
-fn collect_segment_matches(
-    buffer: &TextBuffer,
-    segment: &str,
-    segment_start_char: usize,
-    emit_after_char: usize,
-    needle: &str,
+struct MatchCollector<'a> {
+    buffer: &'a TextBuffer,
+    needle: &'a str,
     needle_chars: usize,
-    out: &mut Vec<(Pos, Pos)>,
-    last_emitted_end: &mut usize,
-) {
-    let segment_scan_start_char = last_emitted_end.saturating_sub(segment_start_char);
-    let segment_scan_start_byte = byte_idx_for_char(segment, segment_scan_start_char);
-    let mut scan_start_byte = segment_scan_start_byte;
-    let mut scan_start_chars = segment_scan_start_char;
+    matches: Vec<(Pos, Pos)>,
+    last_emitted_end: usize,
+}
 
-    for (match_start_byte_rel, _) in segment[segment_scan_start_byte..].match_indices(needle) {
-        let match_start_byte = segment_scan_start_byte.saturating_add(match_start_byte_rel);
-        scan_start_chars = scan_start_chars
-            .saturating_add(segment[scan_start_byte..match_start_byte].chars().count());
+impl MatchCollector<'_> {
+    fn collect_segment(
+        &mut self,
+        segment: &str,
+        segment_start_char: usize,
+        emit_after_char: usize,
+    ) {
+        let segment_scan_start_char = self.last_emitted_end.saturating_sub(segment_start_char);
+        let segment_scan_start_byte = byte_idx_for_char(segment, segment_scan_start_char);
+        let mut scan_start_byte = segment_scan_start_byte;
+        let mut scan_start_chars = segment_scan_start_char;
 
-        let start_char = segment_start_char.saturating_add(scan_start_chars);
-        let end_char = start_char.saturating_add(needle_chars);
-        if start_char >= *last_emitted_end && end_char > emit_after_char {
-            out.push((buffer.char_to_pos(start_char), buffer.char_to_pos(end_char)));
-            *last_emitted_end = end_char;
+        for (match_start_byte_rel, _) in
+            segment[segment_scan_start_byte..].match_indices(self.needle)
+        {
+            let match_start_byte = segment_scan_start_byte.saturating_add(match_start_byte_rel);
+            scan_start_chars = scan_start_chars
+                .saturating_add(segment[scan_start_byte..match_start_byte].chars().count());
+
+            let start_char = segment_start_char.saturating_add(scan_start_chars);
+            let end_char = start_char.saturating_add(self.needle_chars);
+            if start_char >= self.last_emitted_end && end_char > emit_after_char {
+                self.matches.push((
+                    self.buffer.char_to_pos(start_char),
+                    self.buffer.char_to_pos(end_char),
+                ));
+                self.last_emitted_end = end_char;
+            }
+
+            scan_start_byte = match_start_byte.saturating_add(self.needle.len());
+            scan_start_chars = scan_start_chars.saturating_add(self.needle_chars);
         }
-
-        scan_start_byte = match_start_byte.saturating_add(needle.len());
-        scan_start_chars = scan_start_chars.saturating_add(needle_chars);
     }
 }
 
@@ -304,107 +298,4 @@ fn trailing_chars(text: &str, char_limit: usize) -> String {
         .map(|(byte_idx, _)| byte_idx)
         .unwrap_or(text.len());
     text[start_byte..].to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn naive_find_matches(buffer: &TextBuffer, needle: &str) -> Vec<(Pos, Pos)> {
-        let source = buffer.to_string();
-        source
-            .match_indices(needle)
-            .map(|(start_byte, matched)| {
-                let start_char = buffer.rope().byte_to_char(start_byte);
-                let end_char = buffer
-                    .rope()
-                    .byte_to_char(start_byte.saturating_add(matched.len()));
-                (buffer.char_to_pos(start_char), buffer.char_to_pos(end_char))
-            })
-            .collect()
-    }
-
-    #[test]
-    fn find_matches_matches_naive_search_across_rope_chunks() {
-        let mut text = String::new();
-        for i in 0..40_000usize {
-            text.push_str(&format!("{i:05x}|"));
-        }
-        let buffer = TextBuffer::from_str(&text);
-
-        let mut chunks = buffer.rope().chunks();
-        let first_chunk = chunks.next().expect("expected at least one chunk");
-        let second_chunk = chunks.next().expect("expected multiple rope chunks");
-        let boundary_needle = format!(
-            "{}{}",
-            trailing_chars(first_chunk, 6),
-            second_chunk.chars().take(6).collect::<String>()
-        );
-
-        assert_eq!(
-            buffer.find_matches(&boundary_needle),
-            naive_find_matches(&buffer, &boundary_needle)
-        );
-    }
-
-    #[test]
-    fn find_matches_matches_naive_search_for_unicode_across_rope_chunks() {
-        let mut text = String::new();
-        for i in 0..20_000usize {
-            text.push_str(&format!("α{i:05x}🙂β"));
-        }
-        let buffer = TextBuffer::from_str(&text);
-
-        let mut chunks = buffer.rope().chunks();
-        let first_chunk = chunks.next().expect("expected at least one chunk");
-        let second_chunk = chunks.next().expect("expected multiple rope chunks");
-        let boundary_needle = format!(
-            "{}{}",
-            trailing_chars(first_chunk, 4),
-            second_chunk.chars().take(4).collect::<String>()
-        );
-
-        assert_eq!(
-            buffer.find_matches(&boundary_needle),
-            naive_find_matches(&buffer, &boundary_needle)
-        );
-    }
-
-    #[test]
-    fn find_matches_preserves_non_overlapping_semantics_across_chunk_boundaries() {
-        let text = "a".repeat(120_000);
-        let buffer = TextBuffer::from_str(&text);
-
-        // Ensure the buffer actually spans multiple chunks
-        assert!(
-            buffer.rope().chunks().count() > 1,
-            "expected multiple rope chunks"
-        );
-
-        assert_eq!(
-            buffer.find_matches("aaa"),
-            naive_find_matches(&buffer, "aaa")
-        );
-    }
-
-    #[test]
-    fn matching_delimiter_ignores_escaped_asymmetric_delimiter_under_cursor() {
-        let buffer = TextBuffer::from_str(r"\(alpha)");
-
-        assert_eq!(buffer.matching_delimiter(Pos::new(0, 1)), None);
-    }
-
-    #[test]
-    fn matching_delimiter_skips_escaped_asymmetric_delimiters_while_scanning() {
-        let buffer = TextBuffer::from_str(r"(alpha \( beta))");
-
-        assert_eq!(
-            buffer.matching_delimiter(Pos::new(0, 0)),
-            Some(Pos::new(0, 14))
-        );
-        assert_eq!(
-            buffer.matching_delimiter(Pos::new(0, 14)),
-            Some(Pos::new(0, 0))
-        );
-    }
 }

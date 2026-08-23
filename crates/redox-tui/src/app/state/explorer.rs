@@ -417,7 +417,7 @@ impl EditorState {
         let explorer_id = explorer.buffer_id;
 
         if let Some(buffer) = self.session.buffer_mut(explorer_id) {
-            *buffer = TextBuffer::from_str(&draft.text);
+            *buffer = TextBuffer::from_text(&draft.text);
         }
         explorer.dir_path = dir_path;
         self.explorer = Some(explorer);
@@ -559,7 +559,7 @@ impl EditorState {
             .map(|view| view.cursor.cursor.line)
             .unwrap_or(0);
         if let Some(buffer) = self.session.buffer_mut(explorer.buffer_id) {
-            *buffer = TextBuffer::from_str(&refreshed_text);
+            *buffer = TextBuffer::from_text(&refreshed_text);
         }
 
         if let Some(view) = self.views.get_mut(&explorer.buffer_id) {

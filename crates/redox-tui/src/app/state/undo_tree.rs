@@ -342,10 +342,10 @@ impl EditorState {
             undo_tree_diff_text(selected_node, preview_change.as_ref());
 
         if let Some(buffer) = self.session.buffer_mut(tree.buffer_id) {
-            *buffer = TextBuffer::from_str(&rendered.text);
+            *buffer = TextBuffer::from_text(&rendered.text);
         }
         if let Some(buffer) = self.session.buffer_mut(tree.diff_buffer_id) {
-            *buffer = TextBuffer::from_str(&diff_text);
+            *buffer = TextBuffer::from_text(&diff_text);
         }
         if let Some(tree) = self.undo_tree.as_mut() {
             tree.display_rows = rendered.display_rows;
@@ -1113,8 +1113,8 @@ mod render_tests {
 
     #[test]
     fn diff_preview_trims_shared_indent_and_expands_changed_line() {
-        let before = TextBuffer::from_str("        word");
-        let after = TextBuffer::from_str("        wordasdf");
+        let before = TextBuffer::from_text("        word");
+        let after = TextBuffer::from_text("        wordasdf");
         let diff = TextDiff::between(&before, &after).expect("missing diff");
         let (deleted, inserted) = diff_preview_lines(&before, &after, &diff);
 
@@ -1125,7 +1125,7 @@ mod render_tests {
     #[test]
     fn undo_tree_preview_coalesces_delete_then_insert_at_same_position() {
         let mut history = UndoHistory::default();
-        let mut buffer = TextBuffer::from_str("word old tail");
+        let mut buffer = TextBuffer::from_text("word old tail");
 
         let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 5));
         let _ = buffer.apply_edit(Edit::delete(5..8));

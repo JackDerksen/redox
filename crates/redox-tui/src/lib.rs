@@ -2799,7 +2799,7 @@ mod tests {
 
     #[test]
     fn draw_snapshot_lines_renders_scrolled_plain_text_without_double_scroll() {
-        let buffer = redox_core::TextBuffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
+        let buffer = redox_core::TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz\n");
         let snapshot = ui::render::RenderSnapshot::new(0, vec!["ijklmnop".to_string()]);
         let mut window = TestWindow::new(8, 1);
         let style = UiStyle::default();
@@ -2831,7 +2831,7 @@ mod tests {
 
     #[test]
     fn visual_selection_visible_cells_connect_blank_lines() {
-        let buffer = redox_core::TextBuffer::from_str("alpha\n\nomega\n");
+        let buffer = redox_core::TextBuffer::from_text("alpha\n\nomega\n");
         let selection =
             redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
 

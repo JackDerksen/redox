@@ -1,10 +1,6 @@
-//! Editing operations for `TextBuffer`.
-//!
-//! Methods in this module mutate the rope and return explicit cursor or
-//! selection results so callers can keep editor state in sync.
+//! Mutations that return the resulting cursor or selection.
 
 use crate::buffer::{Edit, EditBatchSummary, Pos, Selection, TextBuffer};
-use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 impl TextBuffer {
     /// Insert `text` at the given logical position.
@@ -153,6 +149,10 @@ impl TextBuffer {
     ///
     /// Returns the resulting cursor position (end of inserted text, or start of deletion).
     pub fn apply_edit(&mut self, edit: Edit) -> Pos {
+        self.apply_edit_ref(&edit)
+    }
+
+    fn apply_edit_ref(&mut self, edit: &Edit) -> Pos {
         let maxc = self.len_chars();
         let start = edit.range.start.min(maxc);
         let end = edit.range.end.min(maxc);
@@ -193,7 +193,7 @@ impl TextBuffer {
                 (end, start)
             };
 
-            cursor = self.apply_edit(edit.clone());
+            cursor = self.apply_edit_ref(edit);
             let cursor_char = self.pos_to_char(cursor);
 
             changed_start = changed_start.min(start);
@@ -403,21 +403,20 @@ impl TextBuffer {
         if moved { Some(current) } else { None }
     }
 
-    /// Indent each line in a contiguous span by `count` tab characters.
-    ///
-    /// Returns `(line, chars_added)` for every touched line.
+    /// Indent each line and return the character count added per line.
     pub fn indent_line_span(
         &mut self,
         start_line: usize,
         end_line_inclusive: usize,
         count: usize,
+        indent_unit: &str,
     ) -> Vec<(usize, usize)> {
-        if count == 0 {
+        if count == 0 || indent_unit.is_empty() {
             return Vec::new();
         }
 
         let (start, end) = self.normalized_line_range(start_line, end_line_inclusive);
-        let indent = SOFT_TAB.repeat(count);
+        let indent = indent_unit.repeat(count);
         let mut added_by_line = Vec::with_capacity(end.saturating_sub(start) + 1);
         for line in start..=end {
             let _ = self.insert(Pos::new(line, 0), &indent);
@@ -426,17 +425,15 @@ impl TextBuffer {
         added_by_line
     }
 
-    /// Outdent each line in a contiguous span by up to `count` levels.
-    ///
-    /// One outdent level removes either one leading tab or up to four leading spaces.
-    /// Returns `(line, chars_removed)` for every touched line.
+    /// Outdent each line and return the character count removed per line.
     pub fn outdent_line_span(
         &mut self,
         start_line: usize,
         end_line_inclusive: usize,
         count: usize,
+        tab_width: usize,
     ) -> Vec<(usize, usize)> {
-        if count == 0 {
+        if count == 0 || tab_width == 0 {
             return Vec::new();
         }
 
@@ -456,9 +453,7 @@ impl TextBuffer {
                 }
 
                 let mut spaces = 0usize;
-                while idx + spaces < chars.len()
-                    && chars[idx + spaces] == ' '
-                    && spaces < SOFT_TAB_WIDTH
+                while idx + spaces < chars.len() && chars[idx + spaces] == ' ' && spaces < tab_width
                 {
                     spaces += 1;
                 }

@@ -201,7 +201,7 @@ mod tests {
         AnalysisRequest {
             buffer_id,
             version,
-            buffer: TextBuffer::from_str("fn main() {}\n"),
+            buffer: TextBuffer::from_text("fn main() {}\n"),
             syntax_language: Some(SyntaxLanguage::Rust),
         }
     }

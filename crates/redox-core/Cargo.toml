@@ -13,3 +13,4 @@ categories = ["text-editors", "data-structures"]
 anyhow = { workspace = true }
 ropey = "1.6.1"
 serde = { version = "1.0", features = ["derive"] }
+tempfile = "3.27"

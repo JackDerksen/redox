@@ -1,33 +1,39 @@
-//! Core editor primitives.
+//! UI-independent text storage and editor behaviour for Redox.
 //!
-//! `redox-core` provides the UI-agnostic pieces of the editor:
-//! - [`TextBuffer`], a Ropey-backed text buffer with char-indexed editing APIs.
-//! - [`EditorSession`], a multi-buffer session model with dirty tracking and
-//!   bounded incremental loading.
-//! - [`motion`], deterministic Vim-like cursor motion helpers.
+//! [`TextBuffer`] is the boundary around Ropey. Its primary coordinates are
+//! Unicode scalar-value indices and zero-based [`Pos`] values. Byte conversion is
+//! available for protocols and parsers; terminal cells and graphemes stay in the
+//! frontend.
 //!
-//! Notes on indexing
-//! - `ropey::Rope` is UTF-8 text stored as a rope.
-//! - Most editing operations are most naturally expressed in **char indices**
-//!   (`usize` counts of Unicode scalar values), because `ropey` exposes many APIs
-//!   in terms of `char` offsets.
-//! - The UI may need **byte indices** for interoperability with external data,
-//!   but those are not used as the primary index type in this crate.
-
-pub const SOFT_TAB_WIDTH: usize = 4;
-pub const SOFT_TAB: &str = "    ";
+//! # Example
+//!
+//! ```
+//! use redox_core::prelude::*;
+//!
+//! let mut buffer = TextBuffer::from("hello");
+//! let cursor = buffer.insert(Pos::new(0, 5), " world");
+//!
+//! assert_eq!(cursor, Pos::new(0, 11));
+//! assert_eq!(String::from(&buffer), "hello world");
+//! ```
 
 pub mod buffer;
 pub mod fuzzy;
-pub mod io;
-pub mod logic;
 pub mod motion;
 pub mod session;
-pub mod text;
+
+/// Common text-buffer types for editor frontends and integrations.
+///
+/// More specialized APIs, such as sessions, fuzzy matching, and text objects,
+/// remain available through explicit imports from the crate root.
+pub mod prelude {
+    pub use crate::motion::{Motion, apply_motion, apply_motion_for_operator, apply_motion_n};
+    pub use crate::{Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextSlice, UndoHistory};
+}
 
 pub use buffer::{
     DelimiterKind, Edit, EditBatchSummary, Pos, Selection, TextBuffer, TextDiff,
-    TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec, UndoCheckpoint,
+    TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec, TextSlice, UndoCheckpoint,
     UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry, VisualModeKind, VisualSelectionEditPlan,
 };
 pub use fuzzy::{
@@ -40,29 +46,4 @@ pub use session::{
 };
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_buffer_has_one_line() {
-        let b = TextBuffer::new();
-        assert_eq!(b.len_lines(), 1);
-        assert_eq!(b.len_chars(), 0);
-    }
-
-    #[test]
-    fn insert_and_delete_selection_smoke() {
-        let mut b = TextBuffer::from_str("ab");
-
-        let sel = Selection::empty(Pos::new(0, 2));
-        let new_cursor = b.insert(sel.cursor, "c");
-        assert_eq!(b.to_string(), "abc");
-        assert_eq!(new_cursor, Pos::new(0, 3));
-
-        let sel2 = Selection::new(Pos::new(0, 1), Pos::new(0, 2));
-        let (cur, did) = b.delete_selection(sel2);
-        assert!(did);
-        assert_eq!(cur, Pos::new(0, 1));
-        assert_eq!(b.to_string(), "ac");
-    }
-}
+mod tests;
