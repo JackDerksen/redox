@@ -4,13 +4,12 @@ mod loading;
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
-use tempfile::NamedTempFile;
 
 use self::loading::IncrementalFileLoader;
 use crate::TextBuffer;
@@ -787,29 +786,43 @@ impl EditorSession {
                     bail!("file changed on disk; reload or resolve before writing");
                 }
 
-                if !rec.buffer.is_empty()
-                    && rec.buffer.char(rec.buffer.len_chars() - 1) != Some('\n')
-                {
-                    rec.buffer.append("\n");
-                }
-
-                let destination_directory = path.parent().unwrap_or_else(|| Path::new("."));
-                let mut temporary = NamedTempFile::new_in(destination_directory)
-                    .with_context(|| format!("failed to write file: {}", path.display()))?;
-                rec.buffer
-                    .write_to(temporary.as_file_mut())
-                    .with_context(|| format!("failed to write file: {}", path.display()))?;
-                temporary
-                    .flush()
-                    .with_context(|| format!("failed to write file: {}", path.display()))?;
-                match path.metadata() {
-                    Ok(metadata) => temporary
-                        .as_file()
-                        .set_permissions(metadata.permissions())
-                        .with_context(|| format!("failed to write file: {}", path.display()))?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                let needs_final_newline = !rec.buffer.is_empty()
+                    && rec.buffer.char(rec.buffer.len_chars() - 1) != Some('\n');
+                let existing_permissions = match path.metadata() {
+                    Ok(metadata) => Some(metadata.permissions()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => Err(error)
                         .with_context(|| format!("failed to write file: {}", path.display()))?,
+                };
+                let destination_directory = path.parent().unwrap_or_else(|| Path::new("."));
+                let mut temporary_builder = tempfile::Builder::new();
+                #[cfg(unix)]
+                if existing_permissions.is_none() {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    temporary_builder.permissions(std::fs::Permissions::from_mode(0o666));
+                }
+                let mut temporary = temporary_builder
+                    .tempfile_in(destination_directory)
+                    .with_context(|| format!("failed to write file: {}", path.display()))?;
+                {
+                    let mut writer = BufWriter::new(temporary.as_file_mut());
+                    rec.buffer
+                        .write_to(&mut writer)
+                        .with_context(|| format!("failed to write file: {}", path.display()))?;
+                    if needs_final_newline {
+                        writer
+                            .write_all(b"\n")
+                            .with_context(|| format!("failed to write file: {}", path.display()))?;
+                    }
+                    writer
+                        .flush()
+                        .with_context(|| format!("failed to write file: {}", path.display()))?;
+                }
+                if let Some(permissions) = existing_permissions {
+                    temporary
+                        .as_file()
+                        .set_permissions(permissions)
+                        .with_context(|| format!("failed to write file: {}", path.display()))?;
                 }
                 temporary
                     .as_file()
@@ -820,6 +833,9 @@ impl EditorSession {
                     .map_err(|error| error.error)
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
 
+                if needs_final_newline {
+                    rec.buffer.append("\n");
+                }
                 let (fingerprint, normalized_len_chars) =
                     normalized_content_fingerprint(&rec.buffer);
                 rec.clean_fingerprint = fingerprint;
