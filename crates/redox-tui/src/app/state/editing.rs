@@ -502,11 +502,11 @@ impl EditorState {
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        let sel = Selection::empty(view.cursor.cursor);
+        let selection = Selection::empty(view.cursor.cursor);
         {
             let buffer = self.session.active_buffer_mut();
-            let sel = buffer.delete(sel);
-            view.cursor.cursor = sel.cursor;
+            let selection = buffer.delete(selection);
+            view.cursor.cursor = selection.cursor;
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
@@ -596,9 +596,10 @@ impl EditorState {
                 if replacement != ch.to_string() {
                     // Case toggling can expand to multiple codepoints (for example, `ß` -> `SS`).
                     // We intentionally advance to the end of the replacement so repeated `~`
-                    // steps move past the expanded text, which matches Vim-like behavior.
-                    let sel = buffer.replace_selection(Selection::new(cursor, end), &replacement);
-                    cursor = sel.cursor;
+                    // steps move past the expanded text, which matches Vim-like behaviour.
+                    let selection =
+                        buffer.replace_selection(Selection::new(cursor, end), &replacement);
+                    cursor = selection.cursor;
                     changed = true;
                 } else {
                     cursor = end;

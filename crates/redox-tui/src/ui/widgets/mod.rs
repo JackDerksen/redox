@@ -1,7 +1,4 @@
-//! Editor-specific UI widgets for `redox-tui`.
-//!
-//! These widgets are built directly on top of MinUI's `Window` trait and are
-//! intended to stay frontend-only (no `redox-core` dependencies).
+//! Frontend-only editor widgets built on MinUI.
 
 pub mod about;
 pub mod command_line;

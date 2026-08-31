@@ -6,12 +6,10 @@ use crate::ui::icons::UNDO_TREE;
 use crate::ui::style::UndoTreeStyle;
 use crate::ui::widgets::popup::clip_text_to_cells;
 
-// ======================================================================================
 // Credit to https://github.com/mbbill/undotree for the inspiration here.
-// ======================================================================================
 
 const UNDO_TREE_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
-const PREVIEW_HEADER_ROWS: usize = 2; // > 1
+const PREVIEW_HEADER_ROWS: usize = 2;
 pub const UNDO_TREE_HEADER_ROWS: u16 = 1;
 const UNDO_TREE_TITLE: &str = "Undo Tree";
 const UNDO_TREE_TITLE_COL: u16 = 1;

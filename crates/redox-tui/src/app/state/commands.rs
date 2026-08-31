@@ -226,8 +226,8 @@ impl EditorState {
                 }
                 self.clear_status();
             }
-            Err(e) => {
-                self.set_status(format!("open failed: {e}"));
+            Err(error) => {
+                self.set_status(format!("open failed: {error}"));
             }
         }
     }
@@ -288,23 +288,23 @@ impl EditorState {
             return;
         }
 
-        let mut msg = String::new();
+        let mut message = String::new();
         for (idx, summary) in summaries.iter().enumerate() {
             if idx > 0 {
-                msg.push('\n');
+                message.push('\n');
             }
             let active = if summary.is_active { '%' } else { '-' };
             let dirty = if summary.dirty { '+' } else { '-' };
             let new_file = if summary.is_new_file { 'n' } else { '-' };
             let external = if summary.external_changed { '!' } else { '-' };
-            msg.push_str(&format!(
+            message.push_str(&format!(
                 "[{active}{dirty}{new_file}{external}]{}:{}",
                 summary.id.get(),
                 summary.display_name
             ));
         }
 
-        self.set_status(msg);
+        self.set_status(message);
     }
 
     pub(super) fn command_lsp(&mut self, arg: &str) {
@@ -484,9 +484,13 @@ impl EditorState {
                 let _ = buffer.insert(insert_pos, &text);
                 view.cursor.cursor = cursor;
             } else {
-                let sel = Selection::empty(insert_pos);
-                let sel = buffer.insert_newline(sel);
-                view.cursor.cursor = if above { Pos::new(line, 0) } else { sel.cursor };
+                let selection = Selection::empty(insert_pos);
+                let selection = buffer.insert_newline(selection);
+                view.cursor.cursor = if above {
+                    Pos::new(line, 0)
+                } else {
+                    selection.cursor
+                };
             }
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);

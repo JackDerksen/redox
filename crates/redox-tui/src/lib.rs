@@ -51,7 +51,6 @@ use ui::{
     draw_pin_selector_popup, draw_status_toast, draw_symbol_info_popup, draw_undo_tree_lines,
     draw_undo_tree_preview_lines, draw_which_key_popup, explorer_popup_inner_size,
     language_for_path, lsp_marketplace_popup_inner_size, perf_popup_layout,
-    snapshot_lines_wrapped_cached,
 };
 
 pub(crate) const SOFT_TAB_WIDTH: usize = 4;
@@ -450,8 +449,7 @@ fn draw_buffer_view(
                 height: text_h,
             };
             let snapshot_start = Instant::now();
-            let snapshot =
-                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+            let snapshot = view.render_line_cache.snapshot(buffer, &viewport);
             let spec = view
                 .cursor
                 .cursor_spec(buffer, text_w as usize, text_h as usize);
@@ -461,10 +459,11 @@ fn draw_buffer_view(
     perf.snapshot += snapshot_time;
     let overlay_start = Instant::now();
     let search_highlights =
-        state.active_search_highlight_ranges(snapshot.first_line, snapshot.lines.len());
-    let diagnostic_lines = state.active_diagnostic_lines(snapshot.first_line, snapshot.lines.len());
+        state.active_search_highlight_ranges(snapshot.first_line(), snapshot.line_count());
+    let diagnostic_lines =
+        state.active_diagnostic_lines(snapshot.first_line(), snapshot.line_count());
     let snippet_placeholders =
-        state.active_snippet_placeholder_ranges(snapshot.first_line, snapshot.lines.len());
+        state.active_snippet_placeholder_ranges(snapshot.first_line(), snapshot.line_count());
     perf.overlays += overlay_start.elapsed();
 
     draw_relative_line_numbers(
@@ -473,7 +472,7 @@ fn draw_buffer_view(
         gutter.gutter_w,
         text_h,
         gutter.show_git_marker_column,
-        snapshot.first_line,
+        snapshot.first_line(),
         active_cursor_line,
         gutter.total_lines,
     )?;
@@ -483,7 +482,7 @@ fn draw_buffer_view(
         gutter.gutter_w,
         text_h,
         GUTTER_CONTENT_PADDING,
-        snapshot.first_line,
+        snapshot.first_line(),
         state.active_git_diff(),
     )?;
 
@@ -509,8 +508,8 @@ fn draw_buffer_view(
                 .syntax_highlighter
                 .visible_line_spans_for_display_cached(
                     syntax_language,
-                    snapshot.first_line,
-                    snapshot.lines.len(),
+                    snapshot.first_line(),
+                    snapshot.line_count(),
                 );
             let syntax_time = syntax_start.elapsed();
             let overlay_start = Instant::now();
@@ -520,8 +519,8 @@ fn draw_buffer_view(
                     active_delimiter_highlights(
                         buffer,
                         cursor,
-                        snapshot.first_line,
-                        snapshot.lines.len(),
+                        snapshot.first_line(),
+                        snapshot.line_count(),
                         analysis,
                     )
                 })
@@ -531,8 +530,8 @@ fn draw_buffer_view(
                     tree_sitter_scope,
                     buffer,
                     cursor,
-                    snapshot.first_line,
-                    snapshot.lines.len(),
+                    snapshot.first_line(),
+                    snapshot.line_count(),
                     scroll_x,
                     text_w as usize,
                     delimiter_analysis,
@@ -1545,7 +1544,7 @@ fn draw_buffer_snapshot_for_id(
             width: text_w,
             height,
         };
-        let snapshot = snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+        let snapshot = view.render_line_cache.snapshot(buffer, &viewport);
         let analysis_version = view.analysis_version();
         let scope_guides_enabled = scope_guides_enabled(syntax_language);
         let tree_sitter_scope = scope_guides_enabled
@@ -1564,8 +1563,8 @@ fn draw_buffer_snapshot_for_id(
             .syntax_highlighter
             .visible_line_spans_for_display_cached(
                 syntax_language,
-                snapshot.first_line,
-                snapshot.lines.len(),
+                snapshot.first_line(),
+                snapshot.line_count(),
             );
         let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
         let delimiter_highlights = delimiter_analysis
@@ -1573,8 +1572,8 @@ fn draw_buffer_snapshot_for_id(
                 active_delimiter_highlights(
                     buffer,
                     cursor,
-                    snapshot.first_line,
-                    snapshot.lines.len(),
+                    snapshot.first_line(),
+                    snapshot.line_count(),
                     analysis,
                 )
             })
@@ -1584,8 +1583,8 @@ fn draw_buffer_snapshot_for_id(
                 tree_sitter_scope,
                 buffer,
                 cursor,
-                snapshot.first_line,
-                snapshot.lines.len(),
+                snapshot.first_line(),
+                snapshot.line_count(),
                 scroll_x,
                 width.saturating_sub(content_x) as usize,
                 delimiter_analysis,
@@ -1601,7 +1600,7 @@ fn draw_buffer_snapshot_for_id(
                 gutter_w,
                 height,
                 show_git_marker_column,
-                snapshot.first_line,
+                snapshot.first_line(),
                 view.cursor.cursor.line,
                 total_lines,
             )?;
@@ -1611,7 +1610,7 @@ fn draw_buffer_snapshot_for_id(
                 gutter_w,
                 height,
                 GUTTER_CONTENT_PADDING,
-                snapshot.first_line,
+                snapshot.first_line(),
                 git_diff.as_ref(),
             )?;
         }
@@ -1685,12 +1684,12 @@ fn draw_snapshot_lines(
         style.layout.color_column,
         style.theme.color_column,
     );
-    for row in 0..snapshot.lines.len() {
-        let line_idx = snapshot.first_line + row;
-        let visible_line = snapshot.lines.get(row).map(String::as_str).unwrap_or("");
-        let source_line = buffer.line_string(line_idx);
+    for (row, render_line) in snapshot.iter().enumerate() {
+        let line_idx = snapshot.first_line() + row;
+        let visible_line = render_line.visible();
+        let source_line = render_line.source();
         let fallback_line_spans = lexical_fallback_enabled
-            .then(|| lexical_fallback_line_spans(&source_line))
+            .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
         let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
         let lexical_overlay_spans = syntax_spans.and_then(|rows| rows.lexical_overlay(row));
@@ -1726,7 +1725,7 @@ fn draw_snapshot_lines(
             .is_some_and(|ranges| !ranges.is_empty());
         let diagnostic_cells = diagnostic_line.map(|diagnostic| {
             selected_visible_cells(
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 diagnostic.start_col,
@@ -1766,7 +1765,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     style,
@@ -1779,15 +1778,15 @@ fn draw_snapshot_lines(
         let occupied_text_cells = if visible_indent_guides.is_empty() {
             Vec::new()
         } else {
-            occupied_visible_cells(&source_line, scroll_x, text_w)
+            occupied_visible_cells(source_line, scroll_x, text_w)
         };
         let search_cells = search_highlights
             .get(&line_idx)
-            .map(|ranges| highlighted_visible_cells(&source_line, scroll_x, text_w, ranges));
+            .map(|ranges| highlighted_visible_cells(source_line, scroll_x, text_w, ranges));
         if let Some((selection, mode, selection_bg)) = transient_selection {
             if let Some(selected_cells) = visual_selection_visible_cells(
                 buffer,
-                &source_line,
+                source_line,
                 selection,
                 mode,
                 line_idx,
@@ -1821,7 +1820,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     default_colors,
@@ -1844,7 +1843,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     highlighted_chars,
@@ -1856,7 +1855,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     snippet_ranges,
@@ -1867,7 +1866,7 @@ fn draw_snapshot_lines(
                         window,
                         row as u16,
                         content_x,
-                        &source_line,
+                        source_line,
                         scroll_x,
                         text_w,
                         style,
@@ -1897,7 +1896,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 default_colors,
@@ -1920,7 +1919,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 highlighted_chars,
@@ -1932,7 +1931,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 snippet_ranges,
@@ -1943,7 +1942,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     style,
@@ -1965,7 +1964,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     default_colors,
@@ -1980,7 +1979,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     default_colors,
@@ -2002,7 +2001,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 highlighted_chars,
@@ -2014,7 +2013,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 snippet_ranges,
@@ -2025,7 +2024,7 @@ fn draw_snapshot_lines(
                     window,
                     row as u16,
                     content_x,
-                    &source_line,
+                    source_line,
                     scroll_x,
                     text_w,
                     style,
@@ -2044,7 +2043,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 default_colors,
@@ -2059,7 +2058,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 default_colors,
@@ -2070,7 +2069,7 @@ fn draw_snapshot_lines(
             window,
             row as u16,
             content_x,
-            &source_line,
+            source_line,
             scroll_x,
             text_w,
             snippet_ranges,
@@ -2089,7 +2088,7 @@ fn draw_snapshot_lines(
             window,
             row as u16,
             content_x,
-            &source_line,
+            source_line,
             scroll_x,
             text_w,
             highlighted_chars,
@@ -2102,7 +2101,7 @@ fn draw_snapshot_lines(
                 window,
                 row as u16,
                 content_x,
-                &source_line,
+                source_line,
                 scroll_x,
                 text_w,
                 style,
@@ -2800,7 +2799,16 @@ mod tests {
     #[test]
     fn draw_snapshot_lines_renders_scrolled_plain_text_without_double_scroll() {
         let buffer = redox_core::TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz\n");
-        let snapshot = ui::render::RenderSnapshot::new(0, vec!["ijklmnop".to_string()]);
+        let mut render_line_cache = ui::RenderLineCache::new(1);
+        let snapshot = render_line_cache.snapshot(
+            &buffer,
+            &TextViewport {
+                scroll_x: 8,
+                scroll_y: 0,
+                width: 8,
+                height: 1,
+            },
+        );
         let mut window = TestWindow::new(8, 1);
         let style = UiStyle::default();
         let default_colors = ColorPair::new(style.theme.white, style.theme.bg);
@@ -3256,7 +3264,7 @@ fn handle_editor_event(
         InputAction::PasteSystemClipboard => match clipboard.as_mut() {
             Some(system_clipboard) => match system_clipboard.paste() {
                 Ok(text) => state.apply_input(InputAction::PasteSystemClipboardText(text), w, h),
-                Err(e) => state.set_status(format!("clipboard paste failed: {e}")),
+                Err(error) => state.set_status(format!("clipboard paste failed: {error}")),
             },
             None => state.set_status("system clipboard unavailable"),
         },
@@ -3265,8 +3273,8 @@ fn handle_editor_event(
     if let Some(text) = state.take_pending_system_clipboard() {
         match clipboard.as_mut() {
             Some(system_clipboard) => {
-                if let Err(e) = system_clipboard.copy(&text) {
-                    state.set_status(format!("clipboard copy failed: {e}"));
+                if let Err(error) = system_clipboard.copy(&text) {
+                    state.set_status(format!("clipboard copy failed: {error}"));
                 } else {
                     state.set_status("yanked to system clipboard");
                 }

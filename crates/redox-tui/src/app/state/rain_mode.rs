@@ -1,7 +1,7 @@
 use minui::ColorPair;
 
 use super::EditorState;
-use crate::ui::{TextViewport, UiStyle, language_for_path, snapshot_lines_wrapped_cached};
+use crate::ui::{TextViewport, UiStyle, language_for_path};
 
 impl EditorState {
     pub(super) fn command_rain(&mut self) {
@@ -47,20 +47,17 @@ impl EditorState {
                 width: text_width,
                 height: text_height,
             };
-            let snapshot =
-                snapshot_lines_wrapped_cached(buffer, &viewport, &mut view.grapheme_cache);
+            let snapshot = view.render_line_cache.snapshot(buffer, &viewport);
             let syntax_spans = view
                 .syntax_highlighter
                 .visible_line_spans_for_display_cached(
                     syntax_language,
-                    snapshot.first_line,
-                    snapshot.lines.len(),
+                    snapshot.first_line(),
+                    snapshot.line_count(),
                 );
 
             crate::ui::RainAnimation::capture(
-                buffer,
-                &mut view.grapheme_cache,
-                snapshot.first_line,
+                &snapshot,
                 scroll_x,
                 text_width as usize,
                 text_height as usize,

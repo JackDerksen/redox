@@ -1,15 +1,11 @@
 use minui::{ColorPair, TabPolicy, Window, cell_width};
-use redox_core::TextBuffer;
 
 use super::helpers::apply_color_column;
-use super::render::GraphemeCache;
+use super::render::RenderSnapshot;
 use super::style::UiStyle;
 use super::syntax::{VisibleLineSyntaxSpans, syntax_color_for_range};
 
-// ======================================================================================
 // Credit to https://github.com/Eandrju/cellular-automaton.nvim for the inspiration here.
-// One of my absolute favourite Neovim plugins!
-// ======================================================================================
 
 const SIDE_NOISE_PERCENT: u32 = 5;
 const DISPERSE_RATE: usize = 7;
@@ -44,9 +40,7 @@ pub struct RainAnimation {
 
 impl RainAnimation {
     pub fn capture(
-        buffer: &TextBuffer,
-        cache: &mut GraphemeCache,
-        first_line: usize,
+        snapshot: &RenderSnapshot,
         scroll_x: usize,
         width: usize,
         height: usize,
@@ -55,6 +49,7 @@ impl RainAnimation {
         syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
         color_column: Option<(usize, minui::Color)>,
     ) -> Self {
+        let first_line = snapshot.first_line();
         let mut animation = Self {
             first_line,
             width,
@@ -68,32 +63,27 @@ impl RainAnimation {
             grid: vec![vec![RainCell::Empty; width]; height],
         };
 
-        for row in 0..height {
-            let line_idx = first_line.saturating_add(row);
-            if line_idx >= buffer.len_lines() {
-                break;
-            }
-
-            let graphemes = cache.graphemes_for_line(buffer, line_idx);
-            let start_g = skip_graphemes_by_cells(graphemes, scroll_x);
+        for (row, line) in snapshot.iter().take(height).enumerate() {
             let spans = syntax_spans.and_then(|rows| rows.get(row));
+            let mut skipped_cells = 0usize;
             let mut used_cells = 0usize;
-            let mut byte_idx: usize = graphemes[..start_g].iter().map(|g| g.len()).sum();
 
-            for grapheme in &graphemes[start_g..] {
+            for (start_byte, grapheme) in line.grapheme_indices() {
                 let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-                let start_byte = byte_idx;
-                let end_byte = byte_idx.saturating_add(grapheme.len());
+                if skipped_cells < scroll_x {
+                    skipped_cells = skipped_cells.saturating_add(grapheme_width);
+                    continue;
+                }
 
                 if grapheme_width == 0 {
-                    byte_idx = end_byte;
                     continue;
                 }
                 if used_cells.saturating_add(grapheme_width) > width {
                     break;
                 }
 
-                if grapheme.as_ref() != "\t" && grapheme.as_ref() != " " {
+                if grapheme != "\t" && grapheme != " " {
+                    let end_byte = start_byte.saturating_add(grapheme.len());
                     let base_colors = spans
                         .map(|line_spans| {
                             syntax_color_for_range(
@@ -116,7 +106,7 @@ impl RainAnimation {
                         row,
                         used_cells,
                         RainParticle {
-                            glyph: grapheme.to_owned(),
+                            glyph: grapheme.to_owned().into_boxed_str(),
                             colors,
                             disperse_direction,
                             processed: false,
@@ -125,7 +115,6 @@ impl RainAnimation {
                     );
                 }
 
-                byte_idx = end_byte;
                 used_cells = used_cells.saturating_add(grapheme_width);
             }
         }
@@ -352,20 +341,4 @@ impl RainAnimation {
             .wrapping_add(RNG_INCREMENT);
         ((self.rng_state >> 32) % 100) as u32
     }
-}
-
-fn skip_graphemes_by_cells(graphemes: &[Box<str>], skip_cells: usize) -> usize {
-    if skip_cells == 0 || graphemes.is_empty() {
-        return 0;
-    }
-
-    let mut skipped = 0usize;
-    for (idx, grapheme) in graphemes.iter().enumerate() {
-        if skipped >= skip_cells {
-            return idx;
-        }
-        skipped = skipped.saturating_add(cell_width(grapheme, TabPolicy::Fixed(4)) as usize);
-    }
-
-    graphemes.len()
 }

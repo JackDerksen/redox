@@ -214,12 +214,6 @@ fn status_module_segments(
     segments
 }
 
-/// Segment-based status bar widget.
-///
-/// By default:
-/// - `height = 1`
-/// - `bg_colors = None` (no background fill)
-/// - anchored at bottom (`y = window_height - height`)
 #[derive(Debug, Clone)]
 pub struct EditorStatusBar {
     segments: Vec<Segment>,
@@ -314,13 +308,13 @@ impl EditorStatusBar {
         };
 
         let mut out = Vec::with_capacity(self.segments.len());
-        for seg in &self.segments {
-            let mut w = seg.min_width.unwrap_or(default_flex);
-            if seg.min_width.is_none() && remainder > 0 {
-                w = w.saturating_add(1);
+        for segment in &self.segments {
+            let mut segment_width = segment.min_width.unwrap_or(default_flex);
+            if segment.min_width.is_none() && remainder > 0 {
+                segment_width = segment_width.saturating_add(1);
                 remainder -= 1;
             }
-            out.push(w);
+            out.push(segment_width);
         }
 
         out
@@ -357,23 +351,22 @@ impl EditorStatusBar {
         y: u16,
         region_x: u16,
         region_w: u16,
-        seg: &Segment,
+        segment: &Segment,
     ) -> Result<()> {
         if region_w == 0 {
             return Ok(());
         }
 
-        // Clip segment text to fit region.
-        let clipped = Self::clip_with_ellipsis(&seg.text, region_w, seg.clip);
+        let clipped = Self::clip_with_ellipsis(&segment.text, region_w, segment.clip);
         let text_w = clipped.chars().count() as u16;
 
-        let x = match seg.align {
+        let x = match segment.align {
             Align::Left => region_x,
             Align::Center => region_x + (region_w.saturating_sub(text_w) / 2),
             Align::Right => region_x + region_w.saturating_sub(text_w),
         };
 
-        if let Some(colors) = seg.colors {
+        if let Some(colors) = segment.colors {
             window.write_str_colored(y, x, &clipped, colors)?;
         } else {
             window.write_str(y, x, &clipped)?;
@@ -392,7 +385,7 @@ impl EditorStatusBar {
         let region_widths = self.segment_region_widths(width);
 
         let mut x = 0u16;
-        for (seg, region_w) in self.segments.iter().zip(region_widths.iter().copied()) {
+        for (segment, region_w) in self.segments.iter().zip(region_widths.iter().copied()) {
             if x >= width {
                 break;
             }
@@ -400,7 +393,7 @@ impl EditorStatusBar {
             let region_w = region_w.min(width - x);
 
             if region_w > 0 {
-                self.draw_segment(window, y, x, region_w, seg)?;
+                self.draw_segment(window, y, x, region_w, segment)?;
             }
 
             x = x.saturating_add(region_w);
@@ -415,7 +408,6 @@ impl Widget for EditorStatusBar {
         let (width, height) = window.get_size();
         let y0 = self.calculate_y(height);
 
-        // Multi-height: each row currently identical (background fill + same segments).
         for i in 0..self.height {
             let y = y0 + i;
             if y >= height {
@@ -436,7 +428,6 @@ impl Widget for EditorStatusBar {
     }
 }
 
-/// Build the editor's standard bottom status bar from state + style.
 pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
     let buffer_id = state.statusline_buffer_id();
     let Some(buffer) = state.session.buffer(buffer_id) else {

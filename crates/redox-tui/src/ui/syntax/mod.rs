@@ -119,7 +119,7 @@ pub(crate) struct SyntaxCapture {
     pub(crate) priority: u16,
 }
 
-/// Language-agnostic syntax highlighting engine with Treesitter.
+/// Language-agnostic syntax highlighting engine with Tree-sitter.
 impl QuerySyntaxEngine {
     fn new(config: &'static LanguageConfig) -> Option<Self> {
         let mut parser = Parser::new();
@@ -559,8 +559,8 @@ pub fn language_for_path(path: Option<&Path>) -> Option<SyntaxLanguage> {
 }
 
 pub fn language_for_name(name: &str) -> Option<SyntaxLanguage> {
-    let normalised = name.trim().to_ascii_lowercase();
-    match normalised.as_str() {
+    let normalized = name.trim().to_ascii_lowercase();
+    match normalized.as_str() {
         "c" => Some(SyntaxLanguage::C),
         "cpp" | "c++" | "cc" | "cxx" => Some(SyntaxLanguage::Cpp),
         "css" => Some(SyntaxLanguage::Css),

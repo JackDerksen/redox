@@ -1,8 +1,4 @@
-//! Application-layer module for `redox-tui`.
-//!
-//! This module owns editor-TUI specific orchestration state (mode, command line,
-//! dirty flag, pending actions) while keeping terminal-agnostic editing logic in
-//! `redox-core` and rendering in `redox-tui::ui`.
+//! TUI orchestration between editor state, core mechanisms, and rendering.
 
 pub mod state;
 

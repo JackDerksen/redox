@@ -165,12 +165,12 @@ fn clip_text_right_to_cells(text: &str, max_cells: usize) -> String {
     let mut used = 0usize;
     let mut start = graphemes.len();
     while start > 0 {
-        let g = graphemes[start - 1];
-        let gw = (cell_width(g, COMMAND_TAB_POLICY) as usize).max(1);
-        if used + gw > max_cells {
+        let grapheme = graphemes[start - 1];
+        let grapheme_width = (cell_width(grapheme, COMMAND_TAB_POLICY) as usize).max(1);
+        if used + grapheme_width > max_cells {
             break;
         }
-        used += gw;
+        used += grapheme_width;
         start -= 1;
     }
 

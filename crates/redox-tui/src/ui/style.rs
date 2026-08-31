@@ -465,7 +465,6 @@ impl DiagnosticInlineStyle {
             error: ColorPair::new(
                 theme.light_red,
                 Color::Rgb {
-                    // dim red background
                     r: 49,
                     g: 38,
                     b: 43,
@@ -474,7 +473,6 @@ impl DiagnosticInlineStyle {
             warning: ColorPair::new(
                 theme.light_orange,
                 Color::Rgb {
-                    // dim orange background
                     r: 49,
                     g: 43,
                     b: 42,
@@ -483,7 +481,6 @@ impl DiagnosticInlineStyle {
             information: ColorPair::new(
                 theme.light_gray,
                 Color::Rgb {
-                    // dim gray background
                     r: 35,
                     g: 34,
                     b: 38,
@@ -492,7 +489,6 @@ impl DiagnosticInlineStyle {
             hint: ColorPair::new(
                 theme.light_blue,
                 Color::Rgb {
-                    // dim blue background
                     r: 39,
                     g: 45,
                     b: 49,
@@ -942,15 +938,15 @@ impl BaseTheme {
     }
 }
 
-fn dim_style_colour(
-    colour: Color,
+fn dim_style_color(
+    color: Color,
     theme: BaseTheme,
     dimmed: BaseTheme,
     bg: Color,
     amount: f32,
     is_foreground: bool,
 ) -> Color {
-    let theme_colours = [
+    let theme_colors = [
         (theme.bg, dimmed.bg),
         (theme.color_column, dimmed.color_column),
         (theme.scope, dimmed.scope),
@@ -975,16 +971,14 @@ fn dim_style_colour(
         (theme.light_gray, dimmed.light_gray),
     ];
     if is_foreground
-        && let Some((_, replacement)) = theme_colours
-            .iter()
-            .find(|(original, _)| *original == colour)
+        && let Some((_, replacement)) = theme_colors.iter().find(|(original, _)| *original == color)
     {
         return *replacement;
     }
     if is_foreground {
-        dim_foreground_color(colour, bg, amount)
+        dim_foreground_color(color, bg, amount)
     } else {
-        colour
+        color
     }
 }
 
@@ -996,10 +990,10 @@ impl UiStyle {
         style.theme = dimmed_theme;
         macro_rules! dim {
             ($($pair:expr),+ $(,)?) => { $(
-                $pair.fg = dim_style_colour(
+                $pair.fg = dim_style_color(
                     $pair.fg, self.theme, dimmed_theme, bg, self.dim_amount, true,
                 );
-                $pair.bg = dim_style_colour(
+                $pair.bg = dim_style_color(
                     $pair.bg, self.theme, dimmed_theme, bg, self.dim_amount, false,
                 );
             )+ };
@@ -1123,7 +1117,7 @@ impl UiStyle {
         style
     }
 
-    pub fn set_syntax_colour(&mut self, name: &str, colour: ColorPair) -> anyhow::Result<()> {
+    pub(crate) fn set_syntax_color(&mut self, name: &str, color: ColorPair) -> anyhow::Result<()> {
         let target = match name {
             "markdown_code" => &mut self.syntax.markdown_code,
             "markdown_emphasis" => &mut self.syntax.markdown_emphasis,
@@ -1163,11 +1157,11 @@ impl UiStyle {
             "punctuation_special" => &mut self.syntax.punctuation_special,
             _ => anyhow::bail!("unknown syntax colour {name:?}"),
         };
-        *target = colour;
+        *target = color;
         Ok(())
     }
 
-    pub fn set_ui_colour(&mut self, name: &str, colour: ColorPair) -> anyhow::Result<()> {
+    pub(crate) fn set_ui_color(&mut self, name: &str, color: ColorPair) -> anyhow::Result<()> {
         let which_key_target = match name {
             "which_key.background" => Some(&mut self.which_key.background),
             "which_key.edge" => Some(&mut self.which_key.edge),
@@ -1178,15 +1172,15 @@ impl UiStyle {
             _ => None,
         };
         if let Some(target) = which_key_target {
-            *target = colour.fg;
+            *target = color.fg;
             return Ok(());
         }
-        macro_rules! colour_target {
+        macro_rules! color_target {
             ($($name:literal => $target:expr),+ $(,)?) => {
                 match name { $($name => &mut $target,)+ _ => anyhow::bail!("unknown UI colour {name:?}"), }
             };
         }
-        let target = colour_target! {
+        let target = color_target! {
             "git.added" => self.git.added, "git.modified" => self.git.modified,
             "git.conflict" => self.git.conflict, "git.removed" => self.git.removed,
             "status.bar" => self.status_line.bar, "status.path" => self.status_line.path,
@@ -1222,7 +1216,7 @@ impl UiStyle {
             "undo_tree.preview_separator" => self.undo_tree.preview_separator, "undo_tree.preview_deleted" => self.undo_tree.preview_deleted,
             "undo_tree.preview_inserted" => self.undo_tree.preview_inserted
         };
-        *target = colour;
+        *target = color;
         Ok(())
     }
 
@@ -1237,17 +1231,17 @@ impl UiStyle {
     ) {
         macro_rules! apply {
             ($popup:expr) => {{
-                if let Some(v) = width {
-                    $popup.width_percent = v;
+                if let Some(value) = width {
+                    $popup.width_percent = value;
                 }
-                if let Some(v) = height {
-                    $popup.height_percent = v;
+                if let Some(value) = height {
+                    $popup.height_percent = value;
                 }
-                if let Some(v) = min_width {
-                    $popup.min_width = v;
+                if let Some(value) = min_width {
+                    $popup.min_width = value;
                 }
-                if let Some(v) = min_height {
-                    $popup.min_height = v;
+                if let Some(value) = min_height {
+                    $popup.min_height = value;
                 }
             }};
         }
@@ -1258,22 +1252,22 @@ impl UiStyle {
             "lsp_marketplace" => apply!(self.lsp_marketplace),
             "perf" => apply!(self.perf),
             "command_line" => {
-                if let Some(v) = width {
-                    self.command_line.width_percent = v;
+                if let Some(value) = width {
+                    self.command_line.width_percent = value;
                 }
-                if let Some(v) = min_width {
-                    self.command_line.min_width = v;
+                if let Some(value) = min_width {
+                    self.command_line.min_width = value;
                 }
-                if let Some(v) = stacked_padding {
-                    self.command_line.stacked_padding = v;
+                if let Some(value) = stacked_padding {
+                    self.command_line.stacked_padding = value;
                 }
             }
             "undo_tree" => {
-                if let Some(v) = width {
-                    self.undo_tree.width_percent = v;
+                if let Some(value) = width {
+                    self.undo_tree.width_percent = value;
                 }
-                if let Some(v) = min_width {
-                    self.undo_tree.min_width = v;
+                if let Some(value) = min_width {
+                    self.undo_tree.min_width = value;
                 }
             }
             _ => {}

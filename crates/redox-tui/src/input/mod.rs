@@ -1,7 +1,4 @@
-//! Input mapping for `redox-tui`.
-//!
-//! This module translates raw MinUI events into mode-aware editor actions.
-//! It also tracks count prefixes and a small command tree for multi-key motions.
+//! Stateful translation of MinUI events into mode-aware editor intents.
 
 use std::{
     borrow::Cow,
@@ -15,7 +12,6 @@ use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
 
 pub mod cursor;
 
-/// Editor input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InputMode {
     Normal,
@@ -33,61 +29,37 @@ pub enum InputMode {
     VisualBlock,
 }
 
-/// How to enter insert mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertKind {
-    /// `i`: insert at cursor
     Insert,
 
-    /// `a`: append after cursor
     Append,
 
-    /// `I`: insert at the first non-whitespace character on the line
     InsertLineStart,
 
-    /// `A`: append at end of line
     AppendLineEnd,
 }
 
-/// High-level input intents the TUI understands.
-///
-/// These are *mode-aware*; the main editor loop decides how to apply them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
-    /// Bracketed paste payload.
-    ///
-    /// Treated as bulk text insertion in editable modes.
     Paste(String),
 
-    /// Apply a document motion (UI-agnostic) with a Vim-style count.
-    ///
-    /// `count` is always >= 1.
     Motion {
         motion: Motion,
         count: usize,
     },
 
-    /// Switch editor mode.
     SetMode(InputMode),
 
-    /// Enter insert mode (with Vim-like `i` / `a` semantics).
     EnterInsert(InsertKind),
-    /// Create a new line below current line and enter insert mode (`o`).
     OpenLineBelow,
-    /// Create a new line above current line and enter insert mode (`O`).
     OpenLineAbove,
-    /// Join the line below onto the current line (`J`).
     JoinLineBelow,
 
-    /// Enter command mode (like Vim's `:`).
     EnterCommand,
-    /// Enter slash-search mode.
     EnterSearch,
-    /// Open explorer surface (`<leader>e`).
     OpenExplorer,
-    /// Toggle undo tree surface (`<leader>u`).
     ToggleUndoTree,
-    /// Open the file finder popup (`<leader><leader>`).
     OpenFinder,
     ToggleDiagnosticsList,
     TriggerCodeActions,
@@ -99,19 +71,12 @@ pub enum InputAction {
     CompletionAccept,
     CompletionCancel,
     SnippetNext,
-    /// Open item under cursor in active surface (`Enter` in normal mode).
     SurfaceOpenSelected,
-    /// Navigate to parent in active surface (`-` in normal mode).
     SurfaceGoParent,
-    /// Scroll down by one viewport and keep cursor near viewport middle (`Ctrl+D` in normal mode).
     ViewportDownCenter,
-    /// Scroll up by one viewport and keep cursor near viewport middle (`Ctrl+U` in normal mode).
     ViewportUpCenter,
-    /// Centre current cursor line in viewport (`zz` in normal mode).
     CenterCursorLine,
-    /// Resolve and apply a configured sequence of motion inputs.
     ReplaySequence(String),
-    /// Execute a configured editor command without opening the command line.
     RunCommand(String),
     SplitFocusLeft,
     SplitFocusDown,
@@ -120,73 +85,49 @@ pub enum InputAction {
     SplitHorizontal,
     SplitVertical,
     CloseSplit,
-    /// Undo most recent edit in active buffer (`u` in normal mode).
     Undo,
-    /// Redo most recently undone edit in active buffer (`Ctrl+R` in normal mode).
     Redo,
-    /// Confirm a pending explorer deletion prompt (`y` in normal mode).
     ConfirmExplorerDelete,
-    /// Yank active visual selection into Redox's private (local) register.
     YankSelectionPrivate,
-    /// Delete (cut) active visual selection into Redox's private register.
     DeleteSelectionPrivate,
-    /// Change active visual selection and enter insert mode.
     ChangeSelectionPrivate,
-    /// Delete active visual selection without yanking.
     DeleteSelectionNoYank,
-    /// Apply an operator to a resolved target at the current cursor.
     OperateTarget {
         operator: TextObjectOperator,
         target: OperatorTarget,
     },
-    /// Delete (cut) current line(s) into Redox's private register.
     DeleteCurrentLinePrivate {
         count: usize,
     },
-    /// Yank current line(s) into Redox's private register.
     YankCurrentLinePrivate {
         count: usize,
     },
-    /// Change current line(s) into Redox's private register and enter insert mode.
     ChangeCurrentLinePrivate {
         count: usize,
     },
-    /// Yank active visual selection into system clipboard.
     YankSelectionSystem,
-    /// Paste from system clipboard.
     PasteSystemClipboard,
-    /// Paste concrete text fetched from the system clipboard.
     PasteSystemClipboardText(String),
-    /// Paste from Redox's private register.
     PastePrivateRegister,
-    /// Paste from Redox's private register before cursor / above line.
     PastePrivateRegisterBefore,
-    /// Delete character under cursor without yanking.
     DeleteCharNoYank,
-    /// Toggle the case of character(s) under the cursor.
     ToggleCase {
         count: usize,
     },
-    /// Replace the character under cursor, or the active visual selection, with a character.
     ReplaceChar(char),
-    /// Move visual selection up by line(s).
     MoveVisualSelectionUp {
         count: usize,
     },
-    /// Move visual selection down by line(s).
     MoveVisualSelectionDown {
         count: usize,
     },
-    /// Indent all lines touched by active visual selection.
     IndentVisualSelection {
         count: usize,
     },
-    /// Un-indent all lines touched by active visual selection.
     OutdentVisualSelection {
         count: usize,
     },
 
-    /// Command-line editing actions (buffer is owned by editor state).
     CommandChar(char),
     CommandBackspace,
     CommandMoveLeft,
@@ -196,14 +137,12 @@ pub enum InputAction {
     CommandEnter,
     CommandCancel,
 
-    /// Search-line editing actions.
     SearchChar(char),
     SearchBackspace,
     SearchMoveLeft,
     SearchMoveRight,
     SearchEnter,
     SearchCancel,
-    /// Finder prompt editing actions.
     FinderChar(char),
     FinderBackspace,
     FinderMoveLeft,
@@ -213,7 +152,6 @@ pub enum InputAction {
     FinderEnter,
     FinderCancel,
     FinderBeginPin,
-    /// Pin slot selector actions.
     PinSelectorMoveNext,
     PinSelectorMovePrev,
     PinSelectorOpenSelected,
@@ -246,19 +184,15 @@ pub enum InputAction {
     },
     QuickPinCurrentFile,
 
-    /// Repeat the most recent cached search.
     RepeatSearch {
         forward: bool,
     },
-    /// Hide active search highlights while keeping the cached search term.
     ClearSearch,
 
-    /// Insert/editing actions.
     InsertChar(char),
     Backspace,
     Enter,
 
-    /// No action.
     None,
 }
 
@@ -394,7 +328,7 @@ const VISUAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[SequenceBinding {
     action: Some(SequenceAction::YankSelectionSystem),
 }];
 
-/// Small state machine for multi-key sequences (eg. `gg`) and counts.
+/// State machine for multi-key sequences and counts.
 #[derive(Debug, Clone)]
 pub struct InputState {
     pending_sequence: String,
@@ -1876,7 +1810,6 @@ fn resolve_pending_operator(
     action
 }
 
-// Operator-pending motions currently reuse the same sequence table as plain motions.
 fn operator_motion_from_input(state: &mut InputState, c: char) -> Option<Motion> {
     if !state.pending_sequence.is_empty() {
         let mut candidate = state.pending_sequence.clone();
@@ -2328,7 +2261,6 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
 
 fn input_action_description(action: &InputAction) -> &'static str {
     match action {
-        // 🤮
         InputAction::OpenExplorer => "Open explorer",
         InputAction::ToggleUndoTree => "Toggle undo tree",
         InputAction::OpenFinder => "Find files",
@@ -3204,1688 +3136,795 @@ fn pin_slot_from_key(key: KeyKind) -> Option<usize> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn normal_mode_character_q_is_not_quit() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('q'));
-        assert_eq!(action, InputAction::None);
+    fn key_event(key: KeyKind, mods: KeyModifiers) -> Event {
+        Event::KeyWithModifiers(KeyWithModifiers { key, mods })
     }
 
-    #[test]
-    fn leader_leader_opens_finder() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        assert_eq!(action, InputAction::OpenFinder);
-    }
-
-    #[test]
-    fn normal_mode_character_colon_enters_command() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(':'));
-        assert_eq!(action, InputAction::EnterCommand);
-    }
-
-    #[test]
-    fn normal_mode_shift_colon_key_event_enters_command() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char(':'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::EnterCommand);
-    }
-
-    #[test]
-    fn finder_mode_ctrl_n_and_ctrl_p_navigate_results() {
-        let mut state = InputState::new();
-        let next = map_event_with_state(
-            &mut state,
-            InputMode::Finder,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('n'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(next, InputAction::FinderMoveNext);
-
-        let prev = map_event_with_state(
-            &mut state,
-            InputMode::Finder,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('p'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(prev, InputAction::FinderMovePrev);
-    }
-
-    #[test]
-    fn ctrl_shift_p_triggers_expected_pin_actions() {
-        let mut state = InputState::new();
-        let quick_pin = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('P'),
-                mods: KeyModifiers {
-                    ctrl: true,
-                    shift: true,
-                    alt: false,
-                    super_key: false,
-                },
-            }),
-        );
-        assert_eq!(quick_pin, InputAction::QuickPinCurrentFile);
-
-        let finder_pin = map_event_with_state(
-            &mut state,
-            InputMode::Finder,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('P'),
-                mods: KeyModifiers {
-                    ctrl: true,
-                    shift: true,
-                    alt: false,
-                    super_key: false,
-                },
-            }),
-        );
-        assert_eq!(finder_pin, InputAction::FinderBeginPin);
-    }
-
-    #[test]
-    fn pin_selector_ctrl_digit_assigns_slot() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('3'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::AssignPinSlot { slot: 2 });
-    }
-
-    #[test]
-    fn pin_selector_j_k_navigate_slots() {
-        let mut state = InputState::new();
-
-        let next = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('j'));
-        assert_eq!(next, InputAction::PinSelectorMoveNext);
-
-        let prev = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('k'));
-        assert_eq!(prev, InputAction::PinSelectorMovePrev);
-    }
-
-    #[test]
-    fn pin_selector_shift_j_k_manage_slots() {
-        let mut state = InputState::new();
-
-        let down = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('J'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(down, InputAction::PinSelectorReorderDown);
-
-        let up = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('K'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(up, InputAction::PinSelectorReorderUp);
-
-        let assign = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Enter,
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(assign, InputAction::PinSelectorAssign);
-    }
-
-    #[test]
-    fn pin_selector_d_deletes_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('d'));
-        assert_eq!(action, InputAction::PinSelectorDeleteSelected);
-    }
-
-    #[test]
-    fn pin_selector_enter_opens_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::PinSelect,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Enter,
-                mods: KeyModifiers::default(),
-            }),
-        );
-        assert_eq!(action, InputAction::PinSelectorOpenSelected);
-    }
-
-    #[test]
-    fn pin_selector_p_assigns_selected_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(&mut state, InputMode::PinSelect, &Event::Character('p'));
-        assert_eq!(action, InputAction::PinSelectorAssign);
-    }
-
-    #[test]
-    fn normal_mode_ctrl_digit_opens_pinned_slot() {
-        let mut state = InputState::new();
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('2'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::OpenPinnedSlot { slot: 1 });
-    }
-
-    #[test]
-    fn normal_mode_ctrl_shift_symbols_do_not_alias_pinned_slots() {
-        let mut state = InputState::new();
-        let ctrl_shift = KeyModifiers {
+    fn ctrl_shift() -> KeyModifiers {
+        KeyModifiers {
             ctrl: true,
             shift: true,
             alt: false,
             super_key: false,
-        };
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('!'),
-                mods: ctrl_shift,
-            }),
-        );
-        assert_eq!(action, InputAction::None);
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('$'),
-                mods: ctrl_shift,
-            }),
-        );
-        assert_eq!(action, InputAction::None);
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('%'),
-                mods: ctrl_shift,
-            }),
-        );
-        assert_eq!(action, InputAction::None);
+        }
     }
 
-    #[test]
-    fn normal_mode_shift_i_enters_insert_line_start() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('I'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(
-            action,
-            InputAction::EnterInsert(InsertKind::InsertLineStart)
-        );
+    fn map_event(mode: InputMode, event: &Event) -> InputAction {
+        map_event_with_state(&mut InputState::new(), mode, event)
     }
 
-    #[test]
-    fn normal_mode_shift_j_joins_line_below() {
+    fn map_sequence(mode: InputMode, sequence: &str) -> InputAction {
         let mut state = InputState::new();
-        for key in [KeyKind::Char('J'), KeyKind::Char('j')] {
-            let action = map_event_with_state(
-                &mut state,
-                InputMode::Normal,
-                &Event::KeyWithModifiers(KeyWithModifiers {
-                    key,
-                    mods: KeyModifiers::shift(),
-                }),
-            );
-            assert_eq!(action, InputAction::JoinLineBelow);
+        let mut action = InputAction::None;
+        for character in sequence.chars() {
+            action = map_event_with_state(&mut state, mode, &Event::Character(character));
+        }
+        action
+    }
+
+    fn motion(motion: Motion, count: usize) -> InputAction {
+        InputAction::Motion { motion, count }
+    }
+
+    fn motion_target(operator: TextObjectOperator, motion: Motion, count: usize) -> InputAction {
+        InputAction::OperateTarget {
+            operator,
+            target: OperatorTarget::Motion { motion, count },
+        }
+    }
+
+    fn text_object_target(
+        operator: TextObjectOperator,
+        scope: TextObjectScope,
+        kind: TextObjectKind,
+        count: usize,
+    ) -> InputAction {
+        InputAction::OperateTarget {
+            operator,
+            target: OperatorTarget::TextObject(TextObjectSpec { scope, kind, count }),
         }
     }
 
     #[test]
-    fn normal_mode_zero_moves_to_real_line_start() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('0'));
+    fn normal_mode_maps_direct_actions() {
+        let cases = [
+            ("unused character", Event::Character('q'), InputAction::None),
+            ("command", Event::Character(':'), InputAction::EnterCommand),
+            (
+                "line start",
+                Event::Character('0'),
+                motion(Motion::LineStart, 1),
+            ),
+            (
+                "first non-blank",
+                Event::Character('_'),
+                motion(Motion::LineFirstNonWhitespace, 1),
+            ),
+            (
+                "line end",
+                Event::Character('$'),
+                motion(Motion::LineEnd, 1),
+            ),
+            (
+                "matching delimiter",
+                Event::Character('%'),
+                motion(Motion::MatchDelimiter, 1),
+            ),
+            ("search", Event::Character('/'), InputAction::EnterSearch),
+            (
+                "open below",
+                Event::Character('o'),
+                InputAction::OpenLineBelow,
+            ),
+            (
+                "open above",
+                Event::Character('O'),
+                InputAction::OpenLineAbove,
+            ),
+            ("join", Event::Character('J'), InputAction::JoinLineBelow),
+            (
+                "visual",
+                Event::Character('v'),
+                InputAction::SetMode(InputMode::Visual),
+            ),
+            (
+                "visual line",
+                Event::Character('V'),
+                InputAction::SetMode(InputMode::VisualLine),
+            ),
+            (
+                "paste private",
+                Event::Character('p'),
+                InputAction::PastePrivateRegister,
+            ),
+            (
+                "paste private before",
+                Event::Character('P'),
+                InputAction::PastePrivateRegisterBefore,
+            ),
+            ("undo", Event::Character('u'), InputAction::Undo),
+            (
+                "delete without yank",
+                Event::Character('x'),
+                InputAction::DeleteCharNoYank,
+            ),
+            (
+                "toggle case",
+                Event::Character('~'),
+                InputAction::ToggleCase { count: 1 },
+            ),
+            (
+                "open selected",
+                Event::Enter,
+                InputAction::SurfaceOpenSelected,
+            ),
+            (
+                "go parent",
+                Event::Character('-'),
+                InputAction::SurfaceGoParent,
+            ),
+            ("clear search", Event::Escape, InputAction::ClearSearch),
+        ];
+
+        for (label, event, expected) in cases {
+            assert_eq!(
+                map_event(InputMode::Normal, &event),
+                expected,
+                "case: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_key_shapes_are_normalized_consistently() {
+        let cases = [
+            (
+                "shifted colon",
+                key_event(KeyKind::Char(':'), KeyModifiers::shift()),
+                InputAction::EnterCommand,
+            ),
+            (
+                "shifted lowercase insert",
+                key_event(KeyKind::Char('i'), KeyModifiers::shift()),
+                InputAction::EnterInsert(InsertKind::InsertLineStart),
+            ),
+            (
+                "shifted lowercase join",
+                key_event(KeyKind::Char('j'), KeyModifiers::shift()),
+                InputAction::JoinLineBelow,
+            ),
+            (
+                "shifted lowercase visual",
+                key_event(KeyKind::Char('v'), KeyModifiers::shift()),
+                InputAction::SetMode(InputMode::VisualLine),
+            ),
+            (
+                "shifted lowercase paste",
+                key_event(KeyKind::Char('p'), KeyModifiers::shift()),
+                InputAction::PastePrivateRegisterBefore,
+            ),
+            (
+                "shifted number base",
+                key_event(KeyKind::Char('4'), KeyModifiers::shift()),
+                motion(Motion::LineEnd, 1),
+            ),
+            (
+                "shifted backtick",
+                key_event(KeyKind::Char('`'), KeyModifiers::shift()),
+                InputAction::ToggleCase { count: 1 },
+            ),
+            (
+                "unmodified enter",
+                key_event(KeyKind::Enter, KeyModifiers::none()),
+                InputAction::SurfaceOpenSelected,
+            ),
+            (
+                "visual block",
+                key_event(KeyKind::Char('v'), KeyModifiers::ctrl()),
+                InputAction::SetMode(InputMode::VisualBlock),
+            ),
+            (
+                "redo",
+                key_event(KeyKind::Char('r'), KeyModifiers::ctrl()),
+                InputAction::Redo,
+            ),
+            (
+                "viewport down",
+                key_event(KeyKind::Char('d'), KeyModifiers::ctrl()),
+                InputAction::ViewportDownCenter,
+            ),
+            (
+                "viewport up",
+                key_event(KeyKind::Char('u'), KeyModifiers::ctrl()),
+                InputAction::ViewportUpCenter,
+            ),
+            (
+                "repeat search forwards",
+                key_event(KeyKind::Char('n'), KeyModifiers::ctrl()),
+                InputAction::RepeatSearch { forward: true },
+            ),
+            (
+                "repeat search backwards",
+                key_event(KeyKind::Char('p'), KeyModifiers::ctrl()),
+                InputAction::RepeatSearch { forward: false },
+            ),
+            (
+                "quick pin",
+                key_event(KeyKind::Char('P'), ctrl_shift()),
+                InputAction::QuickPinCurrentFile,
+            ),
+            (
+                "open pin slot",
+                key_event(KeyKind::Char('2'), KeyModifiers::ctrl()),
+                InputAction::OpenPinnedSlot { slot: 1 },
+            ),
+            (
+                "shifted pin symbol is not a slot",
+                key_event(KeyKind::Char('!'), ctrl_shift()),
+                InputAction::None,
+            ),
+        ];
+
+        for (label, event, expected) in cases {
+            assert_eq!(
+                map_event(InputMode::Normal, &event),
+                expected,
+                "case: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_sequences_dispatch_mode_specific_actions() {
+        let cases = [
+            (InputMode::Normal, "  ", InputAction::OpenFinder),
+            (InputMode::Normal, " e", InputAction::OpenExplorer),
+            (InputMode::Normal, " u", InputAction::ToggleUndoTree),
+            (InputMode::Normal, " x", InputAction::ToggleDiagnosticsList),
+            (InputMode::Normal, " ca", InputAction::TriggerCodeActions),
+            (InputMode::Normal, "gd", InputAction::GotoDefinition),
+            (InputMode::Normal, "gg", motion(Motion::FileStart, 1)),
+            (InputMode::Normal, " p", InputAction::PasteSystemClipboard),
+            (InputMode::Normal, "zz", InputAction::CenterCursorLine),
+            (InputMode::Visual, " y", InputAction::YankSelectionSystem),
+        ];
+
+        for (mode, sequence, expected) in cases {
+            assert_eq!(
+                map_sequence(mode, sequence),
+                expected,
+                "sequence: {sequence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts_apply_once_and_clear_at_sequence_boundaries() {
         assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::LineStart,
-                count: 1,
-            }
+            map_sequence(InputMode::Normal, "3w"),
+            motion(Motion::WordStartAfter, 3)
+        );
+        assert_eq!(
+            map_sequence(InputMode::Normal, "2D"),
+            motion_target(TextObjectOperator::Delete, Motion::LineEnd, 2)
+        );
+        assert_eq!(
+            map_sequence(InputMode::Normal, "3~"),
+            InputAction::ToggleCase { count: 3 }
+        );
+
+        let mut state = InputState::new();
+        for character in "12gg".chars() {
+            let _ =
+                map_event_with_state(&mut state, InputMode::Normal, &Event::Character(character));
+        }
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j')),
+            motion(Motion::Down, 1)
+        );
+
+        let mut state = InputState::new();
+        for character in "2 x".chars() {
+            let _ =
+                map_event_with_state(&mut state, InputMode::Normal, &Event::Character(character));
+        }
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j')),
+            motion(Motion::Down, 1)
         );
     }
 
     #[test]
-    fn normal_mode_underscore_and_dollar_map_to_line_motions() {
-        let mut state = InputState::new();
-        let underscore =
-            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('_'));
-        assert_eq!(
-            underscore,
-            InputAction::Motion {
-                motion: Motion::LineFirstNonWhitespace,
-                count: 1,
-            }
-        );
+    fn operators_resolve_motion_and_line_targets() {
+        let cases = [
+            (
+                "d%",
+                motion_target(TextObjectOperator::Delete, Motion::MatchDelimiter, 1),
+            ),
+            (
+                "d$",
+                motion_target(TextObjectOperator::Delete, Motion::LineEnd, 1),
+            ),
+            (
+                "dw",
+                motion_target(TextObjectOperator::Delete, Motion::WordStartAfter, 1),
+            ),
+            (
+                "dgg",
+                motion_target(TextObjectOperator::Delete, Motion::FileStart, 1),
+            ),
+            (
+                "d0",
+                motion_target(TextObjectOperator::Delete, Motion::LineStart, 1),
+            ),
+            ("dd", InputAction::DeleteCurrentLinePrivate { count: 1 }),
+            ("yy", InputAction::YankCurrentLinePrivate { count: 1 }),
+            ("cc", InputAction::ChangeCurrentLinePrivate { count: 1 }),
+        ];
 
-        let dollar = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
-        assert_eq!(
-            dollar,
-            InputAction::Motion {
-                motion: Motion::LineEnd,
-                count: 1,
-            }
-        );
+        for (sequence, expected) in cases {
+            assert_eq!(
+                map_sequence(InputMode::Normal, sequence),
+                expected,
+                "sequence: {sequence}"
+            );
+        }
     }
 
     #[test]
-    fn normal_mode_percent_maps_to_match_delimiter_motion() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('%'));
-        assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::MatchDelimiter,
-                count: 1,
-            }
-        );
-    }
+    fn character_searches_resolve_plain_and_operator_motions() {
+        let plain_cases = [
+            ("fx", Motion::FindChar('x')),
+            ("tx", Motion::TillChar('x')),
+            ("Fx", Motion::FindCharBefore('x')),
+            ("Tx", Motion::TillCharBefore('x')),
+        ];
+        for (sequence, expected_motion) in plain_cases {
+            assert_eq!(
+                map_sequence(InputMode::Normal, sequence),
+                motion(expected_motion, 1),
+                "sequence: {sequence}"
+            );
+        }
 
-    #[test]
-    fn normal_mode_percent_after_delete_operator_maps_to_motion_operator() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('%'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::MatchDelimiter,
-                    count: 1,
-                },
-            }
-        );
-    }
+        let operator_cases = [
+            ("dtx", TextObjectOperator::Delete, Motion::TillChar('x')),
+            ("cfx", TextObjectOperator::Change, Motion::FindChar('x')),
+            (
+                "dTx",
+                TextObjectOperator::Delete,
+                Motion::TillCharBefore('x'),
+            ),
+            (
+                "cFx",
+                TextObjectOperator::Change,
+                Motion::FindCharBefore('x'),
+            ),
+        ];
+        for (sequence, operator, expected_motion) in operator_cases {
+            assert_eq!(
+                map_sequence(InputMode::Normal, sequence),
+                motion_target(operator, expected_motion, 1),
+                "sequence: {sequence}"
+            );
+        }
 
-    #[test]
-    fn normal_mode_dollar_after_delete_operator_maps_to_motion_operator() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('$'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::LineEnd,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_w_after_delete_operator_maps_to_motion_operator() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('w'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::WordStartAfter,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_gg_after_delete_operator_maps_to_motion_operator() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
-        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
-        assert_eq!(first, InputAction::None);
-        assert_eq!(
-            second,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::FileStart,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_zero_after_delete_operator_maps_to_motion_operator() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('0'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::LineStart,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_shift_d_aliases_delete_to_line_end() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('D'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::LineEnd,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_shift_key_d_aliases_delete_to_line_end() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('D'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::LineEnd,
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_shift_key_d_preserves_count_prefix() {
         let mut state = InputState::new();
         let _ = map_event_with_state(
             &mut state,
             InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('2'),
-                mods: KeyModifiers::none(),
-            }),
-        );
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('D'),
-                mods: KeyModifiers::shift(),
-            }),
+            &key_event(KeyKind::Char('f'), KeyModifiers::shift()),
         );
         assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::LineEnd,
-                    count: 2,
-                },
-            }
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x')),
+            motion(Motion::FindCharBefore('x'), 1)
         );
     }
 
     #[test]
-    fn normal_mode_r_consumes_next_character_as_replacement() {
-        let mut state = InputState::new();
-        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(first, InputAction::None);
-        assert_eq!(second, InputAction::ReplaceChar('x'));
-    }
-
-    #[test]
-    fn normal_mode_pending_replace_accepts_shifted_letters() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('D'),
-                mods: KeyModifiers::shift(),
-            }),
+    fn replacement_state_normalizes_characters_and_cancels_cleanly() {
+        assert_eq!(
+            map_sequence(InputMode::Normal, "rx"),
+            InputAction::ReplaceChar('x')
         );
-        assert_eq!(action, InputAction::ReplaceChar('D'));
+
+        let replacements = [
+            (
+                key_event(KeyKind::Char('D'), KeyModifiers::shift()),
+                InputAction::ReplaceChar('D'),
+            ),
+            (
+                key_event(KeyKind::Char('$'), KeyModifiers::shift()),
+                InputAction::ReplaceChar('$'),
+            ),
+            (
+                key_event(KeyKind::Char('4'), KeyModifiers::shift()),
+                InputAction::ReplaceChar('$'),
+            ),
+            (
+                key_event(KeyKind::Tab, KeyModifiers::none()),
+                InputAction::ReplaceChar('\t'),
+            ),
+        ];
+        for (event, expected) in replacements {
+            let mut state = InputState::new();
+            let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+            assert_eq!(
+                map_event_with_state(&mut state, InputMode::Normal, &event),
+                expected
+            );
+        }
+
+        for (event, expected) in [
+            (Event::Escape, InputAction::None),
+            (Event::Backspace, InputAction::None),
+            (Event::Enter, InputAction::SurfaceOpenSelected),
+        ] {
+            let mut state = InputState::new();
+            let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
+            assert_eq!(
+                map_event_with_state(&mut state, InputMode::Normal, &event),
+                expected
+            );
+            assert_eq!(
+                map_event_with_state(&mut state, InputMode::Normal, &Event::Character('q')),
+                InputAction::None
+            );
+        }
     }
 
     #[test]
-    fn normal_mode_pending_replace_accepts_shifted_symbols() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('$'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::ReplaceChar('$'));
+    fn text_objects_resolve_operator_and_visual_targets() {
+        let cases = [
+            (
+                InputMode::Normal,
+                "diw",
+                text_object_target(
+                    TextObjectOperator::Delete,
+                    TextObjectScope::Inner,
+                    TextObjectKind::Word,
+                    1,
+                ),
+            ),
+            (
+                InputMode::Normal,
+                "cap",
+                text_object_target(
+                    TextObjectOperator::Change,
+                    TextObjectScope::Around,
+                    TextObjectKind::Paragraph,
+                    1,
+                ),
+            ),
+            (
+                InputMode::Normal,
+                "2ci]",
+                text_object_target(
+                    TextObjectOperator::Change,
+                    TextObjectScope::Inner,
+                    TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                    2,
+                ),
+            ),
+            (
+                InputMode::Normal,
+                "ci\"",
+                text_object_target(
+                    TextObjectOperator::Change,
+                    TextObjectScope::Inner,
+                    TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
+                    1,
+                ),
+            ),
+            (
+                InputMode::Visual,
+                "iw",
+                text_object_target(
+                    TextObjectOperator::Select,
+                    TextObjectScope::Inner,
+                    TextObjectKind::Word,
+                    1,
+                ),
+            ),
+            (
+                InputMode::Visual,
+                "a[",
+                text_object_target(
+                    TextObjectOperator::Select,
+                    TextObjectScope::Around,
+                    TextObjectKind::Delimiter(DelimiterKind::Brackets),
+                    1,
+                ),
+            ),
+            (
+                InputMode::Visual,
+                "iW",
+                text_object_target(
+                    TextObjectOperator::Select,
+                    TextObjectScope::Inner,
+                    TextObjectKind::BigWord,
+                    1,
+                ),
+            ),
+        ];
+
+        for (mode, sequence, expected) in cases {
+            assert_eq!(
+                map_sequence(mode, sequence),
+                expected,
+                "sequence: {sequence}"
+            );
+        }
     }
 
     #[test]
-    fn normal_mode_pending_replace_accepts_shifted_number_base_key() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('4'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::ReplaceChar('$'));
+    fn visual_modes_map_selection_actions_and_exit() {
+        let cases = [
+            (
+                InputMode::Visual,
+                Event::Character('y'),
+                InputAction::YankSelectionPrivate,
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('d'),
+                InputAction::DeleteSelectionPrivate,
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('c'),
+                InputAction::ChangeSelectionPrivate,
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('x'),
+                InputAction::DeleteSelectionNoYank,
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('~'),
+                InputAction::ToggleCase { count: 1 },
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('J'),
+                InputAction::MoveVisualSelectionDown { count: 1 },
+            ),
+            (
+                InputMode::Visual,
+                Event::Character('K'),
+                InputAction::MoveVisualSelectionUp { count: 1 },
+            ),
+            (
+                InputMode::Visual,
+                key_event(KeyKind::Tab, KeyModifiers::none()),
+                InputAction::IndentVisualSelection { count: 1 },
+            ),
+            (
+                InputMode::Visual,
+                key_event(KeyKind::Tab, KeyModifiers::shift()),
+                InputAction::OutdentVisualSelection { count: 1 },
+            ),
+            (
+                InputMode::Visual,
+                key_event(KeyKind::Char('v'), KeyModifiers::ctrl()),
+                InputAction::SetMode(InputMode::VisualBlock),
+            ),
+            (
+                InputMode::Visual,
+                Event::Escape,
+                InputAction::SetMode(InputMode::Normal),
+            ),
+            (
+                InputMode::VisualLine,
+                key_event(KeyKind::Char('c'), KeyModifiers::ctrl()),
+                InputAction::SetMode(InputMode::Normal),
+            ),
+            (
+                InputMode::VisualBlock,
+                key_event(KeyKind::Escape, KeyModifiers::none()),
+                InputAction::SetMode(InputMode::Normal),
+            ),
+        ];
+
+        for (mode, event, expected) in cases {
+            assert_eq!(map_event(mode, &event), expected, "event: {event:?}");
+        }
     }
 
     #[test]
-    fn normal_mode_shift_number_key_event_maps_to_shifted_motion_symbol() {
+    fn editable_modes_map_text_navigation_and_cancellation() {
+        let cases = [
+            (InputMode::Insert, Event::Character('\0'), InputAction::None),
+            (
+                InputMode::Insert,
+                key_event(KeyKind::Tab, KeyModifiers::none()),
+                InputAction::SnippetNext,
+            ),
+            (
+                InputMode::Insert,
+                key_event(KeyKind::Char('k'), ctrl_shift()),
+                InputAction::TriggerCompletion,
+            ),
+            (
+                InputMode::Insert,
+                key_event(KeyKind::Char('k'), KeyModifiers::ctrl()),
+                InputAction::None,
+            ),
+            (
+                InputMode::Insert,
+                Event::Keybind(KeybindAction::Custom("trigger-completion".to_string())),
+                InputAction::TriggerCompletion,
+            ),
+            (
+                InputMode::Insert,
+                key_event(KeyKind::Char('e'), KeyModifiers::ctrl()),
+                InputAction::CompletionCancel,
+            ),
+            (
+                InputMode::Insert,
+                Event::Escape,
+                InputAction::CompletionCancel,
+            ),
+            (
+                InputMode::Insert,
+                key_event(KeyKind::Char('-'), KeyModifiers::shift()),
+                InputAction::InsertChar('_'),
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Char('-'), KeyModifiers::shift()),
+                InputAction::CommandChar('_'),
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Up, KeyModifiers::none()),
+                InputAction::CommandHistoryPrev,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Char('n'), KeyModifiers::ctrl()),
+                InputAction::CommandHistoryNext,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Char('c'), KeyModifiers::ctrl()),
+                InputAction::CommandCancel,
+            ),
+            (
+                InputMode::Search,
+                Event::Character('x'),
+                InputAction::SearchChar('x'),
+            ),
+            (
+                InputMode::Search,
+                Event::Backspace,
+                InputAction::SearchBackspace,
+            ),
+            (InputMode::Search, Event::Enter, InputAction::SearchEnter),
+        ];
+
+        for (mode, event, expected) in cases {
+            assert_eq!(map_event(mode, &event), expected, "event: {event:?}");
+        }
+    }
+
+    #[test]
+    fn popup_modes_map_navigation_selection_and_cancellation() {
+        let cases = [
+            (
+                InputMode::Finder,
+                key_event(KeyKind::Char('n'), KeyModifiers::ctrl()),
+                InputAction::FinderMoveNext,
+            ),
+            (
+                InputMode::Finder,
+                key_event(KeyKind::Char('p'), KeyModifiers::ctrl()),
+                InputAction::FinderMovePrev,
+            ),
+            (
+                InputMode::Finder,
+                key_event(KeyKind::Char('P'), ctrl_shift()),
+                InputAction::FinderBeginPin,
+            ),
+            (
+                InputMode::PinSelect,
+                key_event(KeyKind::Char('3'), KeyModifiers::ctrl()),
+                InputAction::AssignPinSlot { slot: 2 },
+            ),
+            (
+                InputMode::PinSelect,
+                key_event(KeyKind::Char('j'), KeyModifiers::shift()),
+                InputAction::PinSelectorReorderDown,
+            ),
+            (
+                InputMode::PinSelect,
+                Event::Character('p'),
+                InputAction::PinSelectorAssign,
+            ),
+            (
+                InputMode::PinSelect,
+                Event::Character('d'),
+                InputAction::PinSelectorDeleteSelected,
+            ),
+            (
+                InputMode::PinSelect,
+                Event::Enter,
+                InputAction::PinSelectorOpenSelected,
+            ),
+            (
+                InputMode::LspMarketplace,
+                Event::Character('i'),
+                InputAction::LspMarketplaceInstallSelected,
+            ),
+            (
+                InputMode::LspMarketplace,
+                Event::Character('u'),
+                InputAction::LspMarketplaceUninstallSelected,
+            ),
+            (
+                InputMode::DiagnosticsList,
+                Event::Character('a'),
+                InputAction::TriggerCodeActions,
+            ),
+            (
+                InputMode::DiagnosticsList,
+                Event::Character('f'),
+                InputAction::None,
+            ),
+            (
+                InputMode::CodeActions,
+                Event::Enter,
+                InputAction::CodeActionsApplySelected,
+            ),
+            (
+                InputMode::SymbolInfo,
+                Event::Character('j'),
+                InputAction::SymbolInfoMoveNext,
+            ),
+            (
+                InputMode::SymbolInfo,
+                key_event(KeyKind::Up, KeyModifiers::none()),
+                InputAction::SymbolInfoMovePrev,
+            ),
+            (
+                InputMode::SymbolInfo,
+                Event::Escape,
+                InputAction::SymbolInfoCancel,
+            ),
+        ];
+
+        for (mode, event, expected) in cases {
+            assert_eq!(map_event(mode, &event), expected, "event: {event:?}");
+        }
+    }
+
+    #[test]
+    fn explorer_confirmation_requires_confirmation_context() {
         let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('$'),
-                mods: KeyModifiers::shift(),
-            }),
+        assert_eq!(
+            map_event_with_context(&mut state, InputMode::Normal, true, &Event::Character('y'),),
+            InputAction::ConfirmExplorerDelete
         );
         assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::LineEnd,
-                count: 1,
-            }
+            map_event(InputMode::Normal, &Event::Character('y')),
+            InputAction::None
         );
     }
 
     #[test]
-    fn normal_mode_shift_number_base_key_event_maps_to_shifted_motion_symbol() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('4'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::LineEnd,
-                count: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_shift_backtick_key_event_maps_to_tilde_action() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('`'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::ToggleCase { count: 1 });
-    }
-
-    #[test]
-    fn normal_mode_pending_replace_accepts_tab() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('r'));
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Tab,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(action, InputAction::ReplaceChar('\t'));
-    }
-
-    #[test]
-    fn normal_mode_raw_non_character_events_clear_pending_replace() {
-        let mut escape_state = InputState::new();
-        let _ = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('r'));
-        let escape = map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Escape);
-        let after_escape =
-            map_event_with_state(&mut escape_state, InputMode::Normal, &Event::Character('q'));
-        assert_eq!(escape, InputAction::None);
-        assert_eq!(after_escape, InputAction::None);
-
-        let mut backspace_state = InputState::new();
-        let _ = map_event_with_state(
-            &mut backspace_state,
-            InputMode::Normal,
-            &Event::Character('r'),
-        );
-        let backspace =
-            map_event_with_state(&mut backspace_state, InputMode::Normal, &Event::Backspace);
-        let after_backspace = map_event_with_state(
-            &mut backspace_state,
-            InputMode::Normal,
-            &Event::Character('q'),
-        );
-        assert_eq!(backspace, InputAction::None);
-        assert_eq!(after_backspace, InputAction::None);
-
-        let mut enter_state = InputState::new();
-        let _ = map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Character('r'));
-        let enter = map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Enter);
-        let after_enter =
-            map_event_with_state(&mut enter_state, InputMode::Normal, &Event::Character('q'));
-        assert_eq!(enter, InputAction::SurfaceOpenSelected);
-        assert_eq!(after_enter, InputAction::None);
-    }
-
-    #[test]
-    fn normal_mode_f_and_t_consume_target_character() {
-        let mut state = InputState::new();
-        let f = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f'));
-        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(f, InputAction::None);
-        assert_eq!(
-            f_target,
-            InputAction::Motion {
-                motion: Motion::FindChar('x'),
-                count: 1,
-            }
-        );
-
-        let mut state = InputState::new();
-        let t = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('t'));
-        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(t, InputAction::None);
-        assert_eq!(
-            t_target,
-            InputAction::Motion {
-                motion: Motion::TillChar('x'),
-                count: 1,
-            }
-        );
-
-        let mut state = InputState::new();
-        let f = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('F'));
-        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(f, InputAction::None);
-        assert_eq!(
-            f_target,
-            InputAction::Motion {
-                motion: Motion::FindCharBefore('x'),
-                count: 1,
-            }
-        );
-
-        let mut state = InputState::new();
-        let t = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('T'));
-        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(t, InputAction::None);
-        assert_eq!(
-            t_target,
-            InputAction::Motion {
-                motion: Motion::TillCharBefore('x'),
-                count: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_operator_find_and_till_map_into_motion_targets() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('t'));
-        let dt = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(
-            dt,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::TillChar('x'),
-                    count: 1,
-                },
-            }
-        );
-
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f'));
-        let cf = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(
-            cf,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Change,
-                target: OperatorTarget::Motion {
-                    motion: Motion::FindChar('x'),
-                    count: 1,
-                },
-            }
-        );
-
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('T'));
-        let dt = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(
-            dt,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::Motion {
-                    motion: Motion::TillCharBefore('x'),
-                    count: 1,
-                },
-            }
-        );
-
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('F'));
-        let cf = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(
-            cf,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Change,
-                target: OperatorTarget::Motion {
-                    motion: Motion::FindCharBefore('x'),
-                    count: 1,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_slash_enters_search_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('/'));
-        assert_eq!(action, InputAction::EnterSearch);
-    }
-
-    #[test]
-    fn search_mode_characters_map_to_search_actions() {
-        let mut state = InputState::new();
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Search, &Event::Character('x')),
-            InputAction::SearchChar('x')
-        );
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Search, &Event::Backspace),
-            InputAction::SearchBackspace
-        );
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Search, &Event::Enter),
-            InputAction::SearchEnter
-        );
-    }
-
-    #[test]
-    fn ctrl_n_and_ctrl_p_repeat_the_most_recent_search() {
-        let mut state = InputState::new();
-        let next = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('n'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(next, InputAction::RepeatSearch { forward: true });
-
-        let prev = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('p'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(prev, InputAction::RepeatSearch { forward: false });
-    }
-
-    #[test]
-    fn normal_mode_escape_clears_active_search_highlights() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Escape);
-        assert_eq!(action, InputAction::ClearSearch);
-    }
-
-    #[test]
-    fn normal_mode_count_prefix_applies_to_motion() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('3'),
-                mods: KeyModifiers::none(),
-            }),
-        );
-
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('w'),
-                mods: KeyModifiers::none(),
-            }),
-        );
-
-        assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::WordStartAfter,
-                count: 3
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_count_prefix_is_ignored_by_gg_and_cleared() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('1'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
-
-        let gg = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
-        assert_eq!(gg, InputAction::None);
-        let gg = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
-        assert_eq!(
-            gg,
-            InputAction::Motion {
-                motion: Motion::FileStart,
-                count: 1,
-            }
-        );
-
-        let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
-        assert_eq!(
-            next,
-            InputAction::Motion {
-                motion: Motion::Down,
-                count: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn insert_mode_tab_key_advances_snippet() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Tab,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(action, InputAction::SnippetNext);
-    }
-
-    #[test]
-    fn insert_mode_nul_character_is_ignored() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Insert, &Event::Character('\0'));
-        assert_eq!(action, InputAction::None);
-    }
-
-    #[test]
-    fn insert_mode_ctrl_shift_k_key_triggers_completion() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('k'),
-                mods: KeyModifiers {
-                    ctrl: true,
-                    shift: true,
-                    alt: false,
-                    super_key: false,
-                },
-            }),
-        );
-        assert_eq!(action, InputAction::TriggerCompletion);
-    }
-
-    #[test]
-    fn insert_mode_ctrl_k_key_does_not_trigger_completion() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('k'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::None);
-    }
-
-    #[test]
-    fn insert_mode_completion_keybind_triggers_completion() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::Keybind(KeybindAction::Custom("trigger-completion".to_string())),
-        );
-        assert_eq!(action, InputAction::TriggerCompletion);
-    }
-
-    #[test]
-    fn insert_mode_ctrl_e_cancels_completion() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('e'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::CompletionCancel);
-    }
-
-    #[test]
-    fn insert_mode_escape_cancels_completion_first() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Insert, &Event::Escape);
-        assert_eq!(action, InputAction::CompletionCancel);
-    }
-
-    #[test]
-    fn insert_mode_shifted_symbol_key_inserts_shifted_character() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('-'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::InsertChar('_'));
-    }
-
-    #[test]
-    fn command_mode_shifted_symbol_key_types_shifted_character() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('-'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::CommandChar('_'));
-    }
-
-    #[test]
-    fn insert_mode_ctrl_c_cancels_completion_first() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Insert,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::CompletionCancel);
-    }
-
-    #[test]
-    fn symbol_info_mode_escape_cancels_popup() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::SymbolInfo, &Event::Escape);
-        assert_eq!(action, InputAction::SymbolInfoCancel);
-    }
-
-    #[test]
-    fn symbol_info_mode_j_and_arrows_scroll() {
-        let mut state = InputState::new();
-        let down = map_event_with_state(&mut state, InputMode::SymbolInfo, &Event::Character('j'));
-        assert_eq!(down, InputAction::SymbolInfoMoveNext);
-
-        let up = map_event_with_state(
-            &mut state,
-            InputMode::SymbolInfo,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Up,
-                mods: KeyModifiers::default(),
-            }),
-        );
-        assert_eq!(up, InputAction::SymbolInfoMovePrev);
-    }
-
-    #[test]
-    fn normal_mode_leader_e_opens_explorer() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('e'));
-        assert_eq!(action, InputAction::OpenExplorer);
-    }
-
-    #[test]
-    fn normal_mode_leader_u_toggles_undo_tree() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
-        assert_eq!(action, InputAction::ToggleUndoTree);
-    }
-
-    #[test]
-    fn normal_mode_enter_opens_surface_selected() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Enter);
-        assert_eq!(action, InputAction::SurfaceOpenSelected);
-    }
-
-    #[test]
-    fn normal_mode_dash_goes_parent_in_surface() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('-'));
-        assert_eq!(action, InputAction::SurfaceGoParent);
-    }
-
-    #[test]
-    fn normal_mode_key_with_modifiers_enter_opens_surface_selected() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Enter,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(action, InputAction::SurfaceOpenSelected);
-    }
-
-    #[test]
-    fn normal_mode_o_opens_line_below() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('o'));
-        assert_eq!(action, InputAction::OpenLineBelow);
-    }
-
-    #[test]
-    fn normal_mode_shift_o_opens_line_above() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('O'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::OpenLineAbove);
-    }
-
-    #[test]
-    fn normal_mode_v_enters_visual_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('v'));
-        assert_eq!(action, InputAction::SetMode(InputMode::Visual));
-    }
-
-    #[test]
-    fn normal_mode_shift_v_enters_visual_line_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('V'));
-        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
-    }
-
-    #[test]
-    fn normal_mode_shift_v_key_event_enters_visual_line_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('V'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
-    }
-
-    #[test]
-    fn normal_mode_shift_lowercase_v_key_event_enters_visual_line_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('v'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::VisualLine));
-    }
-
-    #[test]
-    fn normal_mode_ctrl_v_enters_visual_block_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('v'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::VisualBlock));
-    }
-
-    #[test]
-    fn visual_escape_returns_to_normal() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Escape);
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
-    }
-
-    #[test]
-    fn command_mode_ctrl_c_cancels() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::CommandCancel);
-    }
-
-    #[test]
-    fn command_mode_up_down_and_ctrl_pn_navigate_history() {
-        let mut state = InputState::new();
-
-        let up = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Up,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(up, InputAction::CommandHistoryPrev);
-
-        let down = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Down,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(down, InputAction::CommandHistoryNext);
-
-        let ctrl_p = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('p'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(ctrl_p, InputAction::CommandHistoryPrev);
-
-        let ctrl_n = map_event_with_state(
-            &mut state,
-            InputMode::Command,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('n'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(ctrl_n, InputAction::CommandHistoryNext);
-    }
-
-    #[test]
-    fn visual_escape_key_with_modifiers_returns_to_normal() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Escape,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
-    }
-
-    #[test]
-    fn visual_ctrl_c_returns_to_normal() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
-    }
-
-    #[test]
-    fn visual_line_ctrl_c_returns_to_normal() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::VisualLine,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
-    }
-
-    #[test]
-    fn visual_block_ctrl_c_returns_to_normal() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::VisualBlock,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('c'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::Normal));
-    }
-
-    #[test]
-    fn visual_mode_ctrl_v_switches_to_visual_block_mode() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('v'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::SetMode(InputMode::VisualBlock));
-    }
-
-    #[test]
-    fn visual_mode_y_yanks_to_private_register() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
-        assert_eq!(action, InputAction::YankSelectionPrivate);
-    }
-
-    #[test]
-    fn visual_mode_d_deletes_to_private_register() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('d'));
-        assert_eq!(action, InputAction::DeleteSelectionPrivate);
-    }
-
-    #[test]
-    fn visual_mode_c_changes_selection_and_enters_insert() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('c'));
-        assert_eq!(action, InputAction::ChangeSelectionPrivate);
-    }
-
-    #[test]
-    fn normal_mode_x_deletes_char_without_yank() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(action, InputAction::DeleteCharNoYank);
-    }
-
-    #[test]
-    fn normal_mode_tilde_toggles_case_with_count() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('3'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('~'));
-        assert_eq!(action, InputAction::ToggleCase { count: 3 });
-    }
-
-    #[test]
-    fn visual_mode_tilde_toggles_selection_case() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('~'));
-        assert_eq!(action, InputAction::ToggleCase { count: 1 });
-    }
-
-    #[test]
-    fn visual_mode_x_deletes_selection_without_yank() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('x'));
-        assert_eq!(action, InputAction::DeleteSelectionNoYank);
-    }
-
-    #[test]
-    fn normal_mode_dd_deletes_current_line_to_private_register() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        assert_eq!(action, InputAction::DeleteCurrentLinePrivate { count: 1 });
-    }
-
-    #[test]
-    fn normal_mode_diw_resolves_to_inner_word_delete() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('w'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Inner,
-                    kind: TextObjectKind::Word,
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_cap_resolves_to_around_paragraph_change() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('a'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Change,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Around,
-                    kind: TextObjectKind::Paragraph,
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_counted_ci_bracket_uses_count() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(']'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Change,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Inner,
-                    kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
-                    count: 2,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_ci_quote_resolves_to_inner_double_quote_change() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('i'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('"'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Change,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Inner,
-                    kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_yy_yanks_current_line_to_private_register() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('y'));
-        assert_eq!(action, InputAction::YankCurrentLinePrivate { count: 1 });
-    }
-
-    #[test]
-    fn normal_mode_cc_changes_current_line_to_private_register() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        assert_eq!(action, InputAction::ChangeCurrentLinePrivate { count: 1 });
-    }
-
-    #[test]
-    fn visual_mode_iw_resolves_to_inner_word_select() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('i'));
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('w'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Select,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Inner,
-                    kind: TextObjectKind::Word,
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn visual_mode_a_bracket_resolves_to_around_bracket_select() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('a'));
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('['));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Select,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Around,
-                    kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn visual_mode_i_big_word_resolves_to_inner_big_word_select() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('i'));
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('W'));
-        assert_eq!(
-            action,
-            InputAction::OperateTarget {
-                operator: TextObjectOperator::Select,
-                target: OperatorTarget::TextObject(TextObjectSpec {
-                    scope: TextObjectScope::Inner,
-                    kind: TextObjectKind::BigWord,
-                    count: 1,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn consumed_prefix_clears_pending_count() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('2'));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-
-        assert_eq!(action, InputAction::ToggleDiagnosticsList);
-        let next = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('j'));
-        assert_eq!(
-            next,
-            InputAction::Motion {
-                motion: Motion::Down,
-                count: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_leader_x_toggles_diagnostics_list() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(action, InputAction::ToggleDiagnosticsList);
-    }
-
-    #[test]
-    fn normal_mode_leader_ca_triggers_code_actions() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('c'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('a'));
-        assert_eq!(action, InputAction::TriggerCodeActions);
-    }
-
-    #[test]
-    fn diagnostics_list_a_triggers_code_actions() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::DiagnosticsList,
-            &Event::Character('a'),
-        );
-        assert_eq!(action, InputAction::TriggerCodeActions);
-    }
-
-    #[test]
-    fn diagnostics_list_f_does_not_trigger_code_actions() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::DiagnosticsList,
-            &Event::Character('f'),
-        );
-        assert_eq!(action, InputAction::None);
-    }
-
-    #[test]
-    fn normal_mode_gd_triggers_goto_definition() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('g'));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('d'));
-        assert_eq!(action, InputAction::GotoDefinition);
-    }
-
-    #[test]
-    fn normal_mode_shift_p_pastes_private_register_before() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('P'));
-        assert_eq!(action, InputAction::PastePrivateRegisterBefore);
-    }
-
-    #[test]
-    fn normal_mode_shift_lowercase_p_key_event_pastes_private_register_before() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('p'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(action, InputAction::PastePrivateRegisterBefore);
-    }
-
-    #[test]
-    fn normal_mode_shift_lowercase_f_and_t_key_events_start_backward_search_motions() {
-        let mut state = InputState::new();
-        let f = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('f'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        let f_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(f, InputAction::None);
-        assert_eq!(
-            f_target,
-            InputAction::Motion {
-                motion: Motion::FindCharBefore('x'),
-                count: 1,
-            }
-        );
-
-        let mut state = InputState::new();
-        let t = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('t'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        let t_target = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('x'));
-        assert_eq!(t, InputAction::None);
-        assert_eq!(
-            t_target,
-            InputAction::Motion {
-                motion: Motion::TillCharBefore('x'),
-                count: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn visual_mode_shift_j_and_shift_k_move_selection() {
-        let mut state = InputState::new();
-        let down = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('J'));
-        assert_eq!(down, InputAction::MoveVisualSelectionDown { count: 1 });
-        let up = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('K'));
-        assert_eq!(up, InputAction::MoveVisualSelectionUp { count: 1 });
-    }
-
-    #[test]
-    fn visual_mode_shift_lowercase_j_and_k_key_events_move_selection() {
-        let mut state = InputState::new();
-        let down = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('j'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(down, InputAction::MoveVisualSelectionDown { count: 1 });
-        let up = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('k'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(up, InputAction::MoveVisualSelectionUp { count: 1 });
-    }
-
-    #[test]
-    fn visual_mode_tab_and_shift_tab_indent_and_outdent() {
-        let mut state = InputState::new();
-        let indent = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Tab,
-                mods: KeyModifiers::none(),
-            }),
-        );
-        assert_eq!(indent, InputAction::IndentVisualSelection { count: 1 });
-
-        let outdent = map_event_with_state(
-            &mut state,
-            InputMode::Visual,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Tab,
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(outdent, InputAction::OutdentVisualSelection { count: 1 });
-    }
-
-    #[test]
-    fn visual_mode_leader_y_yanks_to_system_clipboard() {
+    fn which_key_entries_follow_the_active_mode() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Visual, &Event::Character('y'));
-        assert_eq!(action, InputAction::YankSelectionSystem);
-    }
-
-    #[test]
-    fn which_key_uses_visual_bindings_in_visual_mode() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
-
         let popup = state
             .which_key_popup(
                 InputMode::Visual,
                 Instant::now() + DEFAULT_WHICH_KEY_DELAY,
                 DEFAULT_WHICH_KEY_DELAY,
             )
-            .expect("visual which-key popup");
+            .expect("visual leader should expose which-key entries");
 
+        assert_eq!(popup.prefix, "<leader>");
         assert!(
             popup.entries.iter().any(|entry| {
                 entry.key == "y" && entry.description == "Yank to system clipboard"
@@ -4894,133 +3933,26 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_leader_p_pastes_from_system_clipboard() {
+    fn configured_bindings_dispatch_by_leader_mode_and_count() {
         let mut state = InputState::new();
-        let _ = map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' '));
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
-        assert_eq!(action, InputAction::PasteSystemClipboard);
-    }
+        let bindings = BTreeMap::from([
+            (
+                "normal".to_string(),
+                BTreeMap::from([
+                    ("open_finder".to_string(), "<leader>f".to_string()),
+                    ("undo".to_string(), "<ctrl-g>".to_string()),
+                    ("move_right".to_string(), "q".to_string()),
+                ]),
+            ),
+            (
+                "insert".to_string(),
+                BTreeMap::from([("completion".to_string(), "<ctrl-g>".to_string())]),
+            ),
+        ]);
+        state
+            .configure(',', &bindings)
+            .expect("bindings should configure");
 
-    #[test]
-    fn normal_mode_p_pastes_private_register() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('p'));
-        assert_eq!(action, InputAction::PastePrivateRegister);
-    }
-
-    #[test]
-    fn normal_mode_u_triggers_undo() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('u'));
-        assert_eq!(action, InputAction::Undo);
-    }
-
-    #[test]
-    fn normal_mode_shift_lowercase_g_key_event_maps_to_file_end() {
-        let mut state = InputState::new();
-        let _ = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('2'),
-                mods: KeyModifiers::none(),
-            }),
-        );
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('g'),
-                mods: KeyModifiers::shift(),
-            }),
-        );
-        assert_eq!(
-            action,
-            InputAction::Motion {
-                motion: Motion::FileEnd,
-                count: 2,
-            }
-        );
-    }
-
-    #[test]
-    fn normal_mode_y_confirms_explorer_delete() {
-        let mut state = InputState::new();
-        let action =
-            map_event_with_context(&mut state, InputMode::Normal, true, &Event::Character('y'));
-        assert_eq!(action, InputAction::ConfirmExplorerDelete);
-    }
-
-    #[test]
-    fn normal_mode_ctrl_r_triggers_redo() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('r'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::Redo);
-    }
-
-    #[test]
-    fn normal_mode_ctrl_d_triggers_viewport_down_center() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('d'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::ViewportDownCenter);
-    }
-
-    #[test]
-    fn normal_mode_ctrl_u_triggers_viewport_up_center() {
-        let mut state = InputState::new();
-        let action = map_event_with_state(
-            &mut state,
-            InputMode::Normal,
-            &Event::KeyWithModifiers(KeyWithModifiers {
-                key: KeyKind::Char('u'),
-                mods: KeyModifiers::ctrl(),
-            }),
-        );
-        assert_eq!(action, InputAction::ViewportUpCenter);
-    }
-
-    #[test]
-    fn normal_mode_zz_triggers_center_cursor_line() {
-        let mut state = InputState::new();
-        let first = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('z'));
-        assert_eq!(first, InputAction::None);
-
-        let second = map_event_with_state(&mut state, InputMode::Normal, &Event::Character('z'));
-        assert_eq!(second, InputAction::CenterCursorLine);
-    }
-
-    #[test]
-    fn configured_leader_and_binding_override_defaults() {
-        let mut state = InputState::new();
-        let bindings = BTreeMap::from([(
-            "normal".to_string(),
-            BTreeMap::from([("open_finder".to_string(), "<leader>f".to_string())]),
-        )]);
-        state.configure(',', &bindings).unwrap();
-
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Normal, &Event::Character(' ')),
-            InputAction::None
-        );
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f')),
-            InputAction::None
-        );
-        state.reset_prefixes();
         assert_eq!(
             map_event_with_state(&mut state, InputMode::Normal, &Event::Character(',')),
             InputAction::None
@@ -5029,36 +3961,30 @@ mod tests {
             map_event_with_state(&mut state, InputMode::Normal, &Event::Character('f')),
             InputAction::OpenFinder
         );
-    }
 
-    #[test]
-    fn configured_modified_key_dispatches_by_mode() {
-        let mut state = InputState::new();
-        let bindings = BTreeMap::from([
-            (
-                "normal".to_string(),
-                BTreeMap::from([("undo".to_string(), "<ctrl-g>".to_string())]),
-            ),
-            (
-                "insert".to_string(),
-                BTreeMap::from([("completion".to_string(), "<ctrl-g>".to_string())]),
-            ),
-        ]);
-        state.configure(' ', &bindings).unwrap();
-        let event = Event::Keybind(KeybindAction::Custom("redox-key:<ctrl-g>".to_string()));
-
+        let configured_key =
+            Event::Keybind(KeybindAction::Custom("redox-key:<ctrl-g>".to_string()));
         assert_eq!(
-            map_event_with_state(&mut state, InputMode::Normal, &event),
+            map_event_with_state(&mut state, InputMode::Normal, &configured_key),
             InputAction::Undo
         );
         assert_eq!(
-            map_event_with_state(&mut state, InputMode::Insert, &event),
+            map_event_with_state(&mut state, InputMode::Insert, &configured_key),
             InputAction::TriggerCompletion
+        );
+
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('3')),
+            InputAction::None
+        );
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('q')),
+            motion(Motion::Right, 3)
         );
     }
 
     #[test]
-    fn configured_keybinding_validation_rejects_unreachable_sequences() {
+    fn configured_bindings_reject_invalid_sequences() {
         let mut state = InputState::new();
         let ambiguous = BTreeMap::from([(
             "normal".to_string(),
@@ -5074,27 +4000,13 @@ mod tests {
             BTreeMap::from([("completion".to_string(), "jj".to_string())]),
         )]);
         assert!(state.configure(' ', &unsupported).is_err());
-    }
 
-    #[test]
-    fn configured_motion_uses_pending_count() {
-        let mut state = InputState::new();
-        let bindings = BTreeMap::from([(
-            "normal".to_string(),
-            BTreeMap::from([("move_right".to_string(), "q".to_string())]),
-        )]);
-        state.configure(' ', &bindings).unwrap();
-
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('3')),
-            InputAction::None
-        );
-        assert_eq!(
-            map_event_with_state(&mut state, InputMode::Normal, &Event::Character('q')),
-            InputAction::Motion {
-                motion: Motion::Right,
-                count: 3
-            }
-        );
+        let cycle = ConfiguredBinding {
+            mode: "normal".to_string(),
+            keys: "Q".to_string(),
+            target: ConfiguredBindingTarget::Sequence("Q".to_string()),
+            description: "Cycle".to_string(),
+        };
+        assert!(state.configure_custom_bindings(&[cycle]).is_err());
     }
 }

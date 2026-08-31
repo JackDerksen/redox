@@ -30,7 +30,7 @@ pub struct Config {
     pub popups: BTreeMap<String, PopupSize>,
     pub keybindings: BTreeMap<String, BTreeMap<String, String>>,
     pub bind: Vec<BindConfig>,
-    pub themes: BTreeMap<String, ThemeConfig>,
+    themes: BTreeMap<String, ThemeConfig>,
 }
 
 impl Default for Config {
@@ -90,22 +90,22 @@ pub struct PopupSize {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ThemeConfig {
-    pub palette: BTreeMap<String, String>,
-    pub syntax: BTreeMap<String, ColourValue>,
-    pub ui: BTreeMap<String, ColourValue>,
+struct ThemeConfig {
+    palette: BTreeMap<String, String>,
+    syntax: BTreeMap<String, ColorValue>,
+    ui: BTreeMap<String, ColorValue>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-pub enum ColourValue {
+enum ColorValue {
     Foreground(String),
-    Pair(ColourPairConfig),
+    Pair(ColorPairConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ColourPairConfig {
+struct ColorPairConfig {
     fg: String,
     bg: String,
 }
@@ -210,14 +210,14 @@ impl Config {
         style.icons_enabled = self.icons_enabled;
         style.layout.color_column = self.color_column;
         for (name, value) in &theme.syntax {
-            let pair = colour_pair(value, style.theme.bg)
+            let pair = color_pair(value, style.theme.bg)
                 .with_context(|| format!("invalid syntax colour {name:?}"))?;
-            style.set_syntax_colour(name, pair)?;
+            style.set_syntax_color(name, pair)?;
         }
         for (name, value) in &theme.ui {
-            let pair = colour_pair(value, style.theme.bg)
+            let pair = color_pair(value, style.theme.bg)
                 .with_context(|| format!("invalid UI colour {name:?}"))?;
-            style.set_ui_colour(name, pair)?;
+            style.set_ui_color(name, pair)?;
         }
         self.apply_popup_sizes(&mut style);
         style.dim_amount = self.background_dimming;
@@ -254,48 +254,48 @@ fn validate_percent(value: Option<u16>, name: &str) -> anyhow::Result<()> {
 
 fn apply_palette(style: &mut UiStyle, palette: &BTreeMap<String, String>) -> anyhow::Result<()> {
     for (name, value) in palette {
-        let colour =
-            parse_colour(value).with_context(|| format!("invalid palette colour {name:?}"))?;
+        let color =
+            parse_color(value).with_context(|| format!("invalid palette colour {name:?}"))?;
         match name.as_str() {
-            "background" | "bg" => style.theme.bg = colour,
-            "color_column" => style.theme.color_column = colour,
-            "scope" => style.theme.scope = colour,
-            "selection_bg" => style.theme.selection_bg = colour,
-            "selection_fg" => style.theme.selection_fg = colour,
-            "white" => style.theme.white = colour,
-            "black" => style.theme.black = colour,
-            "red" => style.theme.red = colour,
-            "green" => style.theme.green = colour,
-            "yellow" => style.theme.yellow = colour,
-            "blue" => style.theme.blue = colour,
-            "purple" => style.theme.purple = colour,
-            "orange" => style.theme.orange = colour,
-            "light_red" => style.theme.light_red = colour,
-            "light_green" => style.theme.light_green = colour,
-            "light_yellow" => style.theme.light_yellow = colour,
-            "light_blue" => style.theme.light_blue = colour,
-            "light_purple" => style.theme.light_purple = colour,
-            "light_orange" => style.theme.light_orange = colour,
-            "dark_gray" => style.theme.dark_gray = colour,
-            "mid_gray" => style.theme.mid_gray = colour,
-            "light_gray" => style.theme.light_gray = colour,
+            "background" | "bg" => style.theme.bg = color,
+            "color_column" => style.theme.color_column = color,
+            "scope" => style.theme.scope = color,
+            "selection_bg" => style.theme.selection_bg = color,
+            "selection_fg" => style.theme.selection_fg = color,
+            "white" => style.theme.white = color,
+            "black" => style.theme.black = color,
+            "red" => style.theme.red = color,
+            "green" => style.theme.green = color,
+            "yellow" => style.theme.yellow = color,
+            "blue" => style.theme.blue = color,
+            "purple" => style.theme.purple = color,
+            "orange" => style.theme.orange = color,
+            "light_red" => style.theme.light_red = color,
+            "light_green" => style.theme.light_green = color,
+            "light_yellow" => style.theme.light_yellow = color,
+            "light_blue" => style.theme.light_blue = color,
+            "light_purple" => style.theme.light_purple = color,
+            "light_orange" => style.theme.light_orange = color,
+            "dark_gray" => style.theme.dark_gray = color,
+            "mid_gray" => style.theme.mid_gray = color,
+            "light_gray" => style.theme.light_gray = color,
             _ => bail!("unknown palette colour {name:?}"),
         }
     }
     Ok(())
 }
 
-fn colour_pair(value: &ColourValue, default_bg: Color) -> anyhow::Result<ColorPair> {
+fn color_pair(value: &ColorValue, default_bg: Color) -> anyhow::Result<ColorPair> {
     match value {
-        ColourValue::Foreground(fg) => Ok(ColorPair::new(parse_colour(fg)?, default_bg)),
-        ColourValue::Pair(pair) => Ok(ColorPair::new(
-            parse_colour(&pair.fg)?,
-            parse_colour(&pair.bg)?,
+        ColorValue::Foreground(fg) => Ok(ColorPair::new(parse_color(fg)?, default_bg)),
+        ColorValue::Pair(pair) => Ok(ColorPair::new(
+            parse_color(&pair.fg)?,
+            parse_color(&pair.bg)?,
         )),
     }
 }
 
-fn parse_colour(value: &str) -> anyhow::Result<Color> {
+fn parse_color(value: &str) -> anyhow::Result<Color> {
     if value.eq_ignore_ascii_case("transparent") {
         return Ok(Color::Transparent);
     }
