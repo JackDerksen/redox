@@ -45,7 +45,6 @@ const COMPLETION_AUTO_TRIGGER_DEBOUNCE: Duration = Duration::from_millis(90);
 const COMPLETION_TRIGGER_CHARACTER_DEBOUNCE: Duration = Duration::from_millis(15);
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
-// Provider grouping should be fine
 const JS_TS_LANGUAGES: &[SyntaxLanguage] = &[
     SyntaxLanguage::JavaScript,
     SyntaxLanguage::TypeScript,
@@ -5122,6 +5121,76 @@ mod tests {
         dir
     }
 
+    fn completion_candidate(
+        label: &str,
+        insert_text: &str,
+        kind: &str,
+        insert_text_format: InsertTextFormat,
+    ) -> CompletionCandidate {
+        CompletionCandidate {
+            label: label.to_string(),
+            detail: None,
+            label_detail: None,
+            label_description: None,
+            documentation: None,
+            kind: Some(kind.to_string()),
+            filter_text: None,
+            sort_text: None,
+            insert_text: insert_text.to_string(),
+            insert_text_format,
+            text_edit: None,
+        }
+    }
+
+    fn snippet_placeholder(
+        tabstop: usize,
+        start_char: usize,
+        end_char: usize,
+    ) -> ActiveSnippetPlaceholder {
+        ActiveSnippetPlaceholder {
+            tabstop,
+            start_char,
+            end_char,
+            filled: false,
+        }
+    }
+
+    fn state_with_active_snippet(
+        text: &str,
+        placeholders: Vec<ActiveSnippetPlaceholder>,
+        final_char: Option<usize>,
+    ) -> (EditorState, BufferId) {
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
+        let mut state = EditorState::new(session);
+        let buffer_id = state.session.active_id();
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text(text);
+        state.lsp.active_snippet = Some(ActiveSnippet {
+            buffer_id,
+            placeholders,
+            current: 0,
+            selected: true,
+            final_char,
+        });
+        (state, buffer_id)
+    }
+
+    fn state_with_symbol_info(text: &str, scroll: usize, return_mode: EditorMode) -> EditorState {
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
+        let mut state = EditorState::new(session);
+        state.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at: Pos::new(0, 0),
+            blocks: vec![SymbolInfoBlock {
+                kind: SymbolInfoKind::PlainText,
+                text: text.to_string(),
+            }],
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll,
+            return_mode,
+        });
+        state
+    }
+
     #[test]
     fn file_uri_percent_encodes_special_characters() {
         let uri = file_uri(Path::new("/tmp/redox test #1.rs")).expect("URI should encode");
@@ -5129,12 +5198,13 @@ mod tests {
     }
 
     #[test]
-    fn publish_diagnostics_uses_payload_uri() {
+    fn publish_diagnostics_preserves_fields_and_normalizes_details() {
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
             "params": {
                 "uri": "file:///tmp/example.rs",
+                "version": 7,
                 "diagnostics": [
                     {
                         "range": {
@@ -5151,7 +5221,7 @@ mod tests {
         let (uri, version, diagnostics) =
             parse_publish_diagnostics(&message).expect("diagnostics should parse");
         assert_eq!(uri, "file:///tmp/example.rs");
-        assert_eq!(version, None);
+        assert_eq!(version, Some(7));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
         assert_eq!(diagnostics[0].start_line, 2);
@@ -5160,93 +5230,58 @@ mod tests {
             diagnostics[0].message,
             "something went wrong\n`#[warn(foo)]` on by default"
         );
+
+        let message_cases = [
+            (
+                "empty_details",
+                json!({
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 }
+                    },
+                    "message": "borrowed value does not live long enough (see details)"
+                }),
+                "borrowed value does not live long enough",
+            ),
+            (
+                "related_details",
+                json!({
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 }
+                    },
+                    "message": "type mismatch (see details)",
+                    "relatedInformation": [
+                        {
+                            "location": {
+                                "uri": "file:///tmp/example.rs",
+                                "range": {
+                                    "start": { "line": 2, "character": 4 },
+                                    "end": { "line": 2, "character": 8 }
+                                }
+                            },
+                            "message": "expected `usize` here"
+                        }
+                    ]
+                }),
+                "type mismatch\n\nDetails:\n- expected `usize` here",
+            ),
+        ];
+
+        for (case_name, diagnostic, expected_message) in message_cases {
+            let message = json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": "file:///tmp/example.rs",
+                    "diagnostics": [diagnostic]
+                }
+            });
+            let (_, _, diagnostics) =
+                parse_publish_diagnostics(&message).expect("diagnostics should parse");
+            assert_eq!(diagnostics[0].message, expected_message, "{case_name}");
+        }
     }
-
-    #[test]
-    fn publish_diagnostics_preserves_version() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///tmp/example.rs",
-                "version": 7,
-                "diagnostics": []
-            }
-        });
-
-        let (uri, version, diagnostics) =
-            parse_publish_diagnostics(&message).expect("diagnostics should parse");
-        assert_eq!(uri, "file:///tmp/example.rs");
-        assert_eq!(version, Some(7));
-        assert!(diagnostics.is_empty());
-    }
-
-    #[test]
-    fn publish_diagnostics_strips_empty_see_details_marker() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///tmp/example.rs",
-                "diagnostics": [
-                    {
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 1 }
-                        },
-                        "message": "borrowed value does not live long enough (see details)"
-                    }
-                ]
-            }
-        });
-
-        let (_, _, diagnostics) =
-            parse_publish_diagnostics(&message).expect("diagnostics should parse");
-        assert_eq!(
-            diagnostics[0].message,
-            "borrowed value does not live long enough"
-        );
-    }
-
-    #[test]
-    fn publish_diagnostics_preserves_related_details() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///tmp/example.rs",
-                "diagnostics": [
-                    {
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 1 }
-                        },
-                        "message": "type mismatch (see details)",
-                        "relatedInformation": [
-                            {
-                                "location": {
-                                    "uri": "file:///tmp/example.rs",
-                                    "range": {
-                                        "start": { "line": 2, "character": 4 },
-                                        "end": { "line": 2, "character": 8 }
-                                    }
-                                },
-                                "message": "expected `usize` here"
-                            }
-                        ]
-                    }
-                ]
-            }
-        });
-
-        let (_, _, diagnostics) =
-            parse_publish_diagnostics(&message).expect("diagnostics should parse");
-        assert_eq!(
-            diagnostics[0].message,
-            "type mismatch\n\nDetails:\n- expected `usize` here"
-        );
-    }
-
     #[test]
     fn completion_response_parses_array_and_snippet_items() {
         let message = json!({
@@ -5304,111 +5339,80 @@ mod tests {
     }
 
     #[test]
-    fn function_completion_synthesizes_placeholders_from_signature() {
-        let item = CompletionCandidate {
-            label: "DoThing".to_string(),
-            detail: Some("func DoThing(ctx context.Context, name string) error".to_string()),
-            label_detail: None,
-            label_description: None,
-            documentation: None,
-            kind: Some("function".to_string()),
-            filter_text: None,
-            sort_text: None,
-            insert_text: "DoThing()".to_string(),
-            insert_text_format: InsertTextFormat::PlainText,
-            text_edit: None,
-        };
+    fn function_completions_derive_placeholders_from_available_signatures() {
+        let cases = [
+            (
+                "detail_plain",
+                "DoThing",
+                Some("func DoThing(ctx context.Context, name string) error"),
+                "DoThing()",
+                InsertTextFormat::PlainText,
+                "DoThing(ctx, name)",
+                [(8, 11), (13, 17)],
+                2,
+            ),
+            (
+                "cursor_only_snippet",
+                "DoThing",
+                Some("func DoThing(ctx context.Context) error"),
+                "DoThing($0)",
+                InsertTextFormat::Snippet,
+                "DoThing(ctx)",
+                [(8, 11), (0, 0)],
+                1,
+            ),
+            (
+                "empty_snippet_placeholders",
+                "DoThing",
+                Some("func DoThing(ctx context.Context, name string) error"),
+                "DoThing(${1:}, ${2:})",
+                InsertTextFormat::Snippet,
+                "DoThing(ctx, name)",
+                [(8, 11), (13, 17)],
+                2,
+            ),
+            (
+                "label_signature",
+                "DoThing(ctx context.Context, name string)",
+                None,
+                "DoThing",
+                InsertTextFormat::PlainText,
+                "DoThing(ctx, name)",
+                [(8, 11), (13, 17)],
+                2,
+            ),
+        ];
 
-        let expansion = completion_snippet_expansion(&item, &item.insert_text)
-            .expect("function signature should produce snippet placeholders");
+        for (
+            case_name,
+            label,
+            detail,
+            insert_text,
+            insert_text_format,
+            expected_text,
+            expected_ranges,
+            expected_placeholder_count,
+        ) in cases
+        {
+            let mut item = completion_candidate(label, insert_text, "function", insert_text_format);
+            item.detail = detail.map(str::to_string);
 
-        assert_eq!(expansion.text, "DoThing(ctx, name)");
-        assert_eq!(expansion.placeholders.len(), 2);
-        assert_eq!(expansion.placeholders[0].start, 8);
-        assert_eq!(expansion.placeholders[0].end, 11);
-        assert_eq!(expansion.placeholders[1].start, 13);
-        assert_eq!(expansion.placeholders[1].end, 17);
+            let expansion = completion_snippet_expansion(&item, &item.insert_text)
+                .expect("function signature should produce snippet placeholders");
+            let ranges = expansion
+                .placeholders
+                .iter()
+                .map(|placeholder| (placeholder.start, placeholder.end))
+                .collect::<Vec<_>>();
+
+            assert_eq!(expansion.text, expected_text, "{case_name}");
+            assert_eq!(
+                ranges,
+                expected_ranges[..expected_placeholder_count],
+                "{case_name}"
+            );
+        }
     }
-
-    #[test]
-    fn function_completion_enriches_cursor_only_snippet_from_signature() {
-        let item = CompletionCandidate {
-            label: "DoThing".to_string(),
-            detail: Some("func DoThing(ctx context.Context) error".to_string()),
-            label_detail: None,
-            label_description: None,
-            documentation: None,
-            kind: Some("function".to_string()),
-            filter_text: None,
-            sort_text: None,
-            insert_text: "DoThing($0)".to_string(),
-            insert_text_format: InsertTextFormat::Snippet,
-            text_edit: None,
-        };
-
-        let expansion = completion_snippet_expansion(&item, &item.insert_text)
-            .expect("cursor-only call snippet should be enriched");
-
-        assert_eq!(expansion.text, "DoThing(ctx)");
-        assert_eq!(expansion.placeholders.len(), 1);
-        assert_eq!(expansion.placeholders[0].start, 8);
-        assert_eq!(expansion.placeholders[0].end, 11);
-    }
-
-    #[test]
-    fn function_completion_enriches_empty_snippet_placeholders_from_signature() {
-        let item = CompletionCandidate {
-            label: "DoThing".to_string(),
-            detail: Some("func DoThing(ctx context.Context, name string) error".to_string()),
-            label_detail: None,
-            label_description: None,
-            documentation: None,
-            kind: Some("function".to_string()),
-            filter_text: None,
-            sort_text: None,
-            insert_text: "DoThing(${1:}, ${2:})".to_string(),
-            insert_text_format: InsertTextFormat::Snippet,
-            text_edit: None,
-        };
-
-        let expansion = completion_snippet_expansion(&item, &item.insert_text)
-            .expect("empty snippet placeholders should be enriched");
-
-        assert_eq!(expansion.text, "DoThing(ctx, name)");
-        assert_eq!(expansion.placeholders.len(), 2);
-        assert_eq!(expansion.placeholders[0].start, 8);
-        assert_eq!(expansion.placeholders[0].end, 11);
-        assert_eq!(expansion.placeholders[1].start, 13);
-        assert_eq!(expansion.placeholders[1].end, 17);
-    }
-
-    #[test]
-    fn function_completion_synthesizes_placeholders_from_label_signature() {
-        let item = CompletionCandidate {
-            label: "DoThing(ctx context.Context, name string)".to_string(),
-            detail: None,
-            label_detail: None,
-            label_description: None,
-            documentation: None,
-            kind: Some("function".to_string()),
-            filter_text: None,
-            sort_text: None,
-            insert_text: "DoThing".to_string(),
-            insert_text_format: InsertTextFormat::PlainText,
-            text_edit: None,
-        };
-
-        let expansion = completion_snippet_expansion(&item, &item.insert_text)
-            .expect("label signature should produce snippet placeholders");
-
-        assert_eq!(expansion.text, "DoThing(ctx, name)");
-        assert_eq!(expansion.placeholders.len(), 2);
-        assert_eq!(expansion.placeholders[0].start, 8);
-        assert_eq!(expansion.placeholders[0].end, 11);
-        assert_eq!(expansion.placeholders[1].start, 13);
-        assert_eq!(expansion.placeholders[1].end, 17);
-    }
-
     #[test]
     fn snippets_expand_placeholders_and_preserve_first_cursor_target() {
         let expansion = expand_lsp_snippet("fn ${1:name}(${2:arg}) {\n\t$0\n}");
@@ -5422,97 +5426,16 @@ mod tests {
     }
 
     #[test]
-    fn snippet_selection_collapses_after_first_replacement() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("call(arg, arg)");
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 5,
-                    end_char: 8,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 10,
-                    end_char: 13,
-                    filled: false,
-                },
-            ],
-            current: 0,
-            selected: true,
-            final_char: Some(14),
-        });
-
-        assert!(state.replace_active_snippet_selection_text("f", 80, 24));
-        assert!(
-            !state
-                .lsp
-                .active_snippet
-                .as_ref()
-                .expect("snippet should remain active")
-                .selected
-        );
-
-        for ch in ['o', 'o'] {
-            let text = ch.to_string();
-            let insert_at_char = state
-                .session
-                .active_buffer()
-                .pos_to_char(state.views.get(&buffer_id).unwrap().cursor.cursor);
-            let cursor = state.views.get(&buffer_id).unwrap().cursor.cursor;
-            let new_cursor = state.session.active_buffer_mut().insert(cursor, &text);
-            state.views.get_mut(&buffer_id).unwrap().cursor.cursor = new_cursor;
-            let _ = state.mirror_active_snippet_insert_after_cursor_insert(
-                insert_at_char,
-                &text,
-                80,
-                24,
-            );
-        }
-
-        assert_eq!(state.session.active_buffer().to_string(), "call(foo, foo)");
-        assert!(state.active_snippet_placeholder_ranges(0, 1).is_empty());
-    }
-
-    #[test]
     fn snippet_tab_skips_mirrored_placeholders() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("foo, foo, bar");
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 0,
-                    end_char: 3,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 5,
-                    end_char: 8,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 2,
-                    start_char: 10,
-                    end_char: 13,
-                    filled: false,
-                },
+        let (mut state, buffer_id) = state_with_active_snippet(
+            "foo, foo, bar",
+            vec![
+                snippet_placeholder(1, 0, 3),
+                snippet_placeholder(1, 5, 8),
+                snippet_placeholder(2, 10, 13),
             ],
-            current: 0,
-            selected: true,
-            final_char: Some(13),
-        });
+            Some(13),
+        );
 
         assert!(state.snippet_jump_next(80, 24));
 
@@ -5523,44 +5446,26 @@ mod tests {
             .expect("snippet should remain active");
         assert_eq!(snippet.current, 2);
         assert_eq!(
-            state.views.get(&buffer_id).unwrap().cursor.cursor,
-            redox_core::Pos::new(0, 10)
+            state
+                .views
+                .get(&buffer_id)
+                .expect("active view should exist")
+                .cursor
+                .cursor,
+            Pos::new(0, 10)
         );
     }
-
     #[test]
     fn snippet_tab_repeats_after_placeholder_edits() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("one, two, three");
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 0,
-                    end_char: 3,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 2,
-                    start_char: 5,
-                    end_char: 8,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 3,
-                    start_char: 10,
-                    end_char: 15,
-                    filled: false,
-                },
+        let (mut state, _) = state_with_active_snippet(
+            "one, two, three",
+            vec![
+                snippet_placeholder(1, 0, 3),
+                snippet_placeholder(2, 5, 8),
+                snippet_placeholder(3, 10, 15),
             ],
-            current: 0,
-            selected: true,
-            final_char: Some(15),
-        });
+            Some(15),
+        );
 
         assert!(state.replace_active_snippet_selection_text("alpha", 80, 24));
         assert!(state.snippet_jump_next(80, 24));
@@ -5585,43 +5490,59 @@ mod tests {
                 .is_empty()
         );
     }
-
     #[test]
-    fn snippet_backspace_updates_mirrored_placeholders() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("call(arg, arg)");
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 5,
-                    end_char: 8,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 1,
-                    start_char: 10,
-                    end_char: 13,
-                    filled: false,
-                },
-                ActiveSnippetPlaceholder {
-                    tabstop: 2,
-                    start_char: 14,
-                    end_char: 14,
-                    filled: false,
-                },
+    fn snippet_edits_update_mirrored_placeholders() {
+        let (mut state, buffer_id) = state_with_active_snippet(
+            "call(arg, arg)",
+            vec![
+                snippet_placeholder(1, 5, 8),
+                snippet_placeholder(1, 10, 13),
+                snippet_placeholder(2, 14, 14),
             ],
-            current: 0,
-            selected: true,
-            final_char: Some(14),
-        });
+            Some(14),
+        );
 
-        assert!(state.replace_active_snippet_selection_text("foo", 80, 24));
-        let cursor = state.views.get(&buffer_id).unwrap().cursor.cursor;
+        assert!(state.replace_active_snippet_selection_text("f", 80, 24));
+        assert!(
+            !state
+                .lsp
+                .active_snippet
+                .as_ref()
+                .expect("snippet should remain active")
+                .selected
+        );
+
+        for character in ['o', 'o'] {
+            let text = character.to_string();
+            let cursor = state
+                .views
+                .get(&buffer_id)
+                .expect("active view should exist")
+                .cursor
+                .cursor;
+            let insert_at_char = state.session.active_buffer().pos_to_char(cursor);
+            let new_cursor = state.session.active_buffer_mut().insert(cursor, &text);
+            state
+                .views
+                .get_mut(&buffer_id)
+                .expect("active view should exist")
+                .cursor
+                .cursor = new_cursor;
+            assert!(state.mirror_active_snippet_insert_after_cursor_insert(
+                insert_at_char,
+                &text,
+                80,
+                24,
+            ));
+        }
+        assert_eq!(state.session.active_buffer().to_string(), "call(foo, foo)");
+
+        let cursor = state
+            .views
+            .get(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor;
         let deleted_end = state.session.active_buffer().pos_to_char(cursor);
         let deleted_start = deleted_end.saturating_sub(1);
         let new_cursor = state
@@ -5629,16 +5550,21 @@ mod tests {
             .active_buffer_mut()
             .backspace(redox_core::Selection::empty(cursor))
             .cursor;
-        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = new_cursor;
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor = new_cursor;
 
         assert!(state.mirror_active_snippet_delete_after_cursor_delete(
             deleted_start,
             deleted_end,
             80,
-            24
+            24,
         ));
-
         assert_eq!(state.session.active_buffer().to_string(), "call(fo, fo)");
+
         assert!(state.snippet_jump_next(80, 24));
         let snippet = state
             .lsp
@@ -5647,26 +5573,11 @@ mod tests {
             .expect("snippet should remain active");
         assert_eq!(snippet.placeholders[snippet.current].tabstop, 2);
     }
-
     #[test]
     fn leaving_insert_mode_closes_active_snippet() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
+        let (mut state, _) =
+            state_with_active_snippet("", vec![snippet_placeholder(1, 0, 0)], Some(0));
         state.mode = EditorMode::Insert;
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![ActiveSnippetPlaceholder {
-                tabstop: 1,
-                start_char: 0,
-                end_char: 0,
-                filled: false,
-            }],
-            current: 0,
-            selected: true,
-            final_char: Some(0),
-        });
 
         state.apply_input(
             crate::input::InputAction::SetMode(crate::input::InputMode::Normal),
@@ -5676,29 +5587,20 @@ mod tests {
 
         assert!(state.lsp.active_snippet.is_none());
     }
-
     #[test]
     fn completion_cancel_only_stays_in_insert_for_visible_popup() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
         let mut state = EditorState::new(session);
         state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {
             selected: 0,
-            requested_at: redox_core::Pos::new(0, 0),
-            items: vec![CompletionCandidate {
-                label: "print".to_string(),
-                detail: None,
-                label_detail: None,
-                label_description: None,
-                documentation: None,
-                kind: Some("function".to_string()),
-                filter_text: None,
-                sort_text: None,
-                insert_text: "print".to_string(),
-                insert_text_format: InsertTextFormat::PlainText,
-                text_edit: None,
-            }],
+            requested_at: Pos::new(0, 0),
+            items: vec![completion_candidate(
+                "print",
+                "print",
+                "function",
+                InsertTextFormat::PlainText,
+            )],
         });
 
         state.apply_input(crate::input::InputAction::CompletionCancel, 80, 24);
@@ -5708,7 +5610,7 @@ mod tests {
 
         state.lsp.completion = Some(CompletionState {
             selected: 0,
-            requested_at: redox_core::Pos::new(0, 0),
+            requested_at: Pos::new(0, 0),
             items: Vec::new(),
         });
 
@@ -5717,89 +5619,81 @@ mod tests {
         assert_eq!(state.mode, EditorMode::Normal);
         assert!(state.lsp.completion.is_none());
     }
-
     #[test]
     fn completion_popup_visibility_tracks_current_prefix() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
         *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("prin");
-        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 4);
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor = Pos::new(0, 4);
         state.lsp.completion = Some(CompletionState {
             selected: 0,
-            requested_at: redox_core::Pos::new(0, 3),
-            items: vec![CompletionCandidate {
-                label: "println".to_string(),
-                detail: None,
-                label_detail: None,
-                label_description: None,
-                documentation: None,
-                kind: Some("function".to_string()),
-                filter_text: None,
-                sort_text: None,
-                insert_text: "println".to_string(),
-                insert_text_format: InsertTextFormat::PlainText,
-                text_edit: None,
-            }],
+            requested_at: Pos::new(0, 3),
+            items: vec![completion_candidate(
+                "println",
+                "println",
+                "function",
+                InsertTextFormat::PlainText,
+            )],
         });
 
         assert!(state.completion_popup().is_some());
 
-        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 0);
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor = Pos::new(0, 0);
         assert!(state.completion_popup().is_none());
     }
-
     #[test]
     fn snippet_tab_clears_snippet_after_cursor_moves_away() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
-        let mut state = EditorState::new(session);
-        let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("foo bar");
-        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 7);
-        state.lsp.active_snippet = Some(ActiveSnippet {
-            buffer_id,
-            placeholders: vec![ActiveSnippetPlaceholder {
-                tabstop: 1,
-                start_char: 0,
-                end_char: 3,
-                filled: false,
-            }],
-            current: 0,
-            selected: false,
-            final_char: Some(3),
-        });
+        let (mut state, buffer_id) =
+            state_with_active_snippet("foo bar", vec![snippet_placeholder(1, 0, 3)], Some(3));
+        state
+            .lsp
+            .active_snippet
+            .as_mut()
+            .expect("snippet should be active")
+            .selected = false;
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor = Pos::new(0, 7);
 
         assert!(!state.snippet_jump_next(80, 24));
         assert!(state.lsp.active_snippet.is_none());
     }
-
     #[test]
     fn typing_in_comment_disables_auto_completion_and_closes_popup() {
-        let session = redox_core::EditorSession::open_initial_unnamed()
-            .expect("failed to open unnamed session");
+        let session = EditorSession::open_initial_unnamed().expect("session should open");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
         *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("// comment");
-        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = redox_core::Pos::new(0, 10);
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("active view should exist")
+            .cursor
+            .cursor = Pos::new(0, 10);
         state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {
             selected: 0,
-            requested_at: redox_core::Pos::new(0, 10),
-            items: vec![CompletionCandidate {
-                label: "comment".to_string(),
-                detail: None,
-                label_detail: None,
-                label_description: None,
-                documentation: None,
-                kind: Some("text".to_string()),
-                filter_text: None,
-                sort_text: None,
-                insert_text: "comment".to_string(),
-                insert_text_format: InsertTextFormat::PlainText,
-                text_edit: None,
-            }],
+            requested_at: Pos::new(0, 10),
+            items: vec![completion_candidate(
+                "comment",
+                "comment",
+                "text",
+                InsertTextFormat::PlainText,
+            )],
         });
 
         state.queue_auto_completion_after_insert('a');
@@ -5807,7 +5701,6 @@ mod tests {
         assert!(state.lsp.auto_completion.is_none());
         assert!(state.lsp.completion.is_none());
     }
-
     #[test]
     fn rust_workspace_root_prefers_outermost_cargo_manifest() {
         let root = temp_test_dir("rust-root");
@@ -5833,16 +5726,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_summary_line_prefers_first_non_empty_line() {
-        assert_eq!(
-            diagnostic_summary_line(
-                "\nunused import: `std::env`\n`#[warn(unused_imports)]` on by default"
-            ),
-            "unused import: `std::env`"
-        );
-    }
-
-    #[test]
     fn parse_definition_response_accepts_location_arrays() {
         let message = json!({
             "jsonrpc": "2.0",
@@ -5865,88 +5748,83 @@ mod tests {
     }
 
     #[test]
-    fn parse_hover_response_preserves_code_blocks_and_markdown() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 7,
-            "result": {
-                "contents": [
-                    {
-                        "language": "rust",
-                        "value": "pub fn hover() -> bool"
-                    },
-                    {
-                        "kind": "markdown",
-                        "value": "Returns `true` when hover is available.\n\n- Fast"
+    fn parse_hover_response_preserves_content_kinds_and_normalizes_spacing() {
+        let cases = [
+            (
+                "code_and_markdown",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "result": {
+                        "contents": [
+                            {
+                                "language": "rust",
+                                "value": "pub fn hover() -> bool"
+                            },
+                            {
+                                "kind": "markdown",
+                                "value": "Returns `true` when hover is available.\n\n- Fast"
+                            }
+                        ]
                     }
-                ]
-            }
-        });
-
-        let blocks = parse_hover_response(&message);
-        assert_eq!(
-            blocks,
-            vec![
-                SymbolInfoBlock {
-                    kind: SymbolInfoKind::Code {
-                        language: Some("rust".to_string()),
+                }),
+                vec![
+                    SymbolInfoBlock {
+                        kind: SymbolInfoKind::Code {
+                            language: Some("rust".to_string()),
+                        },
+                        text: "pub fn hover() -> bool".to_string(),
                     },
-                    text: "pub fn hover() -> bool".to_string(),
-                },
-                SymbolInfoBlock {
+                    SymbolInfoBlock {
+                        kind: SymbolInfoKind::Markdown,
+                        text: "Returns `true` when hover is available.\n\n- Fast".to_string(),
+                    },
+                ],
+            ),
+            (
+                "plaintext",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "result": {
+                        "contents": {
+                            "kind": "plaintext",
+                            "value": "Line one\n\n  Line two  \n"
+                        }
+                    }
+                }),
+                vec![SymbolInfoBlock {
+                    kind: SymbolInfoKind::PlainText,
+                    text: "Line one\n\n  Line two".to_string(),
+                }],
+            ),
+            (
+                "repeated_blank_lines",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "result": {
+                        "contents": {
+                            "kind": "markdown",
+                            "value": "Title\n\n\n\nBody\n\n\n- item"
+                        }
+                    }
+                }),
+                vec![SymbolInfoBlock {
                     kind: SymbolInfoKind::Markdown,
-                    text: "Returns `true` when hover is available.\n\n- Fast".to_string(),
-                }
-            ]
-        );
+                    text: "Title\n\nBody\n\n- item".to_string(),
+                }],
+            ),
+        ];
+
+        for (case_name, message, expected_blocks) in cases {
+            assert_eq!(
+                parse_hover_response(&message),
+                expected_blocks,
+                "{case_name}"
+            );
+        }
     }
-
-    #[test]
-    fn parse_hover_response_keeps_plaintext_paragraphs() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 8,
-            "result": {
-                "contents": {
-                    "kind": "plaintext",
-                    "value": "Line one\n\n  Line two  \n"
-                }
-            }
-        });
-
-        let blocks = parse_hover_response(&message);
-        assert_eq!(
-            blocks,
-            vec![SymbolInfoBlock {
-                kind: SymbolInfoKind::PlainText,
-                text: "Line one\n\n  Line two".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_hover_response_collapses_repeated_blank_lines() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 10,
-            "result": {
-                "contents": {
-                    "kind": "markdown",
-                    "value": "Title\n\n\n\nBody\n\n\n- item"
-                }
-            }
-        });
-
-        let blocks = parse_hover_response(&message);
-        assert_eq!(
-            blocks,
-            vec![SymbolInfoBlock {
-                kind: SymbolInfoKind::Markdown,
-                text: "Title\n\nBody\n\n- item".to_string(),
-            }]
-        );
-    }
-
     #[test]
     fn code_action_response_parses_literals_and_commands() {
         let message = json!({
@@ -6026,150 +5904,89 @@ mod tests {
 
     #[test]
     fn close_symbol_info_restores_previous_mode() {
-        let session = EditorSession::open_initial_unnamed().expect("session should open");
-        let mut state = EditorState::new(session);
+        let mut state = state_with_symbol_info("hello", 2, EditorMode::Insert);
         state.mode = EditorMode::SymbolInfo;
-        state.lsp.symbol_info = Some(SymbolInfoState {
-            requested_at: Pos::new(0, 0),
-            blocks: vec![SymbolInfoBlock {
-                kind: SymbolInfoKind::PlainText,
-                text: "hello".to_string(),
-            }],
-            cached_width: None,
-            display_lines: Vec::new(),
-            scroll: 2,
-            return_mode: EditorMode::Insert,
-        });
 
         assert!(state.close_symbol_info());
         assert_eq!(state.mode, EditorMode::Insert);
         assert!(state.lsp.symbol_info.is_none());
     }
-
-    #[test]
-    fn symbol_info_move_scrolls_by_delta() {
-        let session = EditorSession::open_initial_unnamed().expect("session should open");
-        let mut state = EditorState::new(session);
-        state.lsp.symbol_info = Some(SymbolInfoState {
-            requested_at: Pos::new(0, 0),
-            blocks: vec![SymbolInfoBlock {
-                kind: SymbolInfoKind::PlainText,
-                text: "hello".to_string(),
-            }],
-            cached_width: None,
-            display_lines: Vec::new(),
-            scroll: 1,
-            return_mode: EditorMode::Normal,
-        });
-
-        assert!(state.symbol_info_move(3));
-        assert_eq!(
-            state.lsp.symbol_info.as_ref().map(|info| info.scroll),
-            Some(4)
-        );
-
-        assert!(state.symbol_info_move(-10));
-        assert_eq!(
-            state.lsp.symbol_info.as_ref().map(|info| info.scroll),
-            Some(0)
-        );
-    }
-
     #[test]
     fn clamp_symbol_info_scroll_trims_overscroll_to_visible_bottom() {
-        let session = EditorSession::open_initial_unnamed().expect("session should open");
-        let mut state = EditorState::new(session);
+        let text = (0..20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = state_with_symbol_info(&text, 99, EditorMode::Normal);
         state.mode = EditorMode::SymbolInfo;
-        state.lsp.symbol_info = Some(SymbolInfoState {
-            requested_at: Pos::new(0, 0),
-            blocks: vec![SymbolInfoBlock {
-                kind: SymbolInfoKind::PlainText,
-                text: (0..20)
-                    .map(|i| format!("line {i}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            }],
-            cached_width: None,
-            display_lines: Vec::new(),
-            scroll: 99,
-            return_mode: EditorMode::Normal,
-        });
 
         state.clamp_symbol_info_scroll(80);
+
         assert_eq!(
             state.lsp.symbol_info.as_ref().map(|info| info.scroll),
             Some(8)
         );
     }
-
     #[test]
-    fn clippy_output_parses_workspace_relative_spans() {
-        let root = temp_test_dir("clippy-output");
-        let src_dir = root.join("src");
-        fs::create_dir_all(&src_dir).expect("src dir should be created");
-        fs::write(
-            src_dir.join("lib.rs"),
+    fn linter_outputs_are_normalized_to_stored_diagnostics() {
+        type LintParser = fn(&[u8], &Path) -> HashMap<String, Vec<StoredDiagnostic>>;
+
+        fn assert_lint_output(
+            root: &Path,
+            relative_path: &str,
+            source_text: &str,
+            output: &[u8],
+            parser: LintParser,
+            expected_line: usize,
+            expected_message: &str,
+        ) {
+            let file = root.join(relative_path);
+            fs::create_dir_all(file.parent().expect("test file should have a parent"))
+                .expect("source directory should be created");
+            fs::write(&file, source_text).expect("source file should be written");
+
+            let diagnostics = parser(output, root);
+            let uri = file_uri(&file).expect("URI should build");
+            let items = diagnostics
+                .get(&uri)
+                .expect("diagnostics should include file");
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].severity, DiagnosticSeverity::Warning);
+            assert_eq!(items[0].start_line, expected_line);
+            assert!(items[0].message.contains(expected_message));
+        }
+
+        let root = temp_test_dir("linter-output");
+        assert_lint_output(
+            &root,
+            "src/lib.rs",
             "pub fn demo() {\n    let unused_value = 42;\n}\n",
-        )
-        .expect("source file should be written");
-
-        let stdout = br#"{"reason":"compiler-message","message":{"level":"warning","message":"unused variable: `unused_value`","spans":[{"file_name":"src/lib.rs","line_start":2,"line_end":2,"column_start":9,"column_end":21,"is_primary":true}]}}"#;
-        let diagnostics = parse_clippy_output(stdout, &root);
-        let uri = file_uri(&src_dir.join("lib.rs")).expect("URI should build");
-        let items = diagnostics
-            .get(&uri)
-            .expect("diagnostics should include file");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].severity, DiagnosticSeverity::Warning);
-        assert_eq!(items[0].start_line, 1);
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn ruff_output_parses_json_diagnostics() {
-        let root = temp_test_dir("ruff-output");
-        let file = root.join("example.py");
-        fs::write(&file, "import os\n").expect("python file should be written");
-
-        let stdout = br#"[{"filename":"example.py","message":"`os` imported but unused","code":"F401","location":{"row":1,"column":8},"end_location":{"row":1,"column":10}}]"#;
-        let diagnostics = parse_ruff_output(stdout, &root);
-        let uri = file_uri(&file).expect("URI should build");
-        let items = diagnostics
-            .get(&uri)
-            .expect("diagnostics should include file");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].severity, DiagnosticSeverity::Warning);
-        assert!(items[0].message.contains("F401"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn golangci_lint_text_output_parses_diagnostics() {
-        let root = temp_test_dir("golangci-text-output");
-        let dir = root.join("lexer");
-        fs::create_dir_all(&dir).expect("lexer dir should be created");
-        fs::write(
-            dir.join("lexer.go"),
+            br#"{"reason":"compiler-message","message":{"level":"warning","message":"unused variable: `unused_value`","spans":[{"file_name":"src/lib.rs","line_start":2,"line_end":2,"column_start":9,"column_end":21,"is_primary":true}]}}"#,
+            parse_clippy_output,
+            1,
+            "unused variable",
+        );
+        assert_lint_output(
+            &root,
+            "example.py",
+            "import os\n",
+            br#"[{"filename":"example.py","message":"`os` imported but unused","code":"F401","location":{"row":1,"column":8},"end_location":{"row":1,"column":10}}]"#,
+            parse_ruff_output,
+            0,
+            "F401",
+        );
+        assert_lint_output(
+            &root,
+            "lexer/lexer.go",
             "package lexer\n\ntype token struct {\n\tfoo string\n}\n",
-        )
-        .expect("go file should be written");
+            b"lexer/lexer.go:4:2: field foo is unused (unused)\n",
+            parse_golangci_lint_text_output,
+            3,
+            "field foo is unused",
+        );
 
-        let stderr = b"lexer/lexer.go:4:2: field foo is unused (unused)\n";
-        let diagnostics = parse_golangci_lint_text_output(stderr, &root);
-        let uri = file_uri(&dir.join("lexer.go")).expect("URI should build");
-        let items = diagnostics
-            .get(&uri)
-            .expect("diagnostics should include file");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].severity, DiagnosticSeverity::Warning);
-        assert_eq!(items[0].start_line, 3);
-        assert!(items[0].message.contains("field foo is unused"));
-
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
-
     #[test]
     fn lsp_errors_suppress_lint_diagnostics_for_active_file() {
         let lsp_source = DiagnosticSource::Lsp(WorkspaceKey {

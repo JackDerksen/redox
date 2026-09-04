@@ -9,7 +9,6 @@ use crate::ui::syntax::smart_newline_insert;
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
 
 impl EditorState {
-    /// Apply a high-level input action using the active viewport size for cursor reconciliation.
     pub fn apply_input(
         &mut self,
         action: InputAction,
@@ -746,7 +745,7 @@ impl EditorState {
                     let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
-                    let sel = Selection::empty(view.cursor.cursor);
+                    let selection = Selection::empty(view.cursor.cursor);
                     let snippet_delete = {
                         let buffer = self.session.active_buffer();
                         let cursor_char = buffer.pos_to_char(view.cursor.cursor);
@@ -780,8 +779,8 @@ impl EditorState {
                         {
                             view.cursor.cursor = buffer.delete_range(start, end);
                         } else {
-                            let sel = buffer.backspace(sel);
-                            view.cursor.cursor = sel.cursor;
+                            let selection = buffer.backspace(selection);
+                            view.cursor.cursor = selection.cursor;
                         }
                         view.cursor
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
@@ -821,9 +820,9 @@ impl EditorState {
                             let _ = buffer.insert(view.cursor.cursor, &text);
                             view.cursor.cursor = cursor;
                         } else {
-                            let sel = Selection::empty(view.cursor.cursor);
-                            let sel = buffer.insert_newline(sel);
-                            view.cursor.cursor = sel.cursor;
+                            let selection = Selection::empty(view.cursor.cursor);
+                            let selection = buffer.insert_newline(selection);
+                            view.cursor.cursor = selection.cursor;
                         }
                         view.cursor
                             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
@@ -1131,13 +1130,13 @@ impl EditorState {
         }
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-        let behaviour = {
+        let behavior = {
             let buffer = self.session.active_buffer();
             classify_insert_char(buffer, cursor, ch)
         };
 
-        match behaviour {
-            InsertCharBehaviour::Plain => {
+        match behavior {
+            InsertCharBehavior::Plain => {
                 let text = if ch == '\t' {
                     soft_tab_insert_text(self.session.active_buffer(), cursor)
                 } else {
@@ -1146,14 +1145,14 @@ impl EditorState {
                 self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
                 self.queue_auto_completion_after_insert(ch);
             }
-            InsertCharBehaviour::MoveRight => {
+            InsertCharBehavior::MoveRight => {
                 let view = self.views.entry(active_id).or_default();
                 let buffer = self.session.active_buffer();
                 view.cursor.cursor = buffer.clamp_pos(Pos::new(cursor.line, cursor.col + 1));
                 view.cursor
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             }
-            InsertCharBehaviour::InsertPair(close) => {
+            InsertCharBehavior::InsertPair(close) => {
                 let before = self.capture_active_insert_coalesced_checkpoint();
                 let view = self.views.entry(active_id).or_default();
                 let insert_at_char = {
@@ -1257,36 +1256,36 @@ impl EditorState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InsertCharBehaviour {
+enum InsertCharBehavior {
     Plain,
     MoveRight,
     InsertPair(char),
 }
 
-fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCharBehaviour {
+fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCharBehavior {
     if ch == '\t' {
         return buffer
             .char_at(cursor)
             .filter(|current| is_auto_pair_closer(*current))
-            .map(|_| InsertCharBehaviour::MoveRight)
-            .unwrap_or(InsertCharBehaviour::Plain);
+            .map(|_| InsertCharBehavior::MoveRight)
+            .unwrap_or(InsertCharBehavior::Plain);
     }
 
     if buffer.char_at(cursor) == Some(ch) && is_auto_pair_closer(ch) {
-        return InsertCharBehaviour::MoveRight;
+        return InsertCharBehavior::MoveRight;
     }
 
     match ch {
-        '(' => InsertCharBehaviour::InsertPair(')'),
-        '[' => InsertCharBehaviour::InsertPair(']'),
-        '{' => InsertCharBehaviour::InsertPair('}'),
+        '(' => InsertCharBehavior::InsertPair(')'),
+        '[' => InsertCharBehavior::InsertPair(']'),
+        '{' => InsertCharBehavior::InsertPair('}'),
         '"' | '`' => should_auto_pair_symmetric_delimiter(buffer, cursor, ch)
-            .then_some(InsertCharBehaviour::InsertPair(ch))
-            .unwrap_or(InsertCharBehaviour::Plain),
+            .then_some(InsertCharBehavior::InsertPair(ch))
+            .unwrap_or(InsertCharBehavior::Plain),
         '\'' => should_auto_pair_single_quote(buffer, cursor)
-            .then_some(InsertCharBehaviour::InsertPair('\''))
-            .unwrap_or(InsertCharBehaviour::Plain),
-        _ => InsertCharBehaviour::Plain,
+            .then_some(InsertCharBehavior::InsertPair('\''))
+            .unwrap_or(InsertCharBehavior::Plain),
+        _ => InsertCharBehavior::Plain,
     }
 }
 

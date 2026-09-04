@@ -4,9 +4,7 @@ use crate::input::{WhichKeyEntry, WhichKeyPopup};
 use crate::ui::widgets::popup::clip_text_to_cells;
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
-// ======================================================================================
 // Credit to https://github.com/folke/which-key.nvim for the inspiration here.
-// ======================================================================================
 
 const HORIZONTAL_MARGIN: u16 = 1;
 const HEADER_ROWS: usize = 1;

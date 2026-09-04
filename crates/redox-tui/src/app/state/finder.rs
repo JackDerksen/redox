@@ -833,11 +833,11 @@ impl EditorState {
 
         let previous_slots = self.pinned_files.slots.clone();
         let dropped = self.pinned_files.assign_slot(slot, source_path.clone());
-        if let Err(err) = self.pinned_files.save() {
+        if let Err(error) = self.pinned_files.save() {
             self.pinned_files.slots = previous_slots;
             self.mode = EditorMode::PinSelect;
             self.pin_selector = Some(selector);
-            self.set_status(format!("pin save failed: {err}"));
+            self.set_status(format!("pin save failed: {error}"));
             return;
         }
 
@@ -878,9 +878,9 @@ impl EditorState {
         if !self.pinned_files.swap_slots(slot, next_slot as usize) {
             return;
         }
-        if let Err(err) = self.pinned_files.save() {
+        if let Err(error) = self.pinned_files.save() {
             self.pinned_files.slots = previous_slots;
-            self.set_status(format!("pin save failed: {err}"));
+            self.set_status(format!("pin save failed: {error}"));
             return;
         }
         selector.selected_slot = next_slot as usize;
@@ -904,8 +904,8 @@ impl EditorState {
         let Some(removed) = self.pinned_files.remove_at(slot) else {
             return;
         };
-        if let Err(err) = self.pinned_files.save() {
-            self.set_status(format!("pin save failed: {err}"));
+        if let Err(error) = self.pinned_files.save() {
+            self.set_status(format!("pin save failed: {error}"));
             let _ = self.pinned_files.assign_slot(slot, removed);
             return;
         }
@@ -998,8 +998,8 @@ impl EditorState {
                 }
                 self.clear_status();
             }
-            Err(err) => {
-                self.set_status(format!("open failed: {err}"));
+            Err(error) => {
+                self.set_status(format!("open failed: {error}"));
             }
         }
     }

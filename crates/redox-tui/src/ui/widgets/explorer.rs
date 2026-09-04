@@ -1,17 +1,17 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::app::state::{ExplorerRenderRow, ExplorerRenderRowKind};
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
 use crate::ui::icons::{PREFIX_WIDTH, PopupKind, file_icon, folder_icon, popup_title};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
-use crate::ui::{TextViewport, UiStyle, build_editor_status_bar, snapshot_lines_wrapped_cached};
+use crate::ui::{TextViewport, UiStyle, build_editor_status_bar};
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const EXPLORER_STATUS_DOT: &str = "● ";
@@ -54,8 +54,7 @@ pub fn draw_explorer_popup_view(
     let mut view = popup_window_view(window, layout);
 
     state.refresh_git_repo_status_for_dir(&popup.dir_path);
-    let show_git_status_column =
-        explorer_git_status_column_visible(state, &popup.dir_path, state.session.active_buffer());
+    let show_git_status_column = state.refresh_explorer_render_model();
 
     let visual_selection = state.active_visual_selection();
     let (snapshot, spec, cursor_line, total_lines, scroll_x) =
@@ -81,8 +80,7 @@ pub fn draw_explorer_popup_view(
                 width: text_w,
                 height: inner_h,
             };
-            let snapshot =
-                snapshot_lines_wrapped_cached(buffer, &viewport, &mut explorer_view.grapheme_cache);
+            let snapshot = explorer_view.render_line_cache.snapshot(buffer, &viewport);
             let spec = explorer_view
                 .cursor
                 .cursor_spec(buffer, text_w as usize, inner_h as usize);
@@ -94,13 +92,7 @@ pub fn draw_explorer_popup_view(
                 scroll_x,
             )
         });
-    let line_styles = (0..snapshot.lines.len())
-        .map(|row| {
-            let line_idx = snapshot.first_line + row;
-            let source = state.session.active_buffer().line_string(line_idx);
-            explorer_row_style(state, style, &popup.dir_path, &source)
-        })
-        .collect::<Vec<_>>();
+    let render_rows = state.explorer_render_rows(snapshot.first_line(), snapshot.line_count());
 
     let gutter_w = line_number_gutter_width(total_lines, show_git_status_column);
     let icon_col = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
@@ -111,47 +103,49 @@ pub fn draw_explorer_popup_view(
         gutter_w,
         inner_h,
         show_git_status_column,
-        snapshot.first_line,
+        snapshot.first_line(),
         cursor_line,
         total_lines,
     )?;
 
-    for (row, line) in snapshot.lines.iter().enumerate() {
-        let row_style = line_styles.get(row).copied().unwrap_or(ExplorerRowStyle {
-            text: style.explorer.file,
-            git_status: None,
-        });
-        let line_idx = snapshot.first_line + row;
-        let source_line = state.session.active_buffer().line_string(line_idx);
+    for (row, line) in snapshot.iter().enumerate() {
+        let row_style = render_rows
+            .get(row)
+            .copied()
+            .map(|render_row| explorer_row_style(style, render_row))
+            .unwrap_or(ExplorerRowStyle {
+                text: style.explorer.file,
+                git_status: None,
+            });
+        let line_idx = snapshot.first_line() + row;
+        let source_line = line.source();
         if style.icons_enabled
-            && let Some(icon) = explorer_entry_icon(&popup.dir_path, &source_line)
+            && let Some(icon) = explorer_entry_icon(&popup.dir_path, source_line)
         {
             view.write_str_colored(row as u16, icon_col, icon, row_style.text)?;
         }
-        if let Some((selection, mode)) = visual_selection {
-            if let Some(sel_range) = state
+        if let Some((selection, mode)) = visual_selection
+            && let Some(sel_range) = state
                 .session
                 .active_buffer()
                 .visual_selection_char_range_on_line(selection, mode, line_idx)
-            {
-                let source_line = state.session.active_buffer().line_string(line_idx);
-                draw_line_with_selection(
-                    &mut view,
-                    row as u16,
-                    content_x,
-                    &source_line,
-                    scroll_x,
-                    inner_w.saturating_sub(content_x) as usize,
-                    sel_range.start,
-                    sel_range.end,
-                    row_style.text,
-                    ColorPair::new(row_style.text.fg, style.theme.selection_bg),
-                )?;
-                draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
-                continue;
-            }
+        {
+            draw_line_with_selection(
+                &mut view,
+                row as u16,
+                content_x,
+                source_line,
+                scroll_x,
+                inner_w.saturating_sub(content_x) as usize,
+                sel_range.start,
+                sel_range.end,
+                row_style.text,
+                ColorPair::new(row_style.text.fg, style.theme.selection_bg),
+            )?;
+            draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
+            continue;
         }
-        view.write_str_colored(row as u16, content_x, line, row_style.text)?;
+        view.write_str_colored(row as u16, content_x, line.visible(), row_style.text)?;
         draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
     }
     let cursor = spec.visible.then_some(CursorSpec {
@@ -215,68 +209,16 @@ pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u
     )
 }
 
-fn explorer_row_style(
-    state: &EditorState,
-    style: UiStyle,
-    dir_path: &Path,
-    source_line: &str,
-) -> ExplorerRowStyle {
-    let line = source_line.trim();
-    if line.is_empty() {
-        return ExplorerRowStyle {
-            text: style.explorer.file,
-            git_status: None,
-        };
-    }
-
-    let is_dir = line == ".." || line.ends_with('/');
-    let name = line.strip_suffix('/').unwrap_or(line);
-    let is_hidden = name.starts_with('.');
-
-    let git_status = if line == ".." {
-        None
-    } else {
-        explorer_line_git_status(state, dir_path, line)
-    };
-
-    if is_hidden {
-        return ExplorerRowStyle {
-            text: style.explorer.hidden,
-            git_status,
-        };
-    }
-
-    if is_dir {
-        return ExplorerRowStyle {
-            text: style.explorer.directory,
-            git_status,
-        };
-    }
-
-    if is_executable(dir_path.join(name)) {
-        return ExplorerRowStyle {
-            text: style.explorer.executable,
-            git_status,
-        };
-    }
-
+fn explorer_row_style(style: UiStyle, row: ExplorerRenderRow) -> ExplorerRowStyle {
     ExplorerRowStyle {
-        text: style.explorer.file,
-        git_status,
+        text: match row.kind {
+            ExplorerRenderRowKind::File => style.explorer.file,
+            ExplorerRenderRowKind::Directory => style.explorer.directory,
+            ExplorerRenderRowKind::Hidden => style.explorer.hidden,
+            ExplorerRenderRowKind::Executable => style.explorer.executable,
+        },
+        git_status: row.git_status,
     }
-}
-
-fn explorer_line_git_status(
-    state: &EditorState,
-    dir_path: &Path,
-    source_line: &str,
-) -> Option<GitFileStatusKind> {
-    let line = source_line.trim();
-    if line.is_empty() || line == ".." {
-        return None;
-    }
-    let name = line.strip_suffix('/').unwrap_or(line);
-    state.git_status_for_path(&dir_path.join(name))
 }
 
 fn draw_explorer_status_dot(
@@ -293,59 +235,6 @@ fn draw_explorer_status_dot(
     let color = style.git.file_status(status);
     view.write_str_colored(row, col, EXPLORER_STATUS_DOT, color)?;
     Ok(())
-}
-
-fn is_executable(path: PathBuf) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use minui::window::CursorSpec;
-    use redox_core::Pos;
-
-    use super::*;
-    use crate::input::cursor::CursorController;
-
-    #[test]
-    fn popup_reconcile_keeps_selected_entry_visible() {
-        let buffer =
-            TextBuffer::from_text("../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt");
-        let mut cursor = CursorController::default();
-        cursor.cursor = Pos::new(11, 0);
-
-        reconcile_explorer_cursor_for_popup(&mut cursor, &buffer, 20, 5, false, false);
-
-        assert_eq!(cursor.scroll_y_lines, 7);
-        let spec: CursorSpec = cursor.cursor_spec(&buffer, 17, 5);
-        assert!(spec.visible);
-        assert_eq!(spec.y, 4);
-    }
-}
-
-fn explorer_git_status_column_visible(
-    state: &EditorState,
-    dir_path: &Path,
-    buffer: &TextBuffer,
-) -> bool {
-    (0..buffer.len_lines()).any(|line_idx| {
-        let source = buffer.line_string(line_idx);
-        explorer_line_git_status(state, dir_path, &source).is_some()
-    })
 }
 
 fn line_number_gutter_width(total_lines: usize, show_git_status_column: bool) -> u16 {
@@ -469,4 +358,28 @@ fn draw_line_with_selection(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use minui::window::CursorSpec;
+    use redox_core::Pos;
+
+    use super::*;
+    use crate::input::cursor::CursorController;
+
+    #[test]
+    fn popup_reconcile_keeps_selected_entry_visible() {
+        let buffer =
+            TextBuffer::from_text("../\na/\nb/\nc/\nd/\ne/\nf/\ng/\nh/\ni/\nj/\nopen.txt\nz.txt");
+        let mut cursor = CursorController::default();
+        cursor.cursor = Pos::new(11, 0);
+
+        reconcile_explorer_cursor_for_popup(&mut cursor, &buffer, 20, 5, false, false);
+
+        assert_eq!(cursor.scroll_y_lines, 7);
+        let spec: CursorSpec = cursor.cursor_spec(&buffer, 17, 5);
+        assert!(spec.visible);
+        assert_eq!(spec.y, 4);
+    }
 }

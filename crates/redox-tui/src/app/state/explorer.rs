@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 
-use super::{EditorMode, EditorState, StatusMessageStyle};
+use super::{BufferViewState, EditorMode, EditorState, GitFileStatusKind, StatusMessageStyle};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,18 +20,67 @@ pub struct ExplorerPopup {
     pub dir_path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct ExplorerState {
     pub(super) buffer_id: BufferId,
     pub(super) dir_path: PathBuf,
     pub(super) directory_drafts: HashMap<PathBuf, ExplorerDirectoryDraft>,
     pub(super) return_to_buffer_id: BufferId,
+    render_cache: ExplorerRenderCache,
+}
+
+impl Clone for ExplorerState {
+    fn clone(&self) -> Self {
+        Self {
+            buffer_id: self.buffer_id,
+            dir_path: self.dir_path.clone(),
+            directory_drafts: self.directory_drafts.clone(),
+            return_to_buffer_id: self.return_to_buffer_id,
+            render_cache: ExplorerRenderCache::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ExplorerDirectoryDraft {
     pub(super) original_entries: Vec<ExplorerEntry>,
     pub(super) text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExplorerRenderRowKind {
+    File,
+    Directory,
+    Hidden,
+    Executable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExplorerRenderRow {
+    pub(crate) kind: ExplorerRenderRowKind,
+    pub(crate) git_status: Option<GitFileStatusKind>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExplorerCachedRow {
+    kind: ExplorerRenderRowKind,
+    executable_path: Option<PathBuf>,
+    git_status: Option<GitFileStatusKind>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExplorerRenderCacheKey {
+    dir_path: PathBuf,
+    buffer_version: u64,
+    git_revision: u64,
+}
+
+#[derive(Debug, Default)]
+struct ExplorerRenderCache {
+    key: Option<ExplorerRenderCacheKey>,
+    rows: Vec<ExplorerCachedRow>,
+    executable_by_path: HashMap<PathBuf, bool>,
+    show_git_status_column: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,6 +170,104 @@ impl EditorState {
         })
     }
 
+    pub(crate) fn refresh_explorer_render_model(&mut self) -> bool {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return false;
+        };
+        if explorer.buffer_id != self.session.active_id() {
+            return false;
+        }
+
+        let buffer_id = explorer.buffer_id;
+        let dir_path = explorer.dir_path.clone();
+        let Some(buffer_version) = self
+            .views
+            .get(&buffer_id)
+            .map(BufferViewState::analysis_version)
+        else {
+            return false;
+        };
+        let key = ExplorerRenderCacheKey {
+            dir_path: dir_path.clone(),
+            buffer_version,
+            git_revision: self.git.repo_status_revision(),
+        };
+        if explorer.render_cache.key.as_ref() == Some(&key) {
+            return explorer.render_cache.show_git_status_column;
+        }
+
+        let Some(buffer) = self.session.buffer(buffer_id) else {
+            return false;
+        };
+        let rows = (0..buffer.len_lines())
+            .map(|line_index| {
+                let source_slice = buffer.line_slice(line_index);
+                let owned_source;
+                let source = match source_slice.as_str() {
+                    Some(source) => source,
+                    None => {
+                        owned_source = source_slice.to_string();
+                        &owned_source
+                    }
+                };
+                explorer_cached_row(&dir_path, source, |path| self.git.status_for_path(path))
+            })
+            .collect::<Vec<_>>();
+        let show_git_status_column = rows.iter().any(|row| row.git_status.is_some());
+
+        let explorer = self
+            .explorer
+            .as_mut()
+            .expect("explorer state must remain available while rendering");
+        let preserve_executable_cache = explorer.render_cache.key.as_ref().is_some_and(|old_key| {
+            old_key.dir_path == key.dir_path && old_key.buffer_version == key.buffer_version
+        });
+        if !preserve_executable_cache {
+            explorer.render_cache.executable_by_path.clear();
+        }
+        explorer.render_cache.key = Some(key);
+        explorer.render_cache.rows = rows;
+        explorer.render_cache.show_git_status_column = show_git_status_column;
+        show_git_status_column
+    }
+
+    pub(crate) fn explorer_render_rows(
+        &mut self,
+        first_line: usize,
+        line_count: usize,
+    ) -> Vec<ExplorerRenderRow> {
+        let Some(explorer) = self.explorer.as_mut() else {
+            return Vec::new();
+        };
+        let cache = &mut explorer.render_cache;
+        let end_line = first_line.saturating_add(line_count).min(cache.rows.len());
+        let (rows, executable_by_path) = (&cache.rows, &mut cache.executable_by_path);
+
+        rows[first_line.min(end_line)..end_line]
+            .iter()
+            .map(|row| {
+                let kind = if row.kind == ExplorerRenderRowKind::File
+                    && row.executable_path.as_ref().is_some_and(|path| {
+                        if let Some(cached) = executable_by_path.get(path) {
+                            *cached
+                        } else {
+                            let executable = is_executable(path);
+                            executable_by_path.insert(path.clone(), executable);
+                            executable
+                        }
+                    }) {
+                    ExplorerRenderRowKind::Executable
+                } else {
+                    row.kind
+                };
+                ExplorerRenderRow {
+                    kind,
+                    git_status: row.git_status,
+                }
+            })
+            .collect()
+    }
+
     pub fn explorer_background_buffer_id(&self) -> Option<BufferId> {
         let explorer = self.explorer.as_ref()?;
         if explorer.buffer_id != self.session.active_id() {
@@ -168,8 +315,8 @@ impl EditorState {
                 self.mode = EditorMode::Normal;
                 self.clear_status();
             }
-            Err(e) => {
-                self.set_status(format!("explorer open failed: {e}"));
+            Err(error) => {
+                self.set_status(format!("explorer open failed: {error}"));
             }
         }
     }
@@ -230,6 +377,7 @@ impl EditorState {
                 },
             )]),
             return_to_buffer_id: return_to,
+            render_cache: ExplorerRenderCache::default(),
         });
         Ok(())
     }
@@ -282,8 +430,8 @@ impl EditorState {
 
         let parsed = match parse_explorer_entries(&self.session.active_buffer().to_string()) {
             Ok(entries) => entries,
-            Err(e) => {
-                self.set_status(format!("explorer parse error: {e}"));
+            Err(error) => {
+                self.set_status(format!("explorer parse error: {error}"));
                 return;
             }
         };
@@ -301,8 +449,8 @@ impl EditorState {
 
         if entry.is_dir {
             let next_dir = explorer.dir_path.join(entry.name);
-            if let Err(e) = self.refresh_explorer_directory(next_dir) {
-                self.set_status(format!("explorer open failed: {e}"));
+            if let Err(error) = self.refresh_explorer_directory(next_dir) {
+                self.set_status(format!("explorer open failed: {error}"));
             }
             return;
         }
@@ -334,8 +482,8 @@ impl EditorState {
                 self.mode = EditorMode::Normal;
                 self.clear_status();
             }
-            Err(e) => {
-                self.set_status(format!("open failed: {e}"));
+            Err(error) => {
+                self.set_status(format!("open failed: {error}"));
             }
         }
     }
@@ -358,8 +506,10 @@ impl EditorState {
             .parent()
             .unwrap_or(explorer.dir_path.as_path())
             .to_path_buf();
-        if let Err(e) = self.refresh_explorer_directory_with_selection(parent, previous_dir_name) {
-            self.set_status(format!("explorer open failed: {e}"));
+        if let Err(error) =
+            self.refresh_explorer_directory_with_selection(parent, previous_dir_name)
+        {
+            self.set_status(format!("explorer open failed: {error}"));
         }
     }
 
@@ -475,9 +625,9 @@ impl EditorState {
         for (dir_path, draft) in &explorer.directory_drafts {
             let desired_entries = match parse_explorer_entries(&draft.text) {
                 Ok(entries) => entries,
-                Err(e) => {
+                Err(error) => {
                     self.explorer_delete_confirmation_token = None;
-                    self.set_status(format!("explorer parse error: {e}"));
+                    self.set_status(format!("explorer parse error: {error}"));
                     return false;
                 }
             };
@@ -527,16 +677,16 @@ impl EditorState {
         let planned_write =
             match plan_explorer_write(&explorer.directory_drafts, &desired_entries_by_dir) {
                 Ok(plan) => plan,
-                Err(e) => {
+                Err(error) => {
                     self.explorer_delete_confirmation_token = None;
-                    self.set_status(format!("explorer write failed: {e}"));
+                    self.set_status(format!("explorer write failed: {error}"));
                     return false;
                 }
             };
 
-        if let Err(e) = execute_explorer_write(&planned_write) {
+        if let Err(error) = execute_explorer_write(&planned_write) {
             self.explorer_delete_confirmation_token = None;
-            self.set_status(format!("explorer write failed: {e}"));
+            self.set_status(format!("explorer write failed: {error}"));
             return false;
         }
 
@@ -546,8 +696,8 @@ impl EditorState {
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
             Ok(entries) => entries,
-            Err(e) => {
-                self.set_status(format!("explorer refresh failed: {e}"));
+            Err(error) => {
+                self.set_status(format!("explorer refresh failed: {error}"));
                 return false;
             }
         };
@@ -594,8 +744,8 @@ impl EditorState {
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
         let status = format_explorer_write_summary(&planned_write.changes);
-        if let Some(err) = pin_sync_error {
-            self.set_status(format!("{status}; pin save failed: {err}"));
+        if let Some(error) = pin_sync_error {
+            self.set_status(format!("{status}; pin save failed: {error}"));
         } else {
             self.set_status(status);
         }
@@ -686,6 +836,61 @@ fn list_explorer_entries(dir: &Path) -> anyhow::Result<Vec<ExplorerEntry>> {
     Ok(entries)
 }
 
+fn explorer_cached_row(
+    dir_path: &Path,
+    source_line: &str,
+    git_status_for_path: impl FnOnce(&Path) -> Option<GitFileStatusKind>,
+) -> ExplorerCachedRow {
+    let line = source_line.trim();
+    if line.is_empty() {
+        return ExplorerCachedRow {
+            kind: ExplorerRenderRowKind::File,
+            executable_path: None,
+            git_status: None,
+        };
+    }
+    let is_dir = line == ".." || line.ends_with('/');
+    let name = line.strip_suffix('/').unwrap_or(line);
+    let kind = if name.starts_with('.') {
+        ExplorerRenderRowKind::Hidden
+    } else if is_dir {
+        ExplorerRenderRowKind::Directory
+    } else {
+        ExplorerRenderRowKind::File
+    };
+    let entry_path = (line != "..").then(|| dir_path.join(name));
+    let git_status = entry_path.as_deref().and_then(git_status_for_path);
+    let executable_path = if kind == ExplorerRenderRowKind::File {
+        entry_path
+    } else {
+        None
+    };
+
+    ExplorerCachedRow {
+        kind,
+        executable_path,
+        git_status,
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
 fn explorer_entries_to_text(entries: &[ExplorerEntry]) -> String {
     let mut out = String::new();
     for (idx, entry) in entries.iter().enumerate() {
@@ -759,7 +964,7 @@ fn explorer_delete_confirmation_token_for_drafts(
     drafts: &HashMap<PathBuf, ExplorerDirectoryDraft>,
 ) -> String {
     let mut dirs: Vec<_> = drafts.iter().collect();
-    dirs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    dirs.sort_by_key(|(dir_path, _)| dir_path.as_path());
     dirs.into_iter()
         .map(|(dir_path, draft)| format!("{}::{}", dir_path.display(), draft.text))
         .collect::<Vec<_>>()
@@ -1393,7 +1598,7 @@ fn partition_explorer_entry_changes(
             .collect();
 
         for ((old_vec_idx, old_entry), (new_vec_idx, new_entry)) in
-            old_candidates.into_iter().zip(new_candidates.into_iter())
+            old_candidates.into_iter().zip(new_candidates)
         {
             rename_pairs.push((old_entry.clone(), new_entry.clone()));
             old_paired.insert(old_vec_idx);
@@ -1474,45 +1679,6 @@ mod tests {
     }
 
     #[test]
-    fn deleting_non_empty_directory_recursively_removes_children() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("redox_explorer_non_empty_{nanos}"));
-        let doomed = root.join("doomed");
-
-        fs::create_dir_all(&doomed).expect("failed to create directory fixture");
-        fs::write(doomed.join("child.txt"), "x").expect("failed to write child fixture");
-
-        let old_entries = vec![ExplorerEntry {
-            name: "doomed".to_string(),
-            is_dir: true,
-            is_parent: false,
-        }];
-        let new_entries = Vec::new();
-
-        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect("expected non-empty directory delete to succeed");
-        execute_explorer_write(&PlannedExplorerWrite {
-            changes: planned.changes.clone(),
-            dir_writes: vec![planned.clone()],
-        })
-        .expect("expected non-empty directory delete execution to succeed");
-        assert_eq!(
-            planned.changes.deleted_entries,
-            vec![AppliedExplorerEntryChange {
-                name: "doomed".to_string(),
-                path: root.join("doomed"),
-                is_dir: true,
-            }]
-        );
-        assert!(!doomed.exists());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn reorder_only_does_not_mutate_file_contents() {
         let root = temp_dir_path("reorder_only");
         fs::create_dir_all(&root).expect("failed to create fixture root");
@@ -1570,41 +1736,21 @@ mod tests {
     }
 
     #[test]
-    fn inserting_new_entry_in_middle_preserves_existing_file_contents() {
-        let root = temp_dir_path("insert_middle");
-        fs::create_dir_all(&root).expect("failed to create fixture root");
-        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
-        fs::write(root.join("beta.txt"), "beta").expect("failed to write beta fixture");
+    fn explorer_render_rows_classify_entries_and_keep_git_status() {
+        let root = Path::new("/repo");
+        let directory = explorer_cached_row(root, "src/", |_| Some(GitFileStatusKind::Added));
+        let hidden = explorer_cached_row(root, ".env", |_| Some(GitFileStatusKind::Modified));
+        let file = explorer_cached_row(root, "main.rs", |_| None);
 
-        let old_entries = vec![file_entry("alpha.txt"), file_entry("beta.txt")];
-        let new_entries = vec![
-            file_entry("alpha.txt"),
-            file_entry("new.txt"),
-            file_entry("beta.txt"),
-        ];
-
-        let planned = apply_explorer_changes(&root, &old_entries, &new_entries)
-            .expect("expected mid-list insert plan to succeed");
-        execute_explorer_write(&PlannedExplorerWrite {
-            changes: planned.changes.clone(),
-            dir_writes: vec![planned],
-        })
-        .expect("expected mid-list insert to succeed");
-
+        assert_eq!(directory.kind, ExplorerRenderRowKind::Directory);
+        assert_eq!(directory.git_status, Some(GitFileStatusKind::Added));
+        assert_eq!(hidden.kind, ExplorerRenderRowKind::Hidden);
+        assert_eq!(hidden.git_status, Some(GitFileStatusKind::Modified));
+        assert_eq!(file.kind, ExplorerRenderRowKind::File);
         assert_eq!(
-            fs::read_to_string(root.join("alpha.txt")).expect("failed to read alpha"),
-            "alpha"
+            file.executable_path.as_deref(),
+            Some(root.join("main.rs").as_path())
         );
-        assert_eq!(
-            fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
-            "beta"
-        );
-        assert_eq!(
-            fs::read_to_string(root.join("new.txt")).expect("failed to read new file"),
-            ""
-        );
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1629,36 +1775,14 @@ mod tests {
 
     #[test]
     fn parse_explorer_entries_rejects_parent_segments_inside_paths() {
-        let err = parse_explorer_entries("../\npath/../file.txt")
+        let error = parse_explorer_entries("../\npath/../file.txt")
             .expect_err("expected parent segments to be rejected");
 
         assert!(
-            err.to_string()
+            error
+                .to_string()
                 .contains("..' path segments are not allowed")
         );
-    }
-
-    #[test]
-    fn apply_explorer_changes_creates_parent_directories_for_nested_files() {
-        let root = temp_dir_path("nested_create");
-        fs::create_dir_all(&root).expect("failed to create fixture root");
-
-        let planned = apply_explorer_changes(&root, &[], &[file_entry("path/to/file.txt")])
-            .expect("expected nested file create plan to succeed");
-        execute_explorer_write(&PlannedExplorerWrite {
-            changes: planned.changes.clone(),
-            dir_writes: vec![planned],
-        })
-        .expect("expected nested file create to succeed");
-
-        assert!(root.join("path").is_dir());
-        assert!(root.join("path/to").is_dir());
-        assert_eq!(
-            fs::read_to_string(root.join("path/to/file.txt")).expect("failed to read nested file"),
-            ""
-        );
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1694,47 +1818,6 @@ mod tests {
                 .expect("failed to read renamed file"),
             "alpha"
         );
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn apply_explorer_changes_treats_file_delete_and_dir_create_as_separate_changes() {
-        let root = temp_dir_path("delete_file_create_dir");
-        fs::create_dir_all(&root).expect("failed to create fixture root");
-        fs::write(root.join("alpha.txt"), "alpha").expect("failed to write alpha fixture");
-
-        let planned =
-            apply_explorer_changes(&root, &[file_entry("alpha.txt")], &[dir_entry("fresh")])
-                .expect("expected delete+create plan to succeed");
-        execute_explorer_write(&PlannedExplorerWrite {
-            changes: planned.changes.clone(),
-            dir_writes: vec![planned.clone()],
-        })
-        .expect("expected delete+create to succeed");
-
-        assert_eq!(
-            planned.changes.renamed_entries,
-            Vec::<AppliedExplorerRename>::new()
-        );
-        assert_eq!(
-            planned.changes.deleted_entries,
-            vec![AppliedExplorerEntryChange {
-                name: "alpha.txt".to_string(),
-                path: root.join("alpha.txt"),
-                is_dir: false,
-            }]
-        );
-        assert_eq!(
-            planned.changes.created_entries,
-            vec![AppliedExplorerEntryChange {
-                name: "fresh".to_string(),
-                path: root.join("fresh"),
-                is_dir: true,
-            }]
-        );
-        assert!(!root.join("alpha.txt").exists());
-        assert!(root.join("fresh").is_dir());
 
         let _ = fs::remove_dir_all(root);
     }

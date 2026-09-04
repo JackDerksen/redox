@@ -88,6 +88,7 @@ impl GitDiffSnapshot {
 pub struct GitState {
     cache: HashMap<BufferId, GitDiffCacheEntry>,
     repo_status_cache: HashMap<PathBuf, GitRepoStatusCacheEntry>,
+    repo_status_revision: u64,
     pending_repo_status_dirs: HashSet<PathBuf>,
     repo_status_tx: Sender<GitRepoStatusResult>,
     repo_status_rx: Receiver<GitRepoStatusResult>,
@@ -151,6 +152,7 @@ impl Default for GitState {
         Self {
             cache: HashMap::new(),
             repo_status_cache: HashMap::new(),
+            repo_status_revision: 0,
             pending_repo_status_dirs: HashSet::new(),
             repo_status_tx,
             repo_status_rx,
@@ -178,7 +180,7 @@ impl GitState {
         }
     }
 
-    pub fn status_for_path(&self, path: &Path) -> Option<GitFileStatusKind> {
+    pub(super) fn status_for_path(&self, path: &Path) -> Option<GitFileStatusKind> {
         let entry = self
             .repo_status_cache
             .iter()
@@ -191,6 +193,10 @@ impl GitState {
             .get(path)
             .copied()
             .or_else(|| entry.directory_statuses.get(path).copied())
+    }
+
+    pub(super) fn repo_status_revision(&self) -> u64 {
+        self.repo_status_revision
     }
 
     pub fn refresh_repo_status_for_dir(&mut self, dir: &Path) {
@@ -315,7 +321,9 @@ impl GitState {
                 continue;
             };
             let Some((file_statuses, directory_statuses)) = result.statuses else {
-                self.repo_status_cache.remove(&repo_root);
+                if self.repo_status_cache.remove(&repo_root).is_some() {
+                    self.repo_status_revision = self.repo_status_revision.wrapping_add(1);
+                }
                 continue;
             };
             self.repo_status_cache.insert(
@@ -326,6 +334,7 @@ impl GitState {
                     stale: false,
                 },
             );
+            self.repo_status_revision = self.repo_status_revision.wrapping_add(1);
         }
     }
 
@@ -415,9 +424,9 @@ fn load_repo_statuses(repo_root: &Path) -> Option<RepoStatuses> {
             continue;
         }
 
-        let x = raw_entry[0] as char;
-        let y = raw_entry[1] as char;
-        let is_rename_or_copy = matches!(x, 'R' | 'C');
+        let index_status = raw_entry[0] as char;
+        let worktree_status = raw_entry[1] as char;
+        let is_rename_or_copy = matches!(index_status, 'R' | 'C');
         let path_bytes = &raw_entry[3..];
         let Ok(path) = String::from_utf8(path_bytes.to_vec()) else {
             if is_rename_or_copy {
@@ -425,7 +434,7 @@ fn load_repo_statuses(repo_root: &Path) -> Option<RepoStatuses> {
             }
             continue;
         };
-        let Some(status) = classify_repo_status(x, y) else {
+        let Some(status) = classify_repo_status(index_status, worktree_status) else {
             if is_rename_or_copy {
                 let _ = entries.next();
             }

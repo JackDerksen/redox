@@ -20,7 +20,7 @@ use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
 use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
-    GraphemeCache, RainAnimation, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
+    RainAnimation, RenderLineCache, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
 mod about;
 pub use about::AboutPopup;
@@ -34,6 +34,7 @@ mod lsp;
 mod rain_mode;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
+pub(crate) use explorer::{ExplorerRenderRow, ExplorerRenderRowKind};
 use finder::{FinderIndexWorker, FinderState, PinSelectorState, PinnedFilesState};
 pub use finder::{FinderPopup, FinderPreview, PinSelectorPopup};
 pub use git::{GitDiffSnapshot, GitFileStatusKind, GitGutterKind};
@@ -172,7 +173,7 @@ impl EditorMode {
 #[derive(Debug)]
 pub struct BufferViewState {
     pub cursor: CursorController,
-    pub grapheme_cache: GraphemeCache,
+    pub render_line_cache: RenderLineCache,
     pub syntax_highlighter: SyntaxHighlighter,
     pub delimiter_pair_cache: DelimiterPairCache,
     pub visual_anchor: Option<Pos>,
@@ -185,7 +186,7 @@ impl Clone for BufferViewState {
     fn clone(&self) -> Self {
         Self {
             cursor: self.cursor.clone(),
-            grapheme_cache: GraphemeCache::new(512),
+            render_line_cache: RenderLineCache::new(512),
             syntax_highlighter: SyntaxHighlighter::default(),
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: self.visual_anchor,
@@ -200,7 +201,7 @@ impl Default for BufferViewState {
     fn default() -> Self {
         Self {
             cursor: CursorController::new(),
-            grapheme_cache: GraphemeCache::new(512),
+            render_line_cache: RenderLineCache::new(512),
             syntax_highlighter: SyntaxHighlighter::default(),
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: None,
@@ -229,14 +230,14 @@ impl BufferViewState {
     }
 
     fn invalidate_render_caches(&mut self) {
-        self.grapheme_cache.clear();
+        self.render_line_cache.clear();
         self.syntax_highlighter.mark_cache_stale();
         self.delimiter_pair_cache.mark_stale();
         self.analysis_version = self.analysis_version.wrapping_add(1);
     }
 
     fn reset_render_caches(&mut self) {
-        self.grapheme_cache.clear();
+        self.render_line_cache.clear();
         self.syntax_highlighter.clear_cache();
         self.delimiter_pair_cache.clear();
         self.analysis_version = self.analysis_version.wrapping_add(1);
@@ -605,8 +606,8 @@ impl EditorState {
         }
     }
 
-    pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some(msg.into());
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        self.status_msg = Some(message.into());
         self.status_msg_line_styles.clear();
         self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
@@ -1027,12 +1028,12 @@ impl EditorState {
             .saturating_add(viewport_height_rows.saturating_mul(VIEWPORT_PREFETCH_MULTIPLIER));
 
         let _ = self.session.poll_loading(PREFETCH_PER_FRAME_BYTES);
-        if let Err(e) = self.session.ensure_buffer_loaded_through_line(
+        if let Err(error) = self.session.ensure_buffer_loaded_through_line(
             active_id,
             target_line,
             DEMAND_LOAD_BUDGET_BYTES,
         ) {
-            self.set_status(format!("load failed: {e}"));
+            self.set_status(format!("load failed: {error}"));
         }
         if self.session.active_buffer().len_chars() != before_len_chars {
             self.invalidate_active_render_caches();
@@ -1100,8 +1101,8 @@ impl EditorState {
                 self.ensure_buffer_undo_history_loaded(active_id);
                 true
             }
-            Err(e) => {
-                self.set_status(format!("load failed: {e}"));
+            Err(error) => {
+                self.set_status(format!("load failed: {error}"));
                 false
             }
         }
@@ -1113,10 +1114,6 @@ impl EditorState {
 
     pub fn git_diff_for_buffer(&self, buffer_id: BufferId) -> Option<&GitDiffSnapshot> {
         self.git.diff_for(buffer_id)
-    }
-
-    pub fn git_status_for_path(&self, path: &std::path::Path) -> Option<GitFileStatusKind> {
-        self.git.status_for_path(path)
     }
 
     pub fn active_cursor_pos(&self) -> Pos {

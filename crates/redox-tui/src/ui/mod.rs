@@ -1,13 +1,4 @@
-//! UI module for `redox-tui`.
-//!
-//! This module is intentionally UI-only and should not leak into `redox-core`.
-//!
-//! Refactor note:
-//! - Rendering helpers previously lived directly in `ui/mod.rs`.
-//! - They have been moved to `ui/render.rs`.
-//! - Editor-specific widgets live under `ui/widgets/`.
-//!
-//! Keep this module as the stable public surface for UI utilities.
+//! Frontend-only rendering, styling, and widgets.
 
 pub mod helpers;
 pub mod icons;
@@ -18,13 +9,11 @@ pub mod style;
 pub mod syntax;
 pub mod widgets;
 
-// Re-export the render helpers/types so call sites can keep using `ui::...`.
 pub use rain_animation::RainAnimation;
-pub use render::{GraphemeCache, TextViewport, snapshot_lines_wrapped_cached};
+pub use render::{RenderLineCache, TextViewport};
 pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
 pub use syntax::{SyntaxHighlighter, language_for_path};
 
-// Re-export common widgets for convenience.
 pub use widgets::{
     UNDO_TREE_HEADER_ROWS, about_popup_inner_size, build_editor_status_bar,
     build_symbol_info_display_lines, draw_about_popup_view, draw_code_actions_popup,

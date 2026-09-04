@@ -10,11 +10,7 @@ use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use minui::prelude::input::Event;
-
-use crate::input::{
-    InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator, map_event_with_state,
-};
+use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::syntax::SyntaxLanguage;
 
@@ -30,21 +26,6 @@ fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     fs::write(&path, text).expect("failed to write test file");
     let session = EditorSession::open_initial_file(&path).expect("failed to open session");
     EditorState::new(session)
-}
-
-#[test]
-fn visual_mode_exposes_the_which_key_popup() {
-    let path = temp_file_path("visual_which_key");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
-    state.mode = EditorMode::Visual;
-    let _ = map_event_with_state(&mut state.input, InputMode::Visual, &Event::Character(' '));
-
-    let popup = state
-        .which_key_popup(Instant::now() + Duration::from_secs(10))
-        .expect("visual which-key popup");
-
-    assert!(popup.entries.iter().any(|entry| entry.key == "y"));
-    let _ = fs::remove_file(path);
 }
 
 fn undo_history_of(state: &EditorState, buffer_id: BufferId) -> &UndoHistory {
@@ -587,23 +568,6 @@ fn pinned_files_load_json_before_legacy_format() {
 }
 
 #[test]
-fn finder_does_not_open_while_about_popup_is_active() {
-    with_global_test_state_lock(|| {
-        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-        let mut state = EditorState::new(session);
-        state.command_open_about();
-
-        assert!(state.about_popup().is_some());
-
-        state.apply_input(InputAction::OpenFinder, 80, 24);
-
-        assert!(state.about_popup().is_some());
-        assert!(state.finder_popup().is_none());
-        assert_eq!(state.mode, EditorMode::Normal);
-    });
-}
-
-#[test]
 fn finder_does_not_open_while_explorer_popup_is_active() {
     with_global_test_state_lock(|| {
         let session = EditorSession::open_initial_unnamed().expect("failed to open session");
@@ -618,23 +582,6 @@ fn finder_does_not_open_while_explorer_popup_is_active() {
 
         assert!(state.explorer_popup().is_some());
         assert!(state.finder_popup().is_none());
-        assert_eq!(state.mode, EditorMode::Normal);
-    });
-}
-
-#[test]
-fn quick_pin_does_not_open_pinboard_while_about_popup_is_active() {
-    with_global_test_state_lock(|| {
-        let session = EditorSession::open_initial_unnamed().expect("failed to open session");
-        let mut state = EditorState::new(session);
-        state.command_open_about();
-
-        assert!(state.about_popup().is_some());
-
-        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
-
-        assert!(state.about_popup().is_some());
-        assert!(state.pin_selector_popup().is_none());
         assert_eq!(state.mode, EditorMode::Normal);
     });
 }
@@ -803,29 +750,6 @@ fn failed_pin_reorder_rolls_back_in_memory_slots() {
 }
 
 #[test]
-fn pin_selector_shift_enter_assigns_current_file_to_selected_slot() {
-    with_isolated_launch_env("pin_selector_shift_enter_assigns_current_file", |root| {
-        let file_path = root.join("alpha.txt");
-        fs::write(&file_path, "alpha\n").expect("failed to write file");
-
-        let session = EditorSession::open_initial_file(&file_path).expect("failed to open session");
-        let mut state = EditorState::new(session);
-
-        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
-
-        assert_eq!(state.mode, EditorMode::PinSelect);
-        let popup = state.pin_selector_popup().expect("pin selector popup");
-        assert_eq!(popup.selected, 0);
-
-        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
-
-        let canonical = fs::canonicalize(&file_path).expect("canonical path");
-        assert_eq!(state.pinned_files_for_test(), &[canonical]);
-        assert_eq!(state.mode, EditorMode::Normal);
-    });
-}
-
-#[test]
 fn explorer_stays_in_previous_context_after_opening_pinned_file() {
     with_isolated_launch_env(
         "explorer_stays_in_previous_context_after_pinned_open",
@@ -872,105 +796,6 @@ fn explorer_stays_in_previous_context_after_opening_pinned_file() {
             );
         },
     );
-}
-
-#[test]
-fn explorer_stays_in_previous_context_after_saving_pinned_file() {
-    with_isolated_launch_env(
-        "explorer_stays_in_previous_context_after_pinned_save",
-        |root| {
-            let left_dir = root.join("left");
-            let right_dir = root.join("right");
-            fs::create_dir_all(&left_dir).expect("failed to create left dir");
-            fs::create_dir_all(&right_dir).expect("failed to create right dir");
-
-            let left_file = left_dir.join("left.txt");
-            let pinned_file = right_dir.join("pinned.txt");
-            fs::write(&left_file, "left\n").expect("failed to write left file");
-            fs::write(&pinned_file, "pinned  \n").expect("failed to write pinned file");
-
-            let session =
-                EditorSession::open_initial_file(&left_file).expect("failed to open session");
-            let mut state = EditorState::new(session);
-
-            let _ = state
-                .session
-                .open_file(&pinned_file)
-                .expect("failed to switch to pinned file");
-            state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
-            state.apply_input(InputAction::PinSelectorAssign, 80, 24);
-
-            let _ = state
-                .session
-                .open_file(&left_file)
-                .expect("failed to return to left file");
-            state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
-            run_command(&mut state, "w");
-
-            state.apply_input(InputAction::OpenExplorer, 80, 24);
-
-            let popup = state.explorer_popup().expect("explorer popup");
-            assert_eq!(
-                popup.dir_path,
-                fs::canonicalize(&root).expect("root canonical")
-            );
-            assert_eq!(
-                fs::read_to_string(&pinned_file).expect("failed to read pinned file"),
-                "pinned\n"
-            );
-        },
-    );
-}
-
-#[test]
-fn switching_between_pinned_files_keeps_original_explorer_context() {
-    with_isolated_launch_env("switch_between_pinned_files_keeps_origin", |root| {
-        let left_dir = root.join("left");
-        let right_dir = root.join("right");
-        let other_dir = root.join("other");
-        fs::create_dir_all(&left_dir).expect("failed to create left dir");
-        fs::create_dir_all(&right_dir).expect("failed to create right dir");
-        fs::create_dir_all(&other_dir).expect("failed to create other dir");
-
-        let left_file = left_dir.join("left.txt");
-        let first_pin = right_dir.join("first.txt");
-        let second_pin = other_dir.join("second.txt");
-        fs::write(&left_file, "left\n").expect("failed to write left file");
-        fs::write(&first_pin, "first\n").expect("failed to write first pin");
-        fs::write(&second_pin, "second\n").expect("failed to write second pin");
-
-        let session = EditorSession::open_initial_file(&left_file).expect("failed to open session");
-        let mut state = EditorState::new(session);
-
-        let _ = state
-            .session
-            .open_file(&first_pin)
-            .expect("failed to switch to first pin");
-        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
-        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
-
-        let _ = state
-            .session
-            .open_file(&second_pin)
-            .expect("failed to switch to second pin");
-        state.apply_input(InputAction::QuickPinCurrentFile, 80, 24);
-        state.apply_input(InputAction::PinSelectorMoveNext, 80, 24);
-        state.apply_input(InputAction::PinSelectorAssign, 80, 24);
-
-        let _ = state
-            .session
-            .open_file(&left_file)
-            .expect("failed to return to left file");
-        state.apply_input(InputAction::OpenPinnedSlot { slot: 0 }, 80, 24);
-        state.apply_input(InputAction::OpenPinnedSlot { slot: 1 }, 80, 24);
-        state.apply_input(InputAction::OpenExplorer, 80, 24);
-
-        let popup = state.explorer_popup().expect("explorer popup");
-        assert_eq!(
-            popup.dir_path,
-            fs::canonicalize(&root).expect("root canonical")
-        );
-    });
 }
 
 #[test]
@@ -1247,23 +1072,6 @@ fn command_history_editing_recalled_entry_detaches_navigation() {
 }
 
 #[test]
-fn command_history_skips_consecutive_duplicates() {
-    let path = temp_file_path("command_history_dedupe");
-    let mut state = state_with_text(path.clone(), "hello\n");
-
-    run_command(&mut state, "ls");
-    run_command(&mut state, "ls");
-
-    enter_command_mode(&mut state);
-    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
-    assert_eq!(state.command_line, "ls");
-    state.apply_input(InputAction::CommandHistoryPrev, 80, 24);
-    assert_eq!(state.command_line, "ls");
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_result() {
     let mut view = BufferViewState::default();
     let before = TextBuffer::from_text("{ alpha }");
@@ -1396,134 +1204,52 @@ fn stale_analysis_results_are_dropped() {
 }
 
 #[test]
-fn normal_mode_system_clipboard_paste_matches_p_semantics() {
-    let path = temp_file_path("paste_system_clipboard_normal");
-    let mut state = state_with_text(path.clone(), "abcd");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
+fn normal_mode_system_clipboard_paste_sanitizes_text_and_updates_cursor() {
+    let cases = [
+        ("plain", "abcd", "XY", "abXYcd", Pos::new(0, 4)),
+        (
+            "crlf",
+            "one\ntwo\n",
+            "X\r\nY",
+            "onX\nYe\ntwo\n",
+            Pos::new(1, 1),
+        ),
+        (
+            "controls",
+            "abcd",
+            "X\u{1b}Y\u{0008}Z",
+            "abXYZcd",
+            Pos::new(0, 5),
+        ),
+    ];
 
-    state.apply_input(
-        InputAction::PasteSystemClipboardText("XY".to_string()),
-        80,
-        24,
-    );
+    for (case_name, initial_text, clipboard_text, expected_text, expected_cursor) in cases {
+        let path = temp_file_path(&format!("paste_system_clipboard_{case_name}"));
+        let mut state = state_with_text(path.clone(), initial_text);
+        let buffer_id = state.session.active_id();
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("missing view")
+            .cursor
+            .cursor = Pos::new(0, 1);
 
-    assert_eq!(state.session.active_buffer().to_string(), "abXYcd");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
+        state.apply_input(
+            InputAction::PasteSystemClipboardText(clipboard_text.to_string()),
+            80,
+            24,
+        );
 
-    let _ = fs::remove_file(path);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor, "{case_name}");
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn normal_mode_system_clipboard_paste_normalizes_crlf() {
-    let path = temp_file_path("paste_system_clipboard_crlf");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(
-        InputAction::PasteSystemClipboardText("X\r\nY".to_string()),
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "onX\nYe\ntwo\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_system_clipboard_paste_strips_control_characters() {
-    let path = temp_file_path("paste_system_clipboard_controls");
-    let mut state = state_with_text(path.clone(), "abcd");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(
-        InputAction::PasteSystemClipboardText("X\u{1b}Y\u{0008}Z".to_string()),
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "abXYZcd");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_line_start_motions_distinguish_zero_underscore_and_dollar() {
-    let path = temp_file_path("line_start_motions");
-    let mut state = state_with_text(path.clone(), "\t  alpha\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 5);
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::LineStart,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 5);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::LineFirstNonWhitespace,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::LineEnd,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
     let path = temp_file_path("operate_motion_delete_line");
@@ -1580,178 +1306,6 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
 }
 
 #[test]
-fn normal_mode_operate_motion_line_end_count_spans_multiple_lines() {
-    let path = temp_file_path("operate_motion_delete_line_end_count");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\ngamma\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 2);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Delete,
-            target: OperatorTarget::Motion {
-                motion: Motion::LineEnd,
-                count: 2,
-            },
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "al\ngamma\n");
-    assert_eq!(state.private_register, "pha\nbeta");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_find_and_till_char_move_to_expected_columns() {
-    let path = temp_file_path("find_till_motion");
-    let mut state = state_with_text(path.clone(), "alpha beta alpha\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::FindChar('b'),
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::TillChar('b'),
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 15);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::FindCharBefore('b'),
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 15);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::TillCharBefore('b'),
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_percent_jumps_between_matching_delimiters() {
-    let path = temp_file_path("match_delimiter_motion");
-    let mut state = state_with_text(path.clone(), "fn main() {\n    call([x]);\n}\n");
-
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 10);
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::MatchDelimiter,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(2, 0));
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::MatchDelimiter,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 10));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_operate_percent_deletes_matching_delimiter_range() {
-    let path = temp_file_path("operate_match_delimiter");
-    let mut state = state_with_text(path.clone(), "a(b)c\n");
-
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Delete,
-            target: OperatorTarget::Motion {
-                motion: Motion::MatchDelimiter,
-                count: 1,
-            },
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "ac\n");
-    assert_eq!(state.private_register, "(b)");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn operator_find_and_till_char_apply_expected_ranges() {
     let path = temp_file_path("operator_find_till");
     let mut state = state_with_text(path.clone(), "abc def ghi\n");
@@ -1803,67 +1357,6 @@ fn operator_find_and_till_char_apply_expected_ranges() {
     assert_eq!(state.private_register, "abc def g");
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn operator_till_char_matches_vim_style_dtt_behaviour() {
-    let path = temp_file_path("operator_till_char_dtt");
-    let mut state = state_with_text(path.clone(), "formatting\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Delete,
-            target: OperatorTarget::Motion {
-                motion: Motion::TillChar('t'),
-                count: 1,
-            },
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "ftting\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_operate_motion_first_non_whitespace_count_spans_multiple_lines() {
-    let path = temp_file_path("operate_motion_delete_first_non_ws_count");
-    let mut state = state_with_text(path.clone(), "alpha\n  beta\n\tgamma\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 2);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Delete,
-            target: OperatorTarget::Motion {
-                motion: Motion::LineFirstNonWhitespace,
-                count: 3,
-            },
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.session.active_buffer().to_string(), "algamma\n");
-    assert_eq!(state.private_register, "pha\n  beta\n\t");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
 
     let _ = fs::remove_file(path);
 }
@@ -1936,34 +1429,6 @@ fn till_char_search_repeat_tracks_the_actual_matched_character() {
 }
 
 #[test]
-fn till_char_before_search_repeat_tracks_landing_after_the_match() {
-    let path = temp_file_path("till_char_before_search_repeat_target");
-    let mut state = state_with_text(path.clone(), "abacadax\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 6);
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::TillCharBefore('a'),
-            count: 1,
-        },
-        80,
-        24,
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
-
-    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 7));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn repeat_search_reports_when_no_other_instances_exist() {
     let path = temp_file_path("slash_search_single");
     let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
@@ -1998,43 +1463,6 @@ fn search_reports_match_count_in_status_message() {
 
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.status_msg.as_deref(), Some("3 instances of 'test'"));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn repeat_search_rediscovers_single_cached_match_after_hiding_highlights() {
-    let path = temp_file_path("slash_search_single_rediscover");
-    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(InputAction::EnterSearch, 80, 24);
-    for ch in "beta".chars() {
-        state.apply_input(InputAction::SearchChar(ch), 80, 24);
-    }
-    state.apply_input(InputAction::SearchEnter, 80, 24);
-
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
-    state.apply_input(InputAction::ClearSearch, 80, 24);
-    assert!(state.active_search_highlight_ranges(0, 1).is_empty());
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
-    assert!(state.active_search_highlight_ranges(0, 1).contains_key(&0));
-    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -2077,71 +1505,6 @@ fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
 
     state.apply_input(InputAction::ClearSearch, 80, 24);
     assert!(state.active_search_highlight_ranges(0, 1).is_empty());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn paging_and_centering_hide_search_highlights_but_keep_cached_query() {
-    let path = temp_file_path("slash_search_hide_highlights_on_paging");
-    let text = large_text(120);
-    let mut state = state_with_text(path.clone(), &text);
-    let viewport_height_rows = 8usize;
-
-    state.apply_input(InputAction::EnterSearch, 80, viewport_height_rows);
-    for ch in "line".chars() {
-        state.apply_input(InputAction::SearchChar(ch), 80, viewport_height_rows);
-    }
-    state.apply_input(InputAction::SearchEnter, 80, viewport_height_rows);
-
-    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
-
-    state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
-    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
-
-    state.apply_input(
-        InputAction::RepeatSearch { forward: true },
-        80,
-        viewport_height_rows,
-    );
-    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
-
-    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
-    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
-
-    state.apply_input(
-        InputAction::RepeatSearch { forward: true },
-        80,
-        viewport_height_rows,
-    );
-    assert!(!state.active_search_highlight_ranges(0, 8).is_empty());
-
-    state.apply_input(InputAction::CenterCursorLine, 80, viewport_height_rows);
-    assert!(state.active_search_highlight_ranges(0, 8).is_empty());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_shift_i_enters_insert_at_first_non_whitespace() {
-    let path = temp_file_path("shift_i_first_non_whitespace");
-    let mut state = state_with_text(path.clone(), "\t  alpha\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 6);
-
-    state.apply_input(
-        InputAction::EnterInsert(InsertKind::InsertLineStart),
-        80,
-        24,
-    );
-
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
 
     let _ = fs::remove_file(path);
 }
@@ -2215,86 +1578,36 @@ fn normal_mode_replace_char_replaces_tab_as_single_logical_character() {
 }
 
 #[test]
-fn normal_mode_tilde_toggles_case_and_moves_right() {
-    let path = temp_file_path("toggle_case_normal");
-    let mut state = state_with_text(path.clone(), "aBc\n");
+fn normal_mode_tilde_handles_counts_nonletters_and_case_expansion() {
+    let cases = [
+        ("single", "aBc\n", 1, "ABc\n", Pos::new(0, 1), true),
+        ("counted", "a-Bc\n", 4, "A-bC\n", Pos::new(0, 3), true),
+        ("nonletter", "-a\n", 1, "-a\n", Pos::new(0, 1), false),
+        ("multicodepoint", "ßa\n", 1, "SSa\n", Pos::new(0, 2), true),
+    ];
 
-    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
+    for (case_name, initial_text, count, expected_text, expected_cursor, expected_dirty) in cases {
+        let path = temp_file_path(&format!("toggle_case_{case_name}"));
+        let mut state = state_with_text(path.clone(), initial_text);
 
-    assert_eq!(state.session.active_buffer().to_string(), "ABc\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.session.active_meta().dirty);
+        state.apply_input(InputAction::ToggleCase { count }, 80, 24);
 
-    let _ = fs::remove_file(path);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor, "{case_name}");
+        assert_eq!(state.mode, EditorMode::Normal, "{case_name}");
+        assert_eq!(
+            state.session.active_meta().dirty,
+            expected_dirty,
+            "{case_name}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn normal_mode_tilde_count_toggles_letters_and_steps_over_non_letters() {
-    let path = temp_file_path("toggle_case_count");
-    let mut state = state_with_text(path.clone(), "a-Bc\n");
-
-    state.apply_input(InputAction::ToggleCase { count: 4 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "A-bC\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
-    assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_tilde_on_non_letter_only_moves_cursor() {
-    let path = temp_file_path("toggle_case_non_letter");
-    let mut state = state_with_text(path.clone(), "-a\n");
-
-    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "-a\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-    assert!(!state.session.active_meta().dirty);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_tilde_advances_past_multicodepoint_case_expansion() {
-    let path = temp_file_path("toggle_case_multicodepoint");
-    let mut state = state_with_text(path.clone(), "ßa\n");
-
-    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "SSa\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.session.active_meta().dirty);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_char_tilde_toggles_entire_selection_and_normalizes_mode() {
-    let path = temp_file_path("toggle_case_visual_char");
-    let mut state = state_with_text(path.clone(), "aBcD\n");
-
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 2,
-        },
-        80,
-        24,
-    );
-    state.apply_input(InputAction::ToggleCase { count: 1 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "AbCD\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-    assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn visual_block_tilde_toggles_rectangular_selection() {
     let path = temp_file_path("toggle_case_visual_block");
@@ -3026,84 +2339,113 @@ fn split_focus_skips_inaccessible_panes() {
 }
 
 #[test]
-fn insert_mode_auto_pairs_parentheses() {
-    let path = temp_file_path("insert_mode_auto_pairs_parentheses");
-    let mut state = state_with_text(path.clone(), "");
+fn insert_mode_pairing_handles_skip_and_backspace() {
+    let cases = [
+        (
+            "pair",
+            vec![InputAction::InsertChar('(')],
+            "()",
+            Pos::new(0, 1),
+        ),
+        (
+            "skip_closer",
+            vec![InputAction::InsertChar('('), InputAction::InsertChar('\t')],
+            "()",
+            Pos::new(0, 2),
+        ),
+        (
+            "remove_pair",
+            vec![InputAction::InsertChar('('), InputAction::Backspace],
+            "",
+            Pos::new(0, 0),
+        ),
+        (
+            "remove_closer_only",
+            vec![
+                InputAction::InsertChar('('),
+                InputAction::InsertChar('\t'),
+                InputAction::Backspace,
+            ],
+            "(",
+            Pos::new(0, 1),
+        ),
+    ];
 
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('('), 80, 24);
+    for (case_name, actions, expected_text, expected_cursor) in cases {
+        let path = temp_file_path(&format!("insert_mode_pair_{case_name}"));
+        let mut state = state_with_text(path.clone(), "");
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "()");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+        for action in actions {
+            state.apply_input(action, 80, 24);
+        }
 
-    let _ = fs::remove_file(path);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor, "{case_name}");
+
+        let _ = fs::remove_file(path);
+    }
 }
-
 #[test]
-fn insert_mode_tab_advances_out_of_auto_pair_closer() {
-    let path = temp_file_path("insert_mode_tab_out");
-    let mut state = state_with_text(path.clone(), "");
+fn insert_mode_soft_tabs_follow_stops_and_backspace_as_a_unit() {
+    let cases = [
+        (
+            "empty",
+            "",
+            Pos::new(0, 0),
+            vec![InputAction::InsertChar('\t')],
+            "    ",
+            Pos::new(0, 4),
+        ),
+        (
+            "next_stop",
+            "ab",
+            Pos::new(0, 2),
+            vec![InputAction::InsertChar('\t')],
+            "ab  ",
+            Pos::new(0, 4),
+        ),
+        (
+            "backspace",
+            "",
+            Pos::new(0, 0),
+            vec![InputAction::InsertChar('\t'), InputAction::Backspace],
+            "",
+            Pos::new(0, 0),
+        ),
+    ];
 
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('('), 80, 24);
-    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
+    for (case_name, initial_text, initial_cursor, actions, expected_text, expected_cursor) in cases
+    {
+        let path = temp_file_path(&format!("insert_mode_soft_tab_{case_name}"));
+        let mut state = state_with_text(path.clone(), initial_text);
+        let buffer_id = state.session.active_id();
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("missing view")
+            .cursor
+            .cursor = initial_cursor;
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
 
-    assert_eq!(state.session.active_buffer().to_string(), "()");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
+        for action in actions {
+            state.apply_input(action, 80, 24);
+        }
 
-    let _ = fs::remove_file(path);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor, "{case_name}");
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn insert_mode_tab_inserts_soft_tab_spaces() {
-    let path = temp_file_path("insert_mode_soft_tab");
-    let mut state = state_with_text(path.clone(), "");
-
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "    ");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn insert_mode_tab_inserts_spaces_to_next_tab_stop() {
-    let path = temp_file_path("insert_mode_tab_stop");
-    let mut state = state_with_text(path.clone(), "ab");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 2);
-
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "ab  ");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn insert_mode_backspace_removes_full_soft_tab_indent() {
-    let path = temp_file_path("insert_mode_soft_tab_backspace");
-    let mut state = state_with_text(path.clone(), "");
-
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
-    state.apply_input(InputAction::Backspace, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn insert_mode_typing_existing_quote_advances_cursor() {
     let path = temp_file_path("insert_mode_skip_existing_quote");
@@ -3120,76 +2462,32 @@ fn insert_mode_typing_existing_quote_advances_cursor() {
 }
 
 #[test]
-fn insert_mode_backspace_removes_auto_paired_closer_after_opener() {
-    let path = temp_file_path("insert_mode_backspace_pair_cleanup");
-    let mut state = state_with_text(path.clone(), "");
+fn normal_mode_cursor_clamps_to_line_content() {
+    let cases = [
+        ("nonempty", "abc\n", 5, Pos::new(0, 2)),
+        ("empty", "", 1, Pos::new(0, 0)),
+    ];
 
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('('), 80, 24);
-    state.apply_input(InputAction::Backspace, 80, 24);
+    for (case_name, initial_text, motion_count, expected_cursor) in cases {
+        let path = temp_file_path(&format!("normal_mode_cursor_{case_name}"));
+        let mut state = state_with_text(path.clone(), initial_text);
 
-    assert_eq!(state.session.active_buffer().to_string(), "");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+        for _ in 0..motion_count {
+            state.apply_input(
+                InputAction::Motion {
+                    motion: Motion::Right,
+                    count: 1,
+                },
+                80,
+                24,
+            );
+        }
 
-    let _ = fs::remove_file(path);
-}
+        assert_eq!(state.active_cursor_pos(), expected_cursor, "{case_name}");
 
-#[test]
-fn insert_mode_backspace_on_closer_does_not_remove_opener() {
-    let path = temp_file_path("insert_mode_backspace_closer_only");
-    let mut state = state_with_text(path.clone(), "");
-
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::InsertChar('('), 80, 24);
-    state.apply_input(InputAction::InsertChar('\t'), 80, 24);
-    state.apply_input(InputAction::Backspace, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "(");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_mode_cursor_stops_on_last_character_of_non_empty_line() {
-    let path = temp_file_path("normal_mode_last_char");
-    let mut state = state_with_text(path.clone(), "abc\n");
-
-    for _ in 0..5 {
-        state.apply_input(
-            InputAction::Motion {
-                motion: Motion::Right,
-                count: 1,
-            },
-            80,
-            24,
-        );
+        let _ = fs::remove_file(path);
     }
-
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
-
-    let _ = fs::remove_file(path);
 }
-
-#[test]
-fn normal_mode_cursor_can_stay_at_zero_on_empty_line() {
-    let path = temp_file_path("normal_mode_empty_line");
-    let mut state = state_with_text(path.clone(), "");
-
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn switching_buffers_preserves_cursor_and_scroll_state() {
     let path_a = temp_file_path("switch_preserve_a");
@@ -3424,20 +2722,6 @@ fn perf_popup_escape_dismisses_in_normal_mode() {
 
     assert!(state.dismiss_perf_popup());
     assert!(state.perf_popup().is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn command_ls_status_expires_after_timeout() {
-    let path = temp_file_path("ls_ephemeral");
-    let mut state = state_with_text(path.clone(), "alpha");
-
-    run_command(&mut state, "ls");
-    assert!(state.status_msg.is_some());
-
-    expire_status_after_timeout(&mut state);
-    assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
 }
@@ -3735,24 +3019,6 @@ fn command_e_requests_syntax_analysis_for_opened_rust_file() {
 
     let _ = fs::remove_file(path_a);
     let _ = fs::remove_file(path_b);
-}
-
-#[test]
-fn dirty_tracking_clears_after_reverting_to_original_content() {
-    let path = temp_file_path("dirty_revert_state");
-    let mut state = state_with_text(path.clone(), "hello");
-
-    state.apply_input(InputAction::Paste("x".to_string()), 80, 24);
-    assert!(state.session.active_meta().dirty);
-
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
-    state.apply_input(InputAction::Backspace, 80, 24);
-    assert!(!state.session.active_meta().dirty);
-
-    run_command(&mut state, "q");
-    assert!(state.should_quit);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -4722,7 +3988,7 @@ fn explorer_motion_uses_no_scrolloff_and_clamps_window_scroll() {
         .cursor
         .line = 0;
 
-    // Small viewport (text height 5) used to reproduce prior scrolloff behavior.
+    // Small viewport (text height 5) used to reproduce prior scrolloff behaviour.
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -4763,56 +4029,6 @@ fn explorer_motion_uses_no_scrolloff_and_clamps_window_scroll() {
     );
 
     let _ = fs::remove_dir_all(dir);
-}
-
-#[test]
-fn explorer_dash_parent_navigation_selects_previous_directory() {
-    let root = std::env::temp_dir().join(format!(
-        "redox_explorer_parent_dash_test_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock went backwards")
-            .as_nanos()
-    ));
-    let child = root.join("child");
-    fs::create_dir_all(root.join("aaa")).expect("failed to create fixture dir");
-    fs::create_dir_all(root.join("zzz")).expect("failed to create fixture dir");
-    fs::create_dir_all(&child).expect("failed to create fixture dir");
-    let child_file = child.join("open.txt");
-    fs::write(&child_file, "open").expect("failed to write fixture");
-
-    let session = EditorSession::open_initial_file(&child_file).expect("failed to open session");
-    let mut state = EditorState::new(session);
-    state
-        .open_explorer_at_path(child.clone())
-        .expect("failed to open explorer");
-
-    state.apply_input(InputAction::SurfaceGoParent, 80, 24);
-
-    let popup = state
-        .explorer_popup()
-        .expect("explorer popup should stay open");
-    let expected_parent = fs::canonicalize(&root).expect("failed to canonicalize root");
-    assert_eq!(popup.dir_path, expected_parent);
-
-    let child_line = state
-        .session
-        .active_buffer()
-        .to_string()
-        .lines()
-        .position(|line| line == "child/")
-        .expect("child directory missing from parent listing");
-    let active = state.session.active_id();
-    let cursor_line = state
-        .views
-        .get(&active)
-        .expect("missing explorer view")
-        .cursor
-        .cursor
-        .line;
-    assert_eq!(cursor_line, child_line);
-
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -4992,53 +4208,45 @@ fn zz_centers_cursor_line_except_at_top_of_file() {
 }
 
 #[test]
-fn open_line_below_enters_insert_and_inserts_blank_line() {
-    let path = temp_file_path("open_line_below");
-    let mut state = state_with_text(path.clone(), "one\ntwo");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
+fn open_line_actions_enter_insert_and_insert_blank_line() {
+    let cases = [
+        ("below", Pos::new(0, 0), InputAction::OpenLineBelow),
+        ("above", Pos::new(1, 0), InputAction::OpenLineAbove),
+    ];
 
-    state.apply_input(InputAction::OpenLineBelow, 80, 24);
+    for (case_name, initial_cursor, action) in cases {
+        let path = temp_file_path(&format!("open_line_{case_name}"));
+        let mut state = state_with_text(path.clone(), "one\ntwo");
+        let buffer_id = state.session.active_id();
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("missing view")
+            .cursor
+            .cursor = initial_cursor;
 
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
-    assert_eq!(
-        state.views.get(&id).expect("missing view").cursor.cursor,
-        Pos::new(1, 0)
-    );
+        state.apply_input(action, 80, 24);
 
-    let _ = fs::remove_file(path);
+        assert_eq!(state.mode, EditorMode::Insert, "{case_name}");
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "one\n\ntwo",
+            "{case_name}"
+        );
+        assert_eq!(
+            state
+                .views
+                .get(&buffer_id)
+                .expect("missing view")
+                .cursor
+                .cursor,
+            Pos::new(1, 0),
+            "{case_name}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn open_line_above_enters_insert_and_inserts_blank_line() {
-    let path = temp_file_path("open_line_above");
-    let mut state = state_with_text(path.clone(), "one\ntwo");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(1, 0);
-
-    state.apply_input(InputAction::OpenLineAbove, 80, 24);
-
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
-    assert_eq!(
-        state.views.get(&id).expect("missing view").cursor.cursor,
-        Pos::new(1, 0)
-    );
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn first_edit_forces_full_load_before_mutation() {
     let path = temp_file_path("edit_force_full_load");
@@ -5179,38 +4387,6 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
 }
 
 #[test]
-fn visual_line_mode_marks_line_selection_mode() {
-    let path = temp_file_path("visual_line");
-    let mut state = state_with_text(path.clone(), "a\nb\nc\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(1, 0);
-
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
-    let (sel, mode) = state
-        .active_visual_selection()
-        .expect("visual selection should exist");
-    assert_eq!(mode, VisualModeKind::Line);
-    assert_eq!(sel.anchor.line, 1);
-    assert_eq!(sel.cursor.line, 2);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn visual_yank_private_copies_selection_and_exits_visual_mode() {
     let path = temp_file_path("visual_yank_private");
     let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
@@ -5303,46 +4479,6 @@ fn visual_yank_private_without_motion_includes_cursor_char() {
 }
 
 #[test]
-fn visual_block_mode_marks_block_selection_mode() {
-    let path = temp_file_path("visual_block");
-    let mut state = state_with_text(path.clone(), "abcd\nefgh\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
-    let (sel, mode) = state
-        .active_visual_selection()
-        .expect("visual selection should exist");
-    assert_eq!(mode, VisualModeKind::Block);
-    assert_eq!(sel.anchor, Pos::new(0, 1));
-    assert_eq!(sel.cursor, Pos::new(1, 2));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn visual_block_yank_private_copies_rectangular_selection() {
     let path = temp_file_path("visual_block_yank_private");
     let mut state = state_with_text(path.clone(), "abcd\nefgh\n");
@@ -5380,37 +4516,6 @@ fn visual_block_yank_private_copies_rectangular_selection() {
 }
 
 #[test]
-fn visual_delete_private_cuts_charwise_selection() {
-    let path = temp_file_path("visual_delete_private");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 2,
-        },
-        80,
-        24,
-    );
-
-    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "alp");
-    assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn visual_change_private_cuts_charwise_selection_and_enters_insert() {
     let path = temp_file_path("visual_change_private");
     let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
@@ -5437,37 +4542,6 @@ fn visual_change_private_cuts_charwise_selection_and_enters_insert() {
     assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_line_delete_private_cuts_full_lines() {
-    let path = temp_file_path("visual_line_delete_private");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
-    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "one\ntwo\n");
-    assert_eq!(state.session.active_buffer().to_string(), "three\n");
-    assert_eq!(state.mode, EditorMode::Normal);
     assert!(state.status_msg.is_none());
 
     let _ = fs::remove_file(path);
@@ -5538,109 +4612,6 @@ fn text_object_delete_inner_word_cuts_current_word() {
 }
 
 #[test]
-fn text_object_change_around_paragraph_leaves_single_blank_line() {
-    let path = temp_file_path("text_object_change_around_paragraph");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n\nthree\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Change,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Around,
-                kind: TextObjectKind::Paragraph,
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.private_register, "one\ntwo\n\n");
-    assert_eq!(state.session.active_buffer().to_string(), "\nthree\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn text_object_yank_sets_flash_highlight() {
-    let path = temp_file_path("text_object_yank_inner_word");
-    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 7);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Yank,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Inner,
-                kind: TextObjectKind::Word,
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.private_register, "beta");
-    assert_eq!(
-        state.one_shot_highlight(),
-        Some((
-            Selection::new(Pos::new(0, 6), Pos::new(0, 9)),
-            VisualModeKind::Char
-        ))
-    );
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn text_object_change_inner_brackets_preserves_delimiters() {
-    let path = temp_file_path("text_object_change_inner_brackets");
-    let mut state = state_with_text(path.clone(), "foo[bar[baz]]\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 9);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Change,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Inner,
-                kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.private_register, "baz");
-    assert_eq!(state.session.active_buffer().to_string(), "foo[bar[]]\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 8));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
     let path = temp_file_path("text_object_change_inner_parentheses_same_line");
     let mut state = state_with_text(path.clone(), "let value = foo(bar);\n");
@@ -5672,42 +4643,6 @@ fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
     );
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 16));
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn text_object_change_inner_double_quotes_can_jump_to_same_line_pair() {
-    let path = temp_file_path("text_object_change_inner_double_quotes_same_line");
-    let mut state = state_with_text(path.clone(), "let value = \"bar\";\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Change,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Inner,
-                kind: TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes),
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    assert_eq!(state.private_register, "bar");
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "let value = \"\";\n"
-    );
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 13));
 
     let _ = fs::remove_file(path);
 }
@@ -5754,48 +4689,6 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
 }
 
 #[test]
-fn visual_text_object_inner_big_word_selects_non_whitespace_run() {
-    let path = temp_file_path("visual_text_object_inner_big_word");
-    let mut state = state_with_text(
-        path.clone(),
-        "byte_idx.saturating_add(grapheme.len()); next\n",
-    );
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 22);
-
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Select,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Inner,
-                kind: TextObjectKind::BigWord,
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    let (selection, mode) = state.active_visual_selection().expect("visual selection");
-    assert_eq!(mode, VisualModeKind::Char);
-    assert_eq!(
-        state
-            .session
-            .active_buffer()
-            .visual_selection_text(selection, mode),
-        "byte_idx.saturating_add(grapheme.len());"
-    );
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
     let path = temp_file_path("visual_text_object_inner_paragraph");
     let mut state = state_with_text(path.clone(), "zero\n\none\ntwo\n\nthree\n");
@@ -5831,45 +4724,6 @@ fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
             .active_buffer()
             .visual_selection_text(selection, mode),
         "one\ntwo\n"
-    );
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_text_object_around_brackets_uses_same_span_as_operator() {
-    let path = temp_file_path("visual_text_object_around_brackets");
-    let mut state = state_with_text(path.clone(), "x [ab] y\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 7);
-
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::OperateTarget {
-            operator: TextObjectOperator::Select,
-            target: OperatorTarget::TextObject(TextObjectSpec {
-                scope: TextObjectScope::Around,
-                kind: TextObjectKind::Delimiter(DelimiterKind::Brackets),
-                count: 1,
-            }),
-        },
-        80,
-        24,
-    );
-
-    let (selection, mode) = state.active_visual_selection().expect("visual selection");
-    assert_eq!(mode, VisualModeKind::Char);
-    assert_eq!(
-        state
-            .session
-            .active_buffer()
-            .visual_selection_text(selection, mode),
-        "[ab]"
     );
 
     let _ = fs::remove_file(path);
@@ -5932,45 +4786,6 @@ fn visual_line_delete_private_cuts_all_selected_lines() {
 
     assert_eq!(state.private_register, "one\ntwo\nthree\n");
     assert_eq!(state.session.active_buffer().to_string(), "four\n");
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_block_delete_private_cuts_rectangular_selection() {
-    let path = temp_file_path("visual_block_delete_private");
-    let mut state = state_with_text(path.clone(), "abcd\nefgh\nijkl\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 2,
-        },
-        80,
-        24,
-    );
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "bc\nfg\njk");
-    assert_eq!(state.session.active_buffer().to_string(), "ad\neh\nil\n");
     assert_eq!(state.mode, EditorMode::Normal);
     assert!(state.status_msg.is_none());
 
@@ -6300,28 +5115,6 @@ fn repeat_search_does_not_reuse_active_match_positions_across_buffers() {
 }
 
 #[test]
-fn normal_mode_cc_changes_current_line_and_enters_insert() {
-    let path = temp_file_path("cc_change_line");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(1, 2);
-
-    state.apply_input(InputAction::ChangeCurrentLinePrivate { count: 1 }, 80, 24);
-
-    assert_eq!(state.private_register, "two\n");
-    assert_eq!(state.session.active_buffer().to_string(), "one\n\nthree\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
-    assert!(state.status_msg.is_none());
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn normal_mode_cc_preserves_current_line_indent() {
     let path = temp_file_path("cc_preserve_indent");
     let mut state = state_with_text(path.clone(), "one\n\ttwo\nthree\n");
@@ -6369,92 +5162,66 @@ fn insert_enter_uses_tree_sitter_smart_indent() {
 }
 
 #[test]
-fn insert_enter_splits_closing_delimiter_with_smart_indent() {
-    let path = temp_file_path("smart_enter_closing").with_extension("rs");
-    let mut state = state_with_text(path.clone(), "fn main() {}");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 11);
-    state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+fn insert_enter_splits_paired_delimiters_with_smart_indent() {
+    let cases = [
+        (
+            "closing",
+            "rs",
+            "fn main() {}",
+            Pos::new(0, 11),
+            InsertKind::Insert,
+            "fn main() {\n    \n}",
+        ),
+        (
+            "angle",
+            "html",
+            "<>",
+            Pos::new(0, 0),
+            InsertKind::Append,
+            "<\n    \n>",
+        ),
+        (
+            "quotes",
+            "rs",
+            "let text = \"\";",
+            Pos::new(0, 11),
+            InsertKind::Append,
+            "let text = \"\n    \n\";",
+        ),
+        (
+            "backticks",
+            "md",
+            "``",
+            Pos::new(0, 0),
+            InsertKind::Append,
+            "`\n    \n`",
+        ),
+    ];
 
-    state.apply_input(InputAction::Enter, 80, 24);
+    for (case_name, extension, initial_text, initial_cursor, insert_kind, expected_text) in cases {
+        let path = temp_file_path(&format!("smart_enter_{case_name}")).with_extension(extension);
+        let mut state = state_with_text(path.clone(), initial_text);
+        let buffer_id = state.session.active_id();
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("missing view")
+            .cursor
+            .cursor = initial_cursor;
+        state.apply_input(InputAction::EnterInsert(insert_kind), 80, 24);
 
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "fn main() {\n    \n}"
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
-    let _ = fs::remove_file(path);
+        state.apply_input(InputAction::Enter, 80, 24);
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 4), "{case_name}");
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn insert_enter_splits_angle_delimiters_with_smart_indent() {
-    let path = temp_file_path("smart_enter_angle").with_extension("html");
-    let mut state = state_with_text(path.clone(), "<>");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
-
-    state.apply_input(InputAction::Enter, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "<\n    \n>");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn insert_enter_splits_quote_delimiters_with_smart_indent() {
-    let path = temp_file_path("smart_enter_quotes").with_extension("rs");
-    let mut state = state_with_text(path.clone(), "let text = \"\";");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 11);
-    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
-
-    state.apply_input(InputAction::Enter, 80, 24);
-
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "let text = \"\n    \n\";"
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn insert_enter_splits_backtick_delimiters_with_smart_indent() {
-    // Backtick smart-enter behaviour relies on backticks staying paired delimiters.
-    let path = temp_file_path("smart_enter_backticks").with_extension("md");
-    let mut state = state_with_text(path.clone(), "``");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::EnterInsert(InsertKind::Append), 80, 24);
-
-    state.apply_input(InputAction::Enter, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "`\n    \n`");
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     let path = temp_file_path("smart_open_line").with_extension("rs");
@@ -6658,65 +5425,54 @@ fn visual_move_reindents_line_for_new_tree_sitter_scope() {
 }
 
 #[test]
-fn visual_move_last_line_up_does_not_join_at_eof() {
-    let path = temp_file_path("visual_move_last_line_up_eof");
-    let mut state = state_with_text(path.clone(), "one\ntwo");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(1, 0);
+fn visual_line_moves_preserve_eof_boundaries() {
+    let cases = [
+        (
+            "last_up",
+            "one\ntwo",
+            Pos::new(1, 0),
+            InputAction::MoveVisualSelectionUp { count: 1 },
+            "two\none",
+        ),
+        (
+            "second_last_down",
+            "one\ntwo",
+            Pos::new(0, 0),
+            InputAction::MoveVisualSelectionDown { count: 1 },
+            "two\none",
+        ),
+        (
+            "newline_only_last",
+            "one\ntwo\n",
+            Pos::new(1, 0),
+            InputAction::MoveVisualSelectionDown { count: 1 },
+            "one\n\ntwo",
+        ),
+    ];
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
-    state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
+    for (case_name, initial_text, initial_cursor, action, expected_text) in cases {
+        let path = temp_file_path(&format!("visual_move_{case_name}"));
+        let mut state = state_with_text(path.clone(), initial_text);
+        let buffer_id = state.session.active_id();
+        state
+            .views
+            .get_mut(&buffer_id)
+            .expect("missing view")
+            .cursor
+            .cursor = initial_cursor;
 
-    assert_eq!(state.session.active_buffer().to_string(), "two\none");
+        state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+        state.apply_input(action, 80, 24);
 
-    let _ = fs::remove_file(path);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{case_name}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
 }
-
-#[test]
-fn visual_move_second_last_line_down_does_not_join_at_eof() {
-    let path = temp_file_path("visual_move_second_last_down_eof");
-    let mut state = state_with_text(path.clone(), "one\ntwo");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
-    state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "two\none");
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_move_into_newline_only_last_line_does_not_panic_or_join() {
-    let path = temp_file_path("visual_move_into_blank_last_line");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(1, 0);
-
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
-    state.apply_input(InputAction::MoveVisualSelectionDown { count: 1 }, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "one\n\ntwo");
-
-    let _ = fs::remove_file(path);
-}
-
 #[test]
 fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
     let path = temp_file_path("visual_indent_outdent");

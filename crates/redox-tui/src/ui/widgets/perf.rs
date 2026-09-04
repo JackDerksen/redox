@@ -239,7 +239,7 @@ fn draw_bar(
         return Ok(());
     }
 
-    let colour = if perf.value_ms >= perf.hot_ms {
+    let color = if perf.value_ms >= perf.hot_ms {
         style.perf.hot
     } else if perf.value_ms >= perf.warn_ms {
         style.perf.warn
@@ -253,7 +253,7 @@ fn draw_bar(
 
     view.write_str_colored(row, col, &".".repeat(width), style.perf.bar_bg)?;
     if filled > 0 {
-        view.write_str_colored(row, col, &"#".repeat(filled), colour)?;
+        view.write_str_colored(row, col, &"#".repeat(filled), color)?;
     }
     Ok(())
 }

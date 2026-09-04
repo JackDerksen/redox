@@ -1,8 +1,4 @@
-//! Document cursor controller + viewport scrolling logic for `redox-tui`.
-//!
-//! This TUI-specific layer owns viewport state and projects document cursor
-//! positions into terminal cell coordinates. Motion semantics stay in
-//! `redox_core::motion`.
+//! TUI cursor and viewport projection over core motion semantics.
 
 use minui::{TabPolicy, cell_width, window::CursorSpec};
 use redox_core::motion::{Motion, apply_motion_n};
@@ -14,17 +10,11 @@ const LONG_LINE_CURSOR_FAST_PATH_THRESHOLD_CHARS: usize = 8 * 1024;
 const LONG_LINE_CURSOR_FAST_PATH_MAX_DELTA_CHARS: usize = 4 * 1024;
 pub const DEFAULT_SCROLLOFF_ROWS: usize = 5;
 
-/// How the viewport should follow the cursor.
+/// Cursor-follow margins, collapsed at document boundaries.
 #[derive(Debug, Clone, Copy)]
 pub struct FollowConfig {
-    /// Vim-style "scrolloff" behaviour which keeps some padding around the cursor when scrolling.
-    /// For the bottom margin rows, it is disabled near the EOF so that we don't
-    /// manufacture blank space at the bottom of the viewport.
     pub top_margin_rows: usize,
     pub bottom_margin_rows: usize,
-
-    /// If true, horizontal scrolling tries to keep the cursor within the viewport
-    /// but does not add a left/right margin.
     pub horizontal_follow: bool,
 }
 
@@ -38,16 +28,13 @@ impl Default for FollowConfig {
     }
 }
 
-/// A document cursor controller + view state.
 #[derive(Debug, Clone)]
 pub struct CursorController {
-    /// Document cursor in logical units: (line, col) where col is in **char units** (Ropey model).
+    /// Document position; the column is measured in characters.
     pub cursor: Pos,
-
-    /// Horizontal scroll in terminal **cells**.
+    /// Horizontal scroll in terminal cells.
     pub scroll_x_cells: usize,
-
-    /// Vertical scroll in **document lines**.
+    /// Vertical scroll in document lines.
     pub scroll_y_lines: usize,
 
     pub follow: FollowConfig,
@@ -81,13 +68,7 @@ impl CursorController {
         self.follow.bottom_margin_rows = rows;
     }
 
-    /// Reconcile cursor + viewport after an edit.
-    ///
-    /// This clamps the cursor to real buffer content and then updates scroll offsets
-    /// to keep the cursor visible, **without** applying any motion semantics.
-    ///
-    /// Useful after mutations like insert/backspace/newline where the cursor
-    /// is already updated by the caller.
+    /// Clamp an edited cursor position and keep it visible.
     pub fn reconcile_after_edit(
         &mut self,
         buffer: &TextBuffer,
@@ -109,11 +90,7 @@ impl CursorController {
         self.invalidate_visual_cache();
     }
 
-    /// Apply a core (UI-agnostic) motion with a Vim-style count, then adjust scrolling
-    /// to keep the cursor visible.
-    ///
-    /// This is the preferred entry point for frontends that translate input into
-    /// `redox_core::motion::Motion`.
+    /// Apply a core motion and keep the resulting cursor visible.
     pub fn apply_motion(
         &mut self,
         buffer: &TextBuffer,
@@ -176,9 +153,7 @@ impl CursorController {
         self.preferred_col = Some(preferred_col);
     }
 
-    /// Produce a MinUI `CursorSpec` for the current cursor under the current scroll offsets.
-    ///
-    /// If the cursor is not within the current viewport, returns a spec with `visible: false`.
+    /// Project the document cursor into the current terminal viewport.
     pub fn cursor_spec(
         &mut self,
         buffer: &TextBuffer,
@@ -207,7 +182,6 @@ impl CursorController {
         }
     }
 
-    /// Returns the scroll values that should be used to render a viewport.
     #[inline]
     pub fn viewport_scroll(&self) -> (usize, usize) {
         (self.scroll_x_cells, self.scroll_y_lines)
@@ -302,10 +276,7 @@ impl CursorController {
         self.scroll_y_lines = self.scroll_y_lines.min(max_top);
     }
 
-    /// Compute cursor visual (x,y) under non-wrapping rendering.
-    ///
-    /// - `cursor_y_lines` is the document line index (0-based).
-    /// - `cursor_x_cells` is the cursor column in terminal cells on that line.
+    /// Compute the non-wrapping document line and terminal-cell column.
     fn cursor_visual_info(
         &mut self,
         buffer: &TextBuffer,
@@ -458,9 +429,9 @@ fn cell_width_until_char_col(line: &str, cursor_col_chars: usize, tab_policy: Ta
 
 #[inline]
 fn cell_width_for_char(ch: char, tab_policy: TabPolicy) -> usize {
-    let mut buf = [0_u8; 4];
-    let s = ch.encode_utf8(&mut buf);
-    cell_width(s, tab_policy) as usize
+    let mut utf8_buffer = [0_u8; 4];
+    let encoded = ch.encode_utf8(&mut utf8_buffer);
+    cell_width(encoded, tab_policy) as usize
 }
 
 #[cfg(test)]
