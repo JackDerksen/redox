@@ -112,7 +112,7 @@ pub fn draw_explorer_popup_view(
         let row_style = render_rows
             .get(row)
             .copied()
-            .map(|row| explorer_row_style(style, row))
+            .map(|render_row| explorer_row_style(style, render_row))
             .unwrap_or(ExplorerRowStyle {
                 text: style.explorer.file,
                 git_status: None,
