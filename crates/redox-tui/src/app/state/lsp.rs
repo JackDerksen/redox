@@ -2554,7 +2554,7 @@ impl EditorState {
         self.notify_lsp_did_save(self.session.active_id())
     }
 
-    fn notify_lsp_did_save(&mut self, buffer_id: BufferId) -> io::Result<()> {
+    pub(super) fn notify_lsp_did_save(&mut self, buffer_id: BufferId) -> io::Result<()> {
         let result = (|| {
             self.sync_lsp_document(buffer_id, SyncPolicy::Immediate)?;
             if let Some(document) = self.lsp.documents.get(&buffer_id)

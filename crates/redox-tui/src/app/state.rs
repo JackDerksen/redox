@@ -1056,6 +1056,7 @@ impl EditorState {
         let mut conflict: Option<String> = None;
         let mut deleted: Option<String> = None;
         let mut failed: Option<String> = None;
+        let mut diagnostics_error = None;
 
         for change in changes {
             match change.kind {
@@ -1063,6 +1064,9 @@ impl EditorState {
                     reloaded = reloaded.saturating_add(1);
                     self.clear_buffer_undo_history(change.id);
                     self.reset_buffer_render_caches(change.id);
+                    if let Err(error) = self.notify_lsp_did_save(change.id) {
+                        diagnostics_error = Some(error);
+                    }
                 }
                 ExternalFileChangeKind::Conflict => {
                     conflict = Some(change.display_name);
@@ -1083,6 +1087,10 @@ impl EditorState {
             self.set_status(format!("file deleted on disk: {name}"));
         } else if let Some(name) = failed {
             self.set_status(format!("failed to reload changed file: {name}"));
+        } else if let Some(error) = diagnostics_error {
+            self.set_status(format!(
+                "reloaded from disk (diagnostics refresh failed: {error})"
+            ));
         } else if reloaded == 1 {
             self.set_status("reloaded from disk");
         } else {
