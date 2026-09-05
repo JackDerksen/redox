@@ -97,18 +97,8 @@ fn parse_code_action_value(value: &Value) -> Option<AvailableCodeAction> {
 pub fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
     let mut document_edits = Vec::new();
 
-    if let Some(changes) = value.get("changes").and_then(Value::as_object) {
-        for edits in changes.values() {
-            // `changes` carries no versions, and this parser has no document context
-            // to validate them. Reject the whole edit rather than apply only part.
-            if !edits.as_array()?.is_empty() {
-                return None;
-            }
-        }
-    }
-
-    if let Some(changes) = value.get("documentChanges").and_then(Value::as_array) {
-        for entry in changes {
+    if let Some(changes) = value.get("documentChanges") {
+        for entry in changes.as_array()? {
             // Applying only the text-edit portion of a mixed workspace edit can
             // leave the workspace inconsistent. Reject resource operations until
             // the caller can apply them atomically.
@@ -127,6 +117,14 @@ pub fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
                     version,
                     edits,
                 });
+            }
+        }
+    } else if let Some(changes) = value.get("changes").and_then(Value::as_object) {
+        for edits in changes.values() {
+            // `changes` carries no versions, and this parser has no document context
+            // to validate them. Reject the whole edit rather than apply only part.
+            if !edits.as_array()?.is_empty() {
+                return None;
             }
         }
     }

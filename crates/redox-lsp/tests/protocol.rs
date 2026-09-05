@@ -247,7 +247,7 @@ fn hover_and_code_actions_keep_structured_content() {
 }
 
 #[test]
-fn workspace_edits_reject_unversioned_changes_without_partial_results() {
+fn workspace_edits_prefer_document_changes_and_reject_unversioned_changes_alone() {
     let edits = json!([{
         "range": {
             "start": { "line": 0, "character": 0 },
@@ -257,6 +257,12 @@ fn workspace_edits_reject_unversioned_changes_without_partial_results() {
     }]);
     let changes = json!({ "file:///tmp/example.rs": edits });
     assert!(parse_workspace_edit(&json!({ "changes": changes })).is_none());
+    assert!(
+        parse_code_action_response(&json!({
+            "result": [{ "title": "Unsafe edit", "edit": { "changes": changes } }]
+        }))
+        .is_empty()
+    );
 
     for document in [
         json!({ "uri": "file:///tmp/other.rs", "version": 1 }),
@@ -272,14 +278,23 @@ fn workspace_edits_reject_unversioned_changes_without_partial_results() {
             document["version"].as_i64().map(|version| version as i32)
         );
         payload["changes"] = json!({ "file:///tmp/example.rs": [] });
-        assert_eq!(parse_workspace_edit(&payload), Some(expected));
+        assert_eq!(parse_workspace_edit(&payload).as_ref(), Some(&expected));
         payload["changes"] = changes.clone();
-        assert!(parse_workspace_edit(&payload).is_none());
+        assert_eq!(parse_workspace_edit(&payload).as_ref(), Some(&expected));
+        let actions = parse_code_action_response(&json!({
+            "result": [{ "title": "Versioned edit", "edit": payload }]
+        }));
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].edit.as_ref(), Some(&expected));
+        payload["changes"] = json!({ "file:///tmp/example.rs": "invalid" });
+        assert_eq!(parse_workspace_edit(&payload), Some(expected));
+    }
+    for document_changes in [json!(null), json!({}), json!([]), json!([{}])] {
         assert!(
-            parse_code_action_response(&json!({
-                "result": [{ "title": "Unsafe edit", "edit": payload }]
+            parse_workspace_edit(&json!({
+                "documentChanges": document_changes, "changes": changes
             }))
-            .is_empty()
+            .is_none()
         );
     }
 }
