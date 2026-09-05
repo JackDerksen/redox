@@ -76,7 +76,7 @@ struct IncomingDiagnostic {
     severity: Option<u64>,
     message: String,
     #[serde(default, rename = "relatedInformation")]
-    related_information: Vec<RelatedInformation>,
+    related_information: Option<Vec<RelatedInformation>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +147,7 @@ fn parse_diagnostic(diagnostic: IncomingDiagnostic) -> Option<Diagnostic> {
         end_utf16: u32::try_from(diagnostic.range.end.character).ok()?,
         related_information: diagnostic
             .related_information
+            .unwrap_or_default()
             .into_iter()
             .map(|information| DiagnosticRelatedInformation {
                 location: DiagnosticLocation {
