@@ -178,7 +178,7 @@ fn completion_fixed_width(kind_width: usize) -> usize {
 
 fn completion_kind_display(kind: Option<&str>, icons_enabled: bool) -> Option<&str> {
     if icons_enabled {
-        kind.and_then(completion_kind_icon)
+        kind.and_then(completion_kind_icon).or(kind)
     } else {
         kind
     }
@@ -354,6 +354,20 @@ mod tests {
             selected: 0,
             scroll: 0,
         }
+    }
+
+    #[test]
+    fn completion_kind_display_falls_back_to_text_for_unknown_kinds() {
+        assert_eq!(
+            completion_kind_display(Some("unknown"), true),
+            Some("unknown")
+        );
+        assert_eq!(completion_kind_display(Some("function"), true), Some("󰊕"));
+        assert_eq!(
+            completion_kind_display(Some("function"), false),
+            Some("function")
+        );
+        assert_eq!(completion_kind_display(None, true), None);
     }
 
     #[test]
