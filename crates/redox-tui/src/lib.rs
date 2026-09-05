@@ -3565,6 +3565,7 @@ pub fn run() -> anyhow::Result<()> {
 
         let next_interval = if state.rain_is_active()
             || state.one_shot_highlight().is_some()
+            || state.lsp_needs_fast_poll()
             || Instant::now() < active_until
         {
             ANIMATION_FRAME_INTERVAL

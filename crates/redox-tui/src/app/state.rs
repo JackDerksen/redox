@@ -1250,10 +1250,17 @@ impl EditorState {
     }
 
     fn capture_active_undo_checkpoint(&mut self) -> UndoCheckpoint {
-        let active_id = self.session.active_id();
-        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-        let buffer = self.session.active_buffer().clone();
-        let view = self.views.entry(active_id).or_default();
+        self.capture_buffer_undo_checkpoint(self.session.active_id())
+    }
+
+    fn capture_buffer_undo_checkpoint(&mut self, buffer_id: BufferId) -> UndoCheckpoint {
+        let cursor = self.views.entry(buffer_id).or_default().cursor.cursor;
+        let buffer = self
+            .session
+            .buffer(buffer_id)
+            .expect("loaded edit buffer")
+            .clone();
+        let view = self.views.entry(buffer_id).or_default();
         view.undo_history.set_max_records(self.undo_history_size);
         view.undo_history.checkpoint(buffer, cursor)
     }
@@ -1286,34 +1293,39 @@ impl EditorState {
     }
 
     fn finalize_active_insert_undo_if_changed(&mut self) -> bool {
-        let active_id = self.session.active_id();
+        self.finalize_buffer_insert_undo_if_changed(self.session.active_id())
+    }
+
+    fn finalize_buffer_insert_undo_if_changed(&mut self, buffer_id: BufferId) -> bool {
         let Some(before) = self
             .views
-            .entry(active_id)
+            .entry(buffer_id)
             .or_default()
             .pending_insert_undo
             .take()
         else {
             return false;
         };
-        if !self.session.meta(active_id).is_some_and(|meta| meta.dirty) {
+        if !self.session.meta(buffer_id).is_some_and(|meta| meta.dirty) {
             self.views
-                .entry(active_id)
+                .entry(buffer_id)
                 .or_default()
                 .undo_history
                 .clear_coalesce();
             return false;
         }
-        let after_buffer = self.session.active_buffer().clone();
-        let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
-        let view = self.views.entry(active_id).or_default();
+        let Some(after_buffer) = self.session.buffer(buffer_id).cloned() else {
+            return false;
+        };
+        let after_cursor = self.views.entry(buffer_id).or_default().cursor.cursor;
+        let view = self.views.entry(buffer_id).or_default();
         view.undo_history.set_max_records(self.undo_history_size);
         let changed = view
             .undo_history
             .record_if_changed(before, &after_buffer, after_cursor);
         view.undo_history.clear_coalesce();
         if changed {
-            self.refresh_undo_tree_for_buffer(active_id);
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
         changed
     }
@@ -1529,18 +1541,27 @@ impl EditorState {
     }
 
     fn record_active_undo_if_changed(&mut self, before: UndoCheckpoint) -> bool {
+        self.record_buffer_undo_if_changed(self.session.active_id(), before)
+    }
+
+    fn record_buffer_undo_if_changed(
+        &mut self,
+        buffer_id: BufferId,
+        before: UndoCheckpoint,
+    ) -> bool {
         if before.is_coalesced() {
             return false;
         }
-        let active_id = self.session.active_id();
-        let after_buffer = self.session.active_buffer().clone();
-        let after_cursor = self.views.entry(active_id).or_default().cursor.cursor;
-        let view = self.views.entry(active_id).or_default();
+        let Some(after_buffer) = self.session.buffer(buffer_id).cloned() else {
+            return false;
+        };
+        let after_cursor = self.views.entry(buffer_id).or_default().cursor.cursor;
+        let view = self.views.entry(buffer_id).or_default();
         let changed = view
             .undo_history
             .record_if_changed(before, &after_buffer, after_cursor);
         if changed {
-            self.refresh_undo_tree_for_buffer(active_id);
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
         changed
     }

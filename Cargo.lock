@@ -868,6 +868,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox-lsp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "redox-tui"
 version = "0.8.1"
 dependencies = [
@@ -875,6 +886,7 @@ dependencies = [
  "ignore",
  "minui",
  "redox-core",
+ "redox-lsp",
  "rustix",
  "serde",
  "serde_json",
@@ -896,7 +908,6 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "unicode-segmentation",
- "url",
 ]
 
 [[package]]

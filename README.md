@@ -24,7 +24,7 @@
 
 ## Project structure
 
-Redox is a Cargo workspace with a small core crate and a MinUI frontend. The core crate owns editor logic that should stay UI-agnostic, while the TUI crate owns input mapping, app state, rendering, popups, syntax highlighting, and terminal interaction.
+Redox is a Cargo workspace with an editor core, an LSP library, and a MinUI frontend. The core crate owns editor logic that should stay UI-agnostic. The LSP crate owns protocol and process mechanisms. The TUI crate owns input mapping, app state, rendering, popups, syntax highlighting, and terminal interaction.
 
 ```text
 redox/
@@ -41,6 +41,13 @@ redox/
     │       ├── io.rs           # File read/write helpers
     │       ├── motion.rs       # Vim-style motion logic
     │       └── lib.rs          # Shared editor library helpers
+    ├── redox-lsp/
+    │   └── src/
+    │       ├── transport.rs    # JSON-RPC framing and language-server processes
+    │       ├── protocol.rs     # Shared LSP positions, ranges, and definition parsing
+    │       ├── provider.rs     # Built-in provider catalogue and installers
+    │       ├── lint.rs         # Linter processes and output parsing
+    │       └── snippet.rs      # LSP snippet expansion
     └── redox-tui/
         └── src/
             ├── app/            # Main editor state and mode model
@@ -48,10 +55,12 @@ redox/
             └── ui/             # UI rendering, widgets, animations, styling
 ```
 
-This split keeps buffer operations, indexing, motions, fuzzy scoring, and session behaviour easy to test without needing a terminal. The frontend can then evolve the interface without pulling UI details into `redox-core`.
+This split keeps buffer operations, indexing, motions, fuzzy scoring, session behaviour, and LSP mechanics testable without a terminal. The frontend can evolve the interface without pulling UI details into `redox-core` or `redox-lsp`.
 
 **The subcrates can be found here**:
+
 - [redox-core](https://crates.io/crates/redox-core)
+- [redox-lsp](https://crates.io/crates/redox-lsp)
 - [redox-tui](https://crates.io/crates/redox-tui)
 
 ## Getting Started

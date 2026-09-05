@@ -1,0 +1,19 @@
+[package]
+name = "redox-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "LSP transport, protocol parsing, providers, and linters for Redox"
+license = "MIT"
+repository = "https://github.com/JackDerksen/redox"
+readme = "README.md"
+keywords = ["editor", "lsp", "json-rpc", "language-server"]
+categories = ["development-tools", "text-editors"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+url = "2.5"
+
+[dev-dependencies]
+tempfile = "3.23.0"

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{DiagnosticSeverity, IncomingRange, MarketplaceItemId, ProviderId};
+use super::{DiagnosticSeverity, MarketplaceItemId, ProviderId};
 use crate::ui::syntax::{LineSyntaxSpan, SyntaxLanguage};
 
 #[derive(Debug, Clone)]
@@ -89,9 +89,7 @@ pub struct CompletionPopup {
 pub struct CompletionEntry {
     pub kind: Option<String>,
     pub keyword: String,
-    pub type_label: Option<String>,
-    pub extra: Option<String>,
-    pub documentation: Option<String>,
+    pub highlights: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,25 +117,6 @@ pub enum SymbolInfoDisplayKind {
     PlainText,
     Markdown,
     Code { language: Option<SyntaxLanguage> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymbolInfoBlock {
-    pub kind: SymbolInfoKind,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolInfoKind {
-    PlainText,
-    Markdown,
-    Code { language: Option<String> },
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct DefinitionTarget {
-    pub(super) uri: String,
-    pub(super) range: IncomingRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

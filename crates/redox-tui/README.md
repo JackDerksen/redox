@@ -2,7 +2,7 @@
 
 Terminal UI frontend for Redox, built on MinUI.
 
-`redox-tui` owns the interactive terminal application. It depends on `redox-core` for text buffers, motions, fuzzy matching, and session logic, then layers on input handling, app state, rendering, syntax highlighting, and terminal-specific UI.
+`redox-tui` owns the interactive terminal application. It depends on `redox-core` for text buffers, motions, fuzzy matching, and session logic, and on `redox-lsp` for protocol and process mechanisms. It adds input handling, app state, request policy, rendering, syntax highlighting, and terminal-specific UI.
 
 Most users should install the top-level `redox-editor` package, which exposes the `redox` binary. This crate is published separately because it is the frontend runtime used by that package.
 
@@ -11,6 +11,7 @@ Most users should install the top-level `redox-editor` package, which exposes th
 - The MinUI event loop and terminal window integration
 - Input mapping for normal, insert, command, search, finder, pinboard, and visual modes
 - Per-buffer cursor and viewport state
+- LSP request timing, cancellation, completion UX, and diagnostic presentation
 - Command handling, undo/redo state, search state, and editor actions
 - File explorer and fuzzy finder popups
 - Global file pinning and pinboard UI
@@ -50,5 +51,7 @@ cargo run -p redox-editor -- ./README.md
 ```
 
 **Related crates**:
+
 - [redox-core](https://crates.io/crates/redox-core)
+- [redox-lsp](https://crates.io/crates/redox-lsp)
 - [redox-editor](https://crates.io/crates/redox-editor)

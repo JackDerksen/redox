@@ -71,6 +71,29 @@ pub fn folder_icon(is_open: bool) -> &'static str {
     if is_open { "" } else { "" }
 }
 
+pub fn completion_kind_icon(kind: &str) -> Option<&'static str> {
+    match kind {
+        "text" => Some("󰉿"),
+        "method" => Some("󰆧"),
+        "function" => Some("󰊕"),
+        "constructor" => Some(""),
+        "field" | "property" => Some("󰜢"),
+        "variable" => Some("󰀫"),
+        "class" => Some(""),
+        "interface" => Some(""),
+        "module" => Some("󰅩"),
+        "keyword" => Some("󰌋"),
+        "snippet" => Some(""),
+        "constant" => Some("󰏿"),
+        "struct" => Some("󰙅"),
+        "event" => Some(""),
+        "operator" => Some("󰆕"),
+        "type" => Some(""),
+        "item" => Some("•"),
+        _ => None,
+    }
+}
+
 fn language_icon(language: SyntaxLanguage) -> &'static str {
     match language {
         SyntaxLanguage::C => "",
@@ -122,5 +145,12 @@ mod tests {
         assert_eq!(file_icon(Path::new("src/main.rs")), "");
         assert_eq!(file_icon(Path::new("Dockerfile")), "");
         assert_eq!(file_icon(Path::new("notes.unknown")), "");
+    }
+
+    #[test]
+    fn completion_icons_cover_common_symbol_kinds() {
+        assert_eq!(completion_kind_icon("function"), Some("󰊕"));
+        assert_eq!(completion_kind_icon("variable"), Some("󰀫"));
+        assert_eq!(completion_kind_icon("unknown"), None);
     }
 }
