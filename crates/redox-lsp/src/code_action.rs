@@ -98,18 +98,11 @@ pub fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
     let mut document_edits = Vec::new();
 
     if let Some(changes) = value.get("changes").and_then(Value::as_object) {
-        for (uri, edits) in changes {
-            let edits = edits
-                .as_array()?
-                .iter()
-                .map(parse_text_edit)
-                .collect::<Option<Vec<_>>>()?;
-            if !edits.is_empty() {
-                document_edits.push(DocumentEdit {
-                    uri: uri.clone(),
-                    version: None,
-                    edits,
-                });
+        for edits in changes.values() {
+            // `changes` carries no versions, and this parser has no document context
+            // to validate them. Reject the whole edit rather than apply only part.
+            if !edits.as_array()?.is_empty() {
+                return None;
             }
         }
     }

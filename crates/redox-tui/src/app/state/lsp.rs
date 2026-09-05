@@ -4229,9 +4229,10 @@ mod regressions {
         session.open_file(&path).unwrap();
         let mut state = EditorState::new(session);
         state.mode = EditorMode::Normal;
-        let edit = parse_workspace_edit(&json!({"changes":{file_uri(&path).unwrap():[{
+        let edit = parse_workspace_edit(&json!({"documentChanges":[{
+            "textDocument":{"uri":file_uri(&path).unwrap(),"version":null},"edits":[{
             "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}, "newText":"after"
-        }]}})).unwrap();
+        }]}]})).unwrap();
         state.apply_workspace_edit(&edit).unwrap();
         assert_eq!(state.session.active_buffer().to_string(), "after");
         state.undo_active(80, 24);
@@ -4390,10 +4391,10 @@ mod regressions {
         assert!(session.activate(first_id));
         let mut state = EditorState::new(session);
         state.lsp.installed.clear();
-        let payload = json!({"changes":{
-            file_uri(&first).unwrap(): [{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"changed"}],
-            file_uri(&second).unwrap(): [{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":5}},"newText":"other"}]
-        }});
+        let payload = json!({"documentChanges":[
+            {"textDocument":{"uri":file_uri(&first).unwrap(),"version":null},"edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"changed"}]},
+            {"textDocument":{"uri":file_uri(&second).unwrap(),"version":null},"edits":[{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":5}},"newText":"other"}]}
+        ]});
         let mut edit = parse_workspace_edit(&payload).unwrap();
         assert!(state.apply_workspace_edit(&edit).is_err());
         assert_eq!(state.session.buffer(first_id).unwrap().to_string(), "one");

@@ -187,15 +187,16 @@ fn hover_and_code_actions_keep_structured_content() {
                 "kind": "quickfix",
                 "isPreferred": true,
                 "edit": {
-                    "changes": {
-                        "file:///tmp/example.rs": [{
+                    "documentChanges": [{
+                        "textDocument": { "uri": "file:///tmp/example.rs", "version": 1 },
+                        "edits": [{
                             "range": {
                                 "start": { "line": 0, "character": 0 },
                                 "end": { "line": 0, "character": 0 }
                             },
                             "newText": "use std::fmt::Debug;\\n"
                         }]
-                    }
+                    }]
                 }
             },
             { "title": "Disabled", "disabled": { "reason": "nope" } }
@@ -243,6 +244,44 @@ fn hover_and_code_actions_keep_structured_content() {
         }))
         .is_none()
     );
+}
+
+#[test]
+fn workspace_edits_reject_unversioned_changes_without_partial_results() {
+    let edits = json!([{
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 0 }
+        },
+        "newText": "changed"
+    }]);
+    let changes = json!({ "file:///tmp/example.rs": edits });
+    assert!(parse_workspace_edit(&json!({ "changes": changes })).is_none());
+
+    for document in [
+        json!({ "uri": "file:///tmp/other.rs", "version": 1 }),
+        json!({ "uri": "file:///tmp/other.rs", "version": null }),
+        json!({ "uri": "file:///tmp/other.rs" }),
+    ] {
+        let mut payload = json!({
+            "documentChanges": [{ "textDocument": document, "edits": edits }]
+        });
+        let expected = parse_workspace_edit(&payload).unwrap();
+        assert_eq!(
+            expected.document_edits[0].version,
+            document["version"].as_i64().map(|version| version as i32)
+        );
+        payload["changes"] = json!({ "file:///tmp/example.rs": [] });
+        assert_eq!(parse_workspace_edit(&payload), Some(expected));
+        payload["changes"] = changes.clone();
+        assert!(parse_workspace_edit(&payload).is_none());
+        assert!(
+            parse_code_action_response(&json!({
+                "result": [{ "title": "Unsafe edit", "edit": payload }]
+            }))
+            .is_empty()
+        );
+    }
 }
 
 #[test]
