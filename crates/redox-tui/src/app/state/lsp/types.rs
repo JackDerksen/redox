@@ -89,6 +89,8 @@ pub struct CompletionPopup {
 pub struct CompletionEntry {
     pub kind: Option<String>,
     pub keyword: String,
+    /// UTF-8 byte ranges within `keyword`. Use byte positions, not character or
+    /// grapheme indices, to preserve correct Unicode label highlighting.
     pub highlights: Vec<std::ops::Range<usize>>,
 }
 
