@@ -319,12 +319,15 @@ fn parameter_placeholder_text(parameter: &str) -> String {
         return String::new();
     }
     let first = parameter
+        .split_once([':', '='])
+        .map_or(parameter, |(name, _)| name)
         .split_whitespace()
         .next()
         .unwrap_or(parameter)
         .trim_start_matches("...")
         .trim_start_matches('*')
         .trim_start_matches('&');
+    let first = first.strip_suffix('?').unwrap_or(first);
     if is_parameter_name(first) {
         first.to_string()
     } else {

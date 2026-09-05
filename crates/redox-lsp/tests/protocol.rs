@@ -97,7 +97,7 @@ fn diagnostics_preserve_related_information() {
 
 #[test]
 fn snippets_derive_function_parameters_when_servers_omit_tabstops() {
-    let item = CompletionCandidate {
+    let mut item = CompletionCandidate {
         label: "DoThing".to_string(),
         detail: Some("func DoThing(ctx context.Context, name string) error".to_string()),
         label_detail: None,
@@ -112,16 +112,28 @@ fn snippets_derive_function_parameters_when_servers_omit_tabstops() {
         additional_text_edits: Vec::new(),
     };
 
-    let expansion = completion_snippet_expansion(&item, &item.insert_text).unwrap();
-    assert_eq!(expansion.text, "DoThing(ctx, name)");
-    assert_eq!(expansion.placeholders.len(), 2);
-    assert_eq!(
-        (
-            expansion.placeholders[0].start,
-            expansion.placeholders[0].end
-        ),
-        (8, 11)
-    );
+    for signature in [
+        "func DoThing(ctx context.Context, name string) error",
+        "func DoThing(ctx context.Context, name ...string) error",
+        "def DoThing(ctx: Context, name: str = 'default') -> None",
+        "def DoThing(ctx: Context, name='default:value') -> None",
+        "def DoThing(*ctx: Context, **name: str) -> None",
+        "DoThing(ctx: Context, name?: string): void",
+        "DoThing(ctx: Context, ...name: string[]): void",
+        "DoThing(ctx: Context, name: string = 'default'): void",
+    ] {
+        item.detail = Some(signature.to_string());
+        let expansion = completion_snippet_expansion(&item, &item.insert_text).unwrap();
+        assert_eq!(expansion.text, "DoThing(ctx, name)", "{signature}");
+        assert_eq!(expansion.placeholders.len(), 2);
+        assert_eq!(
+            (
+                expansion.placeholders[0].start,
+                expansion.placeholders[0].end
+            ),
+            (8, 11)
+        );
+    }
 }
 
 #[test]
