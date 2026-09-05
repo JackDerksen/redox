@@ -333,7 +333,7 @@ const GO_GOLANGCI_LINT: &[InstallPlan] = &[InstallPlan {
     method: InstallMethod::Go,
     install_args: &[
         "install",
-        "github.com/golangci/golangci-lint/cmd/golangci-lint@latest",
+        "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest",
     ],
     uninstall: Uninstall::GoBinary("golangci-lint"),
 }];

@@ -56,6 +56,13 @@ if let Some(ClientEvent::Message(message)) = client.try_recv() {
 `built_in_providers()` and `built_in_linters()` supply Redox's default tools.
 Callers can construct `ServerCommand` directly for tools outside that catalogue.
 
+The built-in Go linter requires golangci-lint v2.0.0 or newer. Its command uses
+the v2-only `--output.json.path stdout` and `--output.text.path stderr` flags;
+v1 is unsupported. Check `golangci-lint --version` and
+[upgrade any v1 installation](https://golangci-lint.run/docs/welcome/install/local/)
+before enabling it. Ensure the v2 binary is first on `PATH` and
+[migrate any v1 configuration](https://golangci-lint.run/docs/product/migration-guide/).
+
 ## Ownership boundary
 
 The crate owns these mechanisms:

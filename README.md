@@ -69,6 +69,7 @@ This split keeps buffer operations, indexing, motions, fuzzy scoring, session be
 
 - Rust toolchain (`cargo` + `rustc`)
 - A terminal that supports basic ANSI features and raw mode (and ideally full colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for the best experience!
+- Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see [Language tools](#language-tools) for setup.
 
 
 ### Install via CLI
@@ -223,6 +224,13 @@ Pinboard controls:
 Redox can start installed language servers for supported file types and display diagnostics inline, in the status bar, and in a diagnostics popup.
 
 Open the language tools marketplace with `:lsp list`.
+
+Go linting requires golangci-lint v2.0.0 or newer because Redox uses the v2-only
+`--output.json.path stdout` and `--output.text.path stderr` flags. Check
+`golangci-lint --version` before enabling it. If it reports v1, upgrade using the
+[golangci-lint installation guide](https://golangci-lint.run/docs/welcome/install/local/)
+and ensure the v2 binary is first on `PATH`. Existing v1 configurations also need
+the [v2 migration](https://golangci-lint.run/docs/product/migration-guide/).
 
 Completion controls:
 

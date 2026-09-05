@@ -145,6 +145,7 @@ pub fn lint_runner_available(source: &LintSource, path: &Path) -> bool {
 }
 
 /// Runs one configured linter and parses its output by file URI.
+/// Go linting requires golangci-lint v2.0.0 or newer for its output-path flags.
 #[must_use]
 pub fn run_linter(source: &LintSource, path: &Path) -> LintRunResult {
     let output = match source.kind {
