@@ -566,20 +566,11 @@ pub fn install_tool(label: &str, executable: &str, plan: InstallPlan) -> ToolOpe
     }
 }
 
-pub fn uninstall_tool(
-    label: &str,
-    uninstall: Uninstall,
-    install_source: Option<InstallMethod>,
-) -> ToolOperationResult {
-    match uninstall {
+pub fn uninstall_tool(label: &str, plan: InstallPlan) -> ToolOperationResult {
+    let install_source = Some(plan.method);
+    match plan.uninstall {
         Uninstall::Command(args) => {
-            let Some(method) = install_source else {
-                return ToolOperationResult {
-                    install_source,
-                    success: false,
-                    message: format!("cannot uninstall {label} without its install source"),
-                };
-            };
+            let method = plan.method;
             let output = Command::new(method.as_str()).args(args).output();
             match output {
                 Ok(output) if output.status.success() => {

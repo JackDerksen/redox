@@ -67,7 +67,6 @@ const LINTERS: &[LinterSpec] = redox_lsp::provider::built_in_linters();
 
 type InstallMethodId = InstallMethod;
 type ProviderInstallPlan = InstallPlan;
-type ProviderUninstall = Uninstall;
 
 fn lsp_language(language: SyntaxLanguage) -> LspLanguage {
     match language {
@@ -3230,40 +3229,34 @@ impl EditorState {
         item: MarketplaceSpec,
         record: &InstalledToolRecord,
     ) -> bool {
-        let uninstall = record
-            .install_source
-            .and_then(|method| {
-                item.install_plans()
-                    .iter()
-                    .copied()
-                    .find(|plan| plan.method == method)
-                    .map(|plan| plan.uninstall)
-            })
-            .unwrap_or(ProviderUninstall::DisableOnly);
-
-        match uninstall {
-            ProviderUninstall::DisableOnly => false,
-            uninstall => {
-                let install_source = record.install_source;
-                let (tx, rx) = mpsc::channel();
-                thread::Builder::new()
-                    .name(format!("redox-uninstall-{}", item.label()))
-                    .spawn(move || {
-                        let result = run_provider_uninstall(item, uninstall, install_source);
-                        let _ = tx.send(result);
-                    })
-                    .expect("failed to start provider uninstall");
-                self.lsp.provider_operations.insert(
-                    item.id(),
-                    ProviderOperation {
-                        kind: ProviderOperationKind::Uninstalling,
-                        started_at: Instant::now(),
-                        receiver: rx,
-                    },
-                );
-                true
-            }
+        let Some(plan) = record.install_source.and_then(|method| {
+            item.install_plans()
+                .iter()
+                .copied()
+                .find(|plan| plan.method == method)
+        }) else {
+            return false;
+        };
+        if matches!(plan.uninstall, Uninstall::DisableOnly) {
+            return false;
         }
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name(format!("redox-uninstall-{}", item.label()))
+            .spawn(move || {
+                let result = run_provider_uninstall(item, plan);
+                let _ = tx.send(result);
+            })
+            .expect("failed to start provider uninstall");
+        self.lsp.provider_operations.insert(
+            item.id(),
+            ProviderOperation {
+                kind: ProviderOperationKind::Uninstalling,
+                started_at: Instant::now(),
+                receiver: rx,
+            },
+        );
+        true
     }
 
     fn respond_to_lsp_server_request(&mut self, workspace: &WorkspaceKey, message: &Value) -> bool {
@@ -3433,10 +3426,9 @@ fn run_provider_install(
 
 fn run_provider_uninstall(
     item: MarketplaceSpec,
-    uninstall: ProviderUninstall,
-    install_source: Option<InstallMethodId>,
+    plan: ProviderInstallPlan,
 ) -> ProviderOperationResult {
-    let result = uninstall_tool(item.label(), uninstall, install_source);
+    let result = uninstall_tool(item.label(), plan);
     ProviderOperationResult {
         item_id: item.id(),
         kind: ProviderOperationKind::Uninstalling,
