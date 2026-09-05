@@ -4,9 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+use std::sync::Mutex;
 
 use crate::lint::LintRunnerKind;
 use crate::transport::ServerCommand;
+
+static CLIPPY_AVAILABLE: Mutex<bool> = Mutex::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
@@ -511,7 +514,7 @@ pub fn executable_on_path(executable: &str) -> bool {
 #[must_use]
 pub fn tool_available(executable: &str) -> bool {
     if executable == LintRunnerKind::Clippy.executable() {
-        clippy_available()
+        clippy_available(false)
     } else {
         executable_on_path(executable)
     }
@@ -528,7 +531,11 @@ pub fn install_tool(label: &str, executable: &str, plan: InstallPlan) -> ToolOpe
         .output();
     match output {
         Ok(output) if output.status.success() => {
-            let success = tool_available(executable);
+            let success = if executable == LintRunnerKind::Clippy.executable() {
+                clippy_available(true)
+            } else {
+                tool_available(executable)
+            };
             ToolOperationResult {
                 install_source: Some(plan.method),
                 success,
@@ -575,11 +582,18 @@ pub fn uninstall_tool(
             };
             let output = Command::new(method.as_str()).args(args).output();
             match output {
-                Ok(output) if output.status.success() => ToolOperationResult {
-                    install_source,
-                    success: true,
-                    message: format!("removed {label}"),
-                },
+                Ok(output) if output.status.success() => {
+                    if method == InstallMethod::Rustup {
+                        *CLIPPY_AVAILABLE
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()) = false;
+                    }
+                    ToolOperationResult {
+                        install_source,
+                        success: true,
+                        message: format!("removed {label}"),
+                    }
+                }
                 Ok(output) => ToolOperationResult {
                     install_source,
                     success: false,
@@ -614,13 +628,20 @@ pub fn uninstall_tool(
     }
 }
 
-fn clippy_available() -> bool {
-    Command::new("cargo")
-        .args(["clippy", "--version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+fn clippy_available(refresh: bool) -> bool {
+    let mut available = CLIPPY_AVAILABLE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    // Cache successful probes only, so missing tools can be discovered on a later check.
+    if refresh || !*available {
+        *available = Command::new("cargo")
+            .args(["clippy", "--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    *available
 }
 
 fn remove_go_binary(binary: &str) -> io::Result<()> {
