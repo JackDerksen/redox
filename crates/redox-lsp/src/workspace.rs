@@ -53,8 +53,7 @@ pub(crate) fn built_in_workspace_root_for(
                 .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"]))
         }
         ProviderId::Gopls => find_outermost_ancestor_with_any_marker(start_dir, &["go.work"])
-            .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &["go.mod"]))
-            .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"])),
+            .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &["go.mod", ".git"])),
         ProviderId::TypeScriptLanguageServer => find_nearest_ancestor_with_any_marker(
             start_dir,
             &[
@@ -111,9 +110,15 @@ fn find_nearest_ancestor_with_any_marker(start_dir: &Path, markers: &[&str]) -> 
 }
 
 fn find_outermost_ancestor_with_any_marker(start_dir: &Path, markers: &[&str]) -> Option<PathBuf> {
-    start_dir
-        .ancestors()
-        .filter(|dir| markers.iter().any(|marker| dir.join(marker).exists()))
-        .last()
-        .map(Path::to_path_buf)
+    let mut outermost = None;
+    for directory in start_dir.ancestors() {
+        if markers.iter().any(|marker| directory.join(marker).exists()) {
+            outermost = Some(directory.to_path_buf());
+        }
+        // Include markers at the repository root, but never search beyond it.
+        if directory.join(".git").exists() {
+            break;
+        }
+    }
+    outermost
 }
