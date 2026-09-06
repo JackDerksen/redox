@@ -45,38 +45,6 @@ pub(super) enum CodeActionRequestTrigger {
     Prefetch,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct AvailableCodeAction {
-    pub(super) title: String,
-    pub(super) kind: Option<String>,
-    pub(super) preferred: bool,
-    pub(super) edit: Option<WorkspaceEdit>,
-    pub(super) command: Option<LspCommand>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct WorkspaceEdit {
-    pub(super) document_edits: Vec<DocumentEdit>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct DocumentEdit {
-    pub(super) uri: String,
-    pub(super) edits: Vec<TextEdit>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct TextEdit {
-    pub(super) range: IncomingRange,
-    pub(super) new_text: String,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct LspCommand {
-    pub(super) command: String,
-    pub(super) arguments: Vec<Value>,
-}
-
 impl EditorState {
     pub fn code_actions_popup(&self) -> Option<CodeActionPopup> {
         let state = self.lsp.code_actions_popup.as_ref()?;
@@ -213,7 +181,7 @@ impl EditorState {
             .lsp
             .clients
             .get(&document.workspace)
-            .is_some_and(|client| client.session.initialized);
+            .is_some_and(|client| client.session.is_initialized());
         if !client_initialized {
             if trigger == CodeActionRequestTrigger::Manual {
                 self.set_status("LSP still loading");
@@ -250,6 +218,7 @@ impl EditorState {
                         id,
                     },
                     PendingClientRequest {
+                        context: self.lsp_request_context(),
                         kind: PendingRequest::CodeActions {
                             origin,
                             requested_at,
@@ -330,6 +299,7 @@ impl EditorState {
                             id,
                         },
                         PendingClientRequest {
+                            context: self.lsp_request_context(),
                             kind: PendingRequest::ExecuteCommand {
                                 title: action.title.clone(),
                                 edit_applied,
@@ -589,8 +559,37 @@ impl EditorState {
         let text_vh = viewport_height_rows.saturating_sub(crate::ui::STATUS_BAR_HEIGHT_ROWS);
         let mut touched_buffers = Vec::new();
 
+        for document_edit in &edit.document_edits {
+            let Some(expected_version) = document_edit.version else {
+                continue;
+            };
+            let Some((buffer_id, document)) = self
+                .lsp
+                .documents
+                .iter()
+                .find(|(_, document)| document.uri == document_edit.uri)
+            else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "versioned workspace edit targets an unopened document",
+                ));
+            };
+            let current_analysis_version = self
+                .views
+                .get(buffer_id)
+                .map(|view| view.analysis_version());
+            if document.document_version != expected_version
+                || document.last_sent_analysis_version != current_analysis_version
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace edit targets a stale document version",
+                ));
+            }
+        }
+
         let planned_edits = (|| {
-            let mut planned_edits = Vec::new();
+            let mut planned_edits = HashMap::<BufferId, Vec<redox_lsp::TextEdit>>::new();
             for document_edit in &edit.document_edits {
                 let Some(path) = file_path_from_uri(&document_edit.uri) else {
                     return Err(io::Error::new(
@@ -604,28 +603,18 @@ impl EditorState {
                 self.session
                     .ensure_buffer_fully_loaded(buffer_id)
                     .map_err(io::Error::other)?;
-                let Some(buffer) = self.session.buffer(buffer_id) else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "workspace edit target buffer was not loaded",
-                    ));
-                };
-
-                let mut edits = document_edit.edits.clone();
-                edits.sort_by(|left, right| compare_edit_ranges_desc(&left.range, &right.range));
-                let mut buffer_edits = Vec::new();
-                for edit in &edits {
-                    let Some((start, end)) = buffer_positions_for_range(buffer, &edit.range) else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "workspace edit range is out of bounds",
-                        ));
-                    };
-                    buffer_edits.push((start, end, edit.new_text.clone()));
-                }
-
-                planned_edits.push((buffer_id, buffer_edits));
+                planned_edits
+                    .entry(buffer_id)
+                    .or_default()
+                    .extend(document_edit.edits.clone());
             }
+            let planned_edits = planned_edits
+                .into_iter()
+                .map(|(buffer_id, edits)| {
+                    let buffer = self.session.buffer(buffer_id).expect("loaded edit buffer");
+                    prepare_lsp_edits(buffer, &edits).map(|edits| (buffer_id, edits))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
             Ok(planned_edits)
         })();
 
@@ -633,13 +622,20 @@ impl EditorState {
         let planned_edits = planned_edits?;
 
         for (buffer_id, edits) in planned_edits {
+            if self
+                .lsp
+                .active_snippet
+                .as_ref()
+                .is_some_and(|snippet| snippet.buffer_id == buffer_id)
+            {
+                self.lsp.active_snippet = None;
+            }
+            self.finalize_buffer_insert_undo_if_changed(buffer_id);
+            let before = self.capture_buffer_undo_checkpoint(buffer_id);
             let Some(buffer) = self.session.buffer_mut(buffer_id) else {
                 continue;
             };
-            for (start, end, new_text) in edits {
-                let _ = buffer.delete_range(start, end);
-                let _ = buffer.insert(start, &new_text);
-            }
+            apply_character_edits(buffer, &edits);
             let _ = self.session.recompute_buffer_dirty(buffer_id);
             self.invalidate_buffer_render_caches(buffer_id);
             let _ = self.with_buffer_view_mut(buffer_id, |buffer, view| {
@@ -647,6 +643,7 @@ impl EditorState {
                 view.cursor
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             });
+            self.record_buffer_undo_if_changed(buffer_id, before);
             touched_buffers.push(buffer_id);
         }
 
@@ -683,7 +680,7 @@ impl EditorState {
             return false;
         };
         self.lsp.pending_requests.remove(&key);
-        if origin.workspace != *workspace {
+        if origin.workspace != *workspace || request.context != self.lsp_request_context() {
             return true;
         }
 

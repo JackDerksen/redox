@@ -16,6 +16,7 @@ path = "src/main.rs"
 [workspace]
 members = [
     "crates/redox-core",
+    "crates/redox-lsp",
     "crates/redox-tui",
 ]
 

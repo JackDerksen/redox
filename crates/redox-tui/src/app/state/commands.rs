@@ -243,7 +243,12 @@ impl EditorState {
         match self.reload_active_buffer_from_disk(&path, viewport_width_cells, text_vh) {
             Ok(()) => {
                 self.mark_git_repo_statuses_stale();
-                self.set_status("reloaded from disk");
+                match self.notify_active_lsp_did_save() {
+                    Ok(()) => self.set_status("reloaded from disk"),
+                    Err(error) => self.set_status(format!(
+                        "reloaded from disk (diagnostics refresh failed: {error})"
+                    )),
+                }
             }
             Err(error) => self.set_status(format!("reload failed: {error}")),
         }

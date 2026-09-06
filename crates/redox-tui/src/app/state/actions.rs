@@ -15,6 +15,7 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
+        self.cancel_obsolete_lsp_requests();
         self.apply_configured_scrolloff(self.session.active_id());
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
         if self

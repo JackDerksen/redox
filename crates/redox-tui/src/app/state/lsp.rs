@@ -1,15 +1,30 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use redox_core::{BufferId, BufferKind, Pos};
+#[cfg(test)]
+use redox_lsp::InsertTextFormat;
+use redox_lsp::diagnostics::{configuration_response, workspace_folders_response};
+use redox_lsp::protocol::{
+    Position as IncomingPosition, Range as IncomingRange, char_col_to_utf16,
+    utf16_code_unit_to_char_col,
+};
+use redox_lsp::{
+    AvailableCodeAction, Client as LspSession, ClientEvent as SessionEvent, ClientInfo,
+    CompletionCandidate, DefinitionTarget, InstallMethod, InstallPlan, Language as LspLanguage,
+    LintRunResult, LintRunnerKind, LintSource, LinterSpec, ProviderId, ProviderSpec, Uninstall,
+    WorkspaceEdit, completion_snippet_expansion, file_path_from_uri, file_uri,
+    install_method_available, install_tool, lint_runner_available, linter_spec,
+    parse_code_action_response, parse_completion_response, parse_definition_response,
+    parse_hover_response, parse_publish_diagnostics, parse_workspace_edit, provider_spec,
+    run_linter as run_lint_source, tool_available, uninstall_tool, workspace_root_for,
+};
 use serde_json::{Value, json};
-use url::Url;
 
 use super::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::build_symbol_info_display_lines;
@@ -26,376 +41,52 @@ mod diagnostics;
 use diagnostics::*;
 pub use diagnostics::{DiagnosticLine, DiagnosticSeverity, DiagnosticSummary};
 mod types;
-use self::types::{DefinitionTarget, LspMarketplaceEntry, WorkspaceKey};
+use self::types::{LspMarketplaceEntry, WorkspaceKey};
+pub use redox_lsp::{SymbolInfoBlock, SymbolInfoKind};
 pub use types::{
     CodeActionPopup, CodeActionPopupEntry, CompletionEntry, CompletionPopup, CompletionPreview,
     DiagnosticsCodeActionsPane, DiagnosticsPopup, DiagnosticsPopupEntry, DiagnosticsPopupFocus,
-    LspEntryStatusKind, LspMarketplacePopup, SymbolInfoBlock, SymbolInfoDisplayKind,
-    SymbolInfoDisplayLine, SymbolInfoKind, SymbolInfoPopup,
+    LspEntryStatusKind, LspMarketplacePopup, SymbolInfoDisplayKind, SymbolInfoDisplayLine,
+    SymbolInfoPopup,
 };
 
-const INITIALIZE_REQUEST_ID: i64 = 1;
-const FIRST_DYNAMIC_REQUEST_ID: i64 = 2;
 const LSP_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const MAX_LSP_EVENTS_PER_WORKSPACE_POLL: usize = 256;
 const DIAGNOSTICS_POPUP_VISIBLE_ROWS: usize = 12;
 const COMPLETION_POPUP_VISIBLE_ROWS: usize = 8;
 const SYMBOL_INFO_MAX_HEIGHT: usize = 12;
 const LSP_CHANGE_DEBOUNCE: Duration = Duration::from_millis(175);
-const COMPLETION_AUTO_TRIGGER_DEBOUNCE: Duration = Duration::from_millis(90);
-const COMPLETION_TRIGGER_CHARACTER_DEBOUNCE: Duration = Duration::from_millis(15);
+const COMPLETION_AUTO_TRIGGER_DEBOUNCE: Duration = Duration::from_millis(35);
+const COMPLETION_TRIGGER_CHARACTER_DEBOUNCE: Duration = Duration::ZERO;
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const LSP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const LSP_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-const JS_TS_LANGUAGES: &[SyntaxLanguage] = &[
-    SyntaxLanguage::JavaScript,
-    SyntaxLanguage::TypeScript,
-    SyntaxLanguage::Tsx,
-];
-const CSS_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Css];
-const HTML_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Html];
-const JSON_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Json];
-const LUA_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Lua];
-const MARKDOWN_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Markdown];
-const PYTHON_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Python];
-const RUST_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Rust];
-const TOML_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Toml];
-const YAML_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Yaml];
-const GO_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::Go];
-const C_CPP_LANGUAGES: &[SyntaxLanguage] = &[SyntaxLanguage::C, SyntaxLanguage::Cpp];
+const PROVIDERS: &[ProviderSpec] = redox_lsp::provider::built_in_providers();
+const LINTERS: &[LinterSpec] = redox_lsp::provider::built_in_linters();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ProviderId {
-    RustAnalyzer,
-    Clangd,
-    Gopls,
-    Pyright,
-    TypeScriptLanguageServer,
-    LuaLanguageServer,
-    Taplo,
-    Marksman,
-    YamlLanguageServer,
-    JsonLanguageServer,
-    HtmlLanguageServer,
-    CssLanguageServer,
-}
+type InstallMethodId = InstallMethod;
+type ProviderInstallPlan = InstallPlan;
 
-impl ProviderId {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::RustAnalyzer => "rust-analyzer",
-            Self::Clangd => "clangd",
-            Self::Gopls => "gopls",
-            Self::Pyright => "pyright-langserver",
-            Self::TypeScriptLanguageServer => "typescript-language-server",
-            Self::LuaLanguageServer => "lua-language-server",
-            Self::Taplo => "taplo",
-            Self::Marksman => "marksman",
-            Self::YamlLanguageServer => "yaml-language-server",
-            Self::JsonLanguageServer => "vscode-json-language-server",
-            Self::HtmlLanguageServer => "vscode-html-language-server",
-            Self::CssLanguageServer => "vscode-css-language-server",
-        }
-    }
-
-    fn from_str(value: &str) -> Option<Self> {
-        PROVIDERS
-            .iter()
-            .find(|provider| provider.id.as_str() == value)
-            .map(|provider| provider.id)
+fn lsp_language(language: SyntaxLanguage) -> LspLanguage {
+    match language {
+        SyntaxLanguage::C => LspLanguage::C,
+        SyntaxLanguage::Cpp => LspLanguage::Cpp,
+        SyntaxLanguage::Css => LspLanguage::Css,
+        SyntaxLanguage::Go => LspLanguage::Go,
+        SyntaxLanguage::Html => LspLanguage::Html,
+        SyntaxLanguage::JavaScript => LspLanguage::JavaScript,
+        SyntaxLanguage::Json => LspLanguage::Json,
+        SyntaxLanguage::Lua => LspLanguage::Lua,
+        SyntaxLanguage::Markdown => LspLanguage::Markdown,
+        SyntaxLanguage::Python => LspLanguage::Python,
+        SyntaxLanguage::Rust => LspLanguage::Rust,
+        SyntaxLanguage::Toml => LspLanguage::Toml,
+        SyntaxLanguage::TypeScript => LspLanguage::TypeScript,
+        SyntaxLanguage::Tsx => LspLanguage::Tsx,
+        SyntaxLanguage::Yaml => LspLanguage::Yaml,
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-struct ProviderSpec {
-    id: ProviderId,
-    label: &'static str,
-    language_label: &'static str,
-    executable: &'static str,
-    args: &'static [&'static str],
-    languages: &'static [SyntaxLanguage],
-    install_plans: &'static [ProviderInstallPlan],
-}
-
-impl ProviderSpec {
-    fn matches_language(self, language: SyntaxLanguage) -> bool {
-        self.languages.contains(&language)
-    }
-
-    fn language_id_for(self, language: SyntaxLanguage) -> Option<&'static str> {
-        match (self.id, language) {
-            (ProviderId::Clangd, SyntaxLanguage::C) => Some("c"),
-            (ProviderId::Clangd, SyntaxLanguage::Cpp) => Some("cpp"),
-            (ProviderId::TypeScriptLanguageServer, SyntaxLanguage::JavaScript) => {
-                Some("javascript")
-            }
-            (ProviderId::TypeScriptLanguageServer, SyntaxLanguage::TypeScript) => {
-                Some("typescript")
-            }
-            (ProviderId::TypeScriptLanguageServer, SyntaxLanguage::Tsx) => Some("typescriptreact"),
-            (_, language) if self.matches_language(language) => Some(match self.id {
-                ProviderId::RustAnalyzer => "rust",
-                ProviderId::Gopls => "go",
-                ProviderId::Pyright => "python",
-                ProviderId::LuaLanguageServer => "lua",
-                ProviderId::Taplo => "toml",
-                ProviderId::Marksman => "markdown",
-                ProviderId::YamlLanguageServer => "yaml",
-                ProviderId::JsonLanguageServer => "json",
-                ProviderId::HtmlLanguageServer => "html",
-                ProviderId::CssLanguageServer => "css",
-                ProviderId::Clangd | ProviderId::TypeScriptLanguageServer => return None,
-            }),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LinterSpec {
-    kind: LintRunnerKind,
-    label: &'static str,
-    language_label: &'static str,
-    install_plans: &'static [ProviderInstallPlan],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum InstallMethodId {
-    Brew,
-    Cargo,
-    Go,
-    Npm,
-    Rustup,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ProviderInstallPlan {
-    method: InstallMethodId,
-    install_args: &'static [&'static str],
-    uninstall: ProviderUninstall,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ProviderUninstall {
-    Command(&'static [&'static str]),
-    GoBinary(&'static str),
-    DisableOnly,
-}
-
-const BREW_RUST_ANALYZER: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Brew,
-    install_args: &["install", "rust-analyzer"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "rust-analyzer"]),
-}];
-const BREW_LUA_LANGUAGE_SERVER: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Brew,
-    install_args: &["install", "lua-language-server"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "lua-language-server"]),
-}];
-const BREW_MARKSMAN: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Brew,
-    install_args: &["install", "marksman"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "marksman"]),
-}];
-const CARGO_TAPLO: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Cargo,
-    install_args: &["install", "taplo-cli", "--locked"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "taplo-cli"]),
-}];
-const GO_GOPLS: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Go,
-    install_args: &["install", "golang.org/x/tools/gopls@latest"],
-    uninstall: ProviderUninstall::GoBinary("gopls"),
-}];
-const NPM_PYRIGHT: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "pyright"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "-g", "pyright"]),
-}];
-const NPM_TYPESCRIPT_LSP: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "typescript", "typescript-language-server"],
-    uninstall: ProviderUninstall::Command(&[
-        "uninstall",
-        "-g",
-        "typescript-language-server",
-        "typescript",
-    ]),
-}];
-const NPM_YAML_LSP: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "yaml-language-server"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "-g", "yaml-language-server"]),
-}];
-const NPM_VSCODE_JSON: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "vscode-langservers-extracted"],
-    uninstall: ProviderUninstall::DisableOnly,
-}];
-const NPM_VSCODE_HTML: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "vscode-langservers-extracted"],
-    uninstall: ProviderUninstall::DisableOnly,
-}];
-const NPM_VSCODE_CSS: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Npm,
-    install_args: &["install", "-g", "vscode-langservers-extracted"],
-    uninstall: ProviderUninstall::DisableOnly,
-}];
-const RUSTUP_CLIPPY: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Rustup,
-    install_args: &["component", "add", "clippy"],
-    uninstall: ProviderUninstall::Command(&["component", "remove", "clippy"]),
-}];
-const BREW_GOLANGCI_LINT: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Brew,
-    install_args: &["install", "golangci-lint"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "golangci-lint"]),
-}];
-const GO_GOLANGCI_LINT: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Go,
-    install_args: &[
-        "install",
-        "github.com/golangci/golangci-lint/cmd/golangci-lint@latest",
-    ],
-    uninstall: ProviderUninstall::GoBinary("golangci-lint"),
-}];
-const BREW_RUFF: &[ProviderInstallPlan] = &[ProviderInstallPlan {
-    method: InstallMethodId::Brew,
-    install_args: &["install", "ruff"],
-    uninstall: ProviderUninstall::Command(&["uninstall", "ruff"]),
-}];
-const NO_AUTO_INSTALL: &[ProviderInstallPlan] = &[];
-
-const PROVIDERS: &[ProviderSpec] = &[
-    ProviderSpec {
-        id: ProviderId::RustAnalyzer,
-        label: "rust-analyzer",
-        language_label: "Rust",
-        executable: "rust-analyzer",
-        args: &[],
-        languages: RUST_LANGUAGES,
-        install_plans: BREW_RUST_ANALYZER,
-    },
-    ProviderSpec {
-        id: ProviderId::Clangd,
-        label: "clangd",
-        language_label: "C / C++",
-        executable: "clangd",
-        args: &[],
-        languages: C_CPP_LANGUAGES,
-        install_plans: NO_AUTO_INSTALL,
-    },
-    ProviderSpec {
-        id: ProviderId::Gopls,
-        label: "gopls",
-        language_label: "Go",
-        executable: "gopls",
-        args: &[],
-        languages: GO_LANGUAGES,
-        install_plans: GO_GOPLS,
-    },
-    ProviderSpec {
-        id: ProviderId::Pyright,
-        label: "pyright",
-        language_label: "Python",
-        executable: "pyright-langserver",
-        args: &["--stdio"],
-        languages: PYTHON_LANGUAGES,
-        install_plans: NPM_PYRIGHT,
-    },
-    ProviderSpec {
-        id: ProviderId::TypeScriptLanguageServer,
-        label: "typescript-language-server",
-        language_label: "JS/TS",
-        executable: "typescript-language-server",
-        args: &["--stdio"],
-        languages: JS_TS_LANGUAGES,
-        install_plans: NPM_TYPESCRIPT_LSP,
-    },
-    ProviderSpec {
-        id: ProviderId::LuaLanguageServer,
-        label: "lua-language-server",
-        language_label: "Lua",
-        executable: "lua-language-server",
-        args: &[],
-        languages: LUA_LANGUAGES,
-        install_plans: BREW_LUA_LANGUAGE_SERVER,
-    },
-    ProviderSpec {
-        id: ProviderId::Taplo,
-        label: "taplo",
-        language_label: "TOML",
-        executable: "taplo",
-        args: &["lsp", "stdio"],
-        languages: TOML_LANGUAGES,
-        install_plans: CARGO_TAPLO,
-    },
-    ProviderSpec {
-        id: ProviderId::Marksman,
-        label: "marksman",
-        language_label: "Markdown",
-        executable: "marksman",
-        args: &["server"],
-        languages: MARKDOWN_LANGUAGES,
-        install_plans: BREW_MARKSMAN,
-    },
-    ProviderSpec {
-        id: ProviderId::YamlLanguageServer,
-        label: "yaml-language-server",
-        language_label: "YAML",
-        executable: "yaml-language-server",
-        args: &["--stdio"],
-        languages: YAML_LANGUAGES,
-        install_plans: NPM_YAML_LSP,
-    },
-    ProviderSpec {
-        id: ProviderId::JsonLanguageServer,
-        label: "vscode-json-language-server",
-        language_label: "JSON",
-        executable: "vscode-json-language-server",
-        args: &["--stdio"],
-        languages: JSON_LANGUAGES,
-        install_plans: NPM_VSCODE_JSON,
-    },
-    ProviderSpec {
-        id: ProviderId::HtmlLanguageServer,
-        label: "vscode-html-language-server",
-        language_label: "HTML",
-        executable: "vscode-html-language-server",
-        args: &["--stdio"],
-        languages: HTML_LANGUAGES,
-        install_plans: NPM_VSCODE_HTML,
-    },
-    ProviderSpec {
-        id: ProviderId::CssLanguageServer,
-        label: "vscode-css-language-server",
-        language_label: "CSS",
-        executable: "vscode-css-language-server",
-        args: &["--stdio"],
-        languages: CSS_LANGUAGES,
-        install_plans: NPM_VSCODE_CSS,
-    },
-];
-
-const LINTERS: &[LinterSpec] = &[
-    LinterSpec {
-        kind: LintRunnerKind::Clippy,
-        label: "clippy",
-        language_label: "Rust",
-        install_plans: RUSTUP_CLIPPY,
-    },
-    LinterSpec {
-        kind: LintRunnerKind::GolangciLint,
-        label: "golangci-lint",
-        language_label: "Go",
-        install_plans: &[BREW_GOLANGCI_LINT[0], GO_GOLANGCI_LINT[0]],
-    },
-    LinterSpec {
-        kind: LintRunnerKind::Ruff,
-        label: "ruff",
-        language_label: "Python",
-        install_plans: BREW_RUFF,
-    },
-];
 
 #[derive(Debug, Clone, Copy)]
 enum MarketplaceSpec {
@@ -440,21 +131,10 @@ impl MarketplaceSpec {
     }
 }
 
+#[derive(Debug)]
 struct PendingLintRun {
-    source: LintSource,
-    uri: String,
-    document_version: i32,
+    request: QueuedLintRun,
     receiver: Receiver<LintRunResult>,
-}
-
-impl std::fmt::Debug for PendingLintRun {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingLintRun")
-            .field("source", &self.source)
-            .field("uri", &self.uri)
-            .field("document_version", &self.document_version)
-            .finish_non_exhaustive()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -462,14 +142,8 @@ struct QueuedLintRun {
     source: LintSource,
     path: PathBuf,
     uri: String,
-    document_version: i32,
-}
-
-#[derive(Debug)]
-struct LintRunResult {
-    source: LintSource,
-    diagnostics_by_uri: HashMap<String, Vec<StoredDiagnostic>>,
-    error: Option<String>,
+    buffer_id: BufferId,
+    analysis_version: u64,
 }
 
 #[derive(Default)]
@@ -485,6 +159,7 @@ pub(super) struct LspState {
     symbol_info: Option<SymbolInfoState>,
     recent_completions: HashMap<String, u32>,
     clients: HashMap<WorkspaceKey, ManagedClient>,
+    retry_after: HashMap<WorkspaceKey, Instant>,
     documents: HashMap<BufferId, ManagedDocument>,
     diagnostics: HashMap<String, Vec<StoredDiagnostics>>,
     deferred_diagnostics: Vec<DeferredDiagnostics>,
@@ -646,6 +321,15 @@ fn pending_request_same_family(left: &PendingRequest, right: &PendingRequest) ->
 struct PendingClientRequest {
     kind: PendingRequest,
     started_at: Instant,
+    context: RequestContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestContext {
+    buffer_id: BufferId,
+    analysis_version: u64,
+    cursor: Pos,
+    mode: EditorMode,
 }
 
 struct ProviderOperation {
@@ -691,362 +375,6 @@ impl std::fmt::Debug for ManagedClient {
     }
 }
 
-enum SessionEvent {
-    Message(Value),
-    Terminated,
-}
-
-struct LspSession {
-    child: Child,
-    stdin: ChildStdin,
-    events: Receiver<SessionEvent>,
-    initialized: bool,
-    next_request_id: i64,
-}
-
-impl std::fmt::Debug for LspSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LspSession")
-            .field("initialized", &self.initialized)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for LspSession {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl LspSession {
-    fn spawn(provider: ProviderSpec, root: &Path) -> io::Result<Self> {
-        let mut child = Command::new(provider.executable)
-            .args(provider.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .current_dir(root)
-            .spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("failed to open LSP stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("failed to open LSP stdout"))?;
-        let (tx, rx) = mpsc::channel();
-        thread::Builder::new()
-            .name(format!("redox-lsp-{}", provider.label))
-            .spawn(move || {
-                let mut reader = BufReader::new(stdout);
-                while let Some(message) = read_lsp_message(&mut reader) {
-                    if tx.send(SessionEvent::Message(message)).is_err() {
-                        return;
-                    }
-                }
-                let _ = tx.send(SessionEvent::Terminated);
-            })
-            .expect("failed to start LSP reader");
-
-        let mut session = Self {
-            child,
-            stdin,
-            events: rx,
-            initialized: false,
-            next_request_id: FIRST_DYNAMIC_REQUEST_ID,
-        };
-        session.send_initialize(root)?;
-        Ok(session)
-    }
-
-    fn send_initialize(&mut self, root: &Path) -> io::Result<()> {
-        let root_uri = file_uri(root)?;
-        let root_path = root.to_string_lossy().to_string();
-        let workspace_name = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("workspace")
-            .to_string();
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": INITIALIZE_REQUEST_ID,
-            "method": "initialize",
-            "params": {
-                "processId": null,
-                "rootPath": root_path,
-                "rootUri": root_uri.clone(),
-                "workspaceFolders": [
-                    {
-                        "uri": root_uri,
-                        "name": workspace_name
-                    }
-                ],
-                "capabilities": {
-                    "workspace": {
-                        "applyEdit": true
-                    },
-                    "textDocument": {
-                        "publishDiagnostics": {
-                            "relatedInformation": true,
-                            "versionSupport": true
-                        },
-                        "hover": {
-                            "contentFormat": ["markdown", "plaintext"]
-                        },
-                        "completion": {
-                            "completionItem": {
-                                "snippetSupport": true
-                            }
-                        },
-                        "codeAction": {
-                            "codeActionLiteralSupport": {
-                                "codeActionKind": {
-                                    "valueSet": [
-                                        "quickfix",
-                                        "refactor",
-                                        "refactor.extract",
-                                        "refactor.inline",
-                                        "refactor.rewrite",
-                                        "source",
-                                        "source.organizeImports"
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                },
-                "clientInfo": {
-                    "name": "redox",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_initialized(&mut self) -> io::Result<()> {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "initialized",
-            "params": {}
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_response(&mut self, id: Value, result: Value) -> io::Result<()> {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_method_not_found(&mut self, id: Value, method: &str) -> io::Result<()> {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": -32601,
-                "message": format!("unsupported request: {method}")
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_did_open(
-        &mut self,
-        path: &Path,
-        language_id: &str,
-        version: i32,
-        text: &str,
-    ) -> io::Result<()> {
-        let uri = file_uri(path)?;
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": language_id,
-                    "version": version,
-                    "text": text,
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_did_change(&mut self, path: &Path, version: i32, text: &str) -> io::Result<()> {
-        let uri = file_uri(path)?;
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "version": version,
-                },
-                "contentChanges": [
-                    {
-                        "text": text,
-                    }
-                ]
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_did_save(&mut self, path: &Path) -> io::Result<()> {
-        let uri = file_uri(path)?;
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didSave",
-            "params": {
-                "textDocument": {
-                    "uri": uri
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_cancel_request(&mut self, id: i64) -> io::Result<()> {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "$/cancelRequest",
-            "params": {
-                "id": id
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)
-    }
-
-    fn send_goto_definition(
-        &mut self,
-        path: &Path,
-        line: usize,
-        character: u32,
-    ) -> io::Result<i64> {
-        let uri = file_uri(path)?;
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "textDocument/definition",
-            "params": {
-                "textDocument": {
-                    "uri": uri
-                },
-                "position": {
-                    "line": line,
-                    "character": character
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)?;
-        Ok(request_id)
-    }
-
-    fn send_hover(&mut self, path: &Path, line: usize, character: u32) -> io::Result<i64> {
-        let uri = file_uri(path)?;
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "textDocument/hover",
-            "params": {
-                "textDocument": {
-                    "uri": uri
-                },
-                "position": {
-                    "line": line,
-                    "character": character
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)?;
-        Ok(request_id)
-    }
-
-    fn send_completion(&mut self, path: &Path, line: usize, character: u32) -> io::Result<i64> {
-        let uri = file_uri(path)?;
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": {
-                    "uri": uri
-                },
-                "position": {
-                    "line": line,
-                    "character": character
-                },
-                "context": {
-                    "triggerKind": 1
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)?;
-        Ok(request_id)
-    }
-
-    fn send_code_actions(
-        &mut self,
-        path: &Path,
-        range: &IncomingRange,
-        diagnostics: &[Value],
-    ) -> io::Result<i64> {
-        let uri = file_uri(path)?;
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "textDocument/codeAction",
-            "params": {
-                "textDocument": {
-                    "uri": uri
-                },
-                "range": range,
-                "context": {
-                    "diagnostics": diagnostics,
-                    "only": ["quickfix"]
-                }
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)?;
-        Ok(request_id)
-    }
-
-    fn send_execute_command(&mut self, command: &str, arguments: &[Value]) -> io::Result<i64> {
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "workspace/executeCommand",
-            "params": {
-                "command": command,
-                "arguments": arguments,
-            }
-        });
-        write_lsp_message(&mut self.stdin, &message)?;
-        Ok(request_id)
-    }
-
-    fn try_recv(&self) -> Option<SessionEvent> {
-        self.events.try_recv().ok()
-    }
-}
-
 impl EditorState {
     pub(in crate::app::state) fn lsp_statusline_return_mode(&self) -> Option<EditorMode> {
         match self.mode {
@@ -1066,6 +394,8 @@ impl EditorState {
 
     pub fn completion_popup(&self) -> Option<CompletionPopup> {
         let state = self.visible_completion_state()?;
+        let buffer = self.session.buffer(self.session.active_id())?;
+        let prefix = completion_prefix(buffer, self.active_cursor_pos());
         let max_selected = state.items.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
         let scroll = selected.saturating_sub(COMPLETION_POPUP_VISIBLE_ROWS.saturating_sub(1));
@@ -1076,9 +406,7 @@ impl EditorState {
                 .map(|item| CompletionEntry {
                     kind: item.kind.clone(),
                     keyword: item.label.clone(),
-                    type_label: completion_type_label(item),
-                    extra: completion_extra_label(item),
-                    documentation: item.documentation.clone(),
+                    highlights: completion_label_highlights(&item.label, &prefix),
                 })
                 .collect(),
             selected,
@@ -1090,13 +418,23 @@ impl EditorState {
         self.visible_completion_state().is_some()
     }
 
+    pub(crate) fn lsp_needs_fast_poll(&self) -> bool {
+        self.lsp.auto_completion.is_some()
+            || self.lsp.pending_requests.values().any(|request| {
+                matches!(
+                    request.kind,
+                    PendingRequest::Completion { .. } | PendingRequest::SymbolInfo { .. }
+                )
+            })
+    }
+
     pub fn completion_preview(&self) -> Option<CompletionPreview> {
         let state = self.visible_completion_state()?;
         let item = state.items.get(state.selected)?;
         let buffer = self.session.buffer(self.session.active_id())?;
         let cursor = self.active_cursor_pos();
         let suffix = line_after_cursor_completion_preview_suffix(buffer, cursor)?;
-        let edit = completion_edit_for_buffer(item, buffer, state.requested_at);
+        let edit = completion_edit_for_buffer(item, buffer, state.requested_at)?;
         let insert = completion_snippet_expansion(item, &edit.insert)
             .map(|expansion| expansion.text)
             .unwrap_or_else(|| edit.insert.clone());
@@ -1229,7 +567,7 @@ impl EditorState {
         };
 
         PROVIDERS.iter().copied().any(|provider| {
-            provider.matches_language(language)
+            provider.matches_language(lsp_language(language))
                 && self
                     .lsp
                     .installed
@@ -1370,7 +708,7 @@ impl EditorState {
         let active_id = self.session.active_id();
         let document = self.lsp.documents.get(&active_id)?;
         let client = self.lsp.clients.get(&document.workspace)?;
-        if client.session.initialized {
+        if client.session.is_initialized() {
             return None;
         }
         let elapsed = now.saturating_duration_since(client.loading_since);
@@ -1383,6 +721,8 @@ impl EditorState {
 
     pub fn poll_lsp(&mut self) {
         let now = Instant::now();
+        self.cancel_obsolete_lsp_requests();
+        self.lsp.retry_after.retain(|_, retry_at| *retry_at > now);
         self.poll_provider_operations();
         self.poll_lint_runs();
         self.ensure_active_lsp_client();
@@ -1394,37 +734,54 @@ impl EditorState {
         let mut terminated = Vec::new();
         let workspaces = self.lsp.clients.keys().cloned().collect::<Vec<_>>();
         for workspace in workspaces {
-            loop {
+            if self.lsp.clients.get(&workspace).is_some_and(|client| {
+                !client.session.is_initialized()
+                    && now.saturating_duration_since(client.loading_since) >= LSP_INITIALIZE_TIMEOUT
+            }) {
+                terminated.push((
+                    workspace,
+                    Some("language-server initialization timed out".to_string()),
+                ));
+                continue;
+            }
+            for _ in 0..MAX_LSP_EVENTS_PER_WORKSPACE_POLL {
                 let event = self
                     .lsp
                     .clients
-                    .get(&workspace)
+                    .get_mut(&workspace)
                     .and_then(|client| client.session.try_recv());
                 let Some(event) = event else {
                     break;
                 };
 
                 match event {
-                    SessionEvent::Message(message) => {
-                        if is_initialize_response(&message) {
-                            if let Some(client) = self.lsp.clients.get_mut(&workspace) {
-                                client.session.initialized = true;
-                                let _ = client.session.send_initialized();
-                            }
-                            let document_ids = self
-                                .lsp
-                                .documents
-                                .iter()
-                                .filter_map(|(buffer_id, document)| {
-                                    (document.workspace == workspace).then_some(*buffer_id)
-                                })
-                                .collect::<Vec<_>>();
-                            for buffer_id in document_ids {
-                                let _ = self.sync_lsp_document(buffer_id, SyncPolicy::Immediate);
-                            }
-                            continue;
+                    SessionEvent::Initialized { .. } => {
+                        let document_ids = self
+                            .lsp
+                            .documents
+                            .iter()
+                            .filter_map(|(buffer_id, document)| {
+                                (document.workspace == workspace).then_some(*buffer_id)
+                            })
+                            .collect::<Vec<_>>();
+                        for buffer_id in document_ids {
+                            let _ = self.sync_lsp_document(buffer_id, SyncPolicy::Immediate);
                         }
-
+                    }
+                    SessionEvent::InitializationFailed { message } => {
+                        let label = self
+                            .lsp
+                            .clients
+                            .get(&workspace)
+                            .map(|client| client.provider.label)
+                            .unwrap_or("language server");
+                        terminated.push((
+                            workspace.clone(),
+                            Some(format!("failed to initialize {label}: {message}")),
+                        ));
+                        break;
+                    }
+                    SessionEvent::Message(message) => {
                         if let Some((uri, version, diagnostics)) =
                             parse_publish_diagnostics(&message)
                         {
@@ -1462,16 +819,22 @@ impl EditorState {
                             continue;
                         }
                     }
-                    SessionEvent::Terminated => {
-                        terminated.push(workspace.clone());
+                    SessionEvent::Terminated { error } => {
+                        terminated.push((
+                            workspace.clone(),
+                            error.map(|error| format!("language server stopped: {error}")),
+                        ));
                         break;
                     }
                 }
             }
         }
 
-        for workspace in terminated {
+        for (workspace, error) in terminated {
             self.lsp.clients.remove(&workspace);
+            self.lsp
+                .retry_after
+                .insert(workspace.clone(), now + LSP_RETRY_DELAY);
             self.reset_documents_for_workspace(&workspace);
             self.remove_diagnostics_for_source_everywhere(&DiagnosticSource::Lsp(
                 workspace.clone(),
@@ -1479,6 +842,20 @@ impl EditorState {
             self.lsp
                 .pending_requests
                 .retain(|key, _| key.workspace != workspace);
+            self.lsp
+                .deferred_diagnostics
+                .retain(|pending| pending.source != DiagnosticSource::Lsp(workspace.clone()));
+            if self.lsp.completion.as_ref().is_some_and(|completion| {
+                self.lsp
+                    .documents
+                    .get(&completion.context.buffer_id)
+                    .is_some_and(|document| document.workspace == workspace)
+            }) {
+                self.close_completion();
+            }
+            if let Some(error) = error {
+                self.set_status(error);
+            }
         }
 
         self.cleanup_orphaned_lsp_state();
@@ -1638,18 +1015,15 @@ impl EditorState {
             }
             self.set_status(format!("installing {}", item.label()));
             return;
-        } else if self
-            .lsp
-            .installed
-            .insert(
-                item.id(),
-                InstalledToolRecord {
-                    install_source: None,
-                },
-            )
-            .is_none()
-            && let Err(error) = save_installed_tools(&self.lsp.installed)
-        {
+        }
+        let std::collections::hash_map::Entry::Vacant(entry) = self.lsp.installed.entry(item.id())
+        else {
+            return;
+        };
+        entry.insert(InstalledToolRecord {
+            install_source: None,
+        });
+        if let Err(error) = save_installed_tools(&self.lsp.installed) {
             self.set_status(format!("failed to save installed tools: {error}"));
             self.lsp.installed.remove(&item.id());
             return;
@@ -1711,7 +1085,7 @@ impl EditorState {
             self.lsp
                 .installed
                 .contains_key(&MarketplaceItemId::Provider(provider.id))
-                && provider.matches_language(language)
+                && provider.matches_language(lsp_language(language))
         });
         let linter = self
             .lint_source_for_path(path, language)
@@ -1775,11 +1149,11 @@ impl EditorState {
             self.lsp
                 .installed
                 .contains_key(&MarketplaceItemId::Provider(provider.id))
-                && provider.matches_language(language)
+                && provider.matches_language(lsp_language(language))
         }) else {
             return;
         };
-        let Some(language_id) = provider.language_id_for(language) else {
+        let Some(language_id) = provider.language_id_for(lsp_language(language)) else {
             return;
         };
 
@@ -1792,13 +1166,28 @@ impl EditorState {
             return;
         }
 
-        let root = workspace_root_for(path, provider.id, self.session.launch_dir());
+        let root = workspace_root_for(path, &provider, self.session.launch_dir());
         let workspace = WorkspaceKey {
             provider_id: provider.id,
             root: root.clone(),
         };
         if !self.lsp.clients.contains_key(&workspace) {
-            match LspSession::spawn(provider, &root) {
+            if self
+                .lsp
+                .retry_after
+                .get(&workspace)
+                .is_some_and(|retry_at| Instant::now() < *retry_at)
+            {
+                return;
+            }
+            match LspSession::spawn(
+                &provider.command(),
+                &root,
+                ClientInfo {
+                    name: "redox",
+                    version: env!("CARGO_PKG_VERSION"),
+                },
+            ) {
                 Ok(session) => {
                     self.lsp.clients.insert(
                         workspace.clone(),
@@ -1810,6 +1199,9 @@ impl EditorState {
                     );
                 }
                 Err(error) => {
+                    self.lsp
+                        .retry_after
+                        .insert(workspace.clone(), Instant::now() + LSP_RETRY_DELAY);
                     self.set_status(format!("failed to start {}: {error}", provider.label));
                     return;
                 }
@@ -1834,11 +1226,13 @@ impl EditorState {
             return;
         }
 
+        let path = path.to_path_buf();
+        self.close_lsp_document(active_id);
         self.lsp.documents.insert(
             active_id,
             ManagedDocument {
                 workspace,
-                path: path.to_path_buf(),
+                path,
                 uri,
                 language_id,
                 document_version: 0,
@@ -1871,7 +1265,7 @@ impl EditorState {
         let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
             return Ok(());
         };
-        if !client.session.initialized {
+        if !client.session.is_initialized() {
             return Ok(());
         }
         if !self
@@ -1911,6 +1305,12 @@ impl EditorState {
             document.opened = true;
             document.last_sent_analysis_version = Some(analysis_version);
             document.last_sent_text = Some(text);
+            document.pending_sync_since = None;
+            document.pending_sync_analysis_version = None;
+            return Ok(());
+        }
+
+        if document.last_sent_analysis_version == Some(analysis_version) {
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
             return Ok(());
@@ -1961,20 +1361,34 @@ impl EditorState {
             .into_iter()
             .map(|summary| summary.id)
             .collect::<HashSet<_>>();
-        self.lsp
+        let closed = self
+            .lsp
             .documents
-            .retain(|buffer_id, _| valid_ids.contains(buffer_id));
+            .iter()
+            .filter_map(|(buffer_id, document)| {
+                (self
+                    .session
+                    .meta(*buffer_id)
+                    .and_then(|meta| meta.path.as_deref())
+                    != Some(document.path.as_path()))
+                .then_some(*buffer_id)
+            })
+            .collect::<Vec<_>>();
+        for buffer_id in closed {
+            self.close_lsp_document(buffer_id);
+        }
         let live_workspaces = self
             .lsp
             .documents
             .values()
             .map(|document| document.workspace.clone())
             .collect::<HashSet<_>>();
-        let live_lint_sources = self
-            .lsp
-            .documents
-            .values()
-            .filter_map(|document| self.lint_source_for_document(document))
+        let live_lint_sources = valid_ids
+            .iter()
+            .filter_map(|buffer_id| {
+                self.saved_buffer_lint_context(*buffer_id)
+                    .map(|request| request.source)
+            })
             .collect::<HashSet<_>>();
         self.lsp
             .clients
@@ -1995,21 +1409,38 @@ impl EditorState {
                 DiagnosticSource::Lsp(workspace) => live_workspaces.contains(workspace),
                 DiagnosticSource::Lint(source) => live_lint_sources.contains(source),
             });
-        let live_lint_runs = self
+        self.lsp.queued_lint_runs = std::mem::take(&mut self.lsp.queued_lint_runs)
+            .into_iter()
+            .filter(|request| self.lint_request_is_current(request))
+            .collect();
+    }
+
+    fn close_lsp_document(&mut self, buffer_id: BufferId) {
+        let Some(document) = self.lsp.documents.remove(&buffer_id) else {
+            return;
+        };
+        if document.opened
+            && let Some(client) = self.lsp.clients.get_mut(&document.workspace)
+        {
+            let _ = client.session.send_did_close(&document.path);
+        }
+        let source = DiagnosticSource::Lsp(document.workspace.clone());
+        self.remove_diagnostics_for_source_uri(&document.uri, &source);
+        self.lsp
+            .deferred_diagnostics
+            .retain(|pending| pending.uri != document.uri || pending.source != source);
+        let requests = self
             .lsp
-            .documents
-            .values()
-            .filter_map(|document| {
-                self.lint_source_for_document(document)
-                    .map(|source| (document.uri.clone(), document.document_version, source))
+            .pending_requests
+            .iter()
+            .filter_map(|(key, request)| {
+                (request.context.buffer_id == buffer_id).then_some(key.clone())
             })
-            .collect::<HashSet<_>>();
-        self.lsp.lint_runs.retain(|run| {
-            live_lint_runs.contains(&(run.uri.clone(), run.document_version, run.source.clone()))
-        });
-        self.lsp.queued_lint_runs.retain(|run| {
-            live_lint_runs.contains(&(run.uri.clone(), run.document_version, run.source.clone()))
-        });
+            .collect::<Vec<_>>();
+        for key in requests {
+            self.lsp.pending_requests.remove(&key);
+            self.send_lsp_cancel_request(&key);
+        }
     }
 
     fn current_diagnostic_popup_entries(&self) -> Vec<DiagnosticsPopupEntry> {
@@ -2124,6 +1555,9 @@ impl EditorState {
     }
 
     fn remove_provider_runtime_state(&mut self, provider_id: ProviderId) {
+        self.lsp
+            .retry_after
+            .retain(|workspace, _| workspace.provider_id != provider_id);
         let mut doomed_workspaces = self
             .lsp
             .clients
@@ -2184,6 +1618,49 @@ impl EditorState {
             if self.lsp.pending_requests.remove(&key).is_some() {
                 self.send_lsp_cancel_request(&key);
             }
+        }
+    }
+
+    fn lsp_request_context(&self) -> RequestContext {
+        let buffer_id = self.session.active_id();
+        RequestContext {
+            buffer_id,
+            analysis_version: self
+                .views
+                .get(&buffer_id)
+                .map_or(0, |view| view.analysis_version()),
+            cursor: self.active_cursor_pos(),
+            mode: self.mode,
+        }
+    }
+
+    pub(super) fn cancel_obsolete_lsp_requests(&mut self) {
+        let context = self.lsp_request_context();
+        let obsolete = self
+            .lsp
+            .pending_requests
+            .iter()
+            .filter_map(|(key, request)| {
+                (!matches!(request.kind, PendingRequest::ExecuteCommand { .. })
+                    && request.context != context)
+                    .then_some(key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in obsolete {
+            self.lsp.pending_requests.remove(&key);
+            self.send_lsp_cancel_request(&key);
+        }
+    }
+
+    fn cancel_lsp_request_family(&mut self, kind: PendingRequest) {
+        let workspaces = self
+            .lsp
+            .pending_requests
+            .keys()
+            .map(|key| key.workspace.clone())
+            .collect::<HashSet<_>>();
+        for workspace in workspaces {
+            self.cancel_pending_lsp_requests(&workspace, kind.clone());
         }
     }
 
@@ -2269,7 +1746,7 @@ impl EditorState {
             self.set_status("no LSP client for current buffer");
             return;
         };
-        if !client.session.initialized {
+        if !client.session.is_initialized() {
             self.set_status("LSP still loading");
             return;
         }
@@ -2284,6 +1761,7 @@ impl EditorState {
                         id,
                     },
                     PendingClientRequest {
+                        context: self.lsp_request_context(),
                         kind: PendingRequest::GotoDefinition,
                         started_at: Instant::now(),
                     },
@@ -2300,35 +1778,47 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        let completion_blocks = self.selected_completion_symbol_info_blocks();
+        let return_mode = self.mode;
+        let active_id = self.session.active_id();
+        let cursor = self.active_cursor_pos();
+        if let Some(workspace) = self
+            .lsp
+            .documents
+            .get(&active_id)
+            .map(|document| document.workspace.clone())
+        {
+            self.cancel_pending_lsp_requests(
+                &workspace,
+                PendingRequest::SymbolInfo {
+                    requested_at: cursor,
+                    return_mode,
+                },
+            );
+        }
         self.close_completion();
         self.clear_symbol_info();
+        if !completion_blocks.is_empty() {
+            self.show_symbol_info(completion_blocks, cursor, return_mode);
+            return;
+        }
         let _ = self.sync_active_lsp_document();
 
-        let active_id = self.session.active_id();
         let Some(document) = self.lsp.documents.get(&active_id).cloned() else {
             self.set_status("no LSP document for current buffer");
             return;
         };
-        let cursor = self.active_cursor_pos();
         let Some(buffer) = self.session.buffer(active_id) else {
             self.set_status("active buffer unavailable");
             return;
         };
         let line = cursor.line.min(buffer.len_lines().saturating_sub(1));
         let character = char_col_to_utf16(&buffer.line_string(line), cursor.col);
-        let return_mode = self.mode;
-        self.cancel_pending_lsp_requests(
-            &document.workspace,
-            PendingRequest::SymbolInfo {
-                requested_at: cursor,
-                return_mode,
-            },
-        );
         let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
             self.set_status("no LSP client for current buffer");
             return;
         };
-        if !client.session.initialized {
+        if !client.session.is_initialized() {
             self.set_status("LSP still loading");
             return;
         }
@@ -2340,6 +1830,7 @@ impl EditorState {
                         id,
                     },
                     PendingClientRequest {
+                        context: self.lsp_request_context(),
                         kind: PendingRequest::SymbolInfo {
                             requested_at: cursor,
                             return_mode,
@@ -2367,6 +1858,7 @@ impl EditorState {
             }
             return;
         }
+        self.refilter_completion_for_active_cursor(inserted);
         self.lsp.auto_completion = Some(AutoCompletionRequest {
             requested_at: self.active_cursor_pos(),
             due_at: Instant::now() + completion_auto_trigger_delay(inserted),
@@ -2489,7 +1981,7 @@ impl EditorState {
         let before = self.capture_active_insert_coalesced_checkpoint();
         {
             let buffer = self.session.active_buffer_mut();
-            apply_snippet_edits(buffer, &edits);
+            apply_character_edits(buffer, &edits);
         }
         self.update_active_snippet_after_edits(&edits);
         self.mark_active_snippet_tabstop_filled(tabstop);
@@ -2568,7 +2060,7 @@ impl EditorState {
         let mirrored = !edits.is_empty();
         if !edits.is_empty() {
             let buffer = self.session.active_buffer_mut();
-            apply_snippet_edits(buffer, &edits);
+            apply_character_edits(buffer, &edits);
         }
         self.update_active_snippet_after_edits(&edits);
         self.mark_active_snippet_tabstop_filled(tabstop);
@@ -2643,7 +2135,7 @@ impl EditorState {
         let mirrored = !edits.is_empty();
         if mirrored {
             let buffer = self.session.active_buffer_mut();
-            apply_snippet_edits(buffer, &edits);
+            apply_character_edits(buffer, &edits);
         }
         self.update_active_snippet_after_edits(&edits);
         self.mark_active_snippet_tabstop_filled(tabstop);
@@ -2816,7 +2308,7 @@ impl EditorState {
             }
             return;
         };
-        if !client.session.initialized {
+        if !client.session.is_initialized() {
             if manual {
                 self.set_status("LSP still loading");
             }
@@ -2833,6 +2325,7 @@ impl EditorState {
                         id,
                     },
                     PendingClientRequest {
+                        context: self.lsp_request_context(),
                         kind: PendingRequest::Completion {
                             requested_at: cursor,
                             manual,
@@ -2897,12 +2390,19 @@ impl EditorState {
     }
 
     pub(super) fn close_completion(&mut self) -> bool {
+        self.cancel_lsp_request_family(PendingRequest::Completion {
+            requested_at: self.active_cursor_pos(),
+            manual: false,
+        });
         self.lsp.auto_completion = None;
-        let had_completion = self.lsp.completion.take().is_some();
-        had_completion
+        self.lsp.completion.take().is_some()
     }
 
     pub(super) fn close_symbol_info(&mut self) -> bool {
+        self.cancel_lsp_request_family(PendingRequest::SymbolInfo {
+            requested_at: self.active_cursor_pos(),
+            return_mode: self.mode,
+        });
         let Some(symbol_info) = self.lsp.symbol_info.take() else {
             return false;
         };
@@ -2913,6 +2413,10 @@ impl EditorState {
     }
 
     pub(super) fn clear_symbol_info(&mut self) -> bool {
+        self.cancel_lsp_request_family(PendingRequest::SymbolInfo {
+            requested_at: self.active_cursor_pos(),
+            return_mode: self.mode,
+        });
         self.lsp.symbol_info.take().is_some()
     }
 
@@ -2925,18 +2429,37 @@ impl EditorState {
         viewport_width_cells: usize,
         text_vh: usize,
     ) -> bool {
-        let Some(state) = self.lsp.completion.take() else {
+        if self.visible_completion_state().is_none() {
+            self.close_completion();
             return false;
-        };
+        }
+        let state = self.lsp.completion.take().expect("visible completion");
+        self.close_completion();
         let Some(item) = state.items.get(state.selected).cloned() else {
             return false;
         };
-        self.remember_completion_accept(&item);
         let active_id = self.session.active_id();
-        let Some(buffer) = self.session.buffer(active_id) else {
-            return false;
+        let buffer = self.session.active_buffer();
+        let Some(edit) = completion_edit_for_buffer(&item, buffer, state.requested_at) else {
+            self.set_status("completion has an invalid edit range");
+            return true;
         };
-        let edit = completion_edit_for_buffer(&item, buffer, state.requested_at);
+        let additional_edits = match prepare_lsp_edits(buffer, &item.additional_text_edits) {
+            Ok(edits) => edits,
+            Err(error) => {
+                self.set_status(format!("completion failed: {error}"));
+                return true;
+            }
+        };
+        let start_char = buffer.pos_to_char(edit.start);
+        let end_char = buffer.pos_to_char(edit.end);
+        if additional_edits
+            .iter()
+            .any(|(start, end, _)| *start == start_char || *end > start_char && *start < end_char)
+        {
+            self.set_status("completion has overlapping edits");
+            return true;
+        }
         let snippet_expansion = completion_snippet_expansion(&item, &edit.insert);
         let preserve_active_snippet_edit = snippet_expansion
             .is_none()
@@ -2945,48 +2468,45 @@ impl EditorState {
         let insert = snippet_expansion
             .as_ref()
             .map(|expansion| expansion.text.clone())
-            .unwrap_or_else(|| edit.insert.clone());
-
+            .unwrap_or(edit.insert);
+        let inserted_start = transform_snippet_char_left(start_char, &additional_edits);
+        let inserted_end = inserted_start.saturating_add(insert.chars().count());
+        let mut edits = additional_edits;
+        edits.push((start_char, end_char, insert));
+        self.remember_completion_accept(&item);
         let before = self.capture_active_insert_coalesced_checkpoint();
-        let view = self.views.entry(active_id).or_default();
-        {
-            let buffer = self.session.active_buffer_mut();
-            let start = buffer.clamp_pos(edit.start);
-            let end = buffer.clamp_pos(edit.end);
-            let _ = buffer.delete_range(start, end);
-            let inserted_end = buffer.insert(start, &insert);
-            let start_char = buffer.pos_to_char(start);
-            if let Some(expansion) = snippet_expansion {
-                self.lsp.active_snippet =
-                    active_snippet_from_expansion(active_id, start_char, &expansion);
-                view.cursor.cursor = self
-                    .lsp
-                    .active_snippet
-                    .as_ref()
-                    .and_then(|snippet| snippet.placeholders.first())
-                    .map(|placeholder| buffer.char_to_pos(placeholder.start_char))
-                    .or_else(|| {
-                        expansion
-                            .cursor_offset
-                            .map(|offset| buffer.char_to_pos(start_char.saturating_add(offset)))
-                    })
-                    .unwrap_or(inserted_end);
-            } else {
-                if preserve_active_snippet_edit.is_none() {
-                    self.lsp.active_snippet = None;
+        apply_character_edits(self.session.active_buffer_mut(), &edits);
+        let cursor_char = if let Some(expansion) = snippet_expansion {
+            self.lsp.active_snippet =
+                active_snippet_from_expansion(active_id, inserted_start, &expansion);
+            self.lsp
+                .active_snippet
+                .as_ref()
+                .and_then(|snippet| snippet.placeholders.first())
+                .map(|placeholder| placeholder.start_char)
+                .or_else(|| {
+                    expansion
+                        .cursor_offset
+                        .map(|offset| inserted_start.saturating_add(offset))
+                })
+                .unwrap_or(inserted_end)
+        } else {
+            if let Some((tabstop, _, _)) = preserve_active_snippet_edit {
+                self.update_active_snippet_after_edits(&edits);
+                self.mark_active_snippet_tabstop_filled(tabstop);
+                if let Some(snippet) = self.lsp.active_snippet.as_mut() {
+                    snippet.selected = false;
                 }
-                view.cursor.cursor = inserted_end;
+            } else {
+                self.lsp.active_snippet = None;
             }
-            view.cursor
-                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-        }
-        if let Some((tabstop, start_char, end_char)) = preserve_active_snippet_edit {
-            self.update_active_snippet_after_edits(&[(start_char, end_char, insert)]);
-            self.mark_active_snippet_tabstop_filled(tabstop);
-            if let Some(snippet) = self.lsp.active_snippet.as_mut() {
-                snippet.selected = false;
-            }
-        }
+            inserted_end
+        };
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.cursor.cursor = buffer.char_to_pos(cursor_char.min(buffer.len_chars()));
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
@@ -3034,85 +2554,59 @@ impl EditorState {
         self.notify_lsp_did_save(self.session.active_id())
     }
 
-    fn notify_lsp_did_save(&mut self, buffer_id: BufferId) -> io::Result<()> {
-        let lint_context = self.saved_buffer_lint_context(buffer_id);
-        let Some(document) = self.lsp.documents.get(&buffer_id).cloned() else {
-            if let Some((source, path, uri, document_version)) = lint_context {
-                self.start_lint_run(source, path, uri, document_version);
+    pub(super) fn notify_lsp_did_save(&mut self, buffer_id: BufferId) -> io::Result<()> {
+        let result = (|| {
+            self.sync_lsp_document(buffer_id, SyncPolicy::Immediate)?;
+            if let Some(document) = self.lsp.documents.get(&buffer_id)
+                && document.opened
+                && let Some(client) = self.lsp.clients.get_mut(&document.workspace)
+            {
+                client.session.send_did_save(&document.path)?;
             }
-            return Ok(());
-        };
-        let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
-            if let Some((source, path, uri, document_version)) = lint_context {
-                self.start_lint_run(source, path, uri, document_version);
-            }
-            return Ok(());
-        };
-        if !client.session.initialized {
-            if let Some((source, path, uri, document_version)) = lint_context {
-                self.start_lint_run(source, path, uri, document_version);
-            }
-            return Ok(());
+            Ok(())
+        })();
+        if let Some(request) = self.saved_buffer_lint_context(buffer_id) {
+            self.start_lint_run(request);
         }
-        let Some(text) = self
-            .session
-            .buffer(buffer_id)
-            .map(|buffer| buffer.to_string())
-        else {
-            return Ok(());
-        };
-        let Some(document) = self.lsp.documents.get_mut(&buffer_id) else {
-            return Ok(());
-        };
-        if document.last_sent_text.as_deref() != Some(text.as_str()) {
-            document.document_version = document.document_version.saturating_add(1);
-            client
-                .session
-                .send_did_change(&document.path, document.document_version, &text)?;
-            document.last_sent_analysis_version = self
-                .views
-                .get(&buffer_id)
-                .map(|view| view.analysis_version());
-            document.last_sent_text = Some(text);
-            document.pending_sync_since = None;
-            document.pending_sync_analysis_version = None;
-        }
-        client.session.send_did_save(&document.path)?;
-        let lint_document = document.clone();
-        self.start_lint_run_for_document(&lint_document);
-        Ok(())
+        result
     }
 
     fn poll_lint_runs(&mut self) {
-        let mut pending = Vec::with_capacity(self.lsp.lint_runs.len());
+        let mut pending = Vec::new();
         let mut completed = Vec::new();
-
         for run in self.lsp.lint_runs.drain(..) {
             match run.receiver.try_recv() {
-                Ok(result) => completed.push((run, result)),
+                Ok(result) => completed.push((run.request, Some(result))),
                 Err(TryRecvError::Empty) => pending.push(run),
-                Err(TryRecvError::Disconnected) => {}
+                Err(TryRecvError::Disconnected) => completed.push((run.request, None)),
             }
         }
-
         self.lsp.lint_runs = pending;
-
-        for (run, result) in completed {
-            if self.diagnostics_are_stale(&run.uri, Some(run.document_version)) {
-                self.start_queued_lint_run(&run.source, &run.uri);
-                continue;
+        for (request, result) in completed {
+            if self.lint_request_is_current(&request)
+                && let Some(result) = result
+            {
+                let source = DiagnosticSource::Lint(result.source.clone());
+                if result.source.kind == LintRunnerKind::Ruff {
+                    self.remove_diagnostics_for_source_uri(&request.uri, &source);
+                } else {
+                    self.remove_diagnostics_for_source_everywhere(&source);
+                }
+                for (uri, diagnostics) in result.diagnostics_by_uri {
+                    self.replace_diagnostics_for_source(uri, source.clone(), diagnostics);
+                }
+                if let Some(error) = result.error {
+                    self.set_status(error);
+                }
             }
-
-            let source = DiagnosticSource::Lint(result.source.clone());
-            self.remove_diagnostics_for_source_everywhere(&source);
-            for (uri, diagnostics) in result.diagnostics_by_uri {
-                self.replace_diagnostics_for_source(uri, source.clone(), diagnostics);
+            if let Some(index) = self.lsp.queued_lint_runs.iter().position(|queued| {
+                queued.source == request.source && queued.buffer_id == request.buffer_id
+            }) {
+                let queued = self.lsp.queued_lint_runs.swap_remove(index);
+                if self.lint_request_is_current(&queued) {
+                    self.start_lint_run(queued);
+                }
             }
-
-            if let Some(error) = result.error {
-                self.set_status(error);
-            }
-            self.start_queued_lint_run(&run.source, &run.uri);
         }
     }
 
@@ -3125,36 +2619,15 @@ impl EditorState {
             _ => return None,
         };
 
-        let root = workspace_root_for(path, provider_id, launch_dir);
+        let provider = provider_spec(provider_id)?;
+        let root = workspace_root_for(path, &provider, launch_dir);
         Some(LintSource { kind, root })
     }
 
-    fn lint_source_for_document(&self, document: &ManagedDocument) -> Option<LintSource> {
-        let language = language_for_path(Some(&document.path))?;
-        let source = self.lint_source_for_path(&document.path, language)?;
-        self.lsp
-            .installed
-            .contains_key(&MarketplaceItemId::Linter(source.kind))
-            .then_some(source)
-    }
-
-    fn saved_buffer_lint_context(
-        &self,
-        buffer_id: BufferId,
-    ) -> Option<(LintSource, PathBuf, String, i32)> {
-        if let Some(document) = self.lsp.documents.get(&buffer_id) {
-            return Some((
-                self.lint_source_for_document(document)?,
-                document.path.clone(),
-                document.uri.clone(),
-                document.document_version,
-            ));
-        }
-
+    fn saved_buffer_lint_context(&self, buffer_id: BufferId) -> Option<QueuedLintRun> {
         let meta = self.session.meta(buffer_id)?;
         let path = meta.path.as_deref()?;
-        let language = language_for_path(Some(path))?;
-        let source = self.lint_source_for_path(path, language)?;
+        let source = self.lint_source_for_path(path, language_for_path(Some(path))?)?;
         if !self
             .lsp
             .installed
@@ -3162,113 +2635,53 @@ impl EditorState {
         {
             return None;
         }
-        Some((source, path.to_path_buf(), file_uri(path).ok()?, 0))
-    }
-
-    fn start_lint_run_for_document(&mut self, document: &ManagedDocument) {
-        let Some(source) = self.lint_source_for_document(document) else {
-            return;
-        };
-        self.start_lint_run(
+        Some(QueuedLintRun {
             source,
-            document.path.clone(),
-            document.uri.clone(),
-            document.document_version,
-        );
+            path: path.to_path_buf(),
+            uri: file_uri(path).ok()?,
+            buffer_id,
+            analysis_version: self
+                .views
+                .get(&buffer_id)
+                .map_or(0, |view| view.analysis_version()),
+        })
     }
 
-    fn start_lint_run(
-        &mut self,
-        source: LintSource,
-        path: PathBuf,
-        uri: String,
-        document_version: i32,
-    ) {
-        if !lint_runner_available(&source, &path) {
-            return;
-        }
-        if self
-            .lsp
-            .lint_runs
-            .iter()
-            .any(|run| run.source == source && run.uri == uri)
-        {
-            self.queue_lint_run(source, path, uri, document_version);
-            return;
-        }
-
-        self.spawn_lint_run(source, path, uri, document_version);
+    fn lint_request_is_current(&self, request: &QueuedLintRun) -> bool {
+        self.saved_buffer_lint_context(request.buffer_id)
+            .is_some_and(|current| {
+                current.source == request.source
+                    && current.path == request.path
+                    && current.analysis_version == request.analysis_version
+            })
     }
 
-    fn queue_lint_run(
-        &mut self,
-        source: LintSource,
-        path: PathBuf,
-        uri: String,
-        document_version: i32,
-    ) {
-        if let Some(queued) = self
-            .lsp
-            .queued_lint_runs
-            .iter_mut()
-            .find(|queued| queued.source == source && queued.uri == uri)
-        {
-            queued.path = path;
-            queued.document_version = document_version;
+    fn start_lint_run(&mut self, request: QueuedLintRun) {
+        if self.lsp.lint_runs.iter().any(|run| {
+            run.request.source == request.source && run.request.buffer_id == request.buffer_id
+        }) {
+            self.lsp.queued_lint_runs.retain(|queued| {
+                queued.source != request.source || queued.buffer_id != request.buffer_id
+            });
+            self.lsp.queued_lint_runs.push(request);
             return;
         }
-        self.lsp.queued_lint_runs.push(QueuedLintRun {
-            source,
-            path,
-            uri,
-            document_version,
-        });
-    }
-
-    fn start_queued_lint_run(&mut self, source: &LintSource, uri: &str) {
-        let Some(index) = self
-            .lsp
-            .queued_lint_runs
-            .iter()
-            .position(|queued| &queued.source == source && queued.uri == uri)
-        else {
-            return;
-        };
-        let queued = self.lsp.queued_lint_runs.swap_remove(index);
-        if self.diagnostics_are_stale(&queued.uri, Some(queued.document_version)) {
-            return;
-        }
-        self.start_lint_run(
-            queued.source,
-            queued.path,
-            queued.uri,
-            queued.document_version,
-        );
-    }
-
-    fn spawn_lint_run(
-        &mut self,
-        source: LintSource,
-        path: PathBuf,
-        uri: String,
-        document_version: i32,
-    ) {
-        let source_for_thread = source.clone();
-        let path_for_thread = path.clone();
-        let (tx, rx) = mpsc::channel();
-        thread::Builder::new()
+        let source = request.source.clone();
+        let path = request.path.clone();
+        let (sender, receiver) = mpsc::channel();
+        match thread::Builder::new()
             .name(format!("redox-lint-{}", source.kind.executable()))
             .spawn(move || {
-                let result = run_lint_source(&source_for_thread, &path_for_thread);
-                let _ = tx.send(result);
-            })
-            .expect("failed to start lint runner");
-        self.lsp.lint_runs.push(PendingLintRun {
-            source,
-            uri,
-            document_version,
-            receiver: rx,
-        });
+                if lint_runner_available(&source, &path) {
+                    let _ = sender.send(run_lint_source(&source, &path));
+                }
+            }) {
+            Ok(_) => self
+                .lsp
+                .lint_runs
+                .push(PendingLintRun { request, receiver }),
+            Err(error) => self.set_status(format!("failed to start linter: {error}")),
+        }
     }
 
     fn take_definition_response(
@@ -3290,6 +2703,9 @@ impl EditorState {
             return None;
         }
         let request = self.lsp.pending_requests.remove(&key)?;
+        if request.context != self.lsp_request_context() {
+            return None;
+        }
         match request.kind {
             PendingRequest::GotoDefinition => {
                 if let Some(error) = message.get("error") {
@@ -3333,6 +2749,10 @@ impl EditorState {
         };
         self.lsp.pending_requests.remove(&key);
 
+        if request.context != self.lsp_request_context() {
+            return true;
+        }
+
         if let Some(error) = message.get("error") {
             let detail = error
                 .get("message")
@@ -3349,16 +2769,7 @@ impl EditorState {
             return true;
         }
 
-        self.lsp.symbol_info = Some(SymbolInfoState {
-            requested_at,
-            blocks,
-            cached_width: None,
-            display_lines: Vec::new(),
-            scroll: 0,
-            return_mode,
-        });
-        self.mode = EditorMode::SymbolInfo;
-        self.clear_status();
+        self.show_symbol_info(blocks, requested_at, return_mode);
         true
     }
 
@@ -3381,6 +2792,9 @@ impl EditorState {
             return false;
         };
         self.lsp.pending_requests.remove(&key);
+        if request.context != self.lsp_request_context() || self.mode != EditorMode::Insert {
+            return true;
+        }
 
         if let Some(error) = message.get("error") {
             let detail = error
@@ -3402,20 +2816,15 @@ impl EditorState {
                 &self.lsp.recent_completions,
             );
         }
+        items.truncate(100);
         if self.active_cursor_pos() != requested_at
             || (!manual && self.cursor_is_in_comment_for_completion())
         {
             self.clear_status();
             return true;
         }
-        /*
-        if items.is_empty() {
-            self.lsp.completion = None;
-            self.set_status("no completions");
-            return true;
-        }
-        */
         self.lsp.completion = Some(CompletionState {
+            context: self.lsp_request_context(),
             selected: 0,
             requested_at,
             items,
@@ -3433,24 +2842,122 @@ impl EditorState {
 
     fn visible_completion_state(&self) -> Option<&CompletionState> {
         let state = self.lsp.completion.as_ref()?;
-        if state.items.is_empty() || !self.completion_matches_active_cursor(state.requested_at) {
-            return None;
-        }
-        Some(state)
+        (!state.items.is_empty()
+            && state.context == self.lsp_request_context()
+            && self.mode == EditorMode::Insert)
+            .then_some(state)
     }
 
-    fn completion_matches_active_cursor(&self, requested_at: Pos) -> bool {
-        let cursor = self.active_cursor_pos();
-        if cursor == requested_at {
-            return true;
-        }
-        let Some(buffer) = self.session.buffer(self.session.active_id()) else {
-            return false;
+    fn refilter_completion_for_active_cursor(&mut self, inserted: char) {
+        let context = self.lsp_request_context();
+        let Some(buffer) = self.session.buffer(context.buffer_id) else {
+            return;
         };
-        if cursor.line != requested_at.line || cursor.col < requested_at.col {
-            return false;
+        let Some(mut completion) = self.lsp.completion.take() else {
+            return;
+        };
+        let previous = completion.context;
+        if previous.buffer_id != context.buffer_id
+            || previous.mode != EditorMode::Insert
+            || previous.analysis_version.checked_add(1) != Some(context.analysis_version)
+            || context.cursor
+                != Pos::new(previous.cursor.line, previous.cursor.col.saturating_add(1))
+            || completion_prefix_start(buffer, previous.cursor)
+                != completion_prefix_start(buffer, context.cursor)
+        {
+            return;
         }
-        completion_prefix_start(buffer, cursor) == completion_prefix_start(buffer, requested_at)
+        let at = IncomingPosition {
+            line: previous.cursor.line as u64,
+            character: char_col_to_utf16(
+                &buffer.line_string(previous.cursor.line),
+                previous.cursor.col,
+            ) as u64,
+        };
+        let shift = |position: &mut IncomingPosition, include_boundary: bool| {
+            if position.line == at.line
+                && (position.character > at.character
+                    || include_boundary && position.character == at.character)
+            {
+                position.character = position
+                    .character
+                    .saturating_add(inserted.len_utf16() as u64);
+            }
+        };
+        for item in &mut completion.items {
+            if let Some(edit) = item.text_edit.as_mut() {
+                shift(&mut edit.range.start, false);
+                shift(&mut edit.range.end, true);
+            }
+            for edit in &mut item.additional_text_edits {
+                shift(&mut edit.range.start, true);
+                shift(&mut edit.range.end, true);
+            }
+        }
+        completion.items = filter_and_sort_completion_items(
+            completion.items,
+            &completion_prefix(buffer, context.cursor),
+            &completion_context(buffer, context.cursor),
+            &self.lsp.recent_completions,
+        );
+        completion.selected = completion
+            .selected
+            .min(completion.items.len().saturating_sub(1));
+        completion.requested_at = context.cursor;
+        completion.context = context;
+        self.lsp.completion = Some(completion);
+    }
+
+    fn selected_completion_symbol_info_blocks(&self) -> Vec<SymbolInfoBlock> {
+        let Some(completion) = self.visible_completion_state() else {
+            return Vec::new();
+        };
+        let Some(item) = completion.items.get(completion.selected) else {
+            return Vec::new();
+        };
+        let mut blocks = Vec::new();
+        for text in [
+            item.detail.as_deref(),
+            item.label_detail.as_deref(),
+            item.label_description.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        {
+            if !blocks
+                .iter()
+                .any(|block: &SymbolInfoBlock| block.text == text)
+            {
+                blocks.push(SymbolInfoBlock {
+                    kind: SymbolInfoKind::PlainText,
+                    text: text.to_string(),
+                });
+            }
+        }
+        if let Some(documentation) = &item.documentation {
+            blocks.push(documentation.clone());
+        }
+        blocks
+    }
+
+    fn show_symbol_info(
+        &mut self,
+        blocks: Vec<SymbolInfoBlock>,
+        requested_at: Pos,
+        return_mode: EditorMode,
+    ) {
+        self.lsp.symbol_info = Some(SymbolInfoState {
+            requested_at,
+            blocks,
+            cached_width: None,
+            display_lines: Vec::new(),
+            scroll: 0,
+            return_mode,
+        });
+        self.mode = EditorMode::SymbolInfo;
+        self.clear_status();
     }
 
     fn completion_context_syntax_role(&self) -> Option<SyntaxRole> {
@@ -3722,40 +3229,34 @@ impl EditorState {
         item: MarketplaceSpec,
         record: &InstalledToolRecord,
     ) -> bool {
-        let uninstall = record
-            .install_source
-            .and_then(|method| {
-                item.install_plans()
-                    .iter()
-                    .copied()
-                    .find(|plan| plan.method == method)
-                    .map(|plan| plan.uninstall)
-            })
-            .unwrap_or(ProviderUninstall::DisableOnly);
-
-        match uninstall {
-            ProviderUninstall::DisableOnly => false,
-            uninstall => {
-                let install_source = record.install_source;
-                let (tx, rx) = mpsc::channel();
-                thread::Builder::new()
-                    .name(format!("redox-uninstall-{}", item.label()))
-                    .spawn(move || {
-                        let result = run_provider_uninstall(item, uninstall, install_source);
-                        let _ = tx.send(result);
-                    })
-                    .expect("failed to start provider uninstall");
-                self.lsp.provider_operations.insert(
-                    item.id(),
-                    ProviderOperation {
-                        kind: ProviderOperationKind::Uninstalling,
-                        started_at: Instant::now(),
-                        receiver: rx,
-                    },
-                );
-                true
-            }
+        let Some(plan) = record.install_source.and_then(|method| {
+            item.install_plans()
+                .iter()
+                .copied()
+                .find(|plan| plan.method == method)
+        }) else {
+            return false;
+        };
+        if matches!(plan.uninstall, Uninstall::DisableOnly) {
+            return false;
         }
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name(format!("redox-uninstall-{}", item.label()))
+            .spawn(move || {
+                let result = run_provider_uninstall(item, plan);
+                let _ = tx.send(result);
+            })
+            .expect("failed to start provider uninstall");
+        self.lsp.provider_operations.insert(
+            item.id(),
+            ProviderOperation {
+                kind: ProviderOperationKind::Uninstalling,
+                started_at: Instant::now(),
+                receiver: rx,
+            },
+        );
+        true
     }
 
     fn respond_to_lsp_server_request(&mut self, workspace: &WorkspaceKey, message: &Value) -> bool {
@@ -3767,9 +3268,11 @@ impl EditorState {
         };
 
         let result = match method {
-            "client/registerCapability" | "client/unregisterCapability" => Some(Value::Null),
+            "client/registerCapability"
+            | "client/unregisterCapability"
+            | "window/showMessageRequest" => Some(Value::Null),
             "workspace/configuration" => Some(configuration_response(message)),
-            "workspace/workspaceFolders" => Some(workspace_folders_response(workspace)),
+            "workspace/workspaceFolders" => Some(workspace_folders_response(&workspace.root)),
             "workspace/applyEdit" => Some(self.workspace_apply_edit_response(message)),
             _ => None,
         };
@@ -3827,566 +3330,35 @@ impl EditorState {
     }
 }
 
-fn parse_definition_response(message: &Value) -> Option<DefinitionTarget> {
-    let result = message.get("result")?;
-    if result.is_null() {
-        return None;
-    }
-
-    if result.is_array() {
-        let entries = result.as_array()?;
-        let first = entries.first()?;
-        return parse_definition_target_value(first);
-    }
-
-    parse_definition_target_value(result)
-}
-
-fn parse_code_action_response(message: &Value) -> Vec<AvailableCodeAction> {
-    message
-        .get("result")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(parse_code_action_value)
-        .collect()
-}
-
-fn parse_code_action_value(value: &Value) -> Option<AvailableCodeAction> {
-    if value
-        .get("disabled")
-        .and_then(|disabled| disabled.get("reason"))
-        .is_some()
-    {
-        return None;
-    }
-
-    if value.get("title").is_some() && value.get("command").and_then(Value::as_str).is_some() {
-        let title = value.get("title")?.as_str()?.to_string();
-        let command = Some(LspCommand {
-            command: value.get("command")?.as_str()?.to_string(),
-            arguments: value
-                .get("arguments")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-        });
-        return Some(AvailableCodeAction {
-            title,
-            kind: Some("quickfix".to_string()),
-            preferred: false,
-            edit: None,
-            command,
-        });
-    }
-
-    let title = value.get("title")?.as_str()?.to_string();
-    let kind = value
-        .get("kind")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let preferred = value
-        .get("isPreferred")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let edit = value.get("edit").and_then(parse_workspace_edit);
-    let command = value.get("command").and_then(parse_lsp_command);
-    Some(AvailableCodeAction {
-        title,
-        kind,
-        preferred,
-        edit,
-        command,
-    })
-}
-
-fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
-    let mut document_edits = Vec::new();
-
-    if let Some(changes) = value.get("changes").and_then(Value::as_object) {
-        for (uri, edits) in changes {
-            let edits = edits
-                .as_array()?
-                .iter()
-                .filter_map(parse_text_edit)
-                .collect::<Vec<_>>();
-            if !edits.is_empty() {
-                document_edits.push(DocumentEdit {
-                    uri: uri.clone(),
-                    edits,
-                });
-            }
-        }
-    }
-
-    if let Some(changes) = value.get("documentChanges").and_then(Value::as_array) {
-        for entry in changes {
-            let Some(text_document) = entry.get("textDocument") else {
-                continue;
-            };
-            let uri = text_document.get("uri")?.as_str()?.to_string();
-            let edits = entry
-                .get("edits")
-                .and_then(Value::as_array)?
-                .iter()
-                .filter_map(parse_text_edit)
-                .collect::<Vec<_>>();
-            if !edits.is_empty() {
-                document_edits.push(DocumentEdit { uri, edits });
-            }
-        }
-    }
-
-    (!document_edits.is_empty()).then_some(WorkspaceEdit { document_edits })
-}
-
-fn parse_text_edit(value: &Value) -> Option<TextEdit> {
-    let range = serde_json::from_value::<IncomingRange>(value.get("range")?.clone()).ok()?;
-    let new_text = value.get("newText")?.as_str()?.to_string();
-    Some(TextEdit { range, new_text })
-}
-
-fn parse_lsp_command(value: &Value) -> Option<LspCommand> {
-    Some(LspCommand {
-        command: value.get("command")?.as_str()?.to_string(),
-        arguments: value
-            .get("arguments")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    })
-}
-
-fn parse_hover_response(message: &Value) -> Vec<SymbolInfoBlock> {
-    let Some(result) = message.get("result") else {
-        return Vec::new();
-    };
-    if result.is_null() {
-        return Vec::new();
-    }
-    let Some(contents) = result.get("contents") else {
-        return Vec::new();
-    };
-    normalise_hover_blocks(hover_contents_blocks(contents))
-}
-
-fn hover_contents_blocks(value: &Value) -> Vec<SymbolInfoBlock> {
-    if let Some(text) = value.as_str() {
-        return vec![SymbolInfoBlock {
-            kind: SymbolInfoKind::Markdown,
-            text: text.to_string(),
-        }];
-    }
-    if let Some(array) = value.as_array() {
-        return array.iter().flat_map(hover_contents_blocks).collect();
-    }
-    if let Some(kind) = value.get("kind").and_then(Value::as_str) {
-        let text = value
-            .get("value")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let kind = match kind {
-            "markdown" => SymbolInfoKind::Markdown,
-            _ => SymbolInfoKind::PlainText,
-        };
-        return vec![SymbolInfoBlock { kind, text }];
-    }
-    if value.get("language").is_some() || value.get("value").is_some() {
-        return vec![hover_marked_string_block(value)];
-    }
-    Vec::new()
-}
-
-fn hover_marked_string_block(value: &Value) -> SymbolInfoBlock {
-    let language = value
-        .get("language")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    if let Some(text) = value.as_str() {
-        return SymbolInfoBlock {
-            kind: SymbolInfoKind::Markdown,
-            text: text.to_string(),
-        };
-    }
-    let text = value
-        .get("value")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    SymbolInfoBlock {
-        kind: SymbolInfoKind::Code { language },
-        text,
-    }
-}
-
-fn normalise_hover_blocks(blocks: Vec<SymbolInfoBlock>) -> Vec<SymbolInfoBlock> {
-    blocks
-        .into_iter()
-        .filter_map(|block| {
-            let SymbolInfoBlock { kind, text } = block;
-            let text = match &kind {
-                SymbolInfoKind::Code { .. } => {
-                    trim_blank_edges(&trim_trailing_whitespace_lines(&text))
-                }
-                SymbolInfoKind::Markdown | SymbolInfoKind::PlainText => {
-                    collapse_blank_lines(&trim_trailing_whitespace_lines(&text))
-                }
-            };
-            (!text.is_empty()).then_some(SymbolInfoBlock { kind, text })
+fn prepare_lsp_edits(
+    buffer: &redox_core::TextBuffer,
+    edits: &[redox_lsp::TextEdit],
+) -> io::Result<Vec<(usize, usize, String)>> {
+    let mut prepared = edits
+        .iter()
+        .map(|edit| {
+            let (start, end) =
+                buffer_positions_for_range(buffer, &edit.range).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid LSP edit range")
+                })?;
+            Ok((
+                buffer.pos_to_char(start),
+                buffer.pos_to_char(end),
+                edit.new_text.clone(),
+            ))
         })
-        .collect()
-}
-
-fn trim_trailing_whitespace_lines(text: &str) -> String {
-    text.lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn trim_blank_edges(text: &str) -> String {
-    text.lines()
-        .skip_while(|line| line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .skip_while(|line| line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn collapse_blank_lines(text: &str) -> String {
-    let mut lines = Vec::new();
-    let mut last_was_blank = true;
-
-    for line in text.lines() {
-        let is_blank = line.trim().is_empty();
-        if is_blank {
-            if !last_was_blank {
-                lines.push(String::new());
-            }
-        } else {
-            lines.push(line.to_string());
-        }
-        last_was_blank = is_blank;
+        .collect::<io::Result<Vec<_>>>()?;
+    // Apply right to left, including reversing equal-position insertions so
+    // their final text keeps the server's order.
+    prepared.reverse();
+    prepared.sort_by_key(|(start, end, _)| std::cmp::Reverse((*start, *end)));
+    if prepared.windows(2).any(|pair| pair[1].1 > pair[0].0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "overlapping LSP edits",
+        ));
     }
-
-    while lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-
-    lines.join("\n")
-}
-
-fn parse_definition_target_value(value: &Value) -> Option<DefinitionTarget> {
-    if let Ok(location) = serde_json::from_value::<IncomingLocation>(value.clone()) {
-        return Some(DefinitionTarget {
-            uri: location.uri,
-            range: location.range,
-        });
-    }
-    let link = serde_json::from_value::<IncomingLocationLink>(value.clone()).ok()?;
-    Some(DefinitionTarget {
-        uri: link.target_uri,
-        range: link.target_selection_range,
-    })
-}
-
-fn lint_runner_available(source: &LintSource, path: &Path) -> bool {
-    match source.kind {
-        LintRunnerKind::Clippy => clippy_available() && source.root.join("Cargo.toml").exists(),
-        LintRunnerKind::GolangciLint => {
-            executable_on_path(source.kind.executable()) && path.starts_with(&source.root)
-        }
-        LintRunnerKind::Ruff => executable_on_path(source.kind.executable()),
-    }
-}
-
-fn run_lint_source(source: &LintSource, path: &Path) -> LintRunResult {
-    let output = match source.kind {
-        LintRunnerKind::Clippy => Command::new("cargo")
-            .args([
-                "clippy",
-                "--message-format=json",
-                "--all-targets",
-                "--all-features",
-            ])
-            .current_dir(&source.root)
-            .output(),
-        LintRunnerKind::GolangciLint => Command::new("golangci-lint")
-            .args([
-                "run",
-                "--output.json.path",
-                "stdout",
-                "--output.text.path",
-                "stderr",
-                "./...",
-            ])
-            .current_dir(&source.root)
-            .output(),
-        LintRunnerKind::Ruff => Command::new("ruff")
-            .args(["check", "--output-format", "json"])
-            .arg(path)
-            .current_dir(&source.root)
-            .output(),
-    };
-
-    match output {
-        Ok(output) => {
-            let diagnostics_by_uri = match source.kind {
-                LintRunnerKind::Clippy => parse_clippy_output(&output.stdout, &source.root),
-                LintRunnerKind::GolangciLint => {
-                    let mut diagnostics = parse_golangci_lint_output(&output.stdout, &source.root);
-                    if diagnostics.is_empty() {
-                        diagnostics = parse_golangci_lint_text_output(&output.stderr, &source.root);
-                    }
-                    diagnostics
-                }
-                LintRunnerKind::Ruff => parse_ruff_output(&output.stdout, &source.root),
-            };
-            let parsed_any = diagnostics_by_uri.values().any(|items| !items.is_empty());
-            let error = if output.status.success() || parsed_any {
-                None
-            } else {
-                Some(format!(
-                    "{} failed: {}",
-                    lint_runner_label(source.kind),
-                    first_non_empty_output_line(&output.stderr, &output.stdout)
-                ))
-            };
-            LintRunResult {
-                source: source.clone(),
-                diagnostics_by_uri,
-                error,
-            }
-        }
-        Err(error) => LintRunResult {
-            source: source.clone(),
-            diagnostics_by_uri: HashMap::new(),
-            error: Some(format!(
-                "failed to start {}: {error}",
-                lint_runner_label(source.kind)
-            )),
-        },
-    }
-}
-
-fn parse_clippy_output(stdout: &[u8], root: &Path) -> HashMap<String, Vec<StoredDiagnostic>> {
-    let mut diagnostics_by_uri = HashMap::<String, Vec<StoredDiagnostic>>::new();
-    let mut line_cache = HashMap::<PathBuf, Option<Vec<String>>>::new();
-
-    for line in String::from_utf8_lossy(stdout).lines() {
-        if !line.trim_start().starts_with('{') {
-            continue;
-        }
-        let Ok(message) = serde_json::from_str::<CargoCompilerMessage>(line) else {
-            continue;
-        };
-        if message.reason != "compiler-message" {
-            continue;
-        }
-        let Some(message) = message.message else {
-            continue;
-        };
-        let Some(span) = message
-            .spans
-            .iter()
-            .find(|span| span.is_primary)
-            .or_else(|| message.spans.first())
-        else {
-            continue;
-        };
-
-        let file_path = resolve_lint_path(root, Path::new(&span.file_name));
-        let Some(uri) = file_uri(&file_path).ok() else {
-            continue;
-        };
-        let severity = diagnostic_severity_from_text(&message.level);
-        let Some(diagnostic) = stored_diagnostic_from_char_span(
-            &file_path,
-            severity,
-            message.message,
-            span.line_start,
-            span.line_end,
-            span.column_start,
-            span.column_end,
-            &mut line_cache,
-        ) else {
-            continue;
-        };
-        diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
-    }
-
-    diagnostics_by_uri
-}
-
-fn parse_golangci_lint_output(
-    stdout: &[u8],
-    root: &Path,
-) -> HashMap<String, Vec<StoredDiagnostic>> {
-    let Ok(report) = serde_json::from_slice::<GolangciLintReport>(stdout) else {
-        return HashMap::new();
-    };
-    let mut diagnostics_by_uri = HashMap::<String, Vec<StoredDiagnostic>>::new();
-    let mut line_cache = HashMap::<PathBuf, Option<Vec<String>>>::new();
-
-    for issue in report.issues {
-        let file_path = resolve_lint_path(root, Path::new(&issue.pos.filename));
-        let Some(uri) = file_uri(&file_path).ok() else {
-            continue;
-        };
-        let severity = issue
-            .severity
-            .as_deref()
-            .map(diagnostic_severity_from_text)
-            .unwrap_or(DiagnosticSeverity::Warning);
-        let message = if issue.from_linter.trim().is_empty() {
-            issue.text
-        } else {
-            format!("{}: {}", issue.from_linter, issue.text)
-        };
-        let Some(diagnostic) = stored_diagnostic_from_char_span(
-            &file_path,
-            severity,
-            message,
-            issue.pos.line,
-            issue.pos.line,
-            issue.pos.column,
-            issue.pos.column.saturating_add(1),
-            &mut line_cache,
-        ) else {
-            continue;
-        };
-        diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
-    }
-
-    diagnostics_by_uri
-}
-
-fn parse_golangci_lint_text_output(
-    stderr: &[u8],
-    root: &Path,
-) -> HashMap<String, Vec<StoredDiagnostic>> {
-    let mut diagnostics_by_uri = HashMap::<String, Vec<StoredDiagnostic>>::new();
-    let mut line_cache = HashMap::<PathBuf, Option<Vec<String>>>::new();
-
-    for line in String::from_utf8_lossy(stderr).lines() {
-        let Some((path_part, line_no, col_no, message)) = parse_colon_diagnostic_line(line) else {
-            continue;
-        };
-        let file_path = resolve_lint_path(root, Path::new(path_part));
-        let Some(uri) = file_uri(&file_path).ok() else {
-            continue;
-        };
-        let Some(diagnostic) = stored_diagnostic_from_char_span(
-            &file_path,
-            DiagnosticSeverity::Warning,
-            message.to_string(),
-            line_no,
-            line_no,
-            col_no,
-            col_no.saturating_add(1),
-            &mut line_cache,
-        ) else {
-            continue;
-        };
-        diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
-    }
-
-    diagnostics_by_uri
-}
-
-fn parse_colon_diagnostic_line(line: &str) -> Option<(&str, usize, usize, &str)> {
-    let (path_part, rest) = line.split_once(':')?;
-    let (line_part, rest) = rest.split_once(':')?;
-    let (col_part, message) = rest.split_once(':')?;
-    let line_no = line_part.trim().parse::<usize>().ok()?;
-    let col_no = col_part.trim().parse::<usize>().ok()?;
-    let message = message.trim();
-    if path_part.trim().is_empty() || message.is_empty() {
-        return None;
-    }
-    Some((path_part.trim(), line_no, col_no, message))
-}
-
-fn parse_ruff_output(stdout: &[u8], root: &Path) -> HashMap<String, Vec<StoredDiagnostic>> {
-    let Ok(diagnostics) = serde_json::from_slice::<Vec<RuffDiagnostic>>(stdout) else {
-        return HashMap::new();
-    };
-    let mut diagnostics_by_uri = HashMap::<String, Vec<StoredDiagnostic>>::new();
-    let mut line_cache = HashMap::<PathBuf, Option<Vec<String>>>::new();
-
-    for diagnostic in diagnostics {
-        let file_path = resolve_lint_path(root, Path::new(&diagnostic.filename));
-        let Some(uri) = file_uri(&file_path).ok() else {
-            continue;
-        };
-        let message = diagnostic
-            .code
-            .as_deref()
-            .map(|code| format!("{code}: {}", diagnostic.message))
-            .unwrap_or(diagnostic.message);
-        let Some(stored) = stored_diagnostic_from_char_span(
-            &file_path,
-            DiagnosticSeverity::Warning,
-            message,
-            diagnostic.location.row,
-            diagnostic.end_location.row,
-            diagnostic.location.column,
-            diagnostic.end_location.column,
-            &mut line_cache,
-        ) else {
-            continue;
-        };
-        diagnostics_by_uri.entry(uri).or_default().push(stored);
-    }
-
-    diagnostics_by_uri
-}
-
-fn is_initialize_response(message: &Value) -> bool {
-    message
-        .get("id")
-        .and_then(Value::as_i64)
-        .is_some_and(|id| id == INITIALIZE_REQUEST_ID)
-}
-
-fn utf16_code_unit_to_char_col(line: &str, utf16_col: u32) -> usize {
-    let mut consumed_utf16 = 0u32;
-    let mut chars = 0usize;
-    for ch in line.chars() {
-        if consumed_utf16 >= utf16_col {
-            break;
-        }
-        consumed_utf16 = consumed_utf16.saturating_add(ch.len_utf16() as u32);
-        chars += 1;
-    }
-    chars
-}
-
-fn char_col_to_utf16(line: &str, char_col: usize) -> u32 {
-    line.chars()
-        .take(char_col)
-        .fold(0u32, |acc, ch| acc.saturating_add(ch.len_utf16() as u32))
-}
-
-fn compare_edit_ranges_desc(left: &IncomingRange, right: &IncomingRange) -> std::cmp::Ordering {
-    (
-        right.start.line,
-        right.start.character,
-        right.end.line,
-        right.end.character,
-    )
-        .cmp(&(
-            left.start.line,
-            left.start.character,
-            left.end.line,
-            left.end.character,
-        ))
+    Ok(prepared)
 }
 
 fn buffer_positions_for_range(
@@ -4398,51 +3370,16 @@ fn buffer_positions_for_range(
     if start_line >= buffer.len_lines() || end_line >= buffer.len_lines() {
         return None;
     }
-    let start_col = utf16_code_unit_to_char_col(
-        &buffer.line_string(start_line),
-        range.start.character as u32,
-    );
-    let end_col =
-        utf16_code_unit_to_char_col(&buffer.line_string(end_line), range.end.character as u32);
-    Some((
-        buffer.clamp_pos(Pos::new(start_line, start_col)),
-        buffer.clamp_pos(Pos::new(end_line, end_col)),
-    ))
-}
-
-fn write_lsp_message(stdin: &mut ChildStdin, message: &Value) -> io::Result<()> {
-    let json = message.to_string();
-    write!(stdin, "Content-Length: {}\r\n\r\n{json}", json.len())?;
-    stdin.flush()
-}
-
-fn read_lsp_message(reader: &mut impl BufRead) -> Option<Value> {
-    let mut content_length = None;
-
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
-        if line == "\r\n" {
-            break;
-        }
-        let (name, value) = line.split_once(':')?;
-        if name.eq_ignore_ascii_case("Content-Length") {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
-
-    let content_length = content_length?;
-    let mut payload = vec![0; content_length];
-    reader.read_exact(&mut payload).ok()?;
-    serde_json::from_slice(&payload).ok()
-}
-
-fn file_uri(path: &Path) -> io::Result<String> {
-    Url::from_file_path(path)
-        .map(Into::into)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path is not a valid file URI"))
+    let column = |line, character| {
+        let text = buffer.line_string(line);
+        let text = text.trim_end_matches(['\r', '\n']);
+        let character = u32::try_from(character).ok()?;
+        let column = utf16_code_unit_to_char_col(text, character);
+        (char_col_to_utf16(text, column) == character).then_some(column)
+    };
+    let start = Pos::new(start_line, column(start_line, range.start.character)?);
+    let end = Pos::new(end_line, column(end_line, range.end.character)?);
+    ((start.line, start.col) <= (end.line, end.col)).then_some((start, end))
 }
 
 fn syntax_role_covering_byte(
@@ -4456,97 +3393,6 @@ fn syntax_role_covering_byte(
         .map(|span| span.role)
 }
 
-fn file_path_from_uri(uri: &str) -> Option<PathBuf> {
-    Url::parse(uri).ok()?.to_file_path().ok()
-}
-
-fn workspace_root_for(path: &Path, provider_id: ProviderId, launch_dir: &Path) -> PathBuf {
-    let Some(start_dir) = path.parent() else {
-        return launch_dir.to_path_buf();
-    };
-
-    match provider_id {
-        ProviderId::RustAnalyzer => {
-            find_outermost_ancestor_with_any_marker(start_dir, &["Cargo.toml", "rust-project.json"])
-                .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"]))
-        }
-        ProviderId::Gopls => find_outermost_ancestor_with_any_marker(start_dir, &["go.work"])
-            .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &["go.mod"]))
-            .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"])),
-        ProviderId::TypeScriptLanguageServer => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &[
-                "tsconfig.json",
-                "jsconfig.json",
-                "package.json",
-                "deno.json",
-                "deno.jsonc",
-            ],
-        )
-        .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"])),
-        ProviderId::Pyright => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &[
-                "pyproject.toml",
-                "setup.py",
-                "setup.cfg",
-                "requirements.txt",
-            ],
-        )
-        .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"])),
-        ProviderId::Clangd => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &["compile_commands.json", "compile_flags.txt", ".clangd"],
-        )
-        .or_else(|| find_nearest_ancestor_with_any_marker(start_dir, &[".git"])),
-        ProviderId::LuaLanguageServer => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &[".luarc.json", ".luarc.jsonc", "stylua.toml", ".git"],
-        ),
-        ProviderId::Taplo => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &["taplo.toml", ".taplo.toml", "Cargo.toml", ".git"],
-        ),
-        ProviderId::Marksman => find_nearest_ancestor_with_any_marker(
-            start_dir,
-            &[".marksman.toml", "package.json", ".git"],
-        ),
-        ProviderId::YamlLanguageServer
-        | ProviderId::JsonLanguageServer
-        | ProviderId::HtmlLanguageServer
-        | ProviderId::CssLanguageServer => {
-            find_nearest_ancestor_with_any_marker(start_dir, &["package.json", ".git"])
-        }
-    }
-    .unwrap_or_else(|| start_dir.to_path_buf())
-}
-
-fn find_nearest_ancestor_with_any_marker(start_dir: &Path, markers: &[&str]) -> Option<PathBuf> {
-    start_dir
-        .ancestors()
-        .find(|dir| markers.iter().any(|marker| dir.join(marker).exists()))
-        .map(Path::to_path_buf)
-}
-
-fn find_outermost_ancestor_with_any_marker(start_dir: &Path, markers: &[&str]) -> Option<PathBuf> {
-    start_dir
-        .ancestors()
-        .filter(|dir| markers.iter().any(|marker| dir.join(marker).exists()))
-        .last()
-        .map(Path::to_path_buf)
-}
-
-fn provider_spec(provider_id: ProviderId) -> Option<ProviderSpec> {
-    PROVIDERS
-        .iter()
-        .copied()
-        .find(|provider| provider.id == provider_id)
-}
-
-fn linter_spec(kind: LintRunnerKind) -> Option<LinterSpec> {
-    LINTERS.iter().copied().find(|linter| linter.kind == kind)
-}
-
 fn marketplace_spec(item_id: MarketplaceItemId) -> Option<MarketplaceSpec> {
     match item_id {
         MarketplaceItemId::Provider(provider_id) => {
@@ -4557,266 +3403,39 @@ fn marketplace_spec(item_id: MarketplaceItemId) -> Option<MarketplaceSpec> {
 }
 
 fn marketplace_tool_available(item: MarketplaceSpec) -> bool {
-    match item {
-        MarketplaceSpec::Linter(linter) if linter.kind == LintRunnerKind::Clippy => {
-            clippy_available()
-        }
-        _ => executable_on_path(item.executable()),
-    }
+    tool_available(item.executable())
 }
 
 fn install_method_label(method: InstallMethodId) -> &'static str {
-    match method {
-        InstallMethodId::Brew => "brew",
-        InstallMethodId::Cargo => "cargo",
-        InstallMethodId::Go => "go",
-        InstallMethodId::Npm => "npm",
-        InstallMethodId::Rustup => "rustup",
-    }
-}
-
-fn install_method_command(method: InstallMethodId) -> &'static str {
-    install_method_label(method)
-}
-
-fn install_method_available(method: InstallMethodId) -> bool {
-    executable_on_path(install_method_command(method))
+    method.as_str()
 }
 
 fn run_provider_install(
     item: MarketplaceSpec,
     plan: ProviderInstallPlan,
 ) -> ProviderOperationResult {
-    let output = Command::new(install_method_command(plan.method))
-        .args(plan.install_args)
-        .output();
-    match output {
-        Ok(output) if output.status.success() => ProviderOperationResult {
-            item_id: item.id(),
-            kind: ProviderOperationKind::Installing,
-            install_source: Some(plan.method),
-            success: marketplace_tool_available(item),
-            message: if marketplace_tool_available(item) {
-                format!("installed {}", item.label())
-            } else {
-                format!(
-                    "{} finished, but {} is still not on PATH",
-                    install_method_label(plan.method),
-                    item.executable()
-                )
-            },
-        },
-        Ok(output) => ProviderOperationResult {
-            item_id: item.id(),
-            kind: ProviderOperationKind::Installing,
-            install_source: Some(plan.method),
-            success: false,
-            message: format!(
-                "failed to install {} via {}: {}",
-                item.label(),
-                install_method_label(plan.method),
-                first_stderr_line(&output.stderr)
-            ),
-        },
-        Err(error) => ProviderOperationResult {
-            item_id: item.id(),
-            kind: ProviderOperationKind::Installing,
-            install_source: Some(plan.method),
-            success: false,
-            message: format!("failed to start {} installer: {error}", item.label()),
-        },
+    let result = install_tool(item.label(), item.executable(), plan);
+    ProviderOperationResult {
+        item_id: item.id(),
+        kind: ProviderOperationKind::Installing,
+        install_source: result.install_source,
+        success: result.success,
+        message: result.message,
     }
 }
 
 fn run_provider_uninstall(
     item: MarketplaceSpec,
-    uninstall: ProviderUninstall,
-    install_source: Option<InstallMethodId>,
+    plan: ProviderInstallPlan,
 ) -> ProviderOperationResult {
-    match uninstall {
-        ProviderUninstall::Command(args) => {
-            let method = install_source.expect("command uninstall should have install source");
-            let output = Command::new(install_method_command(method))
-                .args(args)
-                .output();
-            match output {
-                Ok(output) if output.status.success() => ProviderOperationResult {
-                    item_id: item.id(),
-                    kind: ProviderOperationKind::Uninstalling,
-                    install_source,
-                    success: true,
-                    message: format!("removed {}", item.label()),
-                },
-                Ok(output) => ProviderOperationResult {
-                    item_id: item.id(),
-                    kind: ProviderOperationKind::Uninstalling,
-                    install_source,
-                    success: false,
-                    message: format!(
-                        "failed to uninstall {} via {}: {}",
-                        item.label(),
-                        install_method_label(method),
-                        first_stderr_line(&output.stderr)
-                    ),
-                },
-                Err(error) => ProviderOperationResult {
-                    item_id: item.id(),
-                    kind: ProviderOperationKind::Uninstalling,
-                    install_source,
-                    success: false,
-                    message: format!("failed to start {} uninstall: {error}", item.label()),
-                },
-            }
-        }
-        ProviderUninstall::GoBinary(binary) => {
-            let result = remove_go_binary(binary);
-            ProviderOperationResult {
-                item_id: item.id(),
-                kind: ProviderOperationKind::Uninstalling,
-                install_source,
-                success: result.is_ok(),
-                message: result
-                    .map(|_| format!("removed {}", item.label()))
-                    .unwrap_or_else(|error| format!("failed to remove {}: {error}", item.label())),
-            }
-        }
-        ProviderUninstall::DisableOnly => ProviderOperationResult {
-            item_id: item.id(),
-            kind: ProviderOperationKind::Uninstalling,
-            install_source,
-            success: true,
-            message: format!("removed {} from Redox", item.label()),
-        },
+    let result = uninstall_tool(item.label(), plan);
+    ProviderOperationResult {
+        item_id: item.id(),
+        kind: ProviderOperationKind::Uninstalling,
+        install_source: result.install_source,
+        success: result.success,
+        message: result.message,
     }
-}
-
-fn remove_go_binary(binary: &str) -> io::Result<()> {
-    let gobin_output = Command::new("go").args(["env", "GOBIN"]).output()?;
-    if !gobin_output.status.success() {
-        return Err(io::Error::other(first_stderr_line(&gobin_output.stderr)));
-    }
-    let gobin = String::from_utf8_lossy(&gobin_output.stdout)
-        .trim()
-        .to_string();
-    let target = if !gobin.is_empty() {
-        PathBuf::from(gobin).join(binary)
-    } else {
-        let gopath_output = Command::new("go").args(["env", "GOPATH"]).output()?;
-        if !gopath_output.status.success() {
-            return Err(io::Error::other(first_stderr_line(&gopath_output.stderr)));
-        }
-        let gopath = String::from_utf8_lossy(&gopath_output.stdout)
-            .trim()
-            .to_string();
-        PathBuf::from(gopath).join("bin").join(binary)
-    };
-    fs::remove_file(target)
-}
-
-fn first_stderr_line(stderr: &[u8]) -> String {
-    let text = String::from_utf8_lossy(stderr);
-    text.lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("unknown error")
-        .to_string()
-}
-
-fn first_non_empty_output_line(primary: &[u8], secondary: &[u8]) -> String {
-    let primary_text = String::from_utf8_lossy(primary);
-    if let Some(line) = primary_text.lines().find(|line| !line.trim().is_empty()) {
-        return line.to_string();
-    }
-
-    let secondary_text = String::from_utf8_lossy(secondary);
-    secondary_text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("unknown error")
-        .to_string()
-}
-
-fn lint_runner_label(kind: LintRunnerKind) -> &'static str {
-    match kind {
-        LintRunnerKind::Clippy => "Clippy",
-        LintRunnerKind::GolangciLint => "golangci-lint",
-        LintRunnerKind::Ruff => "Ruff",
-    }
-}
-
-fn diagnostic_severity_from_text(level: &str) -> DiagnosticSeverity {
-    match level {
-        "error" => DiagnosticSeverity::Error,
-        "warning" | "warn" => DiagnosticSeverity::Warning,
-        "note" | "info" | "information" => DiagnosticSeverity::Information,
-        "help" | "hint" => DiagnosticSeverity::Hint,
-        _ => DiagnosticSeverity::Warning,
-    }
-}
-
-fn resolve_lint_path(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-fn stored_diagnostic_from_char_span(
-    path: &Path,
-    severity: DiagnosticSeverity,
-    message: String,
-    start_line_1: usize,
-    end_line_1: usize,
-    start_col_1: usize,
-    end_col_1: usize,
-    line_cache: &mut HashMap<PathBuf, Option<Vec<String>>>,
-) -> Option<StoredDiagnostic> {
-    let start_line = start_line_1.checked_sub(1)?;
-    let end_line = end_line_1.checked_sub(1)?;
-    let start_col = start_col_1.saturating_sub(1);
-    let mut end_col = end_col_1.saturating_sub(1);
-    if start_line == end_line {
-        end_col = end_col.max(start_col.saturating_add(1));
-    }
-
-    let start_utf16 = char_col_to_utf16_in_file(path, start_line, start_col, line_cache)?;
-    let mut end_utf16 = char_col_to_utf16_in_file(path, end_line, end_col, line_cache)?;
-    if start_line == end_line {
-        end_utf16 = end_utf16.max(start_utf16.saturating_add(1));
-    }
-
-    Some(StoredDiagnostic {
-        severity,
-        message,
-        start_line,
-        end_line,
-        start_utf16,
-        end_utf16,
-    })
-}
-
-fn char_col_to_utf16_in_file(
-    path: &Path,
-    line_idx: usize,
-    char_col: usize,
-    line_cache: &mut HashMap<PathBuf, Option<Vec<String>>>,
-) -> Option<u32> {
-    let lines = cached_file_lines(path, line_cache)?;
-    let line = lines.get(line_idx)?;
-    let clamped_char_col = char_col.min(line.chars().count());
-    Some(char_col_to_utf16(line, clamped_char_col))
-}
-
-fn cached_file_lines<'a>(
-    path: &Path,
-    line_cache: &'a mut HashMap<PathBuf, Option<Vec<String>>>,
-) -> Option<&'a [String]> {
-    let entry = line_cache.entry(path.to_path_buf()).or_insert_with(|| {
-        fs::read_to_string(path)
-            .ok()
-            .map(|text| text.split('\n').map(|line| line.to_string()).collect())
-    });
-    entry.as_deref()
 }
 
 fn load_installed_tools() -> HashMap<MarketplaceItemId, InstalledToolRecord> {
@@ -4829,7 +3448,7 @@ fn load_installed_tools() -> HashMap<MarketplaceItemId, InstalledToolRecord> {
         return entries
             .into_iter()
             .filter_map(|entry| {
-                ProviderId::from_str(&entry).map(|id| {
+                entry.parse::<ProviderId>().ok().map(|id| {
                     (
                         MarketplaceItemId::Provider(id),
                         InstalledToolRecord {
@@ -4849,18 +3468,14 @@ fn load_installed_tools() -> HashMap<MarketplaceItemId, InstalledToolRecord> {
         .filter_map(|entry| {
             let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("lsp");
             let id = match kind {
-                "lsp" => {
-                    MarketplaceItemId::Provider(ProviderId::from_str(entry.get("id")?.as_str()?)?)
-                }
-                "linter" => {
-                    MarketplaceItemId::Linter(parse_lint_runner_kind(entry.get("id")?.as_str()?)?)
-                }
+                "lsp" => MarketplaceItemId::Provider(entry.get("id")?.as_str()?.parse().ok()?),
+                "linter" => MarketplaceItemId::Linter(entry.get("id")?.as_str()?.parse().ok()?),
                 _ => return None,
             };
             let install_source = entry
                 .get("install_source")
                 .and_then(Value::as_str)
-                .and_then(parse_install_method_id);
+                .and_then(|value| value.parse().ok());
             Some((id, InstalledToolRecord { install_source }))
         })
         .collect()
@@ -4879,7 +3494,7 @@ fn save_installed_tools(
             json!({
                 "kind": item_id.persistent_kind(),
                 "id": item_id.id_str(),
-                "install_source": record.install_source.map(install_method_id_str),
+                "install_source": record.install_source.map(InstallMethod::as_str),
             })
         })
         .collect::<Vec<_>>();
@@ -4894,36 +3509,6 @@ fn save_installed_tools(
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, payload)?;
     fs::rename(temp_path, path)
-}
-
-fn install_method_id_str(method: InstallMethodId) -> &'static str {
-    match method {
-        InstallMethodId::Brew => "brew",
-        InstallMethodId::Cargo => "cargo",
-        InstallMethodId::Go => "go",
-        InstallMethodId::Npm => "npm",
-        InstallMethodId::Rustup => "rustup",
-    }
-}
-
-fn parse_install_method_id(value: &str) -> Option<InstallMethodId> {
-    match value {
-        "brew" => Some(InstallMethodId::Brew),
-        "cargo" => Some(InstallMethodId::Cargo),
-        "go" => Some(InstallMethodId::Go),
-        "npm" => Some(InstallMethodId::Npm),
-        "rustup" => Some(InstallMethodId::Rustup),
-        _ => None,
-    }
-}
-
-fn parse_lint_runner_kind(value: &str) -> Option<LintRunnerKind> {
-    match value {
-        "cargo" | "clippy" => Some(LintRunnerKind::Clippy),
-        "golangci-lint" => Some(LintRunnerKind::GolangciLint),
-        "ruff" => Some(LintRunnerKind::Ruff),
-        _ => None,
-    }
 }
 
 fn syntax_language_label(language: SyntaxLanguage) -> &'static str {
@@ -4981,28 +3566,7 @@ fn installed_tools_storage_path() -> PathBuf {
     crate::storage::installed_tools_path()
 }
 
-fn executable_on_path(executable: &str) -> bool {
-    if executable.contains(std::path::MAIN_SEPARATOR) {
-        return Path::new(executable).exists();
-    }
-
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-
-    std::env::split_paths(&paths).any(|dir| dir.join(executable).exists())
-}
-
-fn clippy_available() -> bool {
-    Command::new("cargo")
-        .args(["clippy", "--version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn apply_snippet_edits(buffer: &mut redox_core::TextBuffer, edits: &[(usize, usize, String)]) {
+fn apply_character_edits(buffer: &mut redox_core::TextBuffer, edits: &[(usize, usize, String)]) {
     let mut ordered = edits.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
     for (start_char, end_char, text) in ordered {
@@ -5016,7 +3580,7 @@ fn apply_snippet_edits(buffer: &mut redox_core::TextBuffer, edits: &[(usize, usi
 fn transform_snippet_char(pos: usize, edits: &[(usize, usize, String)]) -> usize {
     let mut transformed = pos;
     let mut ordered = edits.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|(start, _, _)| *start);
+    ordered.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
     for (start, end, text) in ordered {
         let replacement_len = text.chars().count();
         if transformed <= *start {
@@ -5056,14 +3620,14 @@ fn transform_snippet_char_left_with_skip(
 ) -> usize {
     let mut transformed = pos;
     let mut ordered = edits.iter().enumerate().collect::<Vec<_>>();
-    ordered.sort_by_key(|(_, (start, _, _))| *start);
+    ordered.sort_by_key(|(_, (start, _, _))| std::cmp::Reverse(*start));
     for (idx, (start, end, text)) in ordered {
         if skip_idx == Some(idx) {
             continue;
         }
         let replacement_len = text.chars().count();
         let replaced_len = end.saturating_sub(*start);
-        if transformed < *start || transformed == *start {
+        if transformed <= *start {
             continue;
         }
         if transformed >= *end {
@@ -5078,7 +3642,7 @@ fn transform_snippet_char_left_with_skip(
 fn transform_snippet_char_right(pos: usize, edits: &[(usize, usize, String)]) -> usize {
     let mut transformed = pos;
     let mut ordered = edits.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|(start, _, _)| *start);
+    ordered.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
     for (start, end, text) in ordered {
         let replacement_len = text.chars().count();
         let replaced_len = end.saturating_sub(*start);
@@ -5108,18 +3672,6 @@ fn shift_snippet_char(pos: usize, replacement_len: usize, replaced_len: usize) -
 mod tests {
     use super::*;
     use redox_core::EditorSession;
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("redox-{name}-{nonce}"));
-        fs::create_dir_all(&dir).expect("temp dir should be created");
-        dir
-    }
 
     fn completion_candidate(
         label: &str,
@@ -5139,6 +3691,7 @@ mod tests {
             insert_text: insert_text.to_string(),
             insert_text_format,
             text_edit: None,
+            additional_text_edits: Vec::new(),
         }
     }
 
@@ -5189,240 +3742,6 @@ mod tests {
             return_mode,
         });
         state
-    }
-
-    #[test]
-    fn file_uri_percent_encodes_special_characters() {
-        let uri = file_uri(Path::new("/tmp/redox test #1.rs")).expect("URI should encode");
-        assert_eq!(uri, "file:///tmp/redox%20test%20%231.rs");
-    }
-
-    #[test]
-    fn publish_diagnostics_preserves_fields_and_normalizes_details() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///tmp/example.rs",
-                "version": 7,
-                "diagnostics": [
-                    {
-                        "range": {
-                            "start": { "line": 2, "character": 4 },
-                            "end": { "line": 2, "character": 9 }
-                        },
-                        "severity": 1,
-                        "message": "something went wrong\n`#[warn(foo)]` on by default"
-                    }
-                ]
-            }
-        });
-
-        let (uri, version, diagnostics) =
-            parse_publish_diagnostics(&message).expect("diagnostics should parse");
-        assert_eq!(uri, "file:///tmp/example.rs");
-        assert_eq!(version, Some(7));
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
-        assert_eq!(diagnostics[0].start_line, 2);
-        assert_eq!(diagnostics[0].start_utf16, 4);
-        assert_eq!(
-            diagnostics[0].message,
-            "something went wrong\n`#[warn(foo)]` on by default"
-        );
-
-        let message_cases = [
-            (
-                "empty_details",
-                json!({
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 1 }
-                    },
-                    "message": "borrowed value does not live long enough (see details)"
-                }),
-                "borrowed value does not live long enough",
-            ),
-            (
-                "related_details",
-                json!({
-                    "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 1 }
-                    },
-                    "message": "type mismatch (see details)",
-                    "relatedInformation": [
-                        {
-                            "location": {
-                                "uri": "file:///tmp/example.rs",
-                                "range": {
-                                    "start": { "line": 2, "character": 4 },
-                                    "end": { "line": 2, "character": 8 }
-                                }
-                            },
-                            "message": "expected `usize` here"
-                        }
-                    ]
-                }),
-                "type mismatch\n\nDetails:\n- expected `usize` here",
-            ),
-        ];
-
-        for (case_name, diagnostic, expected_message) in message_cases {
-            let message = json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": "file:///tmp/example.rs",
-                    "diagnostics": [diagnostic]
-                }
-            });
-            let (_, _, diagnostics) =
-                parse_publish_diagnostics(&message).expect("diagnostics should parse");
-            assert_eq!(diagnostics[0].message, expected_message, "{case_name}");
-        }
-    }
-    #[test]
-    fn completion_response_parses_array_and_snippet_items() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "result": [
-                {
-                    "label": "println!",
-                    "kind": 3,
-                    "insertText": "println!(\"${1:value}\");$0",
-                    "insertTextFormat": 2
-                }
-            ]
-        });
-
-        let completions = parse_completion_response(&message);
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].label, "println!");
-        assert_eq!(completions[0].kind.as_deref(), Some("function"));
-        assert_eq!(completions[0].insert_text_format, InsertTextFormat::Snippet);
-    }
-
-    #[test]
-    fn completion_response_uses_list_item_defaults() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "result": {
-                "isIncomplete": false,
-                "itemDefaults": {
-                    "insertTextFormat": 2,
-                    "editRange": {
-                        "start": { "line": 1, "character": 4 },
-                        "end": { "line": 1, "character": 7 }
-                    }
-                },
-                "items": [
-                    {
-                        "label": "Ok",
-                        "insertText": "Ok(${1:value})"
-                    }
-                ]
-            }
-        });
-
-        let completions = parse_completion_response(&message);
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].insert_text_format, InsertTextFormat::Snippet);
-        let edit = completions[0]
-            .text_edit
-            .as_ref()
-            .expect("default edit range should be applied");
-        assert_eq!(edit.range.start.line, 1);
-        assert_eq!(edit.range.end.character, 7);
-    }
-
-    #[test]
-    fn function_completions_derive_placeholders_from_available_signatures() {
-        let cases = [
-            (
-                "detail_plain",
-                "DoThing",
-                Some("func DoThing(ctx context.Context, name string) error"),
-                "DoThing()",
-                InsertTextFormat::PlainText,
-                "DoThing(ctx, name)",
-                [(8, 11), (13, 17)],
-                2,
-            ),
-            (
-                "cursor_only_snippet",
-                "DoThing",
-                Some("func DoThing(ctx context.Context) error"),
-                "DoThing($0)",
-                InsertTextFormat::Snippet,
-                "DoThing(ctx)",
-                [(8, 11), (0, 0)],
-                1,
-            ),
-            (
-                "empty_snippet_placeholders",
-                "DoThing",
-                Some("func DoThing(ctx context.Context, name string) error"),
-                "DoThing(${1:}, ${2:})",
-                InsertTextFormat::Snippet,
-                "DoThing(ctx, name)",
-                [(8, 11), (13, 17)],
-                2,
-            ),
-            (
-                "label_signature",
-                "DoThing(ctx context.Context, name string)",
-                None,
-                "DoThing",
-                InsertTextFormat::PlainText,
-                "DoThing(ctx, name)",
-                [(8, 11), (13, 17)],
-                2,
-            ),
-        ];
-
-        for (
-            case_name,
-            label,
-            detail,
-            insert_text,
-            insert_text_format,
-            expected_text,
-            expected_ranges,
-            expected_placeholder_count,
-        ) in cases
-        {
-            let mut item = completion_candidate(label, insert_text, "function", insert_text_format);
-            item.detail = detail.map(str::to_string);
-
-            let expansion = completion_snippet_expansion(&item, &item.insert_text)
-                .expect("function signature should produce snippet placeholders");
-            let ranges = expansion
-                .placeholders
-                .iter()
-                .map(|placeholder| (placeholder.start, placeholder.end))
-                .collect::<Vec<_>>();
-
-            assert_eq!(expansion.text, expected_text, "{case_name}");
-            assert_eq!(
-                ranges,
-                expected_ranges[..expected_placeholder_count],
-                "{case_name}"
-            );
-        }
-    }
-    #[test]
-    fn snippets_expand_placeholders_and_preserve_first_cursor_target() {
-        let expansion = expand_lsp_snippet("fn ${1:name}(${2:arg}) {\n\t$0\n}");
-
-        assert_eq!(expansion.text, "fn name(arg) {\n\t\n}");
-        assert_eq!(expansion.cursor_offset, Some(16));
-        assert_eq!(expansion.placeholders.len(), 2);
-        assert_eq!(expansion.placeholders[0].tabstop, 1);
-        assert_eq!(expansion.placeholders[0].start, 3);
-        assert_eq!(expansion.placeholders[0].end, 7);
     }
 
     #[test]
@@ -5593,6 +3912,7 @@ mod tests {
         let mut state = EditorState::new(session);
         state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
             selected: 0,
             requested_at: Pos::new(0, 0),
             items: vec![completion_candidate(
@@ -5609,6 +3929,7 @@ mod tests {
         assert!(state.lsp.completion.is_none());
 
         state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
             selected: 0,
             requested_at: Pos::new(0, 0),
             items: Vec::new(),
@@ -5624,14 +3945,16 @@ mod tests {
         let session = EditorSession::open_initial_unnamed().expect("session should open");
         let mut state = EditorState::new(session);
         let buffer_id = state.session.active_id();
-        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("prin");
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("pri");
         state
             .views
             .get_mut(&buffer_id)
             .expect("active view should exist")
             .cursor
-            .cursor = Pos::new(0, 4);
+            .cursor = Pos::new(0, 3);
+        state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
             selected: 0,
             requested_at: Pos::new(0, 3),
             items: vec![completion_candidate(
@@ -5642,6 +3965,7 @@ mod tests {
             )],
         });
 
+        state.apply_input(crate::input::InputAction::InsertChar('n'), 80, 24);
         assert!(state.completion_popup().is_some());
 
         state
@@ -5686,6 +4010,7 @@ mod tests {
             .cursor = Pos::new(0, 10);
         state.mode = EditorMode::Insert;
         state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
             selected: 0,
             requested_at: Pos::new(0, 10),
             items: vec![completion_candidate(
@@ -5701,207 +4026,6 @@ mod tests {
         assert!(state.lsp.auto_completion.is_none());
         assert!(state.lsp.completion.is_none());
     }
-    #[test]
-    fn rust_workspace_root_prefers_outermost_cargo_manifest() {
-        let root = temp_test_dir("rust-root");
-        let crate_dir = root.join("member");
-        let src_dir = crate_dir.join("src");
-        fs::create_dir_all(&src_dir).expect("src dir should be created");
-        fs::write(
-            root.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"member\"]\n",
-        )
-        .expect("workspace manifest should be written");
-        fs::write(
-            crate_dir.join("Cargo.toml"),
-            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n",
-        )
-        .expect("crate manifest should be written");
-
-        let file = src_dir.join("lib.rs");
-        let detected = workspace_root_for(&file, ProviderId::RustAnalyzer, Path::new("/fallback"));
-        assert_eq!(detected, root);
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn parse_definition_response_accepts_location_arrays() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 9,
-            "result": [
-                {
-                    "uri": "file:///tmp/example.rs",
-                    "range": {
-                        "start": { "line": 4, "character": 2 },
-                        "end": { "line": 4, "character": 7 }
-                    }
-                }
-            ]
-        });
-
-        let target = parse_definition_response(&message).expect("definition target should parse");
-        assert_eq!(target.uri, "file:///tmp/example.rs");
-        assert_eq!(target.range.start.line, 4);
-        assert_eq!(target.range.start.character, 2);
-    }
-
-    #[test]
-    fn parse_hover_response_preserves_content_kinds_and_normalizes_spacing() {
-        let cases = [
-            (
-                "code_and_markdown",
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 7,
-                    "result": {
-                        "contents": [
-                            {
-                                "language": "rust",
-                                "value": "pub fn hover() -> bool"
-                            },
-                            {
-                                "kind": "markdown",
-                                "value": "Returns `true` when hover is available.\n\n- Fast"
-                            }
-                        ]
-                    }
-                }),
-                vec![
-                    SymbolInfoBlock {
-                        kind: SymbolInfoKind::Code {
-                            language: Some("rust".to_string()),
-                        },
-                        text: "pub fn hover() -> bool".to_string(),
-                    },
-                    SymbolInfoBlock {
-                        kind: SymbolInfoKind::Markdown,
-                        text: "Returns `true` when hover is available.\n\n- Fast".to_string(),
-                    },
-                ],
-            ),
-            (
-                "plaintext",
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 8,
-                    "result": {
-                        "contents": {
-                            "kind": "plaintext",
-                            "value": "Line one\n\n  Line two  \n"
-                        }
-                    }
-                }),
-                vec![SymbolInfoBlock {
-                    kind: SymbolInfoKind::PlainText,
-                    text: "Line one\n\n  Line two".to_string(),
-                }],
-            ),
-            (
-                "repeated_blank_lines",
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 10,
-                    "result": {
-                        "contents": {
-                            "kind": "markdown",
-                            "value": "Title\n\n\n\nBody\n\n\n- item"
-                        }
-                    }
-                }),
-                vec![SymbolInfoBlock {
-                    kind: SymbolInfoKind::Markdown,
-                    text: "Title\n\nBody\n\n- item".to_string(),
-                }],
-            ),
-        ];
-
-        for (case_name, message, expected_blocks) in cases {
-            assert_eq!(
-                parse_hover_response(&message),
-                expected_blocks,
-                "{case_name}"
-            );
-        }
-    }
-    #[test]
-    fn code_action_response_parses_literals_and_commands() {
-        let message = json!({
-            "jsonrpc": "2.0",
-            "id": 12,
-            "result": [
-                {
-                    "title": "Import `std::fmt::Debug`",
-                    "kind": "quickfix",
-                    "isPreferred": true,
-                    "edit": {
-                        "changes": {
-                            "file:///tmp/example.rs": [
-                                {
-                                    "range": {
-                                        "start": { "line": 0, "character": 0 },
-                                        "end": { "line": 0, "character": 0 }
-                                    },
-                                    "newText": "use std::fmt::Debug;\\n"
-                                }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "title": "Run command",
-                    "command": "example.command",
-                    "arguments": ["value"]
-                },
-                {
-                    "title": "Disabled",
-                    "kind": "quickfix",
-                    "disabled": { "reason": "nope" }
-                }
-            ]
-        });
-
-        let actions = parse_code_action_response(&message);
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0].title, "Import `std::fmt::Debug`");
-        assert!(actions[0].preferred);
-        assert!(actions[0].edit.is_some());
-        assert_eq!(
-            actions[1]
-                .command
-                .as_ref()
-                .map(|command| command.command.as_str()),
-            Some("example.command")
-        );
-    }
-
-    #[test]
-    fn workspace_edit_parser_supports_document_changes() {
-        let edit = parse_workspace_edit(&json!({
-            "documentChanges": [
-                {
-                    "textDocument": { "uri": "file:///tmp/example.rs", "version": 1 },
-                    "edits": [
-                        {
-                            "range": {
-                                "start": { "line": 1, "character": 2 },
-                                "end": { "line": 1, "character": 5 }
-                            },
-                            "newText": "value"
-                        }
-                    ]
-                }
-            ]
-        }))
-        .expect("workspace edit should parse");
-
-        assert_eq!(edit.document_edits.len(), 1);
-        assert_eq!(edit.document_edits[0].uri, "file:///tmp/example.rs");
-        assert_eq!(edit.document_edits[0].edits.len(), 1);
-        assert_eq!(edit.document_edits[0].edits[0].new_text, "value");
-    }
-
     #[test]
     fn close_symbol_info_restores_previous_mode() {
         let mut state = state_with_symbol_info("hello", 2, EditorMode::Insert);
@@ -5928,66 +4052,6 @@ mod tests {
         );
     }
     #[test]
-    fn linter_outputs_are_normalized_to_stored_diagnostics() {
-        type LintParser = fn(&[u8], &Path) -> HashMap<String, Vec<StoredDiagnostic>>;
-
-        fn assert_lint_output(
-            root: &Path,
-            relative_path: &str,
-            source_text: &str,
-            output: &[u8],
-            parser: LintParser,
-            expected_line: usize,
-            expected_message: &str,
-        ) {
-            let file = root.join(relative_path);
-            fs::create_dir_all(file.parent().expect("test file should have a parent"))
-                .expect("source directory should be created");
-            fs::write(&file, source_text).expect("source file should be written");
-
-            let diagnostics = parser(output, root);
-            let uri = file_uri(&file).expect("URI should build");
-            let items = diagnostics
-                .get(&uri)
-                .expect("diagnostics should include file");
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].severity, DiagnosticSeverity::Warning);
-            assert_eq!(items[0].start_line, expected_line);
-            assert!(items[0].message.contains(expected_message));
-        }
-
-        let root = temp_test_dir("linter-output");
-        assert_lint_output(
-            &root,
-            "src/lib.rs",
-            "pub fn demo() {\n    let unused_value = 42;\n}\n",
-            br#"{"reason":"compiler-message","message":{"level":"warning","message":"unused variable: `unused_value`","spans":[{"file_name":"src/lib.rs","line_start":2,"line_end":2,"column_start":9,"column_end":21,"is_primary":true}]}}"#,
-            parse_clippy_output,
-            1,
-            "unused variable",
-        );
-        assert_lint_output(
-            &root,
-            "example.py",
-            "import os\n",
-            br#"[{"filename":"example.py","message":"`os` imported but unused","code":"F401","location":{"row":1,"column":8},"end_location":{"row":1,"column":10}}]"#,
-            parse_ruff_output,
-            0,
-            "F401",
-        );
-        assert_lint_output(
-            &root,
-            "lexer/lexer.go",
-            "package lexer\n\ntype token struct {\n\tfoo string\n}\n",
-            b"lexer/lexer.go:4:2: field foo is unused (unused)\n",
-            parse_golangci_lint_text_output,
-            3,
-            "field foo is unused",
-        );
-
-        let _ = fs::remove_dir_all(root);
-    }
-    #[test]
     fn lsp_errors_suppress_lint_diagnostics_for_active_file() {
         let lsp_source = DiagnosticSource::Lsp(WorkspaceKey {
             provider_id: ProviderId::RustAnalyzer,
@@ -6004,6 +4068,7 @@ mod tests {
             end_line: 4,
             start_utf16: 0,
             end_utf16: 1,
+            related_information: Vec::new(),
         };
         let lint_warning = StoredDiagnostic {
             severity: DiagnosticSeverity::Warning,
@@ -6012,6 +4077,7 @@ mod tests {
             end_line: 1,
             start_utf16: 0,
             end_utf16: 1,
+            related_information: Vec::new(),
         };
 
         assert!(should_suppress_lint_diagnostics([
@@ -6022,5 +4088,428 @@ mod tests {
             &lint_source,
             &lint_warning
         )]));
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    use redox_core::{EditorSession, TextBuffer};
+
+    fn state(text: &str, cursor: Pos) -> EditorState {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(text);
+        let active = state.session.active_id();
+        state.views.entry(active).or_default().cursor.cursor = cursor;
+        state.mode = EditorMode::Insert;
+        state
+    }
+
+    #[test]
+    fn completion_replace_range_tracks_typing_inside_word() {
+        for (text, inserted) in [("foobar", 'o'), ("fo𐐀bar", '𐐀')] {
+            let mut state = state(text, Pos::new(0, 2));
+            let items = parse_completion_response(&json!({"result":[{
+                "label":text, "textEdit": {"newText":text, "range":{
+                    "start":{"line":0,"character":0},
+                    "end":{"line":0,"character":text.encode_utf16().count()}
+                }}
+            }]}));
+            state.lsp.completion = Some(CompletionState {
+                context: state.lsp_request_context(),
+                selected: 0,
+                requested_at: Pos::new(0, 2),
+                items,
+            });
+            state.apply_input(crate::input::InputAction::InsertChar(inserted), 80, 24);
+            assert!(state.has_visible_completion_popup());
+            assert!(state.accept_completion(80, 24));
+            assert_eq!(state.session.active_buffer().to_string(), text);
+        }
+    }
+
+    #[test]
+    fn completion_symbol_info_preserves_all_documentation() {
+        let mut state = state("demo", Pos::new(0, 4));
+        let items = parse_completion_response(&json!({"result":[{
+            "label":"demo", "detail":"fn demo()", "documentation":{
+                "kind":"markdown", "value":"Summary.\n\n# Examples\n\n```rust\ndemo();\n```"
+            }
+        }]}));
+        state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
+            selected: 0,
+            requested_at: Pos::new(0, 4),
+            items,
+        });
+        state.trigger_symbol_info();
+        let info = state.lsp.symbol_info.unwrap();
+        assert!(
+            info.blocks
+                .iter()
+                .any(|block| block.kind == SymbolInfoKind::Markdown
+                    && block.text.contains("demo();")),
+            "{:#?}",
+            info.blocks
+        );
+    }
+
+    #[test]
+    fn late_hover_does_not_change_mode_after_cursor_moves() {
+        let mut state = state("abc", Pos::new(0, 0));
+        let workspace = WorkspaceKey {
+            provider_id: ProviderId::RustAnalyzer,
+            root: PathBuf::from("/tmp"),
+        };
+        state.lsp.pending_requests.insert(
+            RequestKey {
+                workspace: workspace.clone(),
+                id: 2,
+            },
+            PendingClientRequest {
+                context: state.lsp_request_context(),
+                started_at: Instant::now(),
+                kind: PendingRequest::SymbolInfo {
+                    requested_at: Pos::new(0, 0),
+                    return_mode: EditorMode::Insert,
+                },
+            },
+        );
+        for motion in [
+            redox_core::motion::Motion::Right,
+            redox_core::motion::Motion::Left,
+        ] {
+            state.apply_input(
+                crate::input::InputAction::Motion { motion, count: 1 },
+                80,
+                24,
+            );
+        }
+        state.take_symbol_info_response(
+            &workspace,
+            &json!({"id":2,"result":{"contents":"old symbol"}}),
+        );
+        assert!(state.lsp.symbol_info.is_none());
+        assert_eq!(state.mode, EditorMode::Insert);
+    }
+
+    #[test]
+    fn cancelled_completion_does_not_reopen_on_late_response() {
+        let mut state = state("abc", Pos::new(0, 3));
+        let workspace = WorkspaceKey {
+            provider_id: ProviderId::RustAnalyzer,
+            root: PathBuf::from("/tmp"),
+        };
+        state.lsp.pending_requests.insert(
+            RequestKey {
+                workspace: workspace.clone(),
+                id: 2,
+            },
+            PendingClientRequest {
+                context: state.lsp_request_context(),
+                started_at: Instant::now(),
+                kind: PendingRequest::Completion {
+                    requested_at: Pos::new(0, 3),
+                    manual: true,
+                },
+            },
+        );
+        state.close_completion();
+        state.mode = EditorMode::Normal;
+        state.take_completion_response(&workspace, &json!({"id":2,"result":[{"label":"abcdef"}]}));
+        assert!(!state.has_visible_completion_popup());
+    }
+
+    #[test]
+    fn workspace_edit_can_be_undone() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.txt");
+        fs::write(&path, "before").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        state.mode = EditorMode::Normal;
+        let edit = parse_workspace_edit(&json!({"documentChanges":[{
+            "textDocument":{"uri":file_uri(&path).unwrap(),"version":null},"edits":[{
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}, "newText":"after"
+        }]}]})).unwrap();
+        state.apply_workspace_edit(&edit).unwrap();
+        assert_eq!(state.session.active_buffer().to_string(), "after");
+        state.undo_active(80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "before");
+    }
+
+    #[test]
+    fn linter_without_lsp_is_retained() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.py");
+        fs::write(&path, "import os\n").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        state.lsp.installed.clear();
+        state.lsp.installed.insert(
+            MarketplaceItemId::Linter(LintRunnerKind::Ruff),
+            InstalledToolRecord {
+                install_source: None,
+            },
+        );
+        let request = state
+            .saved_buffer_lint_context(state.session.active_id())
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let uri = request.uri.clone();
+        let diagnostics = parse_publish_diagnostics(&json!({
+            "method":"textDocument/publishDiagnostics", "params": {"uri":uri, "diagnostics":[{
+                "range":{"start":{"line":0,"character":7},"end":{"line":0,"character":9}},
+                "severity":2,"message":"unused import"
+            }]}
+        }))
+        .unwrap()
+        .2;
+        let result = LintRunResult {
+            source: request.source.clone(),
+            diagnostics_by_uri: HashMap::from([(uri.clone(), diagnostics)]),
+            error: None,
+        };
+        state
+            .lsp
+            .lint_runs
+            .push(PendingLintRun { request, receiver });
+        state.cleanup_orphaned_lsp_state();
+        assert_eq!(state.lsp.lint_runs.len(), 1);
+        sender.send(result).unwrap();
+        state.poll_lint_runs();
+        state.cleanup_orphaned_lsp_state();
+        assert!(state.lsp.diagnostics.contains_key(&uri));
+    }
+
+    #[test]
+    fn enabling_an_enabled_tool_preserves_uninstall_source() {
+        let mut state = state("", Pos::new(0, 0));
+        state.lsp.installed.clear();
+        let selected = MarketplaceItemId::Provider(ProviderId::RustAnalyzer);
+        state.lsp.installed.insert(
+            selected,
+            InstalledToolRecord {
+                install_source: Some(InstallMethod::Brew),
+            },
+        );
+        state.lsp.tool_availability = PROVIDERS
+            .iter()
+            .map(|provider| (MarketplaceItemId::Provider(provider.id), true))
+            .chain(
+                LINTERS
+                    .iter()
+                    .map(|linter| (MarketplaceItemId::Linter(linter.kind), true)),
+            )
+            .collect();
+        state.lsp.marketplace = Some(LspMarketplaceState {
+            selected: 0,
+            scroll: 0,
+        });
+        assert_eq!(state.selected_marketplace_item().unwrap().id(), selected);
+        state.install_selected_lsp();
+        assert_eq!(
+            state.lsp.installed[&selected].install_source,
+            Some(InstallMethod::Brew)
+        );
+    }
+
+    #[test]
+    fn completion_applies_import_edit() {
+        let mut state = state(
+            "package main\n\nfunc main() {\n    fmt\n}\n",
+            Pos::new(3, 7),
+        );
+        let items = parse_completion_response(&json!({"result":[{
+            "label":"fmt", "insertText":"fmt", "additionalTextEdits":[{
+                "range":{"start":{"line":1,"character":0},"end":{"line":1,"character":0}},
+                "newText":"import \"fmt\"\n"
+            }]
+        }]}));
+        state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
+            selected: 0,
+            requested_at: Pos::new(3, 7),
+            items,
+        });
+        assert!(state.accept_completion(80, 24));
+        assert!(
+            state
+                .session
+                .active_buffer()
+                .to_string()
+                .contains("import \"fmt\"")
+        );
+    }
+    #[test]
+    fn completion_imports_and_snippet_positions_are_one_undo_step() {
+        let original = "head\n\nfoo\nend\n";
+        let mut state = state(original, Pos::new(2, 3));
+        let items = parse_completion_response(&json!({"result":[{
+            "label":"foo", "insertText":"foo(${1:value})$0", "insertTextFormat":2,
+            "additionalTextEdits":[
+                {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"first import\n"},
+                {"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":0}},"newText":"second import\n"},
+                {"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":3}},"newText":"tail"}
+            ]
+        }]}));
+        state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
+            selected: 0,
+            requested_at: Pos::new(2, 3),
+            items,
+        });
+        assert!(state.accept_completion(80, 24));
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "first import\nhead\nsecond import\n\nfoo(value)\ntail\n"
+        );
+        assert_eq!(state.active_cursor_pos(), Pos::new(4, 4));
+        let placeholder = &state.lsp.active_snippet.as_ref().unwrap().placeholders[0];
+        assert_eq!(placeholder.end_char - placeholder.start_char, 5);
+        state.apply_input(
+            crate::input::InputAction::SetMode(crate::input::InputMode::Normal),
+            80,
+            24,
+        );
+        state.undo_active(80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), original);
+    }
+
+    #[test]
+    fn workspace_edits_validate_all_files_before_mutation_and_record_inactive_undo() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.txt");
+        let second = directory.path().join("second.txt");
+        fs::write(&first, "one").unwrap();
+        fs::write(&second, "😀two").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        let first_id = session.open_file(&first).unwrap();
+        let second_id = session.open_file(&second).unwrap();
+        assert!(session.activate(first_id));
+        let mut state = EditorState::new(session);
+        state.lsp.installed.clear();
+        let payload = json!({"documentChanges":[
+            {"textDocument":{"uri":file_uri(&first).unwrap(),"version":null},"edits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"changed"}]},
+            {"textDocument":{"uri":file_uri(&second).unwrap(),"version":null},"edits":[{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":5}},"newText":"other"}]}
+        ]});
+        let mut edit = parse_workspace_edit(&payload).unwrap();
+        assert!(state.apply_workspace_edit(&edit).is_err());
+        assert_eq!(state.session.buffer(first_id).unwrap().to_string(), "one");
+        assert_eq!(
+            state.session.buffer(second_id).unwrap().to_string(),
+            "😀two"
+        );
+        let second_edit = edit
+            .document_edits
+            .iter_mut()
+            .find(|edit| edit.uri == file_uri(&second).unwrap())
+            .unwrap();
+        second_edit.edits[0].range.start.character = 0;
+        state.apply_workspace_edit(&edit).unwrap();
+        assert_eq!(state.session.active_id(), first_id);
+        state.undo_active(80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "one");
+        assert!(state.session.activate(second_id));
+        state.undo_active(80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "😀two");
+    }
+
+    #[test]
+    fn stale_linter_results_are_ignored_without_abandoning_the_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.py");
+        fs::write(&path, "import os\n").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        state.lsp.installed.clear();
+        state.lsp.installed.insert(
+            MarketplaceItemId::Linter(LintRunnerKind::Ruff),
+            InstalledToolRecord {
+                install_source: None,
+            },
+        );
+        let request = state
+            .saved_buffer_lint_context(state.session.active_id())
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let result = LintRunResult {
+            source: request.source.clone(),
+            diagnostics_by_uri: HashMap::new(),
+            error: Some("stale lint error".into()),
+        };
+        state
+            .lsp
+            .lint_runs
+            .push(PendingLintRun { request, receiver });
+        state.mode = EditorMode::Insert;
+        state.apply_input(crate::input::InputAction::InsertChar('x'), 80, 24);
+        state.cleanup_orphaned_lsp_state();
+        assert_eq!(state.lsp.lint_runs.len(), 1);
+        sender.send(result).unwrap();
+        state.poll_lint_runs();
+        assert!(state.lsp.lint_runs.is_empty());
+        assert!(state.lsp.diagnostics.is_empty());
+        assert!(
+            !state
+                .status_msg
+                .as_ref()
+                .is_some_and(|status| status.contains("stale lint error"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialization_timeout_backs_off_and_document_cleanup_removes_closed_buffers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        let buffer_id = session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        let provider = provider_spec(ProviderId::RustAnalyzer).unwrap();
+        let root = workspace_root_for(&path, &provider, state.session.launch_dir());
+        let workspace = WorkspaceKey {
+            provider_id: provider.id,
+            root: root.clone(),
+        };
+        state.lsp.installed.clear();
+        state.lsp.installed.insert(
+            MarketplaceItemId::Provider(provider.id),
+            InstalledToolRecord {
+                install_source: None,
+            },
+        );
+        let client = LspSession::spawn(
+            &redox_lsp::ServerCommand::new("mock", "sh").args(&["-c", "exec sleep 10"]),
+            &root,
+            ClientInfo {
+                name: "test",
+                version: "1",
+            },
+        )
+        .unwrap();
+        state.lsp.clients.insert(
+            workspace.clone(),
+            ManagedClient {
+                provider,
+                session: client,
+                loading_since: Instant::now() - LSP_INITIALIZE_TIMEOUT,
+            },
+        );
+        state.ensure_active_lsp_client();
+        assert!(state.lsp.documents.contains_key(&buffer_id));
+        state.poll_lsp();
+        assert!(!state.lsp.clients.contains_key(&workspace));
+        assert!(state.lsp.retry_after[&workspace] > Instant::now());
+        state.poll_lsp();
+        assert!(!state.lsp.clients.contains_key(&workspace));
+        assert!(!state.lsp.documents[&buffer_id].opened);
+        state.session.close_buffer(buffer_id);
+        state.cleanup_orphaned_lsp_state();
+        assert!(!state.lsp.documents.contains_key(&buffer_id));
     }
 }

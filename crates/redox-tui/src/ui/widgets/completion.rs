@@ -1,21 +1,20 @@
+use std::ops::Range;
+
 use minui::{ColorPair, TabPolicy, Window, cell_width};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{CompletionEntry, CompletionPopup};
+use crate::ui::icons::completion_kind_icon;
 use crate::ui::style::SyntaxRole;
-use crate::ui::widgets::popup::{
-    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_divider, draw_popup_frame_at,
-    wrap_text_to_cells,
-};
+use crate::ui::widgets::popup::{PopupChrome, clip_text_to_cells, draw_popup_frame_at};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const COMPLETION_VISIBLE_ROWS: usize = 8;
-const COMPLETION_DOCUMENTATION_ROWS: usize = 4;
-const COMPLETION_MIN_WIDTH: u16 = 32;
-const COMPLETION_MIN_METADATA_WIDTH: u16 = 44;
-const COMPLETION_MAX_WIDTH: u16 = 96;
+const COMPLETION_MIN_WIDTH: u16 = 28;
+const COMPLETION_MAX_WIDTH: u16 = 72;
 const COMPLETION_SELECTOR_GAP: usize = 1;
 const COMPLETION_TRAILING_PADDING: usize = 1;
-const COMPLETION_COLUMN_GAP: usize = 4;
+const COMPLETION_KIND_GAP: usize = 2;
 const COMPLETION_MIN_KEYWORD_WIDTH: usize = 8;
 
 pub fn draw_completion_popup(
@@ -37,17 +36,11 @@ pub fn draw_completion_popup(
     }
 
     let visible_rows = popup_visible_len(popup);
-    let layout = completion_layout(popup, visible_rows, term_w);
+    let layout = completion_layout(popup, visible_rows, term_w, style.icons_enabled);
     let width = layout.width;
-    let documentation = completion_documentation_lines(popup, width);
-    let doc_rows = if documentation.is_empty() {
-        0
-    } else {
-        documentation.len().saturating_add(1)
-    };
     let below_rows = text_bottom_y.saturating_sub(anchor_y.saturating_add(1)) as usize;
     let above_rows = anchor_y as usize;
-    let frame_extra_rows = 2 + doc_rows;
+    let frame_extra_rows = 2;
     let below_capacity = below_rows
         .saturating_sub(frame_extra_rows)
         .min(visible_rows);
@@ -72,7 +65,7 @@ pub fn draw_completion_popup(
     };
     let x = anchor_x.min(term_w.saturating_sub(width));
 
-    let popup_layout = draw_popup_frame_at(
+    draw_popup_frame_at(
         window,
         x,
         y,
@@ -82,9 +75,6 @@ pub fn draw_completion_popup(
         PopupChrome::finder(style),
     )?;
     draw_entries(window, popup, style, x, y, layout, capacity)?;
-    if !documentation.is_empty() {
-        draw_documentation(window, &documentation, style, popup_layout, x, y, capacity)?;
-    }
     Ok(())
 }
 
@@ -128,14 +118,14 @@ pub fn draw_completion_preview(
 struct CompletionLayout {
     width: u16,
     keyword_width: usize,
-    type_width: usize,
-    extra_width: usize,
+    kind_width: usize,
 }
 
 fn completion_layout(
     popup: &CompletionPopup,
     visible_rows: usize,
     term_w: u16,
+    icons_enabled: bool,
 ) -> CompletionLayout {
     let start = popup.scroll.min(popup.entries.len());
     let end = start.saturating_add(visible_rows).min(popup.entries.len());
@@ -146,110 +136,52 @@ fn completion_layout(
         .max()
         .unwrap_or(12)
         .min(36);
-    let type_width = visible
-        .clone()
-        .filter_map(|entry| entry.type_label.as_deref())
+    let kind_width = visible
+        .filter_map(|entry| completion_kind_display(entry.kind.as_deref(), icons_enabled))
         .map(text_width)
         .max()
         .unwrap_or(0)
-        .min(30);
-    let extra_width = visible
-        .filter_map(|entry| entry.extra.as_deref())
-        .map(text_width)
-        .max()
-        .unwrap_or(0)
-        .min(18);
-
-    let has_type = type_width > 0;
-    let has_extra = extra_width > 0;
-    let gaps = completion_metadata_gaps(type_width, extra_width);
+        .min(12);
+    let kind_gap = usize::from(kind_width > 0) * COMPLETION_KIND_GAP;
     let content_width = 1
         + COMPLETION_SELECTOR_GAP
         + keyword_width
-        + gaps
-        + type_width
-        + extra_width
+        + kind_gap
+        + kind_width
         + COMPLETION_TRAILING_PADDING;
-    let min_width = if has_type && has_extra {
-        COMPLETION_MIN_METADATA_WIDTH
-    } else {
-        COMPLETION_MIN_WIDTH
-    };
     let available = term_w.saturating_sub(2).max(1) as usize;
     let width = content_width
         .saturating_add(2)
-        .clamp(min_width as usize, COMPLETION_MAX_WIDTH as usize)
+        .clamp(COMPLETION_MIN_WIDTH as usize, COMPLETION_MAX_WIDTH as usize)
         .min(available)
-        .max(min_width.min(term_w) as usize) as u16;
+        .max(COMPLETION_MIN_WIDTH.min(term_w) as usize) as u16;
 
     let inner_available = width.saturating_sub(2) as usize;
-    let (keyword_width, type_width, extra_width) =
-        fit_completion_columns(inner_available, keyword_width, type_width, extra_width);
+    let fixed_width = completion_fixed_width(kind_width);
+    let keyword_width = keyword_width
+        .min(inner_available.saturating_sub(fixed_width))
+        .max(COMPLETION_MIN_KEYWORD_WIDTH);
 
     CompletionLayout {
         width,
         keyword_width,
-        type_width,
-        extra_width,
+        kind_width,
     }
 }
 
-fn fit_completion_columns(
-    inner_available: usize,
-    keyword_width: usize,
-    type_width: usize,
-    extra_width: usize,
-) -> (usize, usize, usize) {
-    let mut type_width = type_width;
-    let mut extra_width = extra_width;
-
-    loop {
-        let base = 1 + COMPLETION_SELECTOR_GAP + COMPLETION_TRAILING_PADDING;
-        let gaps = completion_metadata_gaps(type_width, extra_width);
-        let metadata_budget =
-            inner_available.saturating_sub(base + gaps + COMPLETION_MIN_KEYWORD_WIDTH);
-        if type_width + extra_width <= metadata_budget {
-            break;
-        }
-
-        if extra_width > 0 {
-            let extra_budget = metadata_budget.saturating_sub(type_width);
-            if extra_budget > 0 {
-                extra_width = extra_width.min(extra_budget);
-                break;
-            } else {
-                extra_width = 0;
-            }
-        } else if type_width > 0 {
-            type_width = type_width.min(metadata_budget);
-            if type_width == 0 {
-                break;
-            }
-            break;
-        } else {
-            break;
-        }
-    }
-
-    let fixed = completion_fixed_width(type_width, extra_width);
-    let keyword_width = keyword_width
-        .min(inner_available.saturating_sub(fixed))
-        .max(COMPLETION_MIN_KEYWORD_WIDTH);
-
-    (keyword_width, type_width, extra_width)
-}
-
-fn completion_fixed_width(type_width: usize, extra_width: usize) -> usize {
+fn completion_fixed_width(kind_width: usize) -> usize {
     1 + COMPLETION_SELECTOR_GAP
-        + completion_metadata_gaps(type_width, extra_width)
-        + type_width
-        + extra_width
+        + usize::from(kind_width > 0) * COMPLETION_KIND_GAP
+        + kind_width
         + COMPLETION_TRAILING_PADDING
 }
 
-fn completion_metadata_gaps(type_width: usize, extra_width: usize) -> usize {
-    usize::from(type_width > 0) * COMPLETION_COLUMN_GAP
-        + usize::from(extra_width > 0) * COMPLETION_COLUMN_GAP
+fn completion_kind_display(kind: Option<&str>, icons_enabled: bool) -> Option<&str> {
+    if icons_enabled {
+        kind.and_then(completion_kind_icon).or(kind)
+    } else {
+        kind
+    }
 }
 
 fn popup_visible_len(popup: &CompletionPopup) -> usize {
@@ -279,11 +211,15 @@ fn draw_entries(
         let idx = start + visible_idx;
         let row = y + 1 + visible_idx as u16;
         let is_selected = idx == popup.selected;
-        let keyword_style =
-            completion_role_color(style, entry, is_selected, CompletionColumn::Keyword);
-        let type_style = completion_role_color(style, entry, is_selected, CompletionColumn::Type);
-        let extra_style = completion_role_color(style, entry, is_selected, CompletionColumn::Extra);
+        let kind_style = completion_kind_color(style, entry, is_selected);
         let dim_style = selection_aware_color(style.finder.dim, selected_style, is_selected);
+        let row_background = if is_selected {
+            selected_style.bg
+        } else {
+            style.finder.text.bg
+        };
+        let keyword_style = ColorPair::new(style.theme.light_gray, row_background);
+        let match_style = ColorPair::new(style.theme.white, row_background);
         let marker = if is_selected { "›" } else { " " };
         if is_selected {
             window.write_str_colored(
@@ -297,80 +233,74 @@ fn draw_entries(
 
         let keyword_x = x + 2 + COMPLETION_SELECTOR_GAP as u16;
         let keyword = clip_text_to_cells(&entry.keyword, layout.keyword_width);
-        window.write_str_colored(row, keyword_x, &keyword, keyword_style)?;
+        draw_completion_keyword(
+            window,
+            row,
+            keyword_x,
+            &keyword,
+            &entry.highlights,
+            keyword_style,
+            match_style,
+        )?;
 
-        let type_x = keyword_x + layout.keyword_width as u16 + COMPLETION_COLUMN_GAP as u16;
-        if layout.type_width > 0
-            && let Some(type_label) = &entry.type_label
+        if layout.kind_width > 0
+            && let Some(kind) = completion_kind_display(entry.kind.as_deref(), style.icons_enabled)
         {
-            let text = clip_text_to_cells(type_label, layout.type_width);
-            window.write_str_colored(row, type_x, &text, type_style)?;
-        }
-
-        if layout.extra_width > 0
-            && let Some(extra) = &entry.extra
-        {
-            let extra = clip_text_to_cells(extra, layout.extra_width);
-            let extra_x = x + width
-                .saturating_sub(1 + COMPLETION_TRAILING_PADDING as u16 + layout.extra_width as u16);
-            window.write_str_colored(row, extra_x, &extra, extra_style)?;
+            let kind = clip_text_to_cells(kind, layout.kind_width);
+            let kind_x = x + width
+                .saturating_sub(1 + COMPLETION_TRAILING_PADDING as u16 + layout.kind_width as u16);
+            window.write_str_colored(row, kind_x, &kind, kind_style)?;
         }
     }
 
     Ok(())
 }
 
-fn draw_documentation(
+fn draw_completion_keyword(
     window: &mut dyn Window,
-    lines: &[String],
-    style: UiStyle,
-    layout: PopupLayout,
-    x: u16,
-    y: u16,
-    capacity: usize,
+    row: u16,
+    start_col: u16,
+    keyword: &str,
+    highlights: &[Range<usize>],
+    base: ColorPair,
+    highlighted: ColorPair,
 ) -> minui::Result<()> {
-    let row = y + capacity as u16 + 1;
-    draw_popup_divider(window, layout, capacity as u16, style.finder.border)?;
-    let color = ColorPair::new(style.theme.light_gray, style.finder.text.bg);
-    for (idx, line) in lines.iter().enumerate() {
-        window.write_str_colored(row + 1 + idx as u16, x + 2, line, color)?;
+    let mut segment_start = 0usize;
+    let mut segment_highlighted = None;
+    let mut column = start_col;
+    for (byte_index, grapheme) in keyword.grapheme_indices(true) {
+        let grapheme_end = byte_index.saturating_add(grapheme.len());
+        let is_highlighted = highlights
+            .iter()
+            .any(|range| byte_index < range.end && grapheme_end > range.start);
+        if let Some(current) = segment_highlighted
+            && current != is_highlighted
+        {
+            let segment = &keyword[segment_start..byte_index];
+            window.write_str_colored(
+                row,
+                column,
+                segment,
+                if current { highlighted } else { base },
+            )?;
+            column = column.saturating_add(text_width(segment) as u16);
+            segment_start = byte_index;
+        }
+        segment_highlighted = Some(is_highlighted);
+    }
+    if let Some(is_highlighted) = segment_highlighted {
+        window.write_str_colored(
+            row,
+            column,
+            &keyword[segment_start..],
+            if is_highlighted { highlighted } else { base },
+        )?;
     }
     Ok(())
 }
 
-fn completion_documentation_lines(popup: &CompletionPopup, width: u16) -> Vec<String> {
-    let Some(documentation) = popup
-        .entries
-        .get(popup.selected)
-        .and_then(|entry| entry.documentation.as_deref())
-    else {
-        return Vec::new();
-    };
-    wrap_text_to_cells(documentation, width.saturating_sub(4) as usize)
-        .into_iter()
-        .filter(|line| !line.trim().is_empty())
-        .take(COMPLETION_DOCUMENTATION_ROWS)
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CompletionColumn {
-    Keyword,
-    Type,
-    Extra,
-}
-
-fn completion_role_color(
-    style: UiStyle,
-    entry: &CompletionEntry,
-    is_selected: bool,
-    column: CompletionColumn,
-) -> ColorPair {
-    let role = match column {
-        CompletionColumn::Keyword => completion_keyword_role(entry.kind.as_deref()),
-        CompletionColumn::Type => SyntaxRole::Type,
-        CompletionColumn::Extra => SyntaxRole::Comment,
-    };
+fn completion_kind_color(style: UiStyle, entry: &CompletionEntry, is_selected: bool) -> ColorPair {
+    let role = completion_keyword_role(entry.kind.as_deref());
     let mut color = style.syntax.color_for(role);
     color.bg = if is_selected {
         style.finder.selected.bg
@@ -414,14 +344,12 @@ fn text_width(text: &str) -> usize {
 mod tests {
     use super::*;
 
-    fn popup_with_metadata() -> CompletionPopup {
+    fn popup_with_kind() -> CompletionPopup {
         CompletionPopup {
             entries: vec![CompletionEntry {
                 kind: Some("function".to_string()),
                 keyword: "very_long_completion_keyword".to_string(),
-                type_label: Some("ExtremelyLongCompletionTypeName".to_string()),
-                extra: Some("very_long_extra".to_string()),
-                documentation: None,
+                highlights: vec![0..4],
             }],
             selected: 0,
             scroll: 0,
@@ -429,15 +357,27 @@ mod tests {
     }
 
     #[test]
-    fn completion_layout_drops_extra_before_overlapping_metadata_columns() {
-        let layout = completion_layout(&popup_with_metadata(), 1, COMPLETION_MIN_METADATA_WIDTH);
-        let inner_available = layout.width.saturating_sub(2) as usize;
-        let used =
-            layout.keyword_width + completion_fixed_width(layout.type_width, layout.extra_width);
+    fn completion_kind_display_falls_back_to_text_for_unknown_kinds() {
+        assert_eq!(
+            completion_kind_display(Some("unknown"), true),
+            Some("unknown")
+        );
+        assert_eq!(completion_kind_display(Some("function"), true), Some("󰊕"));
+        assert_eq!(
+            completion_kind_display(Some("function"), false),
+            Some("function")
+        );
+        assert_eq!(completion_kind_display(None, true), None);
+    }
 
-        assert_eq!(layout.keyword_width, COMPLETION_MIN_KEYWORD_WIDTH);
-        assert!(layout.type_width > 0);
-        assert_eq!(layout.extra_width, 0);
+    #[test]
+    fn completion_layout_keeps_keyword_and_kind_columns_separate() {
+        let layout = completion_layout(&popup_with_kind(), 1, COMPLETION_MIN_WIDTH, false);
+        let inner_available = layout.width.saturating_sub(2) as usize;
+        let used = layout.keyword_width + completion_fixed_width(layout.kind_width);
+
+        assert!(layout.keyword_width >= COMPLETION_MIN_KEYWORD_WIDTH);
+        assert!(layout.kind_width > 0);
         assert!(used <= inner_available);
     }
 }

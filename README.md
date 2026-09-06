@@ -24,7 +24,7 @@
 
 ## Project structure
 
-Redox is a Cargo workspace with a small core crate and a MinUI frontend. The core crate owns editor logic that should stay UI-agnostic, while the TUI crate owns input mapping, app state, rendering, popups, syntax highlighting, and terminal interaction.
+Redox is a Cargo workspace with an editor core, an LSP library, and a MinUI frontend. The core crate owns editor logic that should stay UI-agnostic. The LSP crate owns protocol and process mechanisms. The TUI crate owns input mapping, app state, rendering, popups, syntax highlighting, and terminal interaction.
 
 ```text
 redox/
@@ -41,6 +41,13 @@ redox/
     │       ├── io.rs           # File read/write helpers
     │       ├── motion.rs       # Vim-style motion logic
     │       └── lib.rs          # Shared editor library helpers
+    ├── redox-lsp/
+    │   └── src/
+    │       ├── transport.rs    # JSON-RPC framing and language-server processes
+    │       ├── protocol.rs     # Shared LSP positions, ranges, and definition parsing
+    │       ├── provider.rs     # Built-in provider catalogue and installers
+    │       ├── lint.rs         # Linter processes and output parsing
+    │       └── snippet.rs      # LSP snippet expansion
     └── redox-tui/
         └── src/
             ├── app/            # Main editor state and mode model
@@ -48,10 +55,12 @@ redox/
             └── ui/             # UI rendering, widgets, animations, styling
 ```
 
-This split keeps buffer operations, indexing, motions, fuzzy scoring, and session behaviour easy to test without needing a terminal. The frontend can then evolve the interface without pulling UI details into `redox-core`.
+This split keeps buffer operations, indexing, motions, fuzzy scoring, session behaviour, and LSP mechanics testable without a terminal. The frontend can evolve the interface without pulling UI details into `redox-core` or `redox-lsp`.
 
 **The subcrates can be found here**:
+
 - [redox-core](https://crates.io/crates/redox-core)
+- [redox-lsp](https://crates.io/crates/redox-lsp)
 - [redox-tui](https://crates.io/crates/redox-tui)
 
 ## Getting Started
@@ -60,6 +69,7 @@ This split keeps buffer operations, indexing, motions, fuzzy scoring, and sessio
 
 - Rust toolchain (`cargo` + `rustc`)
 - A terminal that supports basic ANSI features and raw mode (and ideally full colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for the best experience!
+- Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see [Language tools](#language-tools) for setup.
 
 
 ### Install via CLI
@@ -214,6 +224,13 @@ Pinboard controls:
 Redox can start installed language servers for supported file types and display diagnostics inline, in the status bar, and in a diagnostics popup.
 
 Open the language tools marketplace with `:lsp list`.
+
+Go linting requires golangci-lint v2.0.0 or newer because Redox uses the v2-only
+`--output.json.path stdout` and `--output.text.path stderr` flags. Check
+`golangci-lint --version` before enabling it. If it reports v1, upgrade using the
+[golangci-lint installation guide](https://golangci-lint.run/docs/welcome/install/local/)
+and ensure the v2 binary is first on `PATH`. Existing v1 configurations also need
+the [v2 migration](https://golangci-lint.run/docs/product/migration-guide/).
 
 Completion controls:
 

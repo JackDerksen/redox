@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 redox-core = { version = "0.8.0", path = "../redox-core" }
+redox-lsp = { version = "0.1.0", path = "../redox-lsp" }
 minui = { version = "0.7.3", features = ["clipboard"] }
 anyhow = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -39,4 +40,3 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-yaml = "0.7.2"
 ignore = "0.4"
-url = "2.5"

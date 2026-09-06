@@ -207,23 +207,6 @@ pub fn popup_window_view<'a>(window: &'a mut dyn Window, layout: PopupLayout) ->
     }
 }
 
-pub fn draw_popup_divider(
-    window: &mut dyn Window,
-    layout: PopupLayout,
-    inner_row: u16,
-    colors: ColorPair,
-) -> minui::Result<()> {
-    if inner_row >= layout.inner_h {
-        return Ok(());
-    }
-    window.write_str_colored(
-        layout.y.saturating_add(1).saturating_add(inner_row),
-        layout.x,
-        &popup_divider_text(layout.inner_w),
-        colors,
-    )
-}
-
 pub fn draw_popup_view_divider(
     view: &mut WindowView<'_>,
     inner_row: u16,
