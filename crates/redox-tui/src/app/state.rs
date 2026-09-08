@@ -18,7 +18,6 @@ use crate::input::cursor::CursorController;
 use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
 use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
-use crate::ui::syntax::immediate_fallback_line_spans;
 use crate::ui::{
     RainAnimation, RenderLineCache, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
@@ -1447,21 +1446,11 @@ impl EditorState {
     }
 
     fn invalidate_buffer_render_caches(&mut self, buffer_id: BufferId) {
-        let syntax_language = self
-            .session
-            .meta(buffer_id)
-            .and_then(|meta| language_for_path(meta.path.as_deref()));
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             view.invalidate_render_caches();
-            if let Some(syntax_language) = syntax_language
-                && let Some(buffer) = self.session.buffer(buffer_id)
-            {
-                let line = buffer.clamp_line(view.cursor.cursor.line);
-                view.syntax_highlighter.replace_lexical_overlay(
-                    line,
-                    immediate_fallback_line_spans(&buffer.line_string(line), syntax_language),
-                );
+            if let Some(buffer) = self.session.buffer(buffer_id) {
+                view.syntax_highlighter.rebase_cache(buffer);
             }
             view.analysis_version
         };

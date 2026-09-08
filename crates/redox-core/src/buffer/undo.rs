@@ -61,25 +61,24 @@ impl TextDiff {
 
         let before_len = before.len_chars();
         let after_len = after.len_chars();
-        let min_len = before_len.min(after_len);
-
+        // Compare equal rope chunks in bulk; only inspect individual bytes in
+        // the chunks containing the edit. Round partial UTF-8 matches outwards.
+        let prefix_bytes = common_chunk_bytes(before.chunks(), after.chunks(), false);
         let prefix_len = before
-            .chars(0..before_len)
-            .zip(after.chars(0..after_len))
-            .take(min_len)
-            .take_while(|(before_char, after_char)| before_char == after_char)
-            .count();
-
-        let max_suffix_len = before_len
-            .saturating_sub(prefix_len)
-            .min(after_len.saturating_sub(prefix_len));
-
-        let suffix_len = before
-            .chars_reversed(prefix_len..before_len)
-            .zip(after.chars_reversed(prefix_len..after_len))
-            .take(max_suffix_len)
-            .take_while(|(before_char, after_char)| before_char == after_char)
-            .count();
+            .byte_to_char(prefix_bytes)
+            .expect("prefix is in bounds");
+        let suffix_bytes = common_chunk_bytes(
+            before.chunks_reversed(prefix_len..before_len),
+            after.chunks_reversed(prefix_len..after_len),
+            true,
+        );
+        let suffix_start_byte = before.len_bytes() - suffix_bytes;
+        let suffix_start_char = before
+            .byte_to_char(suffix_start_byte)
+            .expect("suffix is in bounds");
+        let suffix_len = before_len
+            - suffix_start_char
+            - usize::from(before.char_to_byte(suffix_start_char) < suffix_start_byte);
 
         let before_changed_end = before_len - suffix_len;
         let after_changed_end = after_len - suffix_len;
@@ -102,6 +101,64 @@ impl TextDiff {
             self.start_char..self.start_char + self.inserted.chars().count(),
             self.deleted.clone(),
         )
+    }
+}
+
+fn common_chunk_bytes<'a>(
+    mut before: impl Iterator<Item = &'a str>,
+    mut after: impl Iterator<Item = &'a str>,
+    from_end: bool,
+) -> usize {
+    let mut before_chunk = &[][..];
+    let mut after_chunk = &[][..];
+    let mut matched = 0;
+    loop {
+        if before_chunk.is_empty() {
+            let Some(chunk) = before.next() else {
+                return matched;
+            };
+            before_chunk = chunk.as_bytes();
+        }
+        if after_chunk.is_empty() {
+            let Some(chunk) = after.next() else {
+                return matched;
+            };
+            after_chunk = chunk.as_bytes();
+        }
+        let length = before_chunk.len().min(after_chunk.len());
+        let (before_part, after_part) = if from_end {
+            (
+                &before_chunk[before_chunk.len() - length..],
+                &after_chunk[after_chunk.len() - length..],
+            )
+        } else {
+            (&before_chunk[..length], &after_chunk[..length])
+        };
+        if before_part != after_part {
+            let matching_bytes = if from_end {
+                before_part
+                    .iter()
+                    .rev()
+                    .zip(after_part.iter().rev())
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            } else {
+                before_part
+                    .iter()
+                    .zip(after_part)
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            };
+            return matched + matching_bytes;
+        }
+        matched += length;
+        if from_end {
+            before_chunk = &before_chunk[..before_chunk.len() - length];
+            after_chunk = &after_chunk[..after_chunk.len() - length];
+        } else {
+            before_chunk = &before_chunk[length..];
+            after_chunk = &after_chunk[length..];
+        }
     }
 }
 
@@ -487,4 +544,37 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_diffs_round_trip_unicode_edits_across_rope_boundaries() {
+        // These characters share partial UTF-8 prefixes or suffixes.
+        let replacements = ["", "a", "é", "ê", "ࠀ", "😀", "😁", "e\u{301}", "\n"];
+        for padding in [0, 700] {
+            let prefix = "λ".repeat(padding);
+            let suffix = "終".repeat(padding);
+            for deleted in replacements {
+                for inserted in replacements {
+                    let before = TextBuffer::from_text(&format!("{prefix}{deleted}{suffix}"));
+                    let after = TextBuffer::from_text(&format!("{prefix}{inserted}{suffix}"));
+                    let Some(change) = TextDiff::between(&before, &after) else {
+                        assert_eq!(before, after);
+                        continue;
+                    };
+                    assert_eq!(change.start_char, padding);
+                    assert_eq!(change.deleted, deleted);
+                    assert_eq!(change.inserted, inserted);
+                    let mut restored = before.clone();
+                    restored.apply_edit(change.forward_edit());
+                    assert_eq!(restored, after);
+                    restored.apply_edit(change.reverse_edit());
+                    assert_eq!(restored, before);
+                }
+            }
+        }
+    }
 }
