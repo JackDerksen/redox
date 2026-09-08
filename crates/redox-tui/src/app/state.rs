@@ -1451,6 +1451,7 @@ impl EditorState {
             view.invalidate_render_caches();
             if let Some(buffer) = self.session.buffer(buffer_id) {
                 view.syntax_highlighter.rebase_cache(buffer);
+                view.delimiter_pair_cache.rebase(buffer);
             }
             view.analysis_version
         };

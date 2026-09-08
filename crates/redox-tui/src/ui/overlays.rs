@@ -1,8 +1,8 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap};
 
 use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
-use redox_core::{Pos, TextBuffer};
+use redox_core::{Pos, TextBuffer, TextDiff};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui::{
@@ -49,8 +49,9 @@ struct EnclosingRange {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct DelimiterAnalysis {
+    source: TextBuffer,
     pairs: Vec<IndexedDelimiterPair>,
-    endpoint_index: HashMap<usize, Vec<usize>>,
+    endpoint_index: Vec<(usize, usize)>,
     enclosing_ranges: Vec<EnclosingRange>,
     scope_ranges: Vec<EnclosingRange>,
 }
@@ -90,6 +91,90 @@ impl DelimiterPairCache {
         }
     }
 
+    pub(crate) fn rebase(&mut self, buffer: &TextBuffer) {
+        self.mark_stale();
+        let Some(analysis) = self.analysis.as_mut() else {
+            return;
+        };
+        let Some(change) = TextDiff::between(&analysis.source, buffer) else {
+            return;
+        };
+        let old_end = change.start_char + change.deleted.chars().count();
+        let new_end = change.start_char + change.inserted.chars().count();
+        let map_endpoint = |position: usize| {
+            if position < change.start_char {
+                Some(position)
+            } else if position >= old_end {
+                Some(new_end + position - old_end)
+            } else {
+                None
+            }
+        };
+        let old_end_pos = analysis.source.char_to_pos(old_end);
+        let new_end_pos = buffer.char_to_pos(new_end);
+        let map_pos = |position: Pos| {
+            if position.line == old_end_pos.line {
+                Pos::new(
+                    new_end_pos.line,
+                    new_end_pos.col + position.col - old_end_pos.col,
+                )
+            } else {
+                Pos::new(
+                    new_end_pos.line + position.line - old_end_pos.line,
+                    position.col,
+                )
+            }
+        };
+        let mut rebuild = false;
+        analysis.pairs.retain_mut(|indexed| {
+            let Some(start) = map_endpoint(indexed.start_char) else {
+                rebuild = true;
+                return false;
+            };
+            let Some(end) = map_endpoint(indexed.end_char) else {
+                rebuild = true;
+                return false;
+            };
+            let was_multiline = indexed.pair.start.line < indexed.pair.end.line;
+            // Inserting immediately before an opener changes which enclosing
+            // pair owns the inserted text. Ordinary typing preserves nesting.
+            rebuild |= change.start_char == indexed.start_char;
+            if change.start_char <= indexed.end_char && old_end >= indexed.start_char {
+                indexed.pair.guide_cell = None;
+            }
+            if indexed.start_char >= old_end {
+                indexed.pair.start = map_pos(indexed.pair.start);
+            }
+            if indexed.end_char >= old_end {
+                indexed.pair.end = map_pos(indexed.pair.end);
+            }
+            indexed.start_char = start;
+            indexed.end_char = end;
+            rebuild |= was_multiline != (indexed.pair.start.line < indexed.pair.end.line);
+            true
+        });
+        if rebuild {
+            analysis.rebuild_indexes();
+        } else {
+            for (position, _) in &mut analysis.endpoint_index {
+                if *position >= old_end {
+                    *position = new_end + *position - old_end;
+                }
+            }
+            for ranges in [&mut analysis.enclosing_ranges, &mut analysis.scope_ranges] {
+                for range in ranges {
+                    if range.start_char > change.start_char {
+                        range.start_char = new_end + range.start_char.saturating_sub(old_end);
+                    }
+                    if range.end_char >= change.start_char {
+                        range.end_char = new_end + range.end_char.saturating_sub(old_end);
+                    }
+                }
+            }
+        }
+        analysis.source = buffer.clone();
+    }
+
     pub(crate) fn clear(&mut self) {
         self.analysis = None;
         self.stale = false;
@@ -102,6 +187,14 @@ impl DelimiterPairCache {
 }
 
 impl DelimiterAnalysis {
+    fn rebuild_indexes(&mut self) {
+        self.endpoint_index = delimiter_endpoint_index(&self.pairs);
+        self.enclosing_ranges = delimiter_enclosing_ranges(&self.pairs, |_| true);
+        self.scope_ranges = delimiter_enclosing_ranges(&self.pairs, |pair| {
+            pair.kind.is_structural() && pair.start.line < pair.end.line
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.pairs.len()
@@ -155,16 +248,23 @@ impl DelimiterAnalysis {
     ) -> Option<DelimiterPair> {
         let start_char = buffer.pos_to_char(buffer.clamp_pos(scope.start));
         let end_char = buffer.pos_to_char(buffer.clamp_pos(scope.end));
-        self.endpoint_index
-            .get(&start_char)?
+        self.pairs_at_endpoint(start_char).find_map(|idx| {
+            let pair = self.pairs.get(idx)?;
+            let is_matching_scope = pair.end_char == end_char
+                && pair.pair.kind.is_structural()
+                && pair.pair.start.line < pair.pair.end.line;
+            is_matching_scope.then_some(pair.pair)
+        })
+    }
+
+    fn pairs_at_endpoint(&self, character: usize) -> impl Iterator<Item = usize> + '_ {
+        let first = self
+            .endpoint_index
+            .partition_point(|&(position, _)| position < character);
+        self.endpoint_index[first..]
             .iter()
-            .find_map(|idx| {
-                let pair = self.pairs.get(*idx)?;
-                let is_matching_scope = pair.end_char == end_char
-                    && pair.pair.kind.is_structural()
-                    && pair.pair.start.line < pair.pair.end.line;
-                is_matching_scope.then_some(pair.pair)
-            })
+            .take_while(move |&&(position, _)| position == character)
+            .map(|&(_, index)| index)
     }
 
     fn pair_at_endpoint(
@@ -172,8 +272,8 @@ impl DelimiterAnalysis {
         char_idx: usize,
         predicate: impl Fn(DelimiterPair) -> bool,
     ) -> Option<DelimiterPair> {
-        self.endpoint_index.get(&char_idx)?.iter().find_map(|idx| {
-            let pair = self.pairs.get(*idx)?.pair;
+        self.pairs_at_endpoint(char_idx).find_map(|idx| {
+            let pair = self.pairs.get(idx)?.pair;
             predicate(pair).then_some(pair)
         })
     }
@@ -209,14 +309,13 @@ pub(crate) fn compute_delimiter_analysis(buffer: &TextBuffer) -> DelimiterAnalys
             }
         })
         .collect::<Vec<_>>();
-    DelimiterAnalysis {
-        endpoint_index: delimiter_endpoint_index(&pairs),
-        enclosing_ranges: delimiter_enclosing_ranges(&pairs, |_| true),
-        scope_ranges: delimiter_enclosing_ranges(&pairs, |pair| {
-            pair.kind.is_structural() && pair.start.line < pair.end.line
-        }),
+    let mut analysis = DelimiterAnalysis {
+        source: buffer.clone(),
         pairs,
-    }
+        ..DelimiterAnalysis::default()
+    };
+    analysis.rebuild_indexes();
+    analysis
 }
 
 pub(crate) fn draw_indent_guides(
@@ -495,12 +594,13 @@ pub(crate) fn active_delimiter_highlights(
     highlights
 }
 
-fn delimiter_endpoint_index(pairs: &[IndexedDelimiterPair]) -> HashMap<usize, Vec<usize>> {
-    let mut endpoints: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (idx, pair) in pairs.iter().enumerate() {
-        endpoints.entry(pair.start_char).or_default().push(idx);
-        endpoints.entry(pair.end_char).or_default().push(idx);
+fn delimiter_endpoint_index(pairs: &[IndexedDelimiterPair]) -> Vec<(usize, usize)> {
+    let mut endpoints = Vec::with_capacity(pairs.len() * 2);
+    for (index, pair) in pairs.iter().enumerate() {
+        endpoints.push((pair.start_char, index));
+        endpoints.push((pair.end_char, index));
     }
+    endpoints.sort_unstable();
     endpoints
 }
 

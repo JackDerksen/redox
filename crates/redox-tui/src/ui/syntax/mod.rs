@@ -7,7 +7,9 @@ use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
-use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
+use tree_sitter::{
+    InputEdit, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
@@ -201,6 +203,24 @@ impl HighlightCache {
         }
         self.line_spans
             .splice(first_line..=old_end_line, replacement);
+        let point = |source: &TextBuffer, character: usize| {
+            let row = source.char_to_line(character);
+            Point::new(
+                row,
+                source.char_to_byte(character) - source.char_to_byte(source.line_to_char(row)),
+            )
+        };
+        self.tree.edit(&InputEdit {
+            start_byte: region_start + edit_start,
+            old_end_byte: region_start + old_end,
+            new_end_byte: region_start + new_end,
+            start_position: point(&self.source, change.start_char),
+            old_end_position: point(
+                &self.source,
+                change.start_char + change.deleted.chars().count(),
+            ),
+            new_end_position: point(buffer, change.start_char + change.inserted.chars().count()),
+        });
         self.source = buffer.clone();
     }
 }
@@ -444,12 +464,13 @@ impl SyntaxHighlighter {
     }
 
     /// Keep display spans attached to the edited text while the worker parses it.
-    /// The old tree remains stale and must not be used for structural queries.
+    /// The edited tree is provisional and is used only for display scopes.
     pub(crate) fn rebase_cache(&mut self, buffer: &TextBuffer) {
         self.mark_cache_stale();
         if let Some(cache) = self.cache.as_mut() {
             cache.rebase(buffer);
         }
+        self.active_scope_cache = None;
     }
 
     #[cfg(test)]
@@ -468,7 +489,7 @@ impl SyntaxHighlighter {
             .is_some_and(|cache| cache.language == language)
     }
 
-    pub fn active_scope_pair_cached(
+    pub fn active_scope_pair_for_display_cached(
         &mut self,
         buffer: &TextBuffer,
         language: Option<SyntaxLanguage>,
@@ -477,9 +498,6 @@ impl SyntaxHighlighter {
     ) -> Option<SyntaxScopePair> {
         let language = language?;
         let cursor_char = buffer.pos_to_char(cursor);
-        if self.cache_stale {
-            return None;
-        }
 
         if let Some(cached) = self.active_scope_cache
             && cached.language == language
@@ -511,29 +529,6 @@ impl SyntaxHighlighter {
             scope,
         });
         scope
-    }
-
-    pub fn active_scope_pair_for_display_cached(
-        &mut self,
-        buffer: &TextBuffer,
-        language: Option<SyntaxLanguage>,
-        analysis_version: u64,
-        cursor: Pos,
-    ) -> Option<SyntaxScopePair> {
-        let stale_scope = if self.cache_stale {
-            let cursor_char = buffer.pos_to_char(cursor);
-            language
-                .and_then(|language| {
-                    self.active_scope_cache.filter(|cached| {
-                        cached.language == language && cached.cursor_char == cursor_char
-                    })
-                })
-                .and_then(|cached| cached.scope)
-        } else {
-            None
-        };
-        self.active_scope_pair_cached(buffer, language, analysis_version, cursor)
-            .or(stale_scope)
     }
 
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
@@ -2115,7 +2110,12 @@ mod tests {
             SyntaxLanguage::Rust,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, Pos::new(1, 15))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Rust),
+                0,
+                Pos::new(1, 15),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 10));
@@ -2123,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_active_scope_for_display_matches_cached_cursor_only() {
+    fn stale_active_scope_for_display_follows_cursor() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
@@ -2132,15 +2132,11 @@ mod tests {
         ));
         let cursor = Pos::new(1, 15);
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
+            .active_scope_pair_for_display_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
             .expect("scope");
 
         highlighter.mark_cache_stale();
 
-        assert_eq!(
-            highlighter.active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor),
-            None
-        );
         assert_eq!(
             highlighter.active_scope_pair_for_display_cached(
                 &buffer,
@@ -2157,7 +2153,7 @@ mod tests {
                 1,
                 Pos::new(1, 16),
             ),
-            None
+            Some(scope)
         );
     }
 
@@ -2318,7 +2314,7 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start);
@@ -2335,7 +2331,12 @@ mod tests {
             SyntaxLanguage::Lua,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Lua), 0, Pos::new(1, 4))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Lua),
+                0,
+                Pos::new(1, 4),
+            )
             .expect("lua scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
@@ -2364,7 +2365,7 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start);
@@ -2381,7 +2382,12 @@ mod tests {
             SyntaxLanguage::Python,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, Pos::new(1, 8))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Python),
+                0,
+                Pos::new(1, 8),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
@@ -2421,7 +2427,12 @@ mod tests {
                 SyntaxLanguage::Python,
             ));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, cursor)
+                .active_scope_pair_for_display_cached(
+                    &buffer,
+                    Some(SyntaxLanguage::Python),
+                    0,
+                    cursor,
+                )
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start, "{source}");
@@ -2438,7 +2449,12 @@ mod tests {
             SyntaxLanguage::Markdown,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Markdown), 0, Pos::new(2, 1))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Markdown),
+                0,
+                Pos::new(2, 1),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
