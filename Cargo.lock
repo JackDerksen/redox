@@ -632,15 +632,16 @@ dependencies = [
 
 [[package]]
 name = "minui"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "226041713ffec366a0dc7b7f1900939336f73eb4bc42f56d18dd750e85334308"
+checksum = "7f56fd7b6fc8c7bec26e5079d6af8fa140a238518460fc32f014e45e0d58b15f"
 dependencies = [
  "arboard",
  "crokey",
  "crossterm",
  "thiserror",
  "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1416,6 +1417,12 @@ name = "unicode-segmentation"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unicode-xid"

@@ -161,44 +161,25 @@ fn wrapped_render_lines(
     width: usize,
 ) -> Vec<SymbolInfoDisplayLine> {
     let mut lines = Vec::new();
-    for source_line in text.lines() {
-        match kind {
-            SymbolInfoDisplayKind::Code { .. } => {
-                let wrapped = wrap_code_line_segments(source_line, width);
-                let source_spans = symbol_info_line_spans(source_line, &kind);
-                if wrapped.is_empty() {
-                    lines.push(SymbolInfoDisplayLine {
-                        text: String::new(),
-                        kind: kind.clone(),
-                        spans: Vec::new(),
-                    });
-                    continue;
-                }
-                lines.extend(wrapped.into_iter().map(|(text, start_byte, end_byte)| {
-                    SymbolInfoDisplayLine {
-                        spans: clip_line_spans(&source_spans, start_byte, end_byte),
-                        text,
-                        kind: kind.clone(),
-                    }
-                }));
-            }
-            SymbolInfoDisplayKind::PlainText | SymbolInfoDisplayKind::Markdown => {
-                let wrapped = wrap_text_to_cells(source_line, width);
-                if wrapped.is_empty() {
-                    lines.push(SymbolInfoDisplayLine {
-                        text: String::new(),
-                        kind: kind.clone(),
-                        spans: Vec::new(),
-                    });
-                    continue;
-                }
-                lines.extend(wrapped.into_iter().map(|text| SymbolInfoDisplayLine {
-                    spans: symbol_info_line_spans(&text, &kind),
-                    text,
-                    kind: kind.clone(),
-                }));
-            }
+    let mode = match kind {
+        SymbolInfoDisplayKind::Code { .. } => minui::TextWrapMode::Wrap,
+        SymbolInfoDisplayKind::PlainText | SymbolInfoDisplayKind::Markdown => {
+            minui::TextWrapMode::WrapWords
         }
+    };
+    for source_line in text.lines() {
+        let wrapped = minui::wrap_ranges_to_cells(
+            source_line,
+            width.min(u16::MAX as usize) as u16,
+            mode,
+            TabPolicy::Fixed(4),
+        );
+        let source_spans = symbol_info_line_spans(source_line, &kind);
+        lines.extend(wrapped.into_iter().map(|range| SymbolInfoDisplayLine {
+            spans: clip_line_spans(&source_spans, range.start, range.end),
+            text: source_line[range].to_owned(),
+            kind: kind.clone(),
+        }));
     }
     lines
 }
@@ -411,48 +392,6 @@ fn plain_text_indented_code_line(line: &str) -> bool {
 
 fn strip_plain_text_code_indent(line: &str) -> &str {
     line.strip_prefix("    ").unwrap_or(line)
-}
-
-#[allow(dead_code)]
-fn wrap_code_line_to_cells(line: &str, max_cells: usize) -> Vec<String> {
-    wrap_code_line_segments(line, max_cells)
-        .into_iter()
-        .map(|(text, _, _)| text)
-        .collect()
-}
-
-fn wrap_code_line_segments(line: &str, max_cells: usize) -> Vec<(String, usize, usize)> {
-    if max_cells == 0 {
-        return Vec::new();
-    }
-    if line.is_empty() {
-        return vec![(String::new(), 0, 0)];
-    }
-
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut used = 0usize;
-    let mut segment_start = 0usize;
-    let mut byte_idx = 0usize;
-
-    for grapheme in line.graphemes(true) {
-        let width = (cell_width(grapheme, TabPolicy::Fixed(4)) as usize).max(1);
-        let next_byte_idx = byte_idx.saturating_add(grapheme.len());
-        if used + width > max_cells && !current.is_empty() {
-            out.push((std::mem::take(&mut current), segment_start, byte_idx));
-            used = 0;
-            segment_start = byte_idx;
-        }
-        current.push_str(grapheme);
-        used += width;
-        byte_idx = next_byte_idx;
-    }
-
-    if !current.is_empty() {
-        out.push((current, segment_start, byte_idx));
-    }
-
-    out
 }
 
 fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> ColorPair {
@@ -1011,7 +950,7 @@ fn text_width(text: &str) -> usize {
 mod tests {
     use super::{
         build_symbol_info_display_lines, markdown_render_lines, plain_text_render_lines,
-        symbol_info_line_spans, wrap_code_line_to_cells,
+        symbol_info_line_spans,
     };
     use crate::app::state::{SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind};
     use crate::ui::syntax::SyntaxLanguage;
@@ -1076,7 +1015,7 @@ mod tests {
                 kind: SymbolInfoKind::Code {
                     language: Some("go".to_string()),
                 },
-                text: "position int // current position in input (points to current char)"
+                text: "position int // 👩🏽‍💻 current position in input (points to current char)"
                     .to_string(),
             }],
             36,
@@ -1101,12 +1040,6 @@ mod tests {
                 .iter()
                 .any(|span| span.start_byte == 0 && span.end_byte == wrapped_code[1].text.len())
         );
-    }
-
-    #[test]
-    fn wrap_code_line_to_cells_preserves_leading_indentation() {
-        let wrapped = wrap_code_line_to_cells("    mod bar {", 80);
-        assert_eq!(wrapped, vec!["    mod bar {".to_string()]);
     }
 
     #[test]

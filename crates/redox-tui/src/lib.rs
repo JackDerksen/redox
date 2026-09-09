@@ -2327,8 +2327,8 @@ fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usi
 
 fn clipped_cell_width(text: &str, max_cells: usize) -> usize {
     let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize;
+    for grapheme in text.graphemes(true) {
+        let ch_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
         if width.saturating_add(ch_width) > max_cells {
             break;
         }

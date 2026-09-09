@@ -10,7 +10,7 @@ use minui::{TabPolicy, cell_width};
 use redox_core::TextBuffer;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// For very long lines, avoid grapheme segmentation.
+/// For very long ASCII lines, avoid grapheme segmentation.
 ///
 /// This keeps startup and redraw latency reasonable for pathological cases
 /// (single-line minified JSON, base64 blobs, logs with giant records, etc.).
@@ -170,8 +170,9 @@ impl RenderLineCache {
         let mut lines = Vec::with_capacity(max_rows);
 
         for line_index in first_line..last_line {
-            let is_long_line =
-                buffer.line_len_chars(line_index) > LONG_LINE_FAST_PATH_THRESHOLD_CHARS;
+            let is_long_line = buffer.line_len_chars(line_index)
+                > LONG_LINE_FAST_PATH_THRESHOLD_CHARS
+                && buffer.line_slice(line_index).chunks().all(str::is_ascii);
             let (source, grapheme_ranges, visible) = if is_long_line {
                 let visible =
                     render_line_window_fast(buffer, line_index, viewport.scroll_x, max_cells);
@@ -326,7 +327,7 @@ fn grapheme_ranges(source: &str) -> Arc<[Range<usize>]> {
 /// Clip cached graphemes to a maximum number of terminal cells.
 ///
 /// Horizontal scrolling never splits a grapheme. If it lands in the middle of
-/// a wide grapheme, the whole grapheme is skipped.
+/// a wide grapheme, its visible remainder is padded with spaces.
 fn clip_graphemes_to_cells(
     source: &str,
     grapheme_ranges: &[Range<usize>],
@@ -337,17 +338,28 @@ fn clip_graphemes_to_cells(
         return String::new();
     }
 
-    let first_grapheme = skip_graphemes_by_cells(source, grapheme_ranges, scroll_x);
     let mut output = String::new();
     let mut used_cells = 0usize;
+    let mut source_column = 0usize;
 
-    for range in &grapheme_ranges[first_grapheme..] {
+    for range in grapheme_ranges {
         if used_cells >= max_cells {
             break;
         }
 
         let grapheme = &source[range.clone()];
         let width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
+        let start_column = source_column;
+        source_column = source_column.saturating_add(width);
+        if source_column <= scroll_x {
+            continue;
+        }
+        if start_column < scroll_x {
+            let padding = (source_column - scroll_x).min(max_cells);
+            output.extend(std::iter::repeat_n(' ', padding));
+            used_cells += padding;
+            continue;
+        }
         if width > 0 && used_cells + width > max_cells {
             break;
         }
@@ -361,28 +373,6 @@ fn clip_graphemes_to_cells(
     }
 
     output
-}
-
-fn skip_graphemes_by_cells(
-    source: &str,
-    grapheme_ranges: &[Range<usize>],
-    skip_cells: usize,
-) -> usize {
-    if skip_cells == 0 || grapheme_ranges.is_empty() {
-        return 0;
-    }
-
-    let mut skipped_cells = 0usize;
-    for (grapheme_index, range) in grapheme_ranges.iter().enumerate() {
-        if skipped_cells >= skip_cells {
-            return grapheme_index;
-        }
-        let grapheme = &source[range.clone()];
-        let width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-        skipped_cells = skipped_cells.saturating_add(width);
-    }
-
-    grapheme_ranges.len()
 }
 
 fn hash64_line(buffer: &TextBuffer, line_index: usize) -> u64 {
@@ -459,6 +449,30 @@ fn cell_width_for_char(character: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_clip_whole_emoji_and_preserve_columns_on_long_unicode_lines() {
+        for prefix in [
+            String::new(),
+            "a".repeat(LONG_LINE_FAST_PATH_THRESHOLD_CHARS + 1),
+        ] {
+            let buffer = TextBuffer::from_text(&format!("{prefix}👩🏽‍💻xy"));
+            let mut cache = RenderLineCache::new(4);
+            for (offset, width, expected) in [(0, 2, "👩🏽‍💻"), (1, 3, " xy"), (2, 2, "xy")]
+            {
+                let snapshot = cache.snapshot(
+                    &buffer,
+                    &TextViewport {
+                        scroll_x: prefix.len() + offset,
+                        scroll_y: 0,
+                        width,
+                        height: 1,
+                    },
+                );
+                assert_eq!(snapshot.iter().next().expect("line").visible(), expected);
+            }
+        }
+    }
 
     #[test]
     fn snapshot_preserves_source_while_clipping_in_terminal_cells() {
