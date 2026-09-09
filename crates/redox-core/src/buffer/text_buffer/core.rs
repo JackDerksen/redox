@@ -144,9 +144,10 @@ impl TextBuffer {
         self.rope.slice(start..end).chars()
     }
 
-    pub(crate) fn chars_reversed(&self, range: Range<usize>) -> impl Iterator<Item = char> + '_ {
+    pub(crate) fn chunks_reversed(&self, range: Range<usize>) -> impl Iterator<Item = &str> {
         let (start, end) = self.normalized_char_range(range.start, range.end);
-        self.rope.chars_at(end).reversed().take(end - start)
+        let slice = self.rope.slice(start..end);
+        slice.chunks_at_byte(slice.len_bytes()).0.reversed()
     }
 
     /// Iterate over Ropey's contiguous storage chunks without exposing Ropey.

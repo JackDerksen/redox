@@ -1089,7 +1089,7 @@ fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_resu
     assert!(view.syntax_highlighter.has_cache_for(SyntaxLanguage::Rust));
     let fresh_scope = view
         .syntax_highlighter
-        .active_scope_pair_cached(
+        .active_scope_pair_for_display_cached(
             &rust_buffer,
             Some(SyntaxLanguage::Rust),
             view.analysis_version,
@@ -1124,15 +1124,6 @@ fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_resu
         view.syntax_highlighter
             .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
             .is_some()
-    );
-    assert_eq!(
-        view.syntax_highlighter.active_scope_pair_cached(
-            &rust_buffer,
-            Some(SyntaxLanguage::Rust),
-            view.analysis_version,
-            Pos::new(1, 4),
-        ),
-        None
     );
     assert_eq!(
         view.syntax_highlighter

@@ -39,7 +39,7 @@ use ui::overlays::{
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
-    merge_line_spans_for_display, scope_guides_enabled, syntax_color_for_range,
+    scope_guides_enabled, syntax_color_for_range,
 };
 use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
 use ui::{
@@ -1691,22 +1691,9 @@ fn draw_snapshot_lines(
         let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
-        let syntax_line_spans = syntax_spans.and_then(|rows| rows.get(row));
-        let lexical_overlay_spans = syntax_spans.and_then(|rows| rows.lexical_overlay(row));
-        let allow_fallback_override = syntax_spans.is_some_and(|rows| rows.cache_stale());
-        let fallback_line_spans = lexical_overlay_spans.or(fallback_line_spans.as_deref());
-        let merged_line_spans = match (syntax_line_spans, fallback_line_spans) {
-            (Some(syntax), Some(fallback)) => Some(merge_line_spans_for_display(
-                syntax,
-                fallback,
-                allow_fallback_override,
-            )),
-            _ => None,
-        };
-        let syntax_line_spans = merged_line_spans
-            .as_deref()
-            .or(syntax_line_spans)
-            .or(fallback_line_spans);
+        let syntax_line_spans = syntax_spans
+            .and_then(|rows| rows.get(row))
+            .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
             .get(&line_idx)
             .map(Vec::as_slice)
@@ -2340,8 +2327,8 @@ fn visible_content_cell_width(source_line: &str, scroll_x: usize, max_cells: usi
 
 fn clipped_cell_width(text: &str, max_cells: usize) -> usize {
     let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize;
+    for grapheme in text.graphemes(true) {
+        let ch_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
         if width.saturating_add(ch_width) > max_cells {
             break;
         }

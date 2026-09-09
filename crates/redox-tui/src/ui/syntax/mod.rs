@@ -2,12 +2,14 @@
 
 mod languages;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
-use redox_core::{Pos, TextBuffer};
-use tree_sitter::{Node, Parser, Query, QueryCursor, Range, StreamingIterator, Tree};
+use redox_core::{Pos, TextBuffer, TextDiff};
+use tree_sitter::{
+    InputEdit, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use self::languages::{
@@ -48,7 +50,6 @@ pub struct LineSyntaxSpan {
 pub struct SyntaxHighlighter {
     cache: Option<HighlightCache>,
     cache_stale: bool,
-    lexical_overlays: BTreeMap<usize, Vec<LineSyntaxSpan>>,
     active_scope_cache: Option<ActiveScopeCache>,
 }
 
@@ -69,10 +70,8 @@ struct ActiveScopeCache {
 #[derive(Debug, Clone, Copy)]
 pub struct VisibleLineSyntaxSpans<'a> {
     line_spans: &'a [Vec<LineSyntaxSpan>],
-    lexical_overlays: &'a BTreeMap<usize, Vec<LineSyntaxSpan>>,
     first_line: usize,
     line_count: usize,
-    cache_stale: bool,
 }
 
 struct QuerySyntaxEngine {
@@ -103,6 +102,127 @@ pub(crate) struct HighlightCache {
     language: SyntaxLanguage,
     line_spans: Vec<Vec<LineSyntaxSpan>>,
     tree: Tree,
+    source: TextBuffer,
+}
+
+impl HighlightCache {
+    fn rebase(&mut self, buffer: &TextBuffer) {
+        let Some(change) = TextDiff::between(&self.source, buffer) else {
+            return;
+        };
+        let first_line = self.source.char_to_line(change.start_char);
+        let old_end_line = self
+            .source
+            .char_to_line(change.start_char + change.deleted.chars().count());
+        let new_end_line = buffer.char_to_line(change.start_char + change.inserted.chars().count());
+        let region_start = self
+            .source
+            .char_to_byte(self.source.line_to_char(first_line));
+        let edit_start = self.source.char_to_byte(change.start_char) - region_start;
+        let old_end = edit_start + change.deleted.len();
+        let new_end = edit_start + change.inserted.len();
+        let source = buffer.slice_chars(
+            buffer.line_to_char(first_line),
+            buffer.line_char_range(new_end_line).end,
+        );
+        let line_starts = compute_line_start_bytes(&source);
+        let mut replacement = vec![Vec::new(); new_end_line - first_line + 1];
+
+        // Preserve spans crossing the edit and shift the untouched suffix.
+        for line in first_line..=old_end_line {
+            let line_start =
+                self.source.char_to_byte(self.source.line_to_char(line)) - region_start;
+            for span in &self.line_spans[line] {
+                let start = line_start + span.start_byte;
+                let end = line_start + span.end_byte;
+                if start >= edit_start && end <= old_end && old_end > edit_start {
+                    continue;
+                }
+                let start_byte = if start >= old_end {
+                    new_end + (start - old_end)
+                } else {
+                    start.min(edit_start)
+                };
+                let end_byte = if end >= old_end {
+                    new_end + (end - old_end)
+                } else if end > edit_start {
+                    new_end
+                } else {
+                    end
+                };
+                push_token_to_lines(
+                    TokenSpan {
+                        start_byte,
+                        end_byte,
+                        role: span.role,
+                        priority: span.priority,
+                    },
+                    &line_starts,
+                    source.len(),
+                    &mut replacement,
+                );
+            }
+        }
+
+        // A block move or indentation change can replace several whole lines.
+        // Recover their existing colours by content, including block context.
+        if old_end_line > first_line || new_end_line > first_line {
+            let mut previous_lines = BTreeMap::new();
+            for line in first_line..=old_end_line {
+                let text = self.source.line_string(line);
+                let content = text.trim_start_matches([' ', '\t']);
+                if !content.is_empty() {
+                    previous_lines
+                        .entry(content.to_owned())
+                        .or_insert_with(VecDeque::new)
+                        .push_back((line, text.len() - content.len()));
+                }
+            }
+            for (offset, spans) in replacement.iter_mut().enumerate() {
+                let text = buffer.line_string(first_line + offset);
+                let content = text.trim_start_matches([' ', '\t']);
+                if let Some((line, old_indent)) = previous_lines
+                    .get_mut(content)
+                    .and_then(VecDeque::pop_front)
+                {
+                    let new_indent = text.len() - content.len();
+                    *spans = self.line_spans[line]
+                        .iter()
+                        .map(|span| LineSyntaxSpan {
+                            start_byte: span.start_byte.saturating_sub(old_indent) + new_indent,
+                            end_byte: span.end_byte.saturating_sub(old_indent) + new_indent,
+                            ..*span
+                        })
+                        .filter(|span| span.start_byte < span.end_byte)
+                        .collect();
+                }
+            }
+        }
+        for spans in &mut replacement {
+            spans.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
+        }
+        self.line_spans
+            .splice(first_line..=old_end_line, replacement);
+        let point = |source: &TextBuffer, character: usize| {
+            let row = source.char_to_line(character);
+            Point::new(
+                row,
+                source.char_to_byte(character) - source.char_to_byte(source.line_to_char(row)),
+            )
+        };
+        self.tree.edit(&InputEdit {
+            start_byte: region_start + edit_start,
+            old_end_byte: region_start + old_end,
+            new_end_byte: region_start + new_end,
+            start_position: point(&self.source, change.start_char),
+            old_end_position: point(
+                &self.source,
+                change.start_char + change.deleted.chars().count(),
+            ),
+            new_end_position: point(buffer, change.start_char + change.inserted.chars().count()),
+        });
+        self.source = buffer.clone();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -248,7 +368,7 @@ fn collect_query_tokens(
         let (query_match, capture_index) = captures
             .get()
             .expect("query capture should exist after advance");
-        let capture = query_match.captures[*capture_index];
+        let capture = query_match.captures()[*capture_index];
         let Some(syntax_capture) = capture_roles.get(capture.index as usize).copied().flatten()
         else {
             continue;
@@ -292,6 +412,7 @@ impl SyntaxHighlighter {
             language,
             line_spans: spans,
             tree,
+            source: buffer.clone(),
         })
     }
 
@@ -308,10 +429,8 @@ impl SyntaxHighlighter {
             .filter(|cache| cache.language == language)?;
         Some(VisibleLineSyntaxSpans {
             line_spans: &cache.line_spans,
-            lexical_overlays: &self.lexical_overlays,
             first_line,
             line_count,
-            cache_stale: false,
         })
     }
 
@@ -321,18 +440,7 @@ impl SyntaxHighlighter {
         first_line: usize,
         line_count: usize,
     ) -> Option<VisibleLineSyntaxSpans<'_>> {
-        let language = language?;
-        let cache = self
-            .cache
-            .as_ref()
-            .filter(|cache| cache.language == language)?;
-        Some(VisibleLineSyntaxSpans {
-            line_spans: &cache.line_spans,
-            lexical_overlays: &self.lexical_overlays,
-            first_line,
-            line_count,
-            cache_stale: self.cache_stale,
-        })
+        self.visible_line_spans_cached(language, first_line, line_count)
     }
 
     pub(crate) fn has_cache_for(&self, language: SyntaxLanguage) -> bool {
@@ -352,16 +460,17 @@ impl SyntaxHighlighter {
     pub(crate) fn clear_cache(&mut self) {
         self.cache = None;
         self.cache_stale = false;
-        self.lexical_overlays.clear();
         self.active_scope_cache = None;
     }
 
-    pub(crate) fn replace_lexical_overlay(&mut self, line: usize, spans: Vec<LineSyntaxSpan>) {
-        if spans.is_empty() {
-            self.lexical_overlays.remove(&line);
-        } else {
-            self.lexical_overlays.insert(line, spans);
+    /// Keep display spans attached to the edited text while the worker parses it.
+    /// The edited tree is provisional and is used only for display scopes.
+    pub(crate) fn rebase_cache(&mut self, buffer: &TextBuffer) {
+        self.mark_cache_stale();
+        if let Some(cache) = self.cache.as_mut() {
+            cache.rebase(buffer);
         }
+        self.active_scope_cache = None;
     }
 
     #[cfg(test)]
@@ -380,7 +489,7 @@ impl SyntaxHighlighter {
             .is_some_and(|cache| cache.language == language)
     }
 
-    pub fn active_scope_pair_cached(
+    pub fn active_scope_pair_for_display_cached(
         &mut self,
         buffer: &TextBuffer,
         language: Option<SyntaxLanguage>,
@@ -389,9 +498,6 @@ impl SyntaxHighlighter {
     ) -> Option<SyntaxScopePair> {
         let language = language?;
         let cursor_char = buffer.pos_to_char(cursor);
-        if self.cache_stale {
-            return None;
-        }
 
         if let Some(cached) = self.active_scope_cache
             && cached.language == language
@@ -425,33 +531,9 @@ impl SyntaxHighlighter {
         scope
     }
 
-    pub fn active_scope_pair_for_display_cached(
-        &mut self,
-        buffer: &TextBuffer,
-        language: Option<SyntaxLanguage>,
-        analysis_version: u64,
-        cursor: Pos,
-    ) -> Option<SyntaxScopePair> {
-        let stale_scope = if self.cache_stale {
-            let cursor_char = buffer.pos_to_char(cursor);
-            language
-                .and_then(|language| {
-                    self.active_scope_cache.filter(|cached| {
-                        cached.language == language && cached.cursor_char == cursor_char
-                    })
-                })
-                .and_then(|cached| cached.scope)
-        } else {
-            None
-        };
-        self.active_scope_pair_cached(buffer, language, analysis_version, cursor)
-            .or(stale_scope)
-    }
-
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
         self.cache = cache;
         self.cache_stale = false;
-        self.lexical_overlays.clear();
         self.active_scope_cache = None;
     }
 }
@@ -468,20 +550,6 @@ impl<'a> VisibleLineSyntaxSpans<'a> {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
         )
-    }
-
-    pub fn cache_stale(&self) -> bool {
-        self.cache_stale
-    }
-
-    pub fn lexical_overlay(&self, row: usize) -> Option<&'a [LineSyntaxSpan]> {
-        if row >= self.line_count {
-            return None;
-        }
-
-        self.lexical_overlays
-            .get(&self.first_line.saturating_add(row))
-            .map(Vec::as_slice)
     }
 }
 
@@ -1238,235 +1306,6 @@ pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
     }
 
     spans
-}
-
-pub fn immediate_fallback_line_spans(
-    source_line: &str,
-    language: SyntaxLanguage,
-) -> Vec<LineSyntaxSpan> {
-    match language {
-        SyntaxLanguage::Markdown => markdown_immediate_line_spans(source_line),
-        _ => lexical_fallback_line_spans(source_line),
-    }
-}
-
-fn markdown_immediate_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
-    let trimmed_start = source_line.trim_start_matches(' ');
-    let leading_spaces = source_line.len().saturating_sub(trimmed_start.len());
-    if leading_spaces <= 3 {
-        if let Some(span) = markdown_heading_span(source_line, trimmed_start, leading_spaces) {
-            return vec![span];
-        }
-        if let Some(span) = markdown_thematic_break_span(source_line, trimmed_start) {
-            return vec![span];
-        }
-        if let Some(span) = markdown_block_quote_span(trimmed_start, leading_spaces) {
-            return vec![span];
-        }
-        if let Some(span) = markdown_list_marker_span(trimmed_start, leading_spaces) {
-            return vec![span];
-        }
-    }
-
-    markdown_inline_fallback_line_spans(source_line)
-}
-
-fn markdown_heading_span(
-    source_line: &str,
-    trimmed_start: &str,
-    leading_spaces: usize,
-) -> Option<LineSyntaxSpan> {
-    let marker_len = trimmed_start
-        .bytes()
-        .take_while(|byte| *byte == b'#')
-        .count();
-    (1..=6).contains(&marker_len).then_some(()).filter(|_| {
-        trimmed_start
-            .as_bytes()
-            .get(marker_len)
-            .is_none_or(u8::is_ascii_whitespace)
-    })?;
-    Some(LineSyntaxSpan {
-        start_byte: leading_spaces,
-        end_byte: source_line.len(),
-        role: SyntaxRole::MarkdownHeading,
-        priority: 10,
-    })
-}
-
-fn markdown_thematic_break_span(source_line: &str, trimmed_start: &str) -> Option<LineSyntaxSpan> {
-    let marker = trimmed_start
-        .bytes()
-        .find(|byte| !byte.is_ascii_whitespace())?;
-    if !matches!(marker, b'-' | b'*' | b'_') {
-        return None;
-    }
-
-    let mut marker_count = 0usize;
-    for byte in trimmed_start.bytes() {
-        if byte.is_ascii_whitespace() {
-            continue;
-        }
-        if byte != marker {
-            return None;
-        }
-        marker_count += 1;
-    }
-
-    (marker_count >= 3).then_some(LineSyntaxSpan {
-        start_byte: 0,
-        end_byte: source_line.len(),
-        role: SyntaxRole::MarkdownFrontmatter,
-        priority: 10,
-    })
-}
-
-fn markdown_block_quote_span(trimmed_start: &str, leading_spaces: usize) -> Option<LineSyntaxSpan> {
-    trimmed_start.starts_with('>').then_some(LineSyntaxSpan {
-        start_byte: leading_spaces,
-        end_byte: leading_spaces + 1,
-        role: SyntaxRole::MarkdownListMarker,
-        priority: 10,
-    })
-}
-
-fn markdown_list_marker_span(trimmed_start: &str, leading_spaces: usize) -> Option<LineSyntaxSpan> {
-    let bytes = trimmed_start.as_bytes();
-    let marker_len = match bytes {
-        [b'-' | b'*' | b'+', next, ..] if next.is_ascii_whitespace() => 1,
-        [first, ..] if first.is_ascii_digit() => {
-            let digit_len = bytes
-                .iter()
-                .take_while(|byte| byte.is_ascii_digit())
-                .count();
-            match bytes.get(digit_len..digit_len.saturating_add(2)) {
-                Some([b'.' | b')', next]) if next.is_ascii_whitespace() => digit_len + 1,
-                _ => return None,
-            }
-        }
-        _ => return None,
-    };
-
-    Some(LineSyntaxSpan {
-        start_byte: leading_spaces,
-        end_byte: leading_spaces + marker_len,
-        role: SyntaxRole::MarkdownListMarker,
-        priority: 10,
-    })
-}
-
-fn markdown_inline_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
-    lexical_fallback_line_spans(source_line)
-        .into_iter()
-        .filter(|span| span.role != SyntaxRole::Comment)
-        .collect()
-}
-
-// Merge cheap lexical spans into stale tree-sitter spans for display-only fallback.
-pub fn merge_line_spans_for_display(
-    base: &[LineSyntaxSpan],
-    fallback: &[LineSyntaxSpan],
-    allow_fallback_override: bool,
-) -> Vec<LineSyntaxSpan> {
-    let base = if allow_fallback_override {
-        override_base_spans_with_lexical_fallback(base, fallback)
-    } else {
-        base.to_vec()
-    };
-    if base.is_empty() {
-        return fallback.to_vec();
-    }
-    if fallback.is_empty() {
-        return base;
-    }
-
-    let mut merged = base.clone();
-    for fallback_span in fallback {
-        let mut cursor = fallback_span.start_byte;
-        for span in &base {
-            if span.start_byte >= fallback_span.end_byte {
-                break;
-            }
-            if span.end_byte <= cursor {
-                continue;
-            }
-            if span.start_byte > cursor {
-                merged.push(LineSyntaxSpan {
-                    start_byte: cursor,
-                    end_byte: span.start_byte.min(fallback_span.end_byte),
-                    role: fallback_span.role,
-                    priority: fallback_span.priority,
-                });
-            }
-            cursor = cursor.max(span.end_byte);
-            if cursor >= fallback_span.end_byte {
-                break;
-            }
-        }
-        if cursor < fallback_span.end_byte {
-            merged.push(LineSyntaxSpan {
-                start_byte: cursor,
-                end_byte: fallback_span.end_byte,
-                role: fallback_span.role,
-                priority: fallback_span.priority,
-            });
-        }
-    }
-    merged.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
-    merged
-}
-
-fn override_base_spans_with_lexical_fallback(
-    base: &[LineSyntaxSpan],
-    fallback: &[LineSyntaxSpan],
-) -> Vec<LineSyntaxSpan> {
-    if !fallback
-        .iter()
-        .any(|span| lexical_fallback_can_override(span.role))
-    {
-        return base.to_vec();
-    }
-
-    let mut clipped = Vec::new();
-    for span in base {
-        let mut cursor = span.start_byte;
-        for override_span in fallback
-            .iter()
-            .filter(|span| lexical_fallback_can_override(span.role))
-        {
-            if override_span.end_byte <= cursor {
-                continue;
-            }
-            if override_span.start_byte >= span.end_byte {
-                break;
-            }
-            if override_span.start_byte > cursor {
-                clipped.push(LineSyntaxSpan {
-                    start_byte: cursor,
-                    end_byte: override_span.start_byte.min(span.end_byte),
-                    role: span.role,
-                    priority: span.priority,
-                });
-            }
-            cursor = cursor.max(override_span.end_byte);
-            if cursor >= span.end_byte {
-                break;
-            }
-        }
-        if cursor < span.end_byte {
-            clipped.push(LineSyntaxSpan {
-                start_byte: cursor,
-                end_byte: span.end_byte,
-                role: span.role,
-                priority: span.priority,
-            });
-        }
-    }
-    clipped
-}
-
-fn lexical_fallback_can_override(role: SyntaxRole) -> bool {
-    matches!(role, SyntaxRole::Comment | SyntaxRole::String)
 }
 
 fn lexical_comment_end(bytes: &[u8], cursor: usize) -> Option<usize> {
@@ -2271,7 +2110,12 @@ mod tests {
             SyntaxLanguage::Rust,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, Pos::new(1, 15))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Rust),
+                0,
+                Pos::new(1, 15),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 10));
@@ -2279,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_active_scope_for_display_matches_cached_cursor_only() {
+    fn stale_active_scope_for_display_follows_cursor() {
         let mut highlighter = SyntaxHighlighter::default();
         let buffer = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
         highlighter.replace_cache(SyntaxHighlighter::compute_cache(
@@ -2288,15 +2132,11 @@ mod tests {
         ));
         let cursor = Pos::new(1, 15);
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
+            .active_scope_pair_for_display_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
             .expect("scope");
 
         highlighter.mark_cache_stale();
 
-        assert_eq!(
-            highlighter.active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor),
-            None
-        );
         assert_eq!(
             highlighter.active_scope_pair_for_display_cached(
                 &buffer,
@@ -2313,7 +2153,7 @@ mod tests {
                 1,
                 Pos::new(1, 16),
             ),
-            None
+            Some(scope)
         );
     }
 
@@ -2339,58 +2179,84 @@ mod tests {
     }
 
     #[test]
-    fn merge_line_spans_for_display_only_fills_uncovered_gaps() {
-        let merged = super::merge_line_spans_for_display(
-            &[super::LineSyntaxSpan {
-                start_byte: 0,
-                end_byte: 5,
-                role: SyntaxRole::Keyword,
-                priority: 20,
-            }],
-            &[super::LineSyntaxSpan {
-                start_byte: 0,
-                end_byte: 10,
-                role: SyntaxRole::Comment,
-                priority: 10,
-            }],
-            false,
-        );
-
-        assert!(merged.iter().any(|span| span.role == SyntaxRole::Keyword
-            && span.start_byte == 0
-            && span.end_byte == 5));
-        assert!(merged.iter().any(|span| span.role == SyntaxRole::Comment
-            && span.start_byte == 5
-            && span.end_byte == 10));
-        assert!(!merged.iter().any(|span| span.role == SyntaxRole::Comment
-            && span.start_byte == 0
-            && span.end_byte == 10));
-    }
-
-    #[test]
-    fn stale_merge_line_spans_for_display_lets_comments_override_stale_spans() {
-        let merged = super::merge_line_spans_for_display(
-            &[super::LineSyntaxSpan {
-                start_byte: 0,
-                end_byte: 5,
-                role: SyntaxRole::Keyword,
-                priority: 20,
-            }],
-            &[super::LineSyntaxSpan {
-                start_byte: 0,
-                end_byte: 10,
-                role: SyntaxRole::Comment,
-                priority: 10,
-            }],
-            true,
-        );
-
-        assert!(!merged.iter().any(|span| span.role == SyntaxRole::Keyword
-            && span.start_byte == 0
-            && span.end_byte == 5));
-        assert!(merged.iter().any(|span| span.role == SyntaxRole::Comment
-            && span.start_byte == 0
-            && span.end_byte == 10));
+    fn pending_highlights_follow_edits_without_changing_existing_colors() {
+        let cases = [
+            (
+                SyntaxLanguage::Rust,
+                "#[derive(Debug)]\nstruct Café;\n",
+                vec![
+                    "#[derive(Debug, Clone)]\nstruct Café;\n",
+                    "\n#[derive(Debug, Clone)]\nstruct Café;\n",
+                ],
+            ),
+            (
+                SyntaxLanguage::Markdown,
+                "---\ntitle: \"café\"\n---\n\n```rust\nlet value = \"text\";\n```\n",
+                vec![
+                    "---\ntitle: \"café noir\"\n---\n\n```rust\nlet value = \"text\";\n```\n",
+                    "---\ntitle: \"café noir\"\n---\n\n```rust\nlet value = \"more text\";\n```\n",
+                ],
+            ),
+            (
+                SyntaxLanguage::Rust,
+                "fn main() {\n    /* first\n       second */\n    // café\n}\n",
+                vec![
+                    "fn main() {\n\n    /* first\n       second */\n    // café\n}\n",
+                    "fn main() {\n\n        /* first\n           second */\n        // café\n}\n",
+                    "fn main() {\n\n        // café\n        /* first\n           second */\n}\n",
+                    "fn main() {\n\n        // café noir\n        /* first\n           second */\n}\n",
+                    "fn main() {\n\n        // café\n        /* first\n           second */\n}\n",
+                ],
+            ),
+            (
+                SyntaxLanguage::Rust,
+                "/*\nfoo();\n*/\nfoo();\n",
+                vec!["    /*\n    foo();\n    */\n    foo();\n"],
+            ),
+            (
+                SyntaxLanguage::Rust,
+                "let value = \"café\";",
+                vec!["let value = \"cafété\";", "let value = \"café\";"],
+            ),
+            (
+                SyntaxLanguage::Rust,
+                "// first\n// second\n",
+                vec!["// first second\n", "// first\n// second\n"],
+            ),
+        ];
+        for (language, initial, edits) in cases {
+            let mut highlighter = SyntaxHighlighter::default();
+            highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+                &TextBuffer::from_text(initial),
+                language,
+            ));
+            for edited in edits {
+                let buffer = TextBuffer::from_text(edited);
+                highlighter.rebase_cache(&buffer);
+                assert!(highlighter.has_stale_cache_for(language));
+                let expected =
+                    SyntaxHighlighter::compute_cache(&buffer, language).expect("fresh parse");
+                let pending = highlighter
+                    .visible_line_spans_for_display_cached(Some(language), 0, buffer.len_lines())
+                    .expect("pending display");
+                for line in 0..buffer.len_lines() {
+                    for (byte, character) in buffer.line_string(line).char_indices() {
+                        if character.is_whitespace() {
+                            continue;
+                        }
+                        let role = |spans: &[super::LineSyntaxSpan]| {
+                            super::best_span_for_range(spans, byte, byte + character.len_utf8())
+                                .map(|span| span.role)
+                        };
+                        assert_eq!(
+                            role(&pending[line]),
+                            role(&expected.line_spans[line]),
+                            "{language:?}, line {line}, byte {byte}: {edited:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2448,7 +2314,7 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start);
@@ -2465,7 +2331,12 @@ mod tests {
             SyntaxLanguage::Lua,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Lua), 0, Pos::new(1, 4))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Lua),
+                0,
+                Pos::new(1, 4),
+            )
             .expect("lua scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
@@ -2494,7 +2365,7 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start);
@@ -2511,7 +2382,12 @@ mod tests {
             SyntaxLanguage::Python,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, Pos::new(1, 8))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Python),
+                0,
+                Pos::new(1, 8),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
@@ -2551,7 +2427,12 @@ mod tests {
                 SyntaxLanguage::Python,
             ));
             let scope = highlighter
-                .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Python), 0, cursor)
+                .active_scope_pair_for_display_cached(
+                    &buffer,
+                    Some(SyntaxLanguage::Python),
+                    0,
+                    cursor,
+                )
                 .expect("scope");
 
             assert_eq!(scope.start, expected_start, "{source}");
@@ -2568,7 +2449,12 @@ mod tests {
             SyntaxLanguage::Markdown,
         ));
         let scope = highlighter
-            .active_scope_pair_cached(&buffer, Some(SyntaxLanguage::Markdown), 0, Pos::new(2, 1))
+            .active_scope_pair_for_display_cached(
+                &buffer,
+                Some(SyntaxLanguage::Markdown),
+                0,
+                Pos::new(2, 1),
+            )
             .expect("scope");
 
         assert_eq!(scope.start, Pos::new(0, 0));
