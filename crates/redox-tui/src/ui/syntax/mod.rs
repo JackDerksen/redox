@@ -368,7 +368,7 @@ fn collect_query_tokens(
         let (query_match, capture_index) = captures
             .get()
             .expect("query capture should exist after advance");
-        let capture = query_match.captures[*capture_index];
+        let capture = query_match.captures()[*capture_index];
         let Some(syntax_capture) = capture_roles.get(capture.index as usize).copied().flatten()
         else {
             continue;

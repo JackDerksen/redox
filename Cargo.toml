@@ -23,7 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-anyhow = "1.0"
+anyhow = "1.0.104"
 
 [dependencies]
 redox-tui = { version = "0.8.1", path = "crates/redox-tui" }
