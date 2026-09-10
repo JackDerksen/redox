@@ -2401,7 +2401,13 @@ fn visual_selection_visible_cells(
             if line_idx < start_line || line_idx > end_line {
                 return None;
             }
-            vec![true; width_cells]
+            // Keep a single cell visible for selected empty lines.
+            visible_cell_range(
+                0,
+                line_cell_width(source_line).max(1),
+                scroll_x,
+                width_cells,
+            )
         }
         redox_core::VisualModeKind::Block => {
             let (start, end) = selection.ordered();
@@ -2825,7 +2831,7 @@ mod tests {
     }
 
     #[test]
-    fn visual_selection_visible_cells_connect_blank_lines() {
+    fn visual_selection_visible_cells_limit_line_mode_to_contents() {
         let buffer = redox_core::TextBuffer::from_text("alpha\n\nomega\n");
         let selection =
             redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
@@ -2838,6 +2844,32 @@ mod tests {
             let cells = visual_selection_visible_cells(&buffer, "", selection, mode, 1, 0, 8)
                 .expect("blank line should be visually selected");
             assert!(cells.iter().any(|selected| *selected));
+        }
+
+        for (text, scroll_x, selected_width) in [
+            ("alpha", 0, 5),
+            ("", 0, 1),
+            ("  a ", 0, 4),
+            ("\t😁x", 0, 7),
+            ("\t😁x", 5, 2),
+            ("alpha", 5, 0),
+            ("longer than the viewport", 0, 8),
+        ] {
+            let cells = visual_selection_visible_cells(
+                &buffer,
+                text,
+                selection,
+                redox_core::VisualModeKind::Line,
+                1,
+                scroll_x,
+                8,
+            )
+            .unwrap_or_else(|| vec![false; 8]);
+            assert_eq!(
+                cells,
+                (0..8).map(|cell| cell < selected_width).collect::<Vec<_>>(),
+                "{text:?}, scroll {scroll_x}"
+            );
         }
     }
 
