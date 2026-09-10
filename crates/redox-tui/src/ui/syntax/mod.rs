@@ -16,8 +16,8 @@ use self::languages::{
     LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
 use super::style::{SyntaxRole, UiStyle};
+use crate::SOFT_TAB_WIDTH;
 use crate::ui::helpers::apply_color_column;
-use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxLanguage {
@@ -667,6 +667,7 @@ pub(crate) fn smart_newline_insert(
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
     cursor: Pos,
+    indent_size: usize,
 ) -> Option<(String, Pos)> {
     let language = smart_indent_language(language)?;
     let source = buffer.to_string();
@@ -687,15 +688,15 @@ pub(crate) fn smart_newline_insert(
     };
     let tree = parse_tree(&virtual_source, language)?;
 
-    let base_indent = floored_indent(leading_indent(&line_text));
-    let inner_indent = indent_after_line(&virtual_source, &tree, language, line)
+    let base_indent = floored_indent(leading_indent(&line_text), indent_size);
+    let inner_indent = indent_after_line(&virtual_source, &tree, language, line, indent_size)
         .unwrap_or_else(|| base_indent.clone());
     let right_trimmed = right.trim_start();
     let quote_split = quote_delimiter_split(&left, right_trimmed);
     if delimiter_split(&virtual_source, &tree, line, right_trimmed) || quote_split {
         let split_indent = if quote_split {
             let mut indent = base_indent.clone();
-            indent.push_str(SOFT_TAB);
+            indent.extend(std::iter::repeat_n(' ', indent_size));
             indent
         } else {
             inner_indent
@@ -705,13 +706,16 @@ pub(crate) fn smart_newline_insert(
         return Some((insert, cursor));
     }
 
-    let mut indent = desired_indent_for_line_source(&virtual_source, language, line + 1)?;
+    let mut indent =
+        desired_indent_for_line_source(&virtual_source, language, line + 1, indent_size)?;
     if right.is_empty() && line + 1 < buffer.len_lines() {
         let next_text = buffer.line_string(line + 1);
         let next_trimmed = next_text.trim_start();
         if starts_with_closing_delimiter(next_trimmed) || starts_with_html_closing(next_trimmed) {
-            let surrounding_indent =
-                max_indent(&inner_indent, &floored_indent(leading_indent(&next_text)));
+            let surrounding_indent = max_indent(
+                &inner_indent,
+                &floored_indent(leading_indent(&next_text), indent_size),
+            );
             indent = max_indent(&indent, &surrounding_indent);
         }
     }
@@ -726,6 +730,7 @@ pub(crate) fn smart_open_line_insert(
     language: Option<SyntaxLanguage>,
     line: usize,
     above: bool,
+    indent_size: usize,
 ) -> Option<(String, Pos)> {
     let language = smart_indent_language(language)?;
     let source = buffer.to_string();
@@ -746,7 +751,7 @@ pub(crate) fn smart_open_line_insert(
     let mut virtual_source = source;
     virtual_source.insert(insert_byte, '\n');
     let new_line = if above { line } else { line + 1 };
-    let indent = desired_indent_for_line_source(&virtual_source, language, new_line)?;
+    let indent = desired_indent_for_line_source(&virtual_source, language, new_line, indent_size)?;
     let insert = if above {
         format!("{indent}\n")
     } else {
@@ -760,15 +765,17 @@ pub(crate) fn desired_indent_for_line(
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
     line: usize,
+    indent_size: usize,
 ) -> Option<String> {
     let language = smart_indent_language(language)?;
-    desired_indent_for_line_source(&buffer.to_string(), language, line)
+    desired_indent_for_line_source(&buffer.to_string(), language, line, indent_size)
 }
 
 fn desired_indent_for_line_source(
     source: &str,
     language: SyntaxLanguage,
     line: usize,
+    indent_size: usize,
 ) -> Option<String> {
     let tree = parse_tree(source, language)?;
     let lines = source.lines().collect::<Vec<_>>();
@@ -783,8 +790,8 @@ fn desired_indent_for_line_source(
             && (starts_with_closing_delimiter(next_text.trim_start())
                 || starts_with_html_closing(next_text.trim_start()))
         {
-            let mut indent = floored_indent(leading_indent(next_text));
-            indent.push_str(SOFT_TAB);
+            let mut indent = floored_indent(leading_indent(next_text), indent_size);
+            indent.extend(std::iter::repeat_n(' ', indent_size));
             return Some(indent);
         }
         return Some(String::new());
@@ -795,12 +802,12 @@ fn desired_indent_for_line_source(
     {
         return Some(indent);
     }
-    let mut indent = indent_after_line(source, &tree, language, prev_line)
-        .unwrap_or_else(|| floored_indent(leading_indent(prev_text)));
+    let mut indent = indent_after_line(source, &tree, language, prev_line, indent_size)
+        .unwrap_or_else(|| floored_indent(leading_indent(prev_text), indent_size));
 
     let trimmed = line_text.trim_start();
     if starts_with_closing_delimiter(trimmed) || starts_with_html_closing(trimmed) {
-        remove_one_indent_level(&mut indent);
+        remove_one_indent_level(&mut indent, indent_size);
     }
 
     Some(indent)
@@ -822,12 +829,13 @@ fn indent_after_line(
     tree: &Tree,
     language: SyntaxLanguage,
     line: usize,
+    indent_size: usize,
 ) -> Option<String> {
     let lines = source.lines().collect::<Vec<_>>();
     let text = lines.get(line).copied()?;
-    let mut indent = floored_indent(leading_indent(text));
+    let mut indent = floored_indent(leading_indent(text), indent_size);
     if opens_line(source, tree, language, line) {
-        indent.push_str(SOFT_TAB);
+        indent.extend(std::iter::repeat_n(' ', indent_size));
     }
     Some(indent)
 }
@@ -935,8 +943,8 @@ fn leading_indent(text: &str) -> &str {
     &text[..end]
 }
 
-fn floored_indent(indent: &str) -> String {
-    SOFT_TAB.repeat(indent_width(indent) / SOFT_TAB_WIDTH)
+fn floored_indent(indent: &str, indent_size: usize) -> String {
+    " ".repeat(indent_width(indent) / indent_size * indent_size)
 }
 
 fn indent_width(indent: &str) -> usize {
@@ -959,7 +967,7 @@ fn max_indent(left: &str, right: &str) -> String {
     }
 }
 
-fn remove_one_indent_level(indent: &mut String) {
+fn remove_one_indent_level(indent: &mut String, indent_size: usize) {
     if indent.ends_with('\t') {
         indent.pop();
         return;
@@ -969,7 +977,7 @@ fn remove_one_indent_level(indent: &mut String) {
         .chars()
         .rev()
         .take_while(|ch| *ch == ' ')
-        .take(SOFT_TAB_WIDTH)
+        .take(indent_size)
         .count();
     for _ in 0..remove {
         indent.pop();
@@ -1702,7 +1710,7 @@ mod tests {
     #[test]
     fn markdown_inline_code_backtick_does_not_open_indent() {
         assert_eq!(
-            super::desired_indent_for_line_source("`code`\n", SyntaxLanguage::Markdown, 1),
+            super::desired_indent_for_line_source("`code`\n", SyntaxLanguage::Markdown, 1, 4),
             Some(String::new())
         );
 

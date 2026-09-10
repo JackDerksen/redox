@@ -639,6 +639,7 @@ impl EditorState {
             let _ = self.session.recompute_buffer_dirty(buffer_id);
             self.invalidate_buffer_render_caches(buffer_id);
             let _ = self.with_buffer_view_mut(buffer_id, |buffer, view| {
+                view.indent_width = None;
                 view.cursor.cursor = buffer.clamp_pos(view.cursor.cursor);
                 view.cursor
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);

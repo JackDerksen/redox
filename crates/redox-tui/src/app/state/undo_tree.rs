@@ -110,6 +110,7 @@ impl EditorState {
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             view.visual_anchor = None;
+            view.indent_width = None;
         }
         self.mode = EditorMode::Normal;
         let _ = self.session.recompute_buffer_dirty(source_buffer_id);
