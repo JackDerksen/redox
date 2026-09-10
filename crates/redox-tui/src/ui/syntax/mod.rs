@@ -663,6 +663,65 @@ pub fn scope_guides_enabled(language: Option<SyntaxLanguage>) -> bool {
     !matches!(language, Some(SyntaxLanguage::Markdown))
 }
 
+pub(crate) fn auto_closing_tag(
+    buffer: &TextBuffer,
+    language: Option<SyntaxLanguage>,
+    cursor: Pos,
+) -> Option<String> {
+    let language = language.filter(|language| {
+        matches!(
+            language,
+            SyntaxLanguage::Html | SyntaxLanguage::JavaScript | SyntaxLanguage::Tsx
+        )
+    })?;
+    let cursor_byte = buffer.char_to_byte(buffer.pos_to_char(cursor));
+    let mut source = buffer.to_string();
+    source.insert(cursor_byte, '>');
+    let tree = parse_tree(&source, language)?;
+    let opening = opening_tag_at_byte(&tree, cursor_byte)?;
+    let name_node = if language == SyntaxLanguage::Html {
+        opening.named_child(0)
+    } else {
+        opening.child_by_field_name("name")
+    };
+    let name = name_node
+        .map(|node| &source[node.byte_range()])
+        .unwrap_or("");
+    if language == SyntaxLanguage::Html && (name.is_empty() || is_html_void_tag(name)) {
+        return None;
+    }
+    // A parser-recognised closing sibling may be separated by text or children.
+    let mut sibling = opening.next_named_sibling();
+    while let Some(node) = sibling {
+        if matches!(node.kind(), "end_tag" | "jsx_closing_element") && !node.is_missing() {
+            let closing_name = if language == SyntaxLanguage::Html {
+                node.named_child(0)
+            } else {
+                node.child_by_field_name("name")
+            };
+            let closing_name = closing_name
+                .map(|node| &source[node.byte_range()])
+                .unwrap_or("");
+            if closing_name == name
+                || (language == SyntaxLanguage::Html && closing_name.eq_ignore_ascii_case(name))
+            {
+                return None;
+            }
+        }
+        sibling = node.next_named_sibling();
+    }
+    Some(format!("</{name}>"))
+}
+
+fn is_html_void_tag(name: &str) -> bool {
+    [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ]
+    .iter()
+    .any(|void| name.eq_ignore_ascii_case(void))
+}
+
 pub(crate) fn smart_newline_insert(
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
@@ -853,23 +912,38 @@ fn opens_line(source: &str, tree: &Tree, language: SyntaxLanguage, line: usize) 
     if language == SyntaxLanguage::Python && ch == ':' {
         return true;
     }
-    if matches!(language, SyntaxLanguage::Html | SyntaxLanguage::Tsx) {
-        let lines = source.lines().collect::<Vec<_>>();
-        if let Some(text) = lines.get(line) {
-            return opens_html_tag(text);
-        }
+    if ch == '>'
+        && let Some(opening) = opening_tag_at_byte(tree, byte)
+    {
+        let name = opening
+            .named_child(0)
+            .map(|node| &source[node.byte_range()])
+            .unwrap_or("");
+        return language != SyntaxLanguage::Html || !is_html_void_tag(name);
     }
     ch == ':' && node_kind_at_byte(tree, byte).is_some_and(|kind| kind.contains("mapping"))
 }
 
 fn delimiter_split(source: &str, tree: &Tree, line: usize, right_trimmed: &str) -> bool {
-    let Some((ch, _)) = trailing_significant_char(source, tree, line) else {
+    let Some((ch, byte)) = trailing_significant_char(source, tree, line) else {
         return false;
     };
     if ch == '`' {
         return false;
     }
     paired_closer_for(ch).is_some_and(|closer| right_trimmed.starts_with(closer))
+        || (ch == '>'
+            && right_trimmed.starts_with("</")
+            && opening_tag_at_byte(tree, byte).is_some())
+}
+
+fn opening_tag_at_byte(tree: &Tree, byte: usize) -> Option<tree_sitter::Node<'_>> {
+    let delimiter = tree.root_node().descendant_for_byte_range(byte, byte + 1)?;
+    let opening = delimiter.parent()?;
+    (delimiter.kind() == ">"
+        && matches!(opening.kind(), "start_tag" | "jsx_opening_element")
+        && opening.end_byte() == byte + 1)
+        .then_some(opening)
 }
 
 fn quote_delimiter_split(left: &str, right_trimmed: &str) -> bool {
@@ -1004,15 +1078,6 @@ fn starts_with_closing_delimiter(trimmed: &str) -> bool {
 
 fn starts_with_html_closing(trimmed: &str) -> bool {
     trimmed.starts_with("</")
-}
-
-fn opens_html_tag(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.starts_with('<')
-        && !trimmed.starts_with("</")
-        && !trimmed.starts_with("<!")
-        && !trimmed.ends_with("/>")
-        && trimmed.contains('>')
 }
 
 fn markdown_indent_after_line(text: &str) -> Option<String> {

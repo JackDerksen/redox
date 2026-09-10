@@ -5156,6 +5156,22 @@ fn insert_enter_uses_tree_sitter_smart_indent() {
 fn insert_enter_splits_paired_delimiters_with_smart_indent() {
     let cases = [
         (
+            "html_tag",
+            "html",
+            "<div></div>",
+            Pos::new(0, 5),
+            InsertKind::Insert,
+            "<div>\n    \n</div>",
+        ),
+        (
+            "jsx_tag",
+            "jsx",
+            "const view = <Panel></Panel>",
+            Pos::new(0, 20),
+            InsertKind::Insert,
+            "const view = <Panel>\n    \n</Panel>",
+        ),
+        (
             "closing",
             "rs",
             "fn main() {}",
