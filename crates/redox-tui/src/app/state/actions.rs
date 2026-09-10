@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::{EditorMode, EditorState, SplitAxis, SplitDirection};
 use crate::SOFT_TAB_WIDTH;
 use crate::input::{InputAction, InputMode, InsertKind};
-use crate::ui::syntax::smart_newline_insert;
+use crate::ui::syntax::{auto_closing_tag, smart_newline_insert};
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
 
 impl EditorState {
@@ -1145,7 +1145,14 @@ impl EditorState {
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let behavior = {
             let buffer = self.session.active_buffer();
-            classify_insert_char(buffer, cursor, ch)
+            if ch == '>' {
+                let language = language_for_path(self.session.active_meta().path.as_deref());
+                auto_closing_tag(buffer, language, cursor)
+                    .map(InsertCharBehavior::InsertPair)
+                    .unwrap_or(InsertCharBehavior::Plain)
+            } else {
+                classify_insert_char(buffer, cursor, ch)
+            }
         };
 
         match behavior {
@@ -1173,7 +1180,7 @@ impl EditorState {
                     let buffer = self.session.active_buffer();
                     buffer.pos_to_char(view.cursor.cursor)
                 };
-                let insert = [ch, close].iter().collect::<String>();
+                let insert = format!("{ch}{close}");
 
                 {
                     let buffer = self.session.active_buffer_mut();
@@ -1269,11 +1276,11 @@ impl EditorState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InsertCharBehavior {
     Plain,
     MoveRight,
-    InsertPair(char),
+    InsertPair(String),
 }
 
 fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCharBehavior {
@@ -1290,14 +1297,14 @@ fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCha
     }
 
     match ch {
-        '(' => InsertCharBehavior::InsertPair(')'),
-        '[' => InsertCharBehavior::InsertPair(']'),
-        '{' => InsertCharBehavior::InsertPair('}'),
+        '(' => InsertCharBehavior::InsertPair(")".into()),
+        '[' => InsertCharBehavior::InsertPair("]".into()),
+        '{' => InsertCharBehavior::InsertPair("}".into()),
         '"' | '`' => should_auto_pair_symmetric_delimiter(buffer, cursor, ch)
-            .then_some(InsertCharBehavior::InsertPair(ch))
+            .then(|| InsertCharBehavior::InsertPair(ch.to_string()))
             .unwrap_or(InsertCharBehavior::Plain),
         '\'' => should_auto_pair_single_quote(buffer, cursor)
-            .then_some(InsertCharBehavior::InsertPair('\''))
+            .then(|| InsertCharBehavior::InsertPair("'".into()))
             .unwrap_or(InsertCharBehavior::Plain),
         _ => InsertCharBehavior::Plain,
     }
