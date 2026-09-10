@@ -675,7 +675,12 @@ pub(crate) fn auto_closing_tag(
         )
     })?;
     let cursor_byte = buffer.char_to_byte(buffer.pos_to_char(cursor));
-    let mut source = buffer.to_string();
+    let source = buffer.to_string();
+    let remainder = source.get(cursor_byte..)?.trim_start();
+    if remainder.starts_with(">") || remainder.starts_with("/>") {
+        return None;
+    }
+    let mut source = source;
     source.insert(cursor_byte, '>');
     let tree = parse_tree(&source, language)?;
     let opening = opening_tag_at_byte(&tree, cursor_byte)?;
