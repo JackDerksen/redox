@@ -16,6 +16,7 @@ pub enum LintRunnerKind {
     Clippy,
     GolangciLint,
     Ruff,
+    ClangFormat,
 }
 
 impl LintRunnerKind {
@@ -25,6 +26,7 @@ impl LintRunnerKind {
             Self::Clippy => "cargo-clippy",
             Self::GolangciLint => "golangci-lint",
             Self::Ruff => "ruff",
+            Self::ClangFormat => "clang-format",
         }
     }
 
@@ -34,6 +36,7 @@ impl LintRunnerKind {
             Self::Clippy => "Clippy",
             Self::GolangciLint => "golangci-lint",
             Self::Ruff => "Ruff",
+            Self::ClangFormat => "clang-format",
         }
     }
 }
@@ -46,6 +49,7 @@ impl FromStr for LintRunnerKind {
             "cargo" | "clippy" => Ok(Self::Clippy),
             "golangci-lint" => Ok(Self::GolangciLint),
             "ruff" => Ok(Self::Ruff),
+            "clang-format" => Ok(Self::ClangFormat),
             _ => Err(()),
         }
     }
@@ -140,7 +144,9 @@ pub fn lint_runner_available(source: &LintSource, path: &Path) -> bool {
         LintRunnerKind::GolangciLint => {
             executable_on_path(source.kind.executable()) && path.starts_with(&source.root)
         }
-        LintRunnerKind::Ruff => executable_on_path(source.kind.executable()),
+        LintRunnerKind::Ruff | LintRunnerKind::ClangFormat => {
+            executable_on_path(source.kind.executable())
+        }
     }
 }
 
@@ -174,6 +180,11 @@ pub fn run_linter(source: &LintSource, path: &Path) -> LintRunResult {
             .arg(path)
             .current_dir(&source.root)
             .output(),
+        LintRunnerKind::ClangFormat => Command::new("clang-format")
+            .args(["--dry-run", "--Werror", "--ferror-limit=0"])
+            .arg(path)
+            .current_dir(&source.root)
+            .output(),
     };
 
     match output {
@@ -188,6 +199,9 @@ pub fn run_linter(source: &LintSource, path: &Path) -> LintRunResult {
                     diagnostics
                 }
                 LintRunnerKind::Ruff => parse_ruff_output(&output.stdout, &source.root),
+                LintRunnerKind::ClangFormat => {
+                    parse_clang_format_output(&output.stderr, &source.root)
+                }
             };
             let parsed_any = diagnostics_by_uri.values().any(|items| !items.is_empty());
             let error = if output.status.success() || parsed_any {
@@ -367,6 +381,65 @@ pub fn parse_ruff_output(stdout: &[u8], root: &Path) -> HashMap<String, Vec<Diag
             continue;
         };
         diagnostics_by_uri.entry(uri).or_default().push(parsed);
+    }
+    diagnostics_by_uri
+}
+
+/// Parses clang-format's dry-run diagnostics. Clang columns are UTF-8 byte offsets.
+#[must_use]
+pub fn parse_clang_format_output(stderr: &[u8], root: &Path) -> HashMap<String, Vec<Diagnostic>> {
+    let mut diagnostics_by_uri = HashMap::<String, Vec<Diagnostic>>::new();
+    let mut line_cache = HashMap::<PathBuf, Option<Vec<String>>>::new();
+    for line in String::from_utf8_lossy(stderr).lines() {
+        let Some(line) = line.strip_suffix(" [-Wclang-format-violations]") else {
+            continue;
+        };
+        let Some((location, message)) = line
+            .split_once(": error: ")
+            .or_else(|| line.split_once(": warning: "))
+        else {
+            continue;
+        };
+        // Split from the right to retain colons in filenames and drive letters.
+        let mut location = location.rsplitn(3, ':');
+        let column = location
+            .next()
+            .and_then(|value| value.parse::<usize>().ok());
+        let row = location
+            .next()
+            .and_then(|value| value.parse::<usize>().ok());
+        let (Some(column), Some(row), Some(filename)) = (column, row, location.next()) else {
+            continue;
+        };
+        let (Some(start_line), Some(start_byte)) = (row.checked_sub(1), column.checked_sub(1))
+        else {
+            continue;
+        };
+        let path = resolve_lint_path(root, Path::new(filename));
+        let Ok(uri) = file_uri(&path) else {
+            continue;
+        };
+        let Some(source_line) =
+            cached_file_lines(&path, &mut line_cache).and_then(|lines| lines.get(start_line))
+        else {
+            continue;
+        };
+        let start_char = source_line
+            .char_indices()
+            .take_while(|(index, _)| *index < start_byte)
+            .count();
+        let start_utf16 = char_col_to_utf16(source_line, start_char);
+        let end_utf16 =
+            char_col_to_utf16(source_line, start_char + 1).max(start_utf16.saturating_add(1));
+        diagnostics_by_uri.entry(uri).or_default().push(Diagnostic {
+            severity: DiagnosticSeverity::Warning,
+            message: message.to_string(),
+            start_line,
+            end_line: start_line,
+            start_utf16,
+            end_utf16,
+            related_information: Vec::new(),
+        });
     }
     diagnostics_by_uri
 }
