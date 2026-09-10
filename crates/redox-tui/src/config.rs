@@ -187,6 +187,15 @@ impl Config {
         name == "default" || self.themes.contains_key(name)
     }
 
+    pub fn theme_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once("default").chain(
+            self.themes
+                .keys()
+                .map(String::as_str)
+                .filter(|name| *name != "default"),
+        )
+    }
+
     pub fn style(&self) -> anyhow::Result<UiStyle> {
         self.style_for_theme(&self.theme)
     }

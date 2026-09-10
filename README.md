@@ -165,7 +165,9 @@ Enter command mode with `:`.
 | `:lsp list` | Open the language tools marketplace. |
 | `:lsp status` | Show the active buffer's detected language tools. |
 
-Command history is available with `Up` / `Down` or `ctrl+p` / `ctrl+n`. Move within the command line with `Left` / `Right`, and cancel with `Escape` / `ctrl+c`.
+Command and subcommand completions appear as ghost text at the end of the input. Press `Tab` to accept, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
+
+`:colorscheme ` also completes theme names from your configuration, plus the built-in `default`. Commands from `[[bind]]` entries with a `command` field are included too. Suggestions refresh after `:config reload`.
 
 ### File navigation
 

@@ -2687,9 +2687,18 @@ fn config_commands_request_runtime_actions() {
     assert!(state.take_config_open_request());
     assert!(!state.take_config_open_request());
 
-    run_command(&mut state, "config reload");
+    enter_command_mode(&mut state);
+    for character in "config re".chars() {
+        state.apply_input(InputAction::CommandChar(character), 80, 24);
+    }
+    assert_eq!(state.command_completion_suffix(), Some("load"));
+    state.apply_input(InputAction::CommandComplete, 80, 24);
+    state.apply_input(InputAction::CommandEnter, 80, 24);
     assert!(state.take_config_reload_request());
     assert!(!state.take_config_reload_request());
+
+    run_command(&mut state, "config \t reload ");
+    assert!(state.take_config_reload_request());
 
     run_command(&mut state, "config nope");
     assert_eq!(state.status_msg.as_deref(), Some("usage: config [reload]"));

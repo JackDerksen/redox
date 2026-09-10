@@ -398,6 +398,7 @@ pub struct CommandLineStyle {
     pub border: ColorPair,
     pub title: ColorPair,
     pub text: ColorPair,
+    pub ghost: ColorPair,
     pub prompt: ColorPair,
 }
 
@@ -411,6 +412,7 @@ impl CommandLineStyle {
             border: ColorPair::new(theme.light_gray, theme.bg),
             title: ColorPair::new(theme.red, theme.bg),
             text: ColorPair::new(theme.white, theme.bg),
+            ghost: ColorPair::new(theme.dark_gray, theme.bg),
             prompt: ColorPair::new(theme.light_gray, theme.bg),
         }
     }

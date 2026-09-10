@@ -3101,7 +3101,7 @@ background = "#141415"
     }
 
     #[test]
-    fn config_reload_preserves_available_session_colorscheme() {
+    fn config_reload_preserves_session_colorscheme_and_refreshes_completions() {
         let dir = temp_dir_path("colorscheme_reload");
         fs::create_dir(&dir).unwrap();
         let config_path = dir.join("config.toml");
@@ -3128,7 +3128,21 @@ background = "#141415"
 
         fs::write(
             &config_path,
-            "[themes.vague.palette]\nbackground = \"#202122\"\n",
+            r##"
+[themes.default]
+[themes.vague.palette]
+background = "#202122"
+[[bind]]
+mode = "normal"
+keys = " m"
+command = " :e notes.md "
+desc = "Open notes"
+[[bind]]
+mode = "normal"
+keys = " n"
+command = "e notes.md"
+desc = "Open notes again"
+"##,
         )
         .unwrap();
         state.request_config_reload();
@@ -3152,6 +3166,47 @@ background = "#141415"
                 b: 34
             }
         );
+        for (prefix, expected) in [("colorscheme ", "default"), ("e ", "notes.md")] {
+            state.apply_input(InputAction::EnterCommand, 80, 24);
+            for character in prefix.chars() {
+                state.apply_input(InputAction::CommandChar(character), 80, 24);
+            }
+            assert_eq!(state.command_completion_suffix(), Some(expected));
+            state.apply_input(InputAction::CommandCompletionNext, 80, 24);
+            if prefix == "colorscheme " {
+                assert_eq!(state.command_completion_suffix(), Some("vague"));
+                state.apply_input(InputAction::CommandCompletionNext, 80, 24);
+            }
+            // Duplicate bindings and a configured default theme occur only once.
+            assert_eq!(state.command_completion_suffix(), Some(expected));
+            state.apply_input(InputAction::CommandComplete, 80, 24);
+            assert_eq!(state.command_line, format!("{prefix}{expected}"));
+        }
+
+        fs::write(&config_path, "[themes.\"étoile\"]\n").unwrap();
+        state.request_config_reload();
+        reload_runtime_config(
+            &mut state,
+            &mut keyboard,
+            &mut style,
+            &mut config,
+            &mut active_theme,
+            &mut theme_override,
+            Some(&config_path),
+        );
+        for (prefix, expected) in [
+            ("colorscheme v", None),
+            ("e ", None),
+            ("colorscheme é", Some("toile")),
+        ] {
+            state.apply_input(InputAction::EnterCommand, 80, 24);
+            for character in prefix.chars() {
+                state.apply_input(InputAction::CommandChar(character), 80, 24);
+            }
+            assert_eq!(state.command_completion_suffix(), expected);
+        }
+        state.apply_input(InputAction::CommandComplete, 80, 24);
+        assert_eq!(state.command_line, "colorscheme étoile");
         let _ = fs::remove_dir_all(dir);
     }
 }
@@ -3384,6 +3439,7 @@ fn reload_runtime_config(
 
     match result {
         Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
+            state.configure_command_completions(candidate.theme_names());
             *active_config = candidate;
             *style = candidate_style;
             *active_theme = candidate_theme;
@@ -3461,6 +3517,7 @@ pub fn run() -> anyhow::Result<()> {
         config.which_key.enabled,
         Duration::from_millis(config.which_key.delay_ms),
     );
+    state.configure_command_completions(config.theme_names());
     if let Some(dir_path) = launch_explorer_dir {
         state.open_explorer_at_path(dir_path)?;
     }
