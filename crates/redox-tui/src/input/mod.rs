@@ -134,6 +134,9 @@ pub enum InputAction {
     CommandMoveRight,
     CommandHistoryPrev,
     CommandHistoryNext,
+    CommandComplete,
+    CommandCompletionNext,
+    CommandCompletionPrev,
     CommandEnter,
     CommandCancel,
 
@@ -438,6 +441,15 @@ impl PendingInput {
 }
 
 impl InputState {
+    pub(crate) fn configured_commands(&self) -> impl Iterator<Item = &str> {
+        self.custom_bindings
+            .iter()
+            .filter_map(|binding| match &binding.action {
+                InputAction::RunCommand(command) => Some(command.as_str()),
+                _ => None,
+            })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -2521,12 +2533,12 @@ fn map_key_with_state(
 
             if ctrl_key(mods, key, 'p') {
                 state.reset_prefixes();
-                return InputAction::CommandHistoryPrev;
+                return InputAction::CommandCompletionPrev;
             }
 
             if ctrl_key(mods, key, 'n') {
                 state.reset_prefixes();
-                return InputAction::CommandHistoryNext;
+                return InputAction::CommandCompletionNext;
             }
 
             return match key {
@@ -2536,6 +2548,8 @@ fn map_key_with_state(
                 KeyKind::Right if unmodified(mods) => InputAction::CommandMoveRight,
                 KeyKind::Up if unmodified(mods) => InputAction::CommandHistoryPrev,
                 KeyKind::Down if unmodified(mods) => InputAction::CommandHistoryNext,
+                KeyKind::Tab if unmodified(mods) => InputAction::CommandComplete,
+                KeyKind::Tab if mods == KeyModifiers::shift() => InputAction::CommandCompletionPrev,
                 KeyKind::Enter if unmodified(mods) => InputAction::CommandEnter,
                 KeyKind::Char(c) if text_mods(mods) => {
                     InputAction::CommandChar(replacement_char_from_key(c, mods))
@@ -3784,6 +3798,26 @@ mod tests {
             (
                 InputMode::Command,
                 key_event(KeyKind::Char('n'), KeyModifiers::ctrl()),
+                InputAction::CommandCompletionNext,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Char('p'), KeyModifiers::ctrl()),
+                InputAction::CommandCompletionPrev,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Tab, KeyModifiers::none()),
+                InputAction::CommandComplete,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Tab, KeyModifiers::shift()),
+                InputAction::CommandCompletionPrev,
+            ),
+            (
+                InputMode::Command,
+                key_event(KeyKind::Down, KeyModifiers::none()),
                 InputAction::CommandHistoryNext,
             ),
             (

@@ -275,12 +275,14 @@ impl EditorState {
 
             InputAction::CommandMoveLeft => {
                 if self.mode == EditorMode::Command {
+                    self.command_completion_index = 0;
                     move_cursor_left(&self.command_line, &mut self.command_line_cursor);
                 }
             }
 
             InputAction::CommandMoveRight => {
                 if self.mode == EditorMode::Command {
+                    self.command_completion_index = 0;
                     move_cursor_right(&self.command_line, &mut self.command_line_cursor);
                 }
             }
@@ -300,6 +302,10 @@ impl EditorState {
             InputAction::CommandEnter => {
                 self.execute_command_line();
             }
+
+            InputAction::CommandComplete => self.accept_command_completion(),
+            InputAction::CommandCompletionNext => self.cycle_command_completion(true),
+            InputAction::CommandCompletionPrev => self.cycle_command_completion(false),
 
             InputAction::OpenFinder => {
                 if self.mode == EditorMode::Normal {

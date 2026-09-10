@@ -99,6 +99,18 @@ fn draw_command_line_popup_after(
         input_width as usize,
     );
     view.write_str_colored(row, input_col, &clipped, style.command_line.text)?;
+    if let Some(suffix) = state.command_completion_suffix() {
+        let ghost =
+            clip_text_to_cells(suffix, (input_width as usize).saturating_sub(cursor_offset));
+        if !ghost.is_empty() {
+            view.write_str_colored(
+                row,
+                input_col.saturating_add(cursor_offset as u16),
+                &ghost,
+                style.command_line.ghost,
+            )?;
+        }
+    }
 
     window.request_cursor(minui::window::CursorSpec {
         x: layout

@@ -9,6 +9,178 @@ use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
 use crate::ui::syntax::{SyntaxLanguage, smart_open_line_insert};
 
+struct CommandDefinition {
+    names: &'static [&'static str],
+    editor_context: fn(&EditorState, &str) -> bool,
+    run: fn(&mut EditorState, &str),
+}
+
+// Dispatch and completion share these names, including aliases and subcommands.
+const COMMANDS: &[CommandDefinition] = &[
+    CommandDefinition {
+        names: &["about"],
+        editor_context: |_, _| false,
+        run: |state, _| state.command_open_about(),
+    },
+    CommandDefinition {
+        names: &["bn", "bnext"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_buffer_cycle_next(),
+    },
+    CommandDefinition {
+        names: &["bp", "bprev"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_buffer_cycle_prev(),
+    },
+    CommandDefinition {
+        names: &["colorscheme"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.request_colorscheme(argument),
+    },
+    CommandDefinition {
+        names: &["config"],
+        editor_context: |_, argument| argument.is_empty(),
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.request_config_open();
+            } else {
+                state.set_status("usage: config [reload]");
+            }
+        },
+    },
+    CommandDefinition {
+        names: &["config reload"],
+        editor_context: |_, _| false,
+        run: |state, _| state.request_config_reload(),
+    },
+    CommandDefinition {
+        names: &["e"],
+        editor_context: |_, argument| !argument.is_empty(),
+        run: |state, argument| state.command_edit(argument),
+    },
+    CommandDefinition {
+        names: &["e!", "reload"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_reload_active(),
+    },
+    CommandDefinition {
+        names: &["ex", "explorer"],
+        editor_context: |_, _| false,
+        run: |state, _| state.command_open_explorer(),
+    },
+    CommandDefinition {
+        names: &["ls"],
+        editor_context: |_, _| false,
+        run: |state, _| state.command_list_buffers(),
+    },
+    CommandDefinition {
+        names: &["lsp"],
+        editor_context: |_, _| false,
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.set_status("usage: lsp list|status");
+            } else {
+                state.set_status(format!("unknown lsp command: {argument}"));
+            }
+        },
+    },
+    CommandDefinition {
+        names: &["lsp list"],
+        editor_context: |_, _| true,
+        run: |state, _| state.open_lsp_marketplace(),
+    },
+    CommandDefinition {
+        names: &["lsp status"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_lsp_status(),
+    },
+    CommandDefinition {
+        names: &["perf"],
+        editor_context: |_, argument| argument.is_empty(),
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.command_toggle_perf();
+            } else {
+                state.set_status("usage: perf [popup]");
+            }
+        },
+    },
+    CommandDefinition {
+        names: &["perf popup"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_toggle_perf(),
+    },
+    CommandDefinition {
+        names: &["q", "quit"],
+        editor_context: |_, _| false,
+        run: |state, _| {
+            if state.active_buffer_is_surface() {
+                if state.close_active_surface_buffer() {
+                    state.clear_status();
+                } else {
+                    state.set_status("cannot close the last buffer");
+                }
+            } else if state.session.any_dirty() {
+                state.set_status(state.unsaved_changes_quit_message());
+            } else {
+                state.should_quit = true;
+            }
+        },
+    },
+    CommandDefinition {
+        names: &["q!"],
+        editor_context: |_, _| false,
+        run: |state, _| state.should_quit = true,
+    },
+    CommandDefinition {
+        names: &["rain"],
+        editor_context: |_, _| true,
+        run: |state, _| state.command_rain(),
+    },
+    CommandDefinition {
+        names: &["undo-tree"],
+        editor_context: |state, _| !state.undo_tree_is_active(),
+        run: |state, _| state.command_toggle_undo_tree(),
+    },
+    CommandDefinition {
+        names: &["w"],
+        editor_context: |state, _| state.active_buffer_is_surface() && !state.explorer_is_active(),
+        run: |state, _| {
+            state.write_current_file();
+        },
+    },
+    CommandDefinition {
+        names: &["wq"],
+        editor_context: |state, _| state.active_buffer_is_surface() && !state.explorer_is_active(),
+        run: |state, _| {
+            if state.write_current_file() {
+                if state.session.any_dirty() {
+                    state.set_status(state.unsaved_changes_message());
+                } else {
+                    state.should_quit = true;
+                }
+            }
+        },
+    },
+];
+
+fn builtin_commands() -> impl Iterator<Item = (&'static str, &'static CommandDefinition)> {
+    COMMANDS
+        .iter()
+        .flat_map(|definition| definition.names.iter().map(move |&name| (name, definition)))
+}
+
+fn resolve_command(command: &str, argument: &str) -> Option<&'static CommandDefinition> {
+    builtin_commands()
+        .filter(|(name, _)| match name.split_once(' ') {
+            Some((head, tail)) => head == command && tail == argument,
+            None => *name == command,
+        })
+        // Prefer a fixed subcommand to its command's argument fallback.
+        .max_by_key(|(name, _)| name.len())
+        .map(|(_, definition)| definition)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SaveFormatter {
     CargoFmt,
@@ -18,6 +190,64 @@ enum SaveFormatter {
 }
 
 impl EditorState {
+    pub(crate) fn configure_command_completions<'name>(
+        &mut self,
+        names: impl IntoIterator<Item = &'name str>,
+    ) {
+        self.configured_command_completions = names
+            .into_iter()
+            .map(|name| format!("colorscheme {name}"))
+            .chain(self.input.configured_commands().map(str::to_owned))
+            .filter(|candidate| !builtin_commands().any(|(name, _)| name == candidate))
+            .collect();
+        self.configured_command_completions.sort();
+        self.configured_command_completions.dedup();
+        self.command_completion_index = 0;
+    }
+
+    fn command_completions(&self) -> impl Iterator<Item = &str> + '_ {
+        let prefix = self.command_line.trim_start();
+        builtin_commands()
+            .map(|(name, _)| name)
+            .chain(
+                self.configured_command_completions
+                    .iter()
+                    .map(String::as_str),
+            )
+            .filter(move |candidate| {
+                self.mode == EditorMode::Command
+                    && self.command_line_cursor == self.command_line.len()
+                    && candidate.starts_with(prefix)
+            })
+    }
+
+    pub(crate) fn command_completion_suffix(&self) -> Option<&str> {
+        self.command_completions()
+            .nth(self.command_completion_index)
+            .map(|candidate| &candidate[self.command_line.trim_start().len()..])
+            .filter(|suffix| !suffix.is_empty())
+    }
+
+    pub(super) fn cycle_command_completion(&mut self, forward: bool) {
+        let count = self.command_completions().count();
+        if count > 0 {
+            self.command_completion_index = if forward {
+                (self.command_completion_index + 1) % count
+            } else {
+                (self.command_completion_index + count - 1) % count
+            };
+        }
+    }
+
+    pub(super) fn accept_command_completion(&mut self) {
+        let Some(suffix) = self.command_completion_suffix().map(str::to_owned) else {
+            return;
+        };
+        self.detach_command_history_navigation();
+        self.command_line.push_str(&suffix);
+        self.command_line_cursor = self.command_line.len();
+    }
+
     pub(super) fn execute_configured_command(&mut self, command: String) {
         self.command_line = command;
         self.command_line_cursor = self.command_line.len();
@@ -47,108 +277,25 @@ impl EditorState {
         let cmd = parts.next().unwrap_or("");
         let arg = parts.next().map(str::trim).unwrap_or("");
 
-        if self.command_uses_editor_context(cmd, arg) && !self.close_active_surfaces_for_command() {
+        let Some(definition) = resolve_command(cmd, arg) else {
+            self.set_status(format!("unknown command: {cmd_raw}"));
+            return;
+        };
+        if (definition.editor_context)(self, arg) && !self.close_active_surfaces_for_command() {
             self.set_status("cannot return to an editor buffer");
             return;
         }
-
-        match cmd {
-            "w" => {
-                self.write_current_file();
-            }
-            "q" | "quit" => {
-                if self.active_buffer_is_surface() {
-                    if self.close_active_surface_buffer() {
-                        self.clear_status();
-                    } else {
-                        self.set_status("cannot close the last buffer");
-                    }
-                    return;
-                }
-
-                if self.session.any_dirty() {
-                    self.set_status(self.unsaved_changes_quit_message());
-                } else {
-                    self.should_quit = true;
-                }
-            }
-            "q!" => {
-                self.should_quit = true;
-            }
-            "wq" => {
-                if self.write_current_file() {
-                    if self.session.any_dirty() {
-                        self.set_status(self.unsaved_changes_message());
-                    } else {
-                        self.should_quit = true;
-                    }
-                }
-            }
-            "e" => {
-                self.command_edit(arg);
-            }
-            "e!" | "reload" => {
-                self.command_reload_active();
-            }
-            "config" => match arg {
-                "" => self.request_config_open(),
-                "reload" => self.request_config_reload(),
-                _ => self.set_status("usage: config [reload]"),
-            },
-            "colorscheme" => self.request_colorscheme(arg),
-            "bn" | "bnext" => {
-                self.command_buffer_cycle_next();
-            }
-            "bp" | "bprev" => {
-                self.command_buffer_cycle_prev();
-            }
-            "ls" => {
-                self.command_list_buffers();
-            }
-            "ex" | "explorer" => {
-                self.command_open_explorer();
-            }
-            "about" => {
-                self.command_open_about();
-            }
-            "rain" => {
-                self.command_rain();
-            }
-            "perf" => match arg {
-                "" | "popup" => self.command_toggle_perf(),
-                _ => self.set_status("usage: perf [popup]"),
-            },
-            "undo-tree" => {
-                self.command_toggle_undo_tree();
-            }
-            "lsp" => {
-                self.command_lsp(arg);
-            }
-            _ => {
-                self.set_status(format!("unknown command: {cmd_raw}"));
-            }
-        }
-    }
-
-    fn command_uses_editor_context(&self, cmd: &str, arg: &str) -> bool {
-        match cmd {
-            "w" | "wq" => self.active_buffer_is_surface() && !self.explorer_is_active(),
-            "e" => !arg.is_empty(),
-            "e!" | "reload" | "bn" | "bnext" | "bp" | "bprev" | "rain" => true,
-            "config" => arg.is_empty(),
-            "perf" => matches!(arg, "" | "popup"),
-            "undo-tree" => !self.undo_tree_is_active(),
-            "lsp" => matches!(arg, "list" | "status"),
-            _ => false,
-        }
+        (definition.run)(self, arg);
     }
 
     pub(super) fn reset_command_history_navigation(&mut self) {
+        self.command_completion_index = 0;
         self.command_history.nav_index = None;
         self.command_history.draft.clear();
     }
 
     pub(super) fn detach_command_history_navigation(&mut self) {
+        self.command_completion_index = 0;
         if self.command_history.nav_index.is_some() {
             self.command_history.draft = self.command_line.clone();
             self.command_history.nav_index = None;
@@ -156,6 +303,7 @@ impl EditorState {
     }
 
     pub(super) fn command_history_prev(&mut self) {
+        self.command_completion_index = 0;
         if self.command_history.entries.is_empty() {
             return;
         }
@@ -175,6 +323,7 @@ impl EditorState {
     }
 
     pub(super) fn command_history_next(&mut self) {
+        self.command_completion_index = 0;
         let Some(current_index) = self.command_history.nav_index else {
             return;
         };
@@ -311,15 +460,6 @@ impl EditorState {
         }
 
         self.set_status(message);
-    }
-
-    pub(super) fn command_lsp(&mut self, arg: &str) {
-        match arg {
-            "list" => self.open_lsp_marketplace(),
-            "status" => self.command_lsp_status(),
-            "" => self.set_status("usage: lsp list|status"),
-            other => self.set_status(format!("unknown lsp command: {other}")),
-        }
     }
 
     pub(super) fn write_current_file(&mut self) -> bool {
