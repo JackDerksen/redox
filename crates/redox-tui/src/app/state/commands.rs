@@ -207,6 +207,7 @@ impl EditorState {
 
     fn command_completions(&self) -> impl Iterator<Item = &str> + '_ {
         let prefix = self.command_line.trim_start();
+        let has_prefix = !prefix.is_empty();
         builtin_commands()
             .map(|(name, _)| name)
             .chain(
@@ -215,7 +216,8 @@ impl EditorState {
                     .map(String::as_str),
             )
             .filter(move |candidate| {
-                self.mode == EditorMode::Command
+                has_prefix
+                    && self.mode == EditorMode::Command
                     && self.command_line_cursor == self.command_line.len()
                     && candidate.starts_with(prefix)
             })
