@@ -177,6 +177,7 @@ pub struct BufferViewState {
     pub delimiter_pair_cache: DelimiterPairCache,
     pub visual_anchor: Option<Pos>,
     analysis_version: u64,
+    indent_width: Option<usize>,
     undo_history: UndoHistory,
     pending_insert_undo: Option<UndoCheckpoint>,
 }
@@ -190,6 +191,7 @@ impl Clone for BufferViewState {
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: self.visual_anchor,
             analysis_version: self.analysis_version,
+            indent_width: self.indent_width,
             undo_history: self.undo_history.clone(),
             pending_insert_undo: self.pending_insert_undo.clone(),
         }
@@ -205,6 +207,7 @@ impl Default for BufferViewState {
             delimiter_pair_cache: DelimiterPairCache::default(),
             visual_anchor: None,
             analysis_version: 0,
+            indent_width: None,
             undo_history: UndoHistory::default(),
             pending_insert_undo: None,
         }
@@ -236,6 +239,7 @@ impl BufferViewState {
     }
 
     fn reset_render_caches(&mut self) {
+        self.indent_width = None;
         self.render_line_cache.clear();
         self.syntax_highlighter.clear_cache();
         self.delimiter_pair_cache.clear();
@@ -1397,6 +1401,25 @@ impl EditorState {
         storage::save_undo_history(path, self.session.active_buffer(), &view.undo_history)
     }
 
+    fn active_indent_width(&mut self) -> usize {
+        // Keep a detected style stable while typing; bulk edits clear it so the
+        // next indentation action samples the new contents.
+        let view = self.views.entry(self.session.active_id()).or_default();
+        if view.indent_width.is_none() {
+            view.indent_width =
+                crate::indentation::detect_buffer_width(self.session.active_buffer());
+        }
+        view.indent_width
+            .unwrap_or(crate::indentation::DEFAULT_WIDTH)
+    }
+
+    fn refresh_active_indentation(&mut self) {
+        self.views
+            .entry(self.session.active_id())
+            .or_default()
+            .indent_width = None;
+    }
+
     fn invalidate_active_render_caches(&mut self) {
         let active_id = self.session.active_id();
         self.invalidate_buffer_render_caches(active_id);
@@ -1619,6 +1642,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
             view.visual_anchor = None;
             view.undo_history.clear_coalesce();
+            view.indent_width = None;
         }
 
         self.mode = EditorMode::Normal;

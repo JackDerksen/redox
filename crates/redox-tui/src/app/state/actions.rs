@@ -744,6 +744,7 @@ impl EditorState {
                     }
                     self.close_completion();
                     let before = self.capture_active_insert_coalesced_checkpoint();
+                    let indent_size = self.active_indent_width();
                     let active_id = self.session.active_id();
                     let view = self.views.entry(active_id).or_default();
                     let selection = Selection::empty(view.cursor.cursor);
@@ -761,7 +762,7 @@ impl EditorState {
                                 .checked_sub(1)
                                 .map(|start| (start, cursor_char.saturating_add(1)))
                         } else if let Some((start, end)) =
-                            soft_tab_backspace_range(buffer, view.cursor.cursor)
+                            soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
                         {
                             Some((buffer.pos_to_char(start), buffer.pos_to_char(end)))
                         } else {
@@ -776,7 +777,7 @@ impl EditorState {
                         {
                             view.cursor.cursor = new_cursor;
                         } else if let Some((start, end)) =
-                            soft_tab_backspace_range(buffer, view.cursor.cursor)
+                            soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
                         {
                             view.cursor.cursor = buffer.delete_range(start, end);
                         } else {
@@ -811,8 +812,13 @@ impl EditorState {
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
                     let language = language_for_path(self.session.active_meta().path.as_deref());
-                    let smart_insert =
-                        smart_newline_insert(self.session.active_buffer(), language, cursor);
+                    let indent_size = self.active_indent_width();
+                    let smart_insert = smart_newline_insert(
+                        self.session.active_buffer(),
+                        language,
+                        cursor,
+                        indent_size,
+                    );
                     let view = self.views.entry(active_id).or_default();
 
                     {
@@ -1077,6 +1083,9 @@ impl EditorState {
         if coalesce_insert_mode
             && self.replace_active_snippet_selection_text(text, viewport_width_cells, text_vh)
         {
+            if text.contains('\n') {
+                self.refresh_active_indentation();
+            }
             return;
         }
 
@@ -1100,6 +1109,9 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        if text.contains('\n') {
+            self.refresh_active_indentation();
+        }
         self.invalidate_active_render_caches();
         if coalesce_insert_mode {
             let _ = self.mirror_active_snippet_insert_after_cursor_insert(
@@ -1139,7 +1151,8 @@ impl EditorState {
         match behavior {
             InsertCharBehavior::Plain => {
                 let text = if ch == '\t' {
-                    soft_tab_insert_text(self.session.active_buffer(), cursor)
+                    let indent_size = self.active_indent_width();
+                    soft_tab_insert_text(self.session.active_buffer(), cursor, indent_size)
                 } else {
                     ch.to_string()
                 };
@@ -1351,7 +1364,11 @@ fn delete_auto_pair_with_backspace(buffer: &mut TextBuffer, cursor: Pos) -> Opti
     Some(buffer.delete_range(start, end))
 }
 
-fn soft_tab_backspace_range(buffer: &TextBuffer, cursor: Pos) -> Option<(Pos, Pos)> {
+fn soft_tab_backspace_range(
+    buffer: &TextBuffer,
+    cursor: Pos,
+    indent_size: usize,
+) -> Option<(Pos, Pos)> {
     if cursor.col == 0 {
         return None;
     }
@@ -1372,9 +1389,9 @@ fn soft_tab_backspace_range(buffer: &TextBuffer, cursor: Pos) -> Option<(Pos, Po
         return None;
     }
 
-    let spaces_left = cursor.col % SOFT_TAB_WIDTH;
+    let spaces_left = cursor.col % indent_size;
     let remove = if spaces_left == 0 {
-        SOFT_TAB_WIDTH
+        indent_size
     } else {
         spaces_left
     };
@@ -1382,11 +1399,11 @@ fn soft_tab_backspace_range(buffer: &TextBuffer, cursor: Pos) -> Option<(Pos, Po
     (cursor.col >= remove).then_some((Pos::new(line, cursor.col - remove), cursor))
 }
 
-fn soft_tab_insert_text(buffer: &TextBuffer, cursor: Pos) -> String {
+fn soft_tab_insert_text(buffer: &TextBuffer, cursor: Pos, indent_size: usize) -> String {
     let line = buffer.clamp_line(cursor.line);
     let line_text = buffer.line_string(line);
     let col = visual_column(&line_text, cursor.col);
-    let next_tab = ((col / SOFT_TAB_WIDTH) + 1) * SOFT_TAB_WIDTH;
+    let next_tab = ((col / indent_size) + 1) * indent_size;
     " ".repeat(next_tab - col)
 }
 

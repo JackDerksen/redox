@@ -342,6 +342,11 @@ const BREW_RUFF: &[InstallPlan] = &[InstallPlan {
     install_args: &["install", "ruff"],
     uninstall: Uninstall::Command(&["uninstall", "ruff"]),
 }];
+const BREW_CLANG_FORMAT: &[InstallPlan] = &[InstallPlan {
+    method: InstallMethod::Brew,
+    install_args: &["install", "clang-format"],
+    uninstall: Uninstall::Command(&["uninstall", "clang-format"]),
+}];
 const NO_AUTO_INSTALL: &[InstallPlan] = &[];
 
 static PROVIDERS: &[ProviderSpec] = &[
@@ -456,6 +461,12 @@ static PROVIDERS: &[ProviderSpec] = &[
 ];
 
 static LINTERS: &[LinterSpec] = &[
+    LinterSpec {
+        kind: LintRunnerKind::ClangFormat,
+        label: "clang-format",
+        language_label: "C / C++",
+        install_plans: BREW_CLANG_FORMAT,
+    },
     LinterSpec {
         kind: LintRunnerKind::Clippy,
         label: "clippy",

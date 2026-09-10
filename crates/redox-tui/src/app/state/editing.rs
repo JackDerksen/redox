@@ -7,7 +7,6 @@ use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
 use crate::ui::language_for_path;
 use crate::ui::syntax::desired_indent_for_line;
-use crate::{SOFT_TAB, SOFT_TAB_WIDTH};
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -773,6 +772,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        self.refresh_active_indentation();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
@@ -887,9 +887,10 @@ impl EditorState {
             return;
         }
 
+        let indent_size = self.active_indent_width();
         for line in start_line..=end_line {
             let Some(indent) =
-                desired_indent_for_line(self.session.active_buffer(), language, line)
+                desired_indent_for_line(self.session.active_buffer(), language, line, indent_size)
             else {
                 continue;
             };
@@ -937,10 +938,11 @@ impl EditorState {
         };
         let before = self.capture_active_undo_checkpoint();
 
+        let indent = " ".repeat(self.active_indent_width());
         let added_by_line = self
             .session
             .active_buffer_mut()
-            .indent_line_span(start_line, end_line, count, SOFT_TAB);
+            .indent_line_span(start_line, end_line, count, &indent);
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
@@ -977,11 +979,12 @@ impl EditorState {
         };
         let before = self.capture_active_undo_checkpoint();
 
+        let indent_size = self.active_indent_width();
         let removed_by_line = self.session.active_buffer_mut().outdent_line_span(
             start_line,
             end_line,
             count,
-            SOFT_TAB_WIDTH,
+            indent_size,
         );
 
         let active_id = self.session.active_id();
@@ -1029,6 +1032,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        self.refresh_active_indentation();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();
@@ -1060,6 +1064,7 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        self.refresh_active_indentation();
         self.invalidate_active_render_caches();
         let _ = self.record_active_undo_if_changed(before);
         let _ = self.session.recompute_active_dirty();

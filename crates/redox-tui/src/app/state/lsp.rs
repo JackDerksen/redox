@@ -225,6 +225,7 @@ impl MarketplaceItemId {
     fn kind_label(self) -> &'static str {
         match self {
             Self::Provider(_) => "LSP",
+            Self::Linter(LintRunnerKind::ClangFormat) => "Formatter",
             Self::Linter(_) => "Linter",
         }
     }
@@ -2587,7 +2588,10 @@ impl EditorState {
                 && let Some(result) = result
             {
                 let source = DiagnosticSource::Lint(result.source.clone());
-                if result.source.kind == LintRunnerKind::Ruff {
+                if matches!(
+                    result.source.kind,
+                    LintRunnerKind::Ruff | LintRunnerKind::ClangFormat
+                ) {
                     self.remove_diagnostics_for_source_uri(&request.uri, &source);
                 } else {
                     self.remove_diagnostics_for_source_everywhere(&source);
@@ -2616,6 +2620,9 @@ impl EditorState {
             SyntaxLanguage::Rust => (LintRunnerKind::Clippy, ProviderId::RustAnalyzer),
             SyntaxLanguage::Go => (LintRunnerKind::GolangciLint, ProviderId::Gopls),
             SyntaxLanguage::Python => (LintRunnerKind::Ruff, ProviderId::Pyright),
+            SyntaxLanguage::C | SyntaxLanguage::Cpp => {
+                (LintRunnerKind::ClangFormat, ProviderId::Clangd)
+            }
             _ => return None,
         };
 

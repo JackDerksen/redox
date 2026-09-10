@@ -400,56 +400,22 @@ pub(crate) fn active_scope_indent_guides(
 }
 
 fn active_scope_guide_cell(buffer: &TextBuffer, scope: DelimiterPair) -> Option<usize> {
-    let opening_guides = leading_indent_guide_cells(&buffer.line_string(scope.start.line));
-    for line_idx in scope.start.line.saturating_add(1)..scope.end.line {
-        let source_line = buffer.line_string(line_idx);
-        if source_line.trim().is_empty() {
-            continue;
-        }
-
-        let inner_guides = leading_indent_guide_cells(&source_line);
-        if inner_guides.len() > opening_guides.len() {
-            return inner_guides.get(opening_guides.len()).copied();
-        }
-        if let Some(&last) = inner_guides.last() {
-            return Some(last);
+    let opening_indent = leading_indent_cells(&buffer.line_string(scope.start.line));
+    for line in scope.start.line.saturating_add(1)..scope.end.line {
+        let source_line = buffer.line_string(line);
+        if !source_line.trim().is_empty() && leading_indent_cells(&source_line) > opening_indent {
+            return Some(opening_indent);
         }
     }
     None
 }
 
-fn leading_indent_guide_cells(source_line: &str) -> Vec<usize> {
-    if source_line.is_empty() {
-        return Vec::new();
-    }
-
-    let mut guides = Vec::new();
-    let mut line_cells = 0usize;
-    let mut consecutive_spaces = 0usize;
-    let mut current_space_block_start = 0usize;
-
-    for ch in source_line.chars() {
-        match ch {
-            '\t' => {
-                consecutive_spaces = 0;
-                guides.push(line_cells);
-                line_cells = line_cells.saturating_add(4);
-            }
-            ' ' => {
-                if consecutive_spaces % 4 == 0 {
-                    current_space_block_start = line_cells;
-                }
-                consecutive_spaces = consecutive_spaces.saturating_add(1);
-                line_cells = line_cells.saturating_add(1);
-                if consecutive_spaces % 4 == 0 {
-                    guides.push(current_space_block_start);
-                }
-            }
-            _ => break,
-        }
-    }
-
-    guides
+fn leading_indent_cells(source_line: &str) -> usize {
+    source_line
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .map(|ch| if ch == '\t' { crate::SOFT_TAB_WIDTH } else { 1 })
+        .sum()
 }
 
 fn filter_visible_indent_guides(
@@ -780,7 +746,7 @@ mod tests {
 
     use super::{
         VisibleDelimiterCell, active_scope_guide_cell, active_scope_indent_guides,
-        compute_delimiter_analysis, filter_visible_indent_guides, leading_indent_guide_cells,
+        compute_delimiter_analysis, filter_visible_indent_guides, leading_indent_cells,
         visible_delimiter_cells,
     };
 
@@ -851,11 +817,20 @@ mod tests {
     }
 
     #[test]
-    fn leading_indent_guides_follow_tabs_and_space_blocks() {
-        assert_eq!(leading_indent_guide_cells("\t\tfoo()"), vec![0, 4]);
-        assert_eq!(leading_indent_guide_cells("        foo()"), vec![0, 4]);
-        assert_eq!(leading_indent_guide_cells("    \tfoo()"), vec![0, 4]);
-        assert!(leading_indent_guide_cells("  foo()").is_empty());
+    fn scope_guides_follow_actual_indentation_columns() {
+        assert_eq!(leading_indent_cells("\t\tfoo()"), 8);
+        for width in [2, 3, 4, 8] {
+            let indent = " ".repeat(width);
+            let buffer = TextBuffer::from_text(&format!(
+                "if outer {{\n{indent}if inner {{\n{indent}{indent}call();\n{indent}}}\n}}\n"
+            ));
+            let analysis = compute_delimiter_analysis(&buffer);
+            let scope = analysis
+                .active_scope_pair(&buffer, Pos::new(2, width * 2))
+                .unwrap();
+            assert_eq!(scope.guide_cell, Some(width));
+            assert_eq!(active_scope_guide_cell(&buffer, scope), Some(width));
+        }
     }
 
     #[test]

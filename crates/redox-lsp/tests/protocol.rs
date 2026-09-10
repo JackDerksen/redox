@@ -1,6 +1,9 @@
 use std::fs;
 
-use redox_lsp::lint::{parse_clippy_output, parse_golangci_lint_text_output, parse_ruff_output};
+use redox_lsp::lint::{
+    parse_clang_format_output, parse_clippy_output, parse_golangci_lint_text_output,
+    parse_ruff_output,
+};
 use redox_lsp::{
     CompletionCandidate, DiagnosticSeverity, InsertTextFormat, ProviderId, SymbolInfoBlock,
     SymbolInfoKind, completion_snippet_expansion, file_uri, parse_code_action_response,
@@ -363,6 +366,27 @@ fn workspace_and_linter_parsers_resolve_file_uris() {
     let golangci =
         parse_golangci_lint_text_output(b"lexer.go:1:1: package comment is missing\n", root);
     assert_eq!(golangci[&file_uri(&go_file).unwrap()][0].start_line, 0);
+
+    let c_file = root.join("sample: file.c");
+    fs::write(&c_file, "/*😁*/int x;\n").unwrap();
+    let clang_format = parse_clang_format_output(
+        b"sample: file.c:1:9: error: code should be clang-formatted [-Wclang-format-violations]\n    ^\ninvalid diagnostic\n",
+        root,
+    );
+    let diagnostic = &clang_format[&file_uri(&c_file).unwrap()][0];
+    assert_eq!(
+        (
+            diagnostic.start_line,
+            diagnostic.start_utf16,
+            diagnostic.end_utf16
+        ),
+        (0, 6, 7)
+    );
+    let kind = "clang-format".parse::<redox_lsp::LintRunnerKind>().unwrap();
+    assert_eq!(
+        redox_lsp::linter_spec(kind).unwrap().language_label,
+        "C / C++"
+    );
 }
 
 #[test]

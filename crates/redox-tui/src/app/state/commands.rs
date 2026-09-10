@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use redox_core::{Pos, Selection, TextBuffer};
 
 use super::{EditorMode, EditorState};
-use crate::SOFT_TAB_WIDTH;
+use crate::indentation::width_for_text;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
 use crate::ui::syntax::{SyntaxLanguage, smart_open_line_insert};
@@ -14,6 +14,7 @@ enum SaveFormatter {
     CargoFmt,
     Gofmt,
     Ruff,
+    ClangFormat,
 }
 
 impl EditorState {
@@ -473,8 +474,14 @@ impl EditorState {
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
         let language = language_for_path(self.session.active_meta().path.as_deref());
         let line = self.session.active_buffer().clamp_line(cursor.line);
-        let smart_insert =
-            smart_open_line_insert(self.session.active_buffer(), language, line, above);
+        let indent_size = self.active_indent_width();
+        let smart_insert = smart_open_line_insert(
+            self.session.active_buffer(),
+            language,
+            line,
+            above,
+            indent_size,
+        );
         let view = self.views.entry(active_id).or_default();
 
         {
@@ -536,6 +543,7 @@ fn formatter_for(language: SyntaxLanguage) -> Option<SaveFormatter> {
         SyntaxLanguage::Rust => Some(SaveFormatter::CargoFmt),
         SyntaxLanguage::Go => Some(SaveFormatter::Gofmt),
         SyntaxLanguage::Python => Some(SaveFormatter::Ruff),
+        SyntaxLanguage::C | SyntaxLanguage::Cpp => Some(SaveFormatter::ClangFormat),
         _ => None,
     }
 }
@@ -549,6 +557,7 @@ fn formatter_available(formatter: SaveFormatter, path: &Path) -> bool {
         }
         SaveFormatter::Gofmt => executable_on_path("gofmt"),
         SaveFormatter::Ruff => executable_on_path("ruff"),
+        SaveFormatter::ClangFormat => executable_on_path("clang-format"),
     }
 }
 
@@ -571,6 +580,13 @@ fn run_formatter(formatter: SaveFormatter, launch_dir: &Path, path: &Path) -> Re
                 .args(["-w"])
                 .arg(path),
             "gofmt",
+        ),
+        SaveFormatter::ClangFormat => run_command_status(
+            Command::new("clang-format")
+                .current_dir(launch_dir)
+                .arg("-i")
+                .arg(path),
+            "clang-format",
         ),
         SaveFormatter::Ruff => {
             run_command_status(
@@ -631,7 +647,7 @@ fn executable_on_path(executable: &str) -> bool {
 }
 
 fn apply_save_format_passes(text: &str) -> String {
-    trim_trailing_whitespace_text(&expand_hard_tabs(text, SOFT_TAB_WIDTH))
+    trim_trailing_whitespace_text(&expand_hard_tabs(text, width_for_text(text)))
 }
 
 fn expand_hard_tabs(text: &str, tab_width: usize) -> String {

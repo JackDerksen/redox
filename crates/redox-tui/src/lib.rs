@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
 mod config;
+mod indentation;
 mod input;
 mod storage;
 mod ui;
@@ -54,7 +55,6 @@ use ui::{
 };
 
 pub(crate) const SOFT_TAB_WIDTH: usize = 4;
-pub(crate) const SOFT_TAB: &str = "    ";
 
 const GUTTER_CONTENT_PADDING: u16 = 1;
 const ANIMATION_FRAME_RATE_HZ: u64 = 60;
