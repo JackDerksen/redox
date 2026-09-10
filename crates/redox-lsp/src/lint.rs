@@ -394,9 +394,10 @@ pub fn parse_clang_format_output(stderr: &[u8], root: &Path) -> HashMap<String, 
         let Some(line) = line.strip_suffix(" [-Wclang-format-violations]") else {
             continue;
         };
-        let Some((location, message)) = line
-            .split_once(": error: ")
-            .or_else(|| line.split_once(": warning: "))
+        let Some((location, message)) = [": error: ", ": warning: "]
+            .into_iter()
+            .filter_map(|separator| line.rsplit_once(separator))
+            .max_by_key(|(location, _)| location.len())
         else {
             continue;
         };
