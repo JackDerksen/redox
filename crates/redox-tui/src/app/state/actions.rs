@@ -1349,7 +1349,7 @@ fn is_word_like_for_single_quote(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
-fn is_auto_pair_closer(ch: char) -> bool {
+pub(super) fn is_auto_pair_closer(ch: char) -> bool {
     matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
 }
 

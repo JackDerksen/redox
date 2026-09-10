@@ -1876,15 +1876,8 @@ impl EditorState {
         text_vh: usize,
     ) -> bool {
         let active_id = self.session.active_id();
-        let cursor_char = {
-            let cursor = self
-                .views
-                .get(&active_id)
-                .map(|view| view.cursor.cursor)
-                .unwrap_or(Pos::new(0, 0));
-            let buffer = self.session.active_buffer();
-            buffer.pos_to_char(cursor)
-        };
+        let cursor = self.active_cursor_pos();
+        let cursor_char = self.session.active_buffer().pos_to_char(cursor);
         let Some(snippet) = self.lsp.active_snippet.as_mut() else {
             return false;
         };
@@ -1899,6 +1892,17 @@ impl EditorState {
         if cursor_char < placeholder.start_char || cursor_char > placeholder.end_char {
             self.lsp.active_snippet = None;
             self.invalidate_active_render_caches();
+            return false;
+        }
+        // Let ordinary Tab-out cross one closer before advancing the snippet.
+        // A selected placeholder still accepts its default with Tab.
+        if !snippet.selected
+            && self
+                .session
+                .active_buffer()
+                .char_at(cursor)
+                .is_some_and(super::actions::is_auto_pair_closer)
+        {
             return false;
         }
         let next_tabstop = snippet
