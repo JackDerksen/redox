@@ -18,12 +18,19 @@ fn detect(lines: impl IntoIterator<Item = impl Iterator<Item = char>>) -> Option
     let mut steps = [0_usize; 9];
     let mut levels = [0_usize; 9];
     let mut previous = 0_usize;
+    let mut continues = false;
     for line in lines {
         // Only inspect prefixes; long lines and large files need no allocation.
-        let Some((indent, first)) = line.take(256).enumerate().find(|(_, ch)| *ch != ' ') else {
+        let mut prefix = line.take(256);
+        let Some((indent, first)) = prefix.by_ref().enumerate().find(|(_, ch)| *ch != ' ') else {
             continue;
         };
         if first.is_whitespace() || matches!(first, '/' | '*' | '#') {
+            continue;
+        }
+        // Retain the statement's indentation until its continuation dedents,
+        // excluding both repeated alignment levels and the steps into/out of them.
+        if continues && indent > previous {
             continue;
         }
         if let Some(count) = steps.get_mut(indent.abs_diff(previous)) {
@@ -33,6 +40,13 @@ fn detect(lines: impl IntoIterator<Item = impl Iterator<Item = char>>) -> Option
             *count += 1;
         }
         previous = indent;
+        // ponytail: trailing punctuation is a language-neutral heuristic; full
+        // syntax analysis would be needed to recognise every continuation form.
+        let last = prefix
+            .filter(|ch| !ch.is_whitespace())
+            .last()
+            .unwrap_or(first);
+        continues = matches!(last, '(' | '[' | ',' | '\\');
     }
     // A single aligned continuation or partially typed indent is not evidence.
     // Prefer the default on ties, then the smaller step. One-space comment
@@ -61,6 +75,16 @@ mod tests {
             ("a {\n   b {\n      c;\n   }\n}\n", 3),
             ("a {\n        b;\n}\n", 8),
             ("a {\n    b(\n      aligned);\n    c;\n}\n", 4),
+            ("call(first,\n     second,\n     third);\n", 4),
+            ("call(\n  first,\n  second,\n  third);\nnext();\n", 4),
+            (
+                "a {\n    call(first,\n         second,\n         third);\n    c;\n}\n",
+                4,
+            ),
+            (
+                "a {\n  call(first,\n       second,\n       third);\n  c;\n}\n",
+                2,
+            ),
             ("/* comment\n * margin\n */\na {\n  b;\n}\n", 2),
             ("\t  if ready {", 4),
             ("a {\n\tb;\n}\n", 4),
