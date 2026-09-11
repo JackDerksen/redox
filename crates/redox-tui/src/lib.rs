@@ -1081,7 +1081,10 @@ fn popup_stack_layout(
     let (_, term_h) = window.get_size();
     let (_, inner_h) = inner_size;
     let popup = anchored_popup_layout(window, inner_size);
-    if state.mode != app::EditorMode::Command {
+    if !matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    ) {
         return PopupStackLayout {
             popup,
             command_padding: None,
