@@ -3,6 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, StatusMessageStyle};
 use crate::ui::UiStyle;
+use crate::ui::widgets::command_line::search_toast_layout;
 use crate::ui::widgets::perf::{PerfPopupLayout, perf_popup_layout};
 use crate::ui::widgets::popup::{
     PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_window_view,
@@ -28,13 +29,24 @@ pub fn draw_status_toast(
 
     let (term_w, term_h) = window.get_size();
     let perf_popup = status_toast_perf_popup_layout(state, term_w, term_h, style);
-    let Some(toast) = toast_layout(
-        message,
-        &state.status_msg_line_styles,
-        term_w,
-        term_h,
-        perf_popup,
-    ) else {
+    let toast = if let Some(search) = search_toast_layout(state, term_w, term_h) {
+        toast_layout_below(
+            message,
+            &state.status_msg_line_styles,
+            term_w,
+            term_h,
+            search,
+        )
+    } else {
+        toast_layout(
+            message,
+            &state.status_msg_line_styles,
+            term_w,
+            term_h,
+            perf_popup,
+        )
+    };
+    let Some(toast) = toast else {
         return Ok(None);
     };
 
@@ -101,7 +113,7 @@ fn toast_layout(
     }
 
     if let Some(perf) = perf_popup {
-        if let Some(layout) = toast_layout_below_perf(message, line_styles, term_w, term_h, perf) {
+        if let Some(layout) = toast_layout_below(message, line_styles, term_w, term_h, perf) {
             return Some(layout);
         }
         if let Some(layout) = toast_layout_left_of_perf(message, line_styles, term_h, perf) {
@@ -126,17 +138,16 @@ fn toast_layout(
     })
 }
 
-fn toast_layout_below_perf(
+fn toast_layout_below(
     message: &str,
     line_styles: &[StatusMessageStyle],
     term_w: u16,
     term_h: u16,
-    perf_popup: PerfPopupLayout,
+    popup: PopupLayout,
 ) -> Option<ToastLayout> {
-    let y = perf_popup
+    let y = popup
         .y
-        .saturating_add(perf_popup.inner_h)
-        .saturating_add(2)
+        .saturating_add(popup.outer_h())
         .saturating_add(TOAST_GAP_ROWS);
     let popup_max_w = term_w.saturating_sub(TOAST_MARGIN_COLS);
     let popup_max_h = term_h.saturating_sub(y).saturating_sub(TOAST_MARGIN_ROWS);

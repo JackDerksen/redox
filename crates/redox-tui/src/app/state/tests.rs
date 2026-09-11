@@ -1353,6 +1353,113 @@ fn operator_find_and_till_char_apply_expected_ranges() {
 }
 
 #[test]
+fn slash_regex_search_handles_unicode_multiline_anchors_and_invalid_patterns() {
+    let path = temp_file_path("regex_search");
+    let mut state = state_with_text(path.clone(), "é12 é34\nab\ncd\n[");
+    for (pattern, expected) in [
+        (r"é\d+", vec![(0, 0, 0, 3), (0, 4, 0, 7)]),
+        (r"ab\ncd", vec![(1, 0, 2, 2)]),
+        (
+            r"^",
+            vec![(0, 0, 0, 0), (1, 0, 1, 0), (2, 0, 2, 0), (3, 0, 3, 0)],
+        ),
+        (r"(?i)AB|CD", vec![(1, 0, 1, 2), (2, 0, 2, 2)]),
+        (r"\[", vec![(3, 0, 3, 1)]),
+    ] {
+        state.apply_input(InputAction::EnterSearch, 80, 24);
+        for character in pattern.chars() {
+            state.apply_input(InputAction::SearchChar(character), 80, 24);
+        }
+        assert_eq!(state.search_error(), None, "{pattern}");
+        let matches = &state.search_state.as_ref().unwrap().matches;
+        assert_eq!(
+            matches
+                .iter()
+                .map(|matched| (
+                    matched.start.line,
+                    matched.start.col,
+                    matched.end.line,
+                    matched.end.col
+                ))
+                .collect::<Vec<_>>(),
+            expected,
+            "{pattern}"
+        );
+        let highlights = state.active_search_highlight_ranges(0, 4);
+        assert!(highlights.values().any(|line| line.active.is_some()));
+        if pattern == r"ab\ncd" {
+            assert_eq!(highlights[&1].active, Some(0..2));
+            assert_eq!(highlights[&2].active, Some(0..2));
+        }
+        state.apply_input(InputAction::SearchEnter, 80, 24);
+        assert!(
+            state
+                .active_search_highlight_ranges(0, 4)
+                .values()
+                .all(|line| line.active.is_none())
+        );
+    }
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    state.apply_input(InputAction::SearchChar('['), 80, 24);
+    assert!(state.search_error().is_some());
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    assert_eq!(state.mode, EditorMode::Search);
+    state.apply_input(InputAction::SearchBackspace, 80, 24);
+    assert_eq!(state.search_error(), None);
+    state.apply_input(InputAction::SearchCancel, 80, 24);
+    state.remember_motion_search(Motion::FindChar('['), 1);
+    assert_eq!(state.search_error(), None);
+    assert_eq!(state.search_match_position().1, 1);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn slash_search_previews_centred_matches_and_restores_cancelled_searches() {
+    let path = temp_file_path("live_search");
+    let text = (0..90)
+        .map(|line| {
+            if matches!(line, 30 | 60) {
+                "hit\n"
+            } else {
+                "row\n"
+            }
+        })
+        .collect::<String>();
+    let mut state = state_with_text(path.clone(), &text);
+    let buffer_id = state.session.active_id();
+    state.views.get_mut(&buffer_id).unwrap().cursor.cursor = Pos::new(8, 0);
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for character in "hit".chars() {
+        state.apply_input(InputAction::SearchChar(character), 80, 24);
+    }
+    assert_eq!(state.search_match_position(), (1, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(30, 0));
+    assert_eq!(state.views[&buffer_id].cursor.scroll_y_lines, 19);
+    assert_eq!(state.active_search_highlight_ranges(0, 90).len(), 2);
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.search_match_position(), (2, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(60, 0));
+    assert_eq!(state.views[&buffer_id].cursor.scroll_y_lines, 49);
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(60, 0));
+
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    state.apply_input(InputAction::SearchChar('x'), 80, 24);
+    assert_eq!(state.search_match_position(), (0, 0));
+    state.apply_input(InputAction::SearchBackspace, 80, 24);
+    assert!(state.active_search_highlight_ranges(0, 90).is_empty());
+    for character in "row".chars() {
+        state.apply_input(InputAction::SearchChar(character), 80, 24);
+    }
+    assert_ne!(state.active_cursor_pos(), Pos::new(60, 0));
+    state.apply_input(InputAction::SearchCancel, 80, 24);
+    assert_eq!(state.search_match_position(), (2, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(60, 0));
+    assert_eq!(state.views[&buffer_id].cursor.scroll_y_lines, 49);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
     let path = temp_file_path("slash_search_repeat");
     let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
@@ -1373,7 +1480,10 @@ fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
     assert_eq!(state.mode, EditorMode::Normal);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 11));
     assert_eq!(
-        state.active_search_highlight_ranges(0, 1).get(&0).cloned(),
+        state
+            .active_search_highlight_ranges(0, 1)
+            .get(&0)
+            .map(|highlights| highlights.ranges.clone()),
         Some(vec![0..5, 11..16, 23..28])
     );
 

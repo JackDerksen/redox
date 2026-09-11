@@ -414,22 +414,20 @@ impl EditorState {
             }
 
             InputAction::SearchCancel => {
-                self.mode = EditorMode::Normal;
-                self.command_line.clear();
-                self.command_line_cursor = 0;
-                self.reset_command_history_navigation();
-                self.input.reset_prefixes();
+                self.cancel_search();
             }
 
             InputAction::SearchChar(c) => {
                 if self.mode == EditorMode::Search {
                     insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
+                    self.update_search_preview(viewport_width_cells, text_vh);
                 }
             }
 
             InputAction::SearchBackspace => {
                 if self.mode == EditorMode::Search {
                     backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
+                    self.update_search_preview(viewport_width_cells, text_vh);
                 }
             }
 
@@ -1021,6 +1019,7 @@ impl EditorState {
                 if matches!(
                     self.mode,
                     EditorMode::Normal
+                        | EditorMode::Search
                         | EditorMode::Visual
                         | EditorMode::VisualLine
                         | EditorMode::VisualBlock
@@ -1247,7 +1246,7 @@ impl EditorState {
         view.cursor.cursor = buffer.clamp_pos(Pos::new(target_line, target_col));
     }
 
-    fn center_active_cursor_line(&mut self, text_vh: usize) {
+    pub(super) fn center_active_cursor_line(&mut self, text_vh: usize) {
         if text_vh == 0 {
             return;
         }

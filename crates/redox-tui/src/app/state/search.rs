@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use redox_core::Pos;
 use redox_core::motion::{Motion, apply_motion_n};
 
-use super::{EditorMode, EditorState, SearchLanding, SearchMatch, SearchQuery, SearchState};
+use super::{
+    EditorMode, EditorState, SearchLanding, SearchLineHighlights, SearchMatch, SearchOrigin,
+    SearchQuery, SearchState,
+};
 
 impl SearchQuery {
     fn landing_pos(&self, start: Pos) -> Pos {
@@ -27,7 +29,7 @@ impl EditorState {
         &mut self,
         first_line: usize,
         line_count: usize,
-    ) -> BTreeMap<usize, Vec<Range<usize>>> {
+    ) -> BTreeMap<usize, SearchLineHighlights> {
         self.ensure_search_state_current();
 
         let mut ranges = BTreeMap::new();
@@ -39,17 +41,35 @@ impl EditorState {
             return ranges;
         }
 
-        for matched in &search.matches {
-            if matched.start.line < first_line || matched.start.line >= last_line {
-                continue;
+        for (index, matched) in search.matches.iter().enumerate() {
+            for line in matched.start.line.max(first_line)
+                ..=matched.end.line.min(last_line.saturating_sub(1))
+            {
+                if line >= last_line
+                    || (line > matched.start.line
+                        && line == matched.end.line
+                        && matched.end.col == 0)
+                {
+                    continue;
+                }
+                let start = if line == matched.start.line {
+                    matched.start.col
+                } else {
+                    0
+                };
+                let end = if line == matched.end.line {
+                    matched.end.col
+                } else {
+                    self.session.active_buffer().line_len_chars(line)
+                };
+                let highlights = ranges
+                    .entry(line)
+                    .or_insert_with(SearchLineHighlights::default);
+                highlights.ranges.push(start..end);
+                if self.mode == EditorMode::Search && search.active_match == Some(index) {
+                    highlights.active = Some(start..end);
+                }
             }
-            if matched.start.line != matched.end.line {
-                continue;
-            }
-            ranges
-                .entry(matched.start.line)
-                .or_insert_with(Vec::new)
-                .push(matched.start.col..matched.end.col);
         }
 
         ranges
@@ -64,7 +84,7 @@ impl EditorState {
         let buffer = self.session.active_buffer();
         let cursor = self.active_cursor_pos();
         let landing = apply_motion_n(buffer, cursor, motion, count.max(1));
-        let matches = search_matches_for_buffer(buffer, &query);
+        let (matches, error) = search_matches_for_buffer(buffer, &query);
         let active_match = motion_search_target_start(buffer, cursor, motion, count.max(1))
             .and_then(|target_start| {
                 matches
@@ -84,10 +104,20 @@ impl EditorState {
             active_match,
             visible: true,
             dirty: false,
+            error,
         });
     }
 
     pub(super) fn enter_search_mode(&mut self) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let buffer_id = self.session.active_id();
+        self.search_origin = Some(SearchOrigin {
+            buffer_id,
+            cursor: self.views.entry(buffer_id).or_default().cursor.clone(),
+            search: self.search_state.take(),
+        });
         self.mode = EditorMode::Search;
         self.command_line.clear();
         self.command_line_cursor = 0;
@@ -95,52 +125,110 @@ impl EditorState {
         self.input.reset_prefixes();
     }
 
-    pub(super) fn execute_search_line(&mut self, viewport_width_cells: usize, text_vh: usize) {
+    pub(crate) fn search_match_position(&self) -> (usize, usize) {
+        self.search_state.as_ref().map_or((0, 0), |search| {
+            (
+                search.active_match.map_or(0, |index| index + 1),
+                search.matches.len(),
+            )
+        })
+    }
+
+    pub(crate) fn search_error(&self) -> Option<&str> {
+        self.search_state.as_ref()?.error.as_deref()
+    }
+
+    fn restore_search_cursor(&mut self) {
+        if let Some(origin) = &self.search_origin
+            && origin.buffer_id == self.session.active_id()
+        {
+            self.views.entry(origin.buffer_id).or_default().cursor = origin.cursor.clone();
+        }
+    }
+
+    pub(super) fn cancel_search(&mut self) {
         if self.mode != EditorMode::Search {
             return;
         }
-
-        let term = std::mem::take(&mut self.command_line);
-        self.command_line_cursor = 0;
+        self.restore_search_cursor();
+        if let Some(origin) = self.search_origin.take() {
+            self.search_state = origin.search;
+        }
         self.mode = EditorMode::Normal;
+        self.command_line.clear();
+        self.command_line_cursor = 0;
+        self.clear_status();
+        self.input.reset_prefixes();
+    }
 
-        if term.is_empty() {
-            self.clear_status();
+    pub(super) fn update_search_preview(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if self.mode != EditorMode::Search {
             return;
         }
-
+        self.clear_status();
+        if self.command_line.is_empty() {
+            self.search_state = None;
+            self.restore_search_cursor();
+            return;
+        }
         let query = SearchQuery {
-            term,
+            term: self.command_line.clone(),
+            regex: true,
             landing: SearchLanding::OnMatch,
         };
-        let active_id = self.session.active_id();
-        let cursor = self.active_cursor_pos();
-        let matches = {
-            let buffer = self.session.active_buffer();
-            search_matches_for_buffer(buffer, &query)
-        };
-        let active_match = {
-            let buffer = self.session.active_buffer();
-            next_match_index_from_cursor(buffer, &matches, cursor, true)
-                .or_else(|| (!matches.is_empty()).then_some(0))
-        };
-        let match_count = matches.len();
-        let status_message = format_search_match_count(&query.term, match_count);
-
+        let buffer_id = self.session.active_id();
+        let cursor = self
+            .search_origin
+            .as_ref()
+            .filter(|origin| origin.buffer_id == buffer_id)
+            .map_or_else(|| self.active_cursor_pos(), |origin| origin.cursor.cursor);
+        let buffer = self.session.active_buffer();
+        let (matches, error) = search_matches_for_buffer(buffer, &query);
+        let active_match = next_match_index_from_cursor(buffer, &matches, cursor, true)
+            .or_else(|| (!matches.is_empty()).then_some(0));
         self.search_state = Some(SearchState {
             query,
-            buffer_id: active_id,
+            buffer_id,
             matches,
             active_match,
             visible: true,
             dirty: false,
+            error,
         });
-
         if let Some(index) = active_match {
             self.move_cursor_to_search_match(index, viewport_width_cells, text_vh);
-            self.set_status(status_message);
         } else {
+            self.restore_search_cursor();
+        }
+    }
+
+    pub(super) fn execute_search_line(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if self.mode != EditorMode::Search {
+            return;
+        }
+        if self.command_line.is_empty() {
+            self.cancel_search();
+            return;
+        }
+        if self
+            .search_state
+            .as_ref()
+            .is_none_or(|search| search.query.term != self.command_line)
+        {
+            self.update_search_preview(viewport_width_cells, text_vh);
+        }
+        if self.search_error().is_some() {
+            return;
+        }
+        let term = std::mem::take(&mut self.command_line);
+        self.command_line_cursor = 0;
+        self.mode = EditorMode::Normal;
+        self.search_origin = None;
+        let (_, count) = self.search_match_position();
+        if count == 0 {
             self.set_status("pattern not found");
+        } else {
+            self.set_status(format_search_match_count(&term, count));
         }
     }
 
@@ -221,7 +309,7 @@ impl EditorState {
                     .map(|matched| matched.start)
             })
             .flatten();
-        let matches = {
+        let (matches, error) = {
             let buffer = self.session.active_buffer();
             search_matches_for_buffer(buffer, &query)
         };
@@ -235,6 +323,7 @@ impl EditorState {
             active_match,
             visible: search.visible,
             dirty: false,
+            error,
         });
     }
 
@@ -258,6 +347,7 @@ impl EditorState {
         view.cursor.cursor = buffer.clamp_pos(landing);
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        self.center_active_cursor_line(text_vh);
     }
 }
 
@@ -270,18 +360,22 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
     match motion {
         Motion::FindChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
+            regex: false,
             landing: SearchLanding::OnMatch,
         }),
         Motion::TillChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
+            regex: false,
             landing: SearchLanding::BeforeMatch,
         }),
         Motion::FindCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
+            regex: false,
             landing: SearchLanding::OnMatch,
         }),
         Motion::TillCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
+            regex: false,
             landing: SearchLanding::AfterMatch,
         }),
         _ => None,
@@ -337,12 +431,48 @@ fn motion_search_target_start(
 fn search_matches_for_buffer(
     buffer: &redox_core::TextBuffer,
     query: &SearchQuery,
-) -> Vec<SearchMatch> {
-    buffer
-        .find_matches(&query.term)
-        .into_iter()
-        .map(|(start, end)| SearchMatch { start, end })
-        .collect()
+) -> (Vec<SearchMatch>, Option<String>) {
+    if !query.regex {
+        return (
+            buffer
+                .find_matches(&query.term)
+                .into_iter()
+                .map(|(start, end)| SearchMatch { start, end })
+                .collect(),
+            None,
+        );
+    }
+    let pattern = match regex::RegexBuilder::new(&query.term)
+        .multi_line(true)
+        .build()
+    {
+        Ok(pattern) => pattern,
+        Err(error) => {
+            return (
+                Vec::new(),
+                Some(
+                    error
+                        .to_string()
+                        .lines()
+                        .last()
+                        .unwrap_or("invalid regex")
+                        .trim_start_matches("error: ")
+                        .to_string(),
+                ),
+            );
+        }
+    };
+    let source = buffer.to_string();
+    let matches = pattern
+        .find_iter(&source)
+        .filter_map(|matched| {
+            Some(SearchMatch {
+                start: buffer.char_to_pos(buffer.byte_to_char(matched.start())?),
+                end: buffer.char_to_pos(buffer.byte_to_char(matched.end())?),
+            })
+        })
+        .collect();
+    (matches, None)
 }
 
 fn next_match_index_from_cursor(
