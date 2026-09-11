@@ -3682,6 +3682,7 @@ pub fn run() -> anyhow::Result<()> {
         window.clear_cursor_request();
         let (w, h) = window.get_size();
         state.set_viewport_size(w as usize, h as usize);
+        state.poll_search_preview(Instant::now());
         window.clear_screen()?;
         draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
         let flush_start = Instant::now();

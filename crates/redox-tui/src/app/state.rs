@@ -124,6 +124,13 @@ struct SearchOrigin {
     search: Option<SearchState>,
 }
 
+#[derive(Debug)]
+struct SearchSource {
+    buffer_id: BufferId,
+    version: u64,
+    text: String,
+}
+
 #[derive(Debug, Default, Clone)]
 struct CommandHistoryState {
     entries: Vec<String>,
@@ -415,6 +422,8 @@ pub struct EditorState {
     one_shot_highlight: Option<OneShotHighlight>,
     search_state: Option<SearchState>,
     search_origin: Option<SearchOrigin>,
+    search_preview_due: Option<Instant>,
+    search_source: Option<SearchSource>,
     pending_system_clipboard: Option<String>,
     explorer_delete_confirmation_token: Option<String>,
     transient_origin_buffer_id: Option<BufferId>,
@@ -488,6 +497,8 @@ impl EditorState {
             one_shot_highlight: None,
             search_state: None,
             search_origin: None,
+            search_preview_due: None,
+            search_source: None,
             pending_system_clipboard: None,
             explorer_delete_confirmation_token: None,
             transient_origin_buffer_id: None,

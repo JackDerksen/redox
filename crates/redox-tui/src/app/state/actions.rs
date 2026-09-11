@@ -420,14 +420,14 @@ impl EditorState {
             InputAction::SearchChar(c) => {
                 if self.mode == EditorMode::Search {
                     insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
-                    self.update_search_preview(viewport_width_cells, text_vh);
+                    self.schedule_search_preview(std::time::Instant::now());
                 }
             }
 
             InputAction::SearchBackspace => {
                 if self.mode == EditorMode::Search {
                     backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
-                    self.update_search_preview(viewport_width_cells, text_vh);
+                    self.schedule_search_preview(std::time::Instant::now());
                 }
             }
 

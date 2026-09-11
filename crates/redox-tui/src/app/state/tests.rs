@@ -1370,6 +1370,7 @@ fn slash_regex_search_handles_unicode_multiline_anchors_and_invalid_patterns() {
         for character in pattern.chars() {
             state.apply_input(InputAction::SearchChar(character), 80, 24);
         }
+        state.poll_search_preview(state.search_preview_due.unwrap());
         assert_eq!(state.search_error(), None, "{pattern}");
         let matches = &state.search_state.as_ref().unwrap().matches;
         assert_eq!(
@@ -1401,6 +1402,7 @@ fn slash_regex_search_handles_unicode_multiline_anchors_and_invalid_patterns() {
     }
     state.apply_input(InputAction::EnterSearch, 80, 24);
     state.apply_input(InputAction::SearchChar('['), 80, 24);
+    state.poll_search_preview(state.search_preview_due.unwrap());
     assert!(state.search_error().is_some());
     state.apply_input(InputAction::SearchEnter, 80, 24);
     assert_eq!(state.mode, EditorMode::Search);
@@ -1432,6 +1434,7 @@ fn slash_search_previews_centred_matches_and_restores_cancelled_searches() {
     for character in "hit".chars() {
         state.apply_input(InputAction::SearchChar(character), 80, 24);
     }
+    state.poll_search_preview(state.search_preview_due.unwrap());
     assert_eq!(state.search_match_position(), (1, 2));
     assert_eq!(state.active_cursor_pos(), Pos::new(30, 0));
     assert_eq!(state.views[&buffer_id].cursor.scroll_y_lines, 19);
@@ -1451,6 +1454,7 @@ fn slash_search_previews_centred_matches_and_restores_cancelled_searches() {
     for character in "row".chars() {
         state.apply_input(InputAction::SearchChar(character), 80, 24);
     }
+    state.poll_search_preview(state.search_preview_due.unwrap());
     assert_ne!(state.active_cursor_pos(), Pos::new(60, 0));
     state.apply_input(InputAction::SearchCancel, 80, 24);
     assert_eq!(state.search_match_position(), (2, 2));
