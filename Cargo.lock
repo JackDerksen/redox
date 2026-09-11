@@ -839,6 +839,7 @@ dependencies = [
  "minui",
  "redox-core",
  "redox-lsp",
+ "regex",
  "rustix",
  "serde",
  "serde_json",

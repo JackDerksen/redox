@@ -2563,8 +2563,16 @@ fn map_key_with_state(
                 state.reset_prefixes();
                 return InputAction::SearchCancel;
             }
+            if ctrl_key(mods, key, 'n') {
+                return InputAction::RepeatSearch { forward: true };
+            }
+            if ctrl_key(mods, key, 'p') {
+                return InputAction::RepeatSearch { forward: false };
+            }
 
             return match key {
+                KeyKind::Down if unmodified(mods) => InputAction::RepeatSearch { forward: true },
+                KeyKind::Up if unmodified(mods) => InputAction::RepeatSearch { forward: false },
                 KeyKind::Escape if unmodified(mods) => InputAction::SearchCancel,
                 KeyKind::Backspace if unmodified(mods) => InputAction::SearchBackspace,
                 KeyKind::Left if unmodified(mods) => InputAction::SearchMoveLeft,
@@ -3829,6 +3837,26 @@ mod tests {
                 InputMode::Search,
                 Event::Character('x'),
                 InputAction::SearchChar('x'),
+            ),
+            (
+                InputMode::Search,
+                key_event(KeyKind::Down, KeyModifiers::none()),
+                InputAction::RepeatSearch { forward: true },
+            ),
+            (
+                InputMode::Search,
+                key_event(KeyKind::Up, KeyModifiers::none()),
+                InputAction::RepeatSearch { forward: false },
+            ),
+            (
+                InputMode::Search,
+                key_event(KeyKind::Char('n'), KeyModifiers::ctrl()),
+                InputAction::RepeatSearch { forward: true },
+            ),
+            (
+                InputMode::Search,
+                key_event(KeyKind::Char('p'), KeyModifiers::ctrl()),
+                InputAction::RepeatSearch { forward: false },
             ),
             (
                 InputMode::Search,

@@ -711,10 +711,12 @@ fn draw_lsp_loading_toast(
         return Ok(None);
     };
     let (term_w, term_h) = window.get_size();
+    let y = ui::widgets::command_line::search_toast_layout(state, term_w, term_h)
+        .map_or(0, |layout| layout.y.saturating_add(layout.outer_h()));
     let width = (cell_width(&message, TabPolicy::Fixed(4)) as u16)
         .saturating_add(2)
         .min(term_w.saturating_sub(2));
-    if width <= 2 || term_h <= 2 {
+    if width <= 2 || term_h.saturating_sub(y) <= 2 {
         return Ok(None);
     }
     let popup_w = width.saturating_add(2);
@@ -722,7 +724,7 @@ fn draw_lsp_loading_toast(
     let layout = ui::widgets::popup::draw_popup_frame_at(
         window,
         x,
-        0,
+        y,
         width,
         1,
         "",
@@ -1463,7 +1465,7 @@ fn draw_buffer_snapshot_for_id(
     window: &mut dyn Window,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    search_highlights: &BTreeMap<usize, app::state::SearchLineHighlights>,
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 ) -> minui::Result<()> {
@@ -1671,7 +1673,7 @@ fn draw_snapshot_lines(
     syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
-    search_highlights: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    search_highlights: &BTreeMap<usize, app::state::SearchLineHighlights>,
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
@@ -1698,6 +1700,23 @@ fn draw_snapshot_lines(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        let filtered_delimiters;
+        let highlighted_chars = if let Some(active) = search_highlights
+            .get(&line_idx)
+            .and_then(|line| line.active.as_ref())
+        {
+            filtered_delimiters = highlighted_chars
+                .iter()
+                .copied()
+                .filter(|column| {
+                    !(*column >= active.start
+                        && *column < active.end.max(active.start.saturating_add(1)))
+                })
+                .collect::<Vec<_>>();
+            filtered_delimiters.as_slice()
+        } else {
+            highlighted_chars
+        };
         let visible_indent_guides = active_scope_guides
             .get(&line_idx)
             .map(Vec::as_slice)
@@ -1709,7 +1728,7 @@ fn draw_snapshot_lines(
             .unwrap_or(&[]);
         let has_search_highlights = search_highlights
             .get(&line_idx)
-            .is_some_and(|ranges| !ranges.is_empty());
+            .is_some_and(|highlights| !highlights.ranges.is_empty());
         let diagnostic_cells = diagnostic_line.map(|diagnostic| {
             selected_visible_cells(
                 source_line,
@@ -1767,9 +1786,15 @@ fn draw_snapshot_lines(
         } else {
             occupied_visible_cells(source_line, scroll_x, text_w)
         };
-        let search_cells = search_highlights
+        let search_cells = search_highlights.get(&line_idx).map(|highlights| {
+            search_highlight_cells(source_line, scroll_x, text_w, &highlights.ranges)
+        });
+        let active_search_cells = search_highlights
             .get(&line_idx)
-            .map(|ranges| highlighted_visible_cells(source_line, scroll_x, text_w, ranges));
+            .and_then(|highlights| highlights.active.as_ref())
+            .map(|range| {
+                search_highlight_cells(source_line, scroll_x, text_w, std::slice::from_ref(range))
+            });
         if let Some((selection, mode, selection_bg)) = transient_selection {
             if let Some(selected_cells) = visual_selection_visible_cells(
                 buffer,
@@ -1781,7 +1806,7 @@ fn draw_snapshot_lines(
                 text_w,
             ) {
                 let highlight_empty_line = source_line.is_empty();
-                let highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
+                let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
                     let mut layers = vec![
                         (selected_cells.as_slice(), selection_bg),
                         (search_cells.as_slice(), style.theme.selection_bg),
@@ -1803,6 +1828,9 @@ fn draw_snapshot_lines(
                     }
                     layers
                 };
+                if let Some(active) = &active_search_cells {
+                    highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray));
+                }
                 draw_line_with_highlights(
                     window,
                     row as u16,
@@ -1867,7 +1895,7 @@ fn draw_snapshot_lines(
         if let Some(search_cells) = search_cells.as_ref()
             && search_cells.iter().any(|selected| *selected)
         {
-            let highlight_layers =
+            let mut highlight_layers =
                 if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
                     vec![
                         (search_cells.as_slice(), style.theme.selection_bg),
@@ -1879,6 +1907,9 @@ fn draw_snapshot_lines(
                 } else {
                     vec![(search_cells.as_slice(), style.theme.selection_bg)]
                 };
+            if let Some(active) = &active_search_cells {
+                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray));
+            }
             draw_line_with_highlights(
                 window,
                 row as u16,
@@ -1891,7 +1922,7 @@ fn draw_snapshot_lines(
                 style,
                 syntax_line_spans,
                 &highlight_layers,
-                false,
+                source_line.is_empty(),
             )?;
             draw_indent_guides(
                 window,
@@ -1900,7 +1931,9 @@ fn draw_snapshot_lines(
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
-                None,
+                active_search_cells
+                    .as_ref()
+                    .map(|cells| (cells.as_slice(), style.theme.light_gray)),
             )?;
             draw_delimiter_highlights(
                 window,
@@ -2337,6 +2370,24 @@ fn clipped_cell_width(text: &str, max_cells: usize) -> usize {
     width
 }
 
+fn search_highlight_cells(
+    source_line: &str,
+    scroll_x: usize,
+    width_cells: usize,
+    ranges: &[std::ops::Range<usize>],
+) -> Vec<bool> {
+    let mut cells = highlighted_visible_cells(source_line, scroll_x, width_cells, ranges);
+    for range in ranges.iter().filter(|range| range.is_empty()) {
+        let byte = source_line
+            .char_indices()
+            .nth(range.start)
+            .map_or(source_line.len(), |(byte, _)| byte);
+        let start = line_cell_width(&source_line[..byte]);
+        mark_visible_cell_range(&mut cells, start, start.saturating_add(1), scroll_x);
+    }
+    cells
+}
+
 fn highlighted_visible_cells(
     source_line: &str,
     scroll_x: usize,
@@ -2695,6 +2746,7 @@ mod tests {
         width: u16,
         height: u16,
         cells: Vec<Vec<char>>,
+        backgrounds: Vec<Vec<Option<Color>>>,
     }
 
     impl TestWindow {
@@ -2703,6 +2755,7 @@ mod tests {
                 width,
                 height,
                 cells: vec![vec![' '; width as usize]; height as usize],
+                backgrounds: vec![vec![None; width as usize]; height as usize],
             }
         }
 
@@ -2737,9 +2790,14 @@ mod tests {
             y: u16,
             x: u16,
             s: &str,
-            _colors: ColorPair,
+            colors: ColorPair,
         ) -> minui::Result<()> {
             self.write_text(y, x, s);
+            if let Some(row) = self.backgrounds.get_mut(y as usize) {
+                for cell in row.iter_mut().skip(x as usize).take(s.chars().count()) {
+                    *cell = Some(colors.bg);
+                }
+            }
             Ok(())
         }
 
@@ -3627,6 +3685,7 @@ pub fn run() -> anyhow::Result<()> {
         window.clear_cursor_request();
         let (w, h) = window.get_size();
         state.set_viewport_size(w as usize, h as usize);
+        state.poll_search_preview(Instant::now());
         window.clear_screen()?;
         draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
         let flush_start = Instant::now();

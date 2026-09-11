@@ -342,6 +342,10 @@ Other language tool commands:
 
 ### Search and text objects
 
+`/` opens a compact search popup in the top-right corner. Matches highlight as you type, with the current result and total count shown in the title. `Down` / `Up` or `ctrl+n` / `ctrl+p` cycle through results and centre the active match where the file position allows. `Enter` keeps the result; `Escape` / `ctrl+c` restore the previous cursor, viewport, and search.
+
+The active result uses a distinct highlight while the popup is open. Searches accept regular expressions, such as `\bword\b`, `name\d+`, `^fn`, or `(?i)text` for case-insensitive matches. Escape punctuation to match it literally, for example `\.`. Anchors apply per line; `\n` and `(?s)` allow matches across lines. Invalid expressions show an error in the popup. Look-around and backreferences are unsupported. Character searches with `f` / `t` remain literal.
+
 | Keys | Behaviour |
 | ---- | --------- |
 | `/` | Search in the current buffer. |
