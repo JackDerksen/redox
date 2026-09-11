@@ -2475,25 +2475,12 @@ fn visual_selection_visible_cells(
                 return None;
             }
 
-            if start.line < line_idx && line_idx < end.line {
-                vec![true; width_cells]
-            } else if let Some(range) =
+            if let Some(range) =
                 buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
-                let mut cells = selected_visible_cells(
-                    source_line,
-                    scroll_x,
-                    width_cells,
-                    range.start,
-                    range.end,
-                );
-                if start.line != end.line && line_idx == start.line {
-                    let line_width = line_cell_width(source_line);
-                    mark_visible_cell_range(&mut cells, line_width, usize::MAX, scroll_x);
-                }
-                cells
+                selected_visible_cells(source_line, scroll_x, width_cells, range.start, range.end)
             } else if start.line < end.line && source_line.is_empty() {
-                vec![true; width_cells]
+                visible_cell_range(0, 1, scroll_x, width_cells)
             } else {
                 return None;
             }
@@ -2889,7 +2876,7 @@ mod tests {
     }
 
     #[test]
-    fn visual_selection_visible_cells_limit_line_mode_to_contents() {
+    fn visual_selection_visible_cells_limit_highlights_to_contents() {
         let buffer = redox_core::TextBuffer::from_text("alpha\n\nomega\n");
         let selection =
             redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
@@ -2913,21 +2900,44 @@ mod tests {
             ("alpha", 5, 0),
             ("longer than the viewport", 0, 8),
         ] {
-            let cells = visual_selection_visible_cells(
-                &buffer,
-                text,
-                selection,
+            let buffer = redox_core::TextBuffer::from_text(&format!("alpha\n{text}\nomega\n"));
+            for mode in [
                 redox_core::VisualModeKind::Line,
-                1,
-                scroll_x,
-                8,
-            )
-            .unwrap_or_else(|| vec![false; 8]);
-            assert_eq!(
-                cells,
-                (0..8).map(|cell| cell < selected_width).collect::<Vec<_>>(),
-                "{text:?}, scroll {scroll_x}"
-            );
+                redox_core::VisualModeKind::Char,
+            ] {
+                let cells =
+                    visual_selection_visible_cells(&buffer, text, selection, mode, 1, scroll_x, 8)
+                        .unwrap_or_else(|| vec![false; 8]);
+                assert_eq!(
+                    cells,
+                    (0..8).map(|cell| cell < selected_width).collect::<Vec<_>>(),
+                    "{mode:?}, {text:?}, scroll {scroll_x}"
+                );
+            }
+        }
+
+        for selection in [
+            selection,
+            redox_core::Selection::new(redox_core::Pos::new(2, 2), redox_core::Pos::new(0, 1)),
+        ] {
+            for (line, text, selected) in [(0, "alpha", 1..5), (2, "omega", 0..3)] {
+                let cells = visual_selection_visible_cells(
+                    &buffer,
+                    text,
+                    selection,
+                    redox_core::VisualModeKind::Char,
+                    line,
+                    0,
+                    8,
+                )
+                .unwrap();
+                assert_eq!(
+                    cells,
+                    (0..8)
+                        .map(|cell| selected.contains(&cell))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
     }
 
