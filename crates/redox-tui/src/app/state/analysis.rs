@@ -11,11 +11,13 @@ use crate::ui::syntax::{HighlightCache, SyntaxLanguage, SyntaxParser};
 #[derive(Debug)]
 pub(super) enum AnalysisResult {
     Syntax {
+        request_id: u64,
         buffer_id: BufferId,
         version: u64,
         syntax_cache: Option<HighlightCache>,
     },
     Delimiters {
+        request_id: u64,
         buffer_id: BufferId,
         version: u64,
         delimiter_analysis: DelimiterAnalysis,
@@ -23,6 +25,7 @@ pub(super) enum AnalysisResult {
 }
 
 struct AnalysisRequest {
+    request_id: u64,
     buffer_id: BufferId,
     version: u64,
     buffer: TextBuffer,
@@ -32,7 +35,8 @@ struct AnalysisRequest {
 pub(super) struct AnalysisWorker {
     requests: LatestRequestSender,
     results: Receiver<AnalysisResult>,
-    pending: Cell<Option<(BufferId, u64)>>,
+    last_request_id: Cell<u64>,
+    pending: Cell<Option<(u64, BufferId, u64)>>,
 }
 
 #[derive(Default)]
@@ -70,6 +74,7 @@ impl AnalysisWorker {
                     let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
                     if result_tx
                         .send(AnalysisResult::Delimiters {
+                            request_id: request.request_id,
                             buffer_id: request.buffer_id,
                             version: request.version,
                             delimiter_analysis,
@@ -83,6 +88,7 @@ impl AnalysisWorker {
                     });
                     if result_tx
                         .send(AnalysisResult::Syntax {
+                            request_id: request.request_id,
                             buffer_id: request.buffer_id,
                             version: request.version,
                             syntax_cache,
@@ -98,6 +104,7 @@ impl AnalysisWorker {
         Self {
             requests: request_tx,
             results: result_rx,
+            last_request_id: Cell::new(0),
             pending: Cell::new(None),
         }
     }
@@ -109,8 +116,15 @@ impl AnalysisWorker {
         buffer: TextBuffer,
         syntax_language: Option<SyntaxLanguage>,
     ) {
-        self.pending.set(Some((buffer_id, version)));
+        let request_id = self
+            .last_request_id
+            .get()
+            .checked_add(1)
+            .expect("analysis request ID overflow");
+        self.last_request_id.set(request_id);
+        self.pending.set(Some((request_id, buffer_id, version)));
         self.requests.send_latest(AnalysisRequest {
+            request_id,
             buffer_id,
             version,
             buffer,
@@ -119,15 +133,30 @@ impl AnalysisWorker {
     }
 
     pub(super) fn try_recv(&self) -> Option<AnalysisResult> {
-        let result = self.results.try_recv().ok()?;
-        if let AnalysisResult::Syntax {
-            buffer_id, version, ..
-        } = &result
-            && self.pending.get() == Some((*buffer_id, *version))
-        {
-            self.pending.set(None);
+        loop {
+            let result = self.results.try_recv().ok()?;
+            let identity = match &result {
+                AnalysisResult::Syntax {
+                    request_id,
+                    buffer_id,
+                    version,
+                    ..
+                }
+                | AnalysisResult::Delimiters {
+                    request_id,
+                    buffer_id,
+                    version,
+                    ..
+                } => (*request_id, *buffer_id, *version),
+            };
+            if self.pending.get() != Some(identity) {
+                continue;
+            }
+            if matches!(result, AnalysisResult::Syntax { .. }) {
+                self.pending.set(None);
+            }
+            return Some(result);
         }
-        Some(result)
     }
 }
 
@@ -209,6 +238,7 @@ mod tests {
 
     fn request(buffer_id: BufferId, version: u64) -> AnalysisRequest {
         AnalysisRequest {
+            request_id: version,
             buffer_id,
             version,
             buffer: TextBuffer::from_text("fn main() {}\n"),

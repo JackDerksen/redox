@@ -1166,6 +1166,7 @@ fn stale_analysis_results_are_dropped() {
     };
 
     state.apply_analysis_result(analysis::AnalysisResult::Delimiters {
+        request_id: 1,
         buffer_id: active_id,
         version: current_version,
         delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(
@@ -1173,6 +1174,7 @@ fn stale_analysis_results_are_dropped() {
         ),
     });
     state.apply_analysis_result(analysis::AnalysisResult::Delimiters {
+        request_id: 2,
         buffer_id: active_id,
         version: current_version.saturating_sub(1),
         delimiter_analysis: crate::ui::overlays::compute_delimiter_analysis(

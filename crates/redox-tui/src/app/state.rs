@@ -1586,6 +1586,7 @@ impl EditorState {
                 buffer_id,
                 version,
                 syntax_cache,
+                ..
             } => {
                 let Some(view) = self.views.get_mut(&buffer_id) else {
                     return;
@@ -1600,6 +1601,7 @@ impl EditorState {
                 buffer_id,
                 version,
                 delimiter_analysis,
+                ..
             } => {
                 let Some(view) = self.views.get_mut(&buffer_id) else {
                     return;
