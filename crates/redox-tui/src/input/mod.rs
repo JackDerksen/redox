@@ -60,6 +60,7 @@ pub enum InputAction {
     EnterSearch,
     OpenExplorer,
     ToggleUndoTree,
+    ToggleZen,
     OpenFinder,
     ToggleDiagnosticsList,
     TriggerCodeActions,
@@ -237,6 +238,7 @@ enum PrefixFallback {
 enum SequenceAction {
     OpenExplorer,
     ToggleUndoTree,
+    ToggleZen,
     OpenFinder,
     ToggleDiagnosticsList,
     TriggerCodeActions,
@@ -264,6 +266,11 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: " e",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::OpenExplorer),
+    },
+    SequenceBinding {
+        sequence: " z",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::ToggleZen),
     },
     SequenceBinding {
         sequence: " u",
@@ -978,6 +985,7 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
     match binding.action {
         Some(SequenceAction::OpenExplorer) => "Open explorer",
         Some(SequenceAction::ToggleUndoTree) => "Toggle undo tree",
+        Some(SequenceAction::ToggleZen) => "Toggle zen mode",
         Some(SequenceAction::OpenFinder) => "Find files",
         Some(SequenceAction::ToggleDiagnosticsList) => "Toggle diagnostics",
         Some(SequenceAction::TriggerCodeActions) => "Code actions",
@@ -2166,6 +2174,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
     let action = match name {
         "open_explorer" => InputAction::OpenExplorer,
         "toggle_undo_tree" => InputAction::ToggleUndoTree,
+        "toggle_zen" => InputAction::ToggleZen,
         "open_finder" => InputAction::OpenFinder,
         "toggle_diagnostics" => InputAction::ToggleDiagnosticsList,
         "code_actions" => InputAction::TriggerCodeActions,
@@ -2279,6 +2288,7 @@ fn input_action_description(action: &InputAction) -> &'static str {
     match action {
         InputAction::OpenExplorer => "Open explorer",
         InputAction::ToggleUndoTree => "Toggle undo tree",
+        InputAction::ToggleZen => "Toggle zen mode",
         InputAction::OpenFinder => "Find files",
         InputAction::ToggleDiagnosticsList => "Toggle diagnostics",
         InputAction::TriggerCodeActions => "Code actions",
@@ -2374,6 +2384,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::OpenExplorer) => {
             state.reset_prefixes();
             InputAction::OpenExplorer
+        }
+        Some(SequenceAction::ToggleZen) => {
+            state.reset_prefixes();
+            InputAction::ToggleZen
         }
         Some(SequenceAction::ToggleUndoTree) => {
             state.reset_prefixes();
@@ -3406,6 +3420,8 @@ mod tests {
             (InputMode::Normal, "  ", InputAction::OpenFinder),
             (InputMode::Normal, " e", InputAction::OpenExplorer),
             (InputMode::Normal, " u", InputAction::ToggleUndoTree),
+            (InputMode::Normal, " z", InputAction::ToggleZen),
+            (InputMode::Visual, " z", InputAction::ToggleZen),
             (InputMode::Normal, " x", InputAction::ToggleDiagnosticsList),
             (InputMode::Normal, " ca", InputAction::TriggerCodeActions),
             (InputMode::Normal, "gd", InputAction::GotoDefinition),

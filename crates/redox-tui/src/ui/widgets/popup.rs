@@ -3,6 +3,7 @@ use minui::{ColorPair, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui::UiStyle;
+use crate::ui::helpers::proportional_size;
 
 const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 const POPUP_ANCHOR_WIDTH_PERCENT: u16 = 65;
@@ -255,14 +256,10 @@ pub fn clip_text_to_cells(text: &str, max_cells: usize) -> String {
 }
 
 fn compute_popup_dim(total: u16, percent: u16, min: u16) -> u16 {
-    if total == 0 {
-        return 0;
-    }
-
-    let desired = ((u32::from(total) * u32::from(percent)) / 100) as u16;
+    let desired = proportional_size(total, percent, min);
     let floor = min.min(total);
     let ceiling = if total > 2 { total - 2 } else { total };
-    desired.max(floor).min(ceiling.max(floor))
+    desired.min(ceiling.max(floor))
 }
 
 fn centered_popup_width(total: u16, percent: u16, min: u16) -> u16 {

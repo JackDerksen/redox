@@ -667,6 +667,8 @@ impl EditorState {
                 }
             }
 
+            InputAction::ToggleZen => self.toggle_zen(),
+
             InputAction::SurfaceOpenSelected => {
                 if self.mode == EditorMode::Normal {
                     if self.undo_tree_is_active() {

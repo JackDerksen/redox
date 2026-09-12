@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui::{
     UiStyle,
-    syntax::{LineSyntaxSpan, SyntaxScopePair, syntax_color_for_range},
+    syntax::{LineSyntaxSpan, SyntaxScope, SyntaxScopePair, syntax_color_for_range},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +257,21 @@ impl DelimiterAnalysis {
         })
     }
 
+    fn pair_within_syntax_scope(
+        &self,
+        buffer: &TextBuffer,
+        pair: Option<DelimiterPair>,
+        syntax_scope: Option<SyntaxScope>,
+    ) -> Option<DelimiterPair> {
+        pair.filter(|pair| {
+            syntax_scope
+                .is_none_or(|scope| pair.start >= scope.extent.start && pair.end < scope.extent.end)
+        })
+        .or_else(|| {
+            syntax_scope.and_then(|scope| self.scope_pair_for_syntax_scope(buffer, scope.body))
+        })
+    }
+
     fn pairs_at_endpoint(&self, character: usize) -> impl Iterator<Item = usize> + '_ {
         let first = self
             .endpoint_index
@@ -350,7 +365,7 @@ pub(crate) fn draw_indent_guides(
 }
 
 pub(crate) fn active_scope_indent_guides(
-    tree_sitter_scope: Option<SyntaxScopePair>,
+    syntax_scope: Option<SyntaxScope>,
     buffer: &TextBuffer,
     cursor: Pos,
     first_line: usize,
@@ -359,20 +374,21 @@ pub(crate) fn active_scope_indent_guides(
     width_cells: usize,
     cached_delimiter_analysis: Option<&DelimiterAnalysis>,
 ) -> BTreeMap<usize, Vec<usize>> {
-    let scope = tree_sitter_scope
-        .map(|pair| {
-            cached_delimiter_analysis
-                .and_then(|analysis| analysis.scope_pair_for_syntax_scope(buffer, pair))
-                .unwrap_or(DelimiterPair {
-                    start: pair.start,
-                    end: pair.end,
-                    kind: DelimiterKind::Brace,
-                    guide_cell: None,
-                })
+    let scope = cached_delimiter_analysis
+        .and_then(|analysis| {
+            analysis.pair_within_syntax_scope(
+                buffer,
+                analysis.active_scope_pair(buffer, cursor),
+                syntax_scope,
+            )
         })
         .or_else(|| {
-            cached_delimiter_analysis
-                .and_then(|analysis| analysis.active_scope_pair(buffer, cursor))
+            syntax_scope.map(|scope| DelimiterPair {
+                start: scope.body.start,
+                end: scope.body.end,
+                kind: DelimiterKind::Brace,
+                guide_cell: None,
+            })
         });
     let Some(scope) = scope else {
         return BTreeMap::new();
@@ -539,12 +555,18 @@ fn visible_delimiter_cells(
 
 pub(crate) fn active_delimiter_highlights(
     buffer: &TextBuffer,
+    syntax_scope: Option<SyntaxScope>,
     cursor: Pos,
     first_line: usize,
     line_count: usize,
     delimiter_analysis: &DelimiterAnalysis,
 ) -> BTreeMap<usize, Vec<usize>> {
-    let Some(active_pair) = delimiter_analysis.active_delimiter_pair(buffer, cursor) else {
+    let active_pair = delimiter_analysis.pair_within_syntax_scope(
+        buffer,
+        delimiter_analysis.active_delimiter_pair(buffer, cursor),
+        syntax_scope,
+    );
+    let Some(active_pair) = active_pair else {
         return BTreeMap::new();
     };
 
@@ -742,7 +764,7 @@ fn is_escaped(prev_char: Option<char>) -> bool {
 mod tests {
     use redox_core::{Pos, TextBuffer};
 
-    use crate::ui::syntax::SyntaxScopePair;
+    use crate::ui::syntax::{SyntaxScope, SyntaxScopePair};
 
     use super::{
         VisibleDelimiterCell, active_scope_guide_cell, active_scope_indent_guides,
@@ -857,11 +879,12 @@ mod tests {
     #[test]
     fn active_scope_guides_use_tree_sitter_scope_without_delimiter_scan() {
         let buffer = TextBuffer::from_text("{\n    answer();\n}\n");
+        let body = SyntaxScopePair {
+            start: Pos::new(0, 0),
+            end: Pos::new(2, 0),
+        };
         let guides = active_scope_indent_guides(
-            Some(SyntaxScopePair {
-                start: Pos::new(0, 0),
-                end: Pos::new(2, 0),
-            }),
+            Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(1, 4),
             0,
@@ -876,11 +899,12 @@ mod tests {
     #[test]
     fn active_scope_guides_include_exclusive_tree_sitter_scope_end() {
         let buffer = TextBuffer::from_text("while True:\n    try:\n        answer()\n");
+        let body = SyntaxScopePair {
+            start: Pos::new(0, 0),
+            end: Pos::new(3, 0),
+        };
         let guides = active_scope_indent_guides(
-            Some(SyntaxScopePair {
-                start: Pos::new(0, 0),
-                end: Pos::new(3, 0),
-            }),
+            Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(2, 8),
             0,
@@ -911,11 +935,12 @@ mod tests {
 
         assert_eq!(scope.guide_cell, Some(4));
 
+        let body = SyntaxScopePair {
+            start: Pos::new(1, 13),
+            end: Pos::new(3, 4),
+        };
         let guides = active_scope_indent_guides(
-            Some(SyntaxScopePair {
-                start: Pos::new(1, 13),
-                end: Pos::new(3, 4),
-            }),
+            Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(2, 8),
             0,

@@ -2,6 +2,13 @@
 
 use minui::{Color, ColorPair};
 
+/// Size a region proportionally, keeping its minimum within the available space.
+pub fn proportional_size(available: u16, percent: u16, minimum: u16) -> u16 {
+    ((u32::from(available) * u32::from(percent.min(100)) / 100) as u16)
+        .max(minimum)
+        .min(available)
+}
+
 pub fn clip_path_with_filename(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();

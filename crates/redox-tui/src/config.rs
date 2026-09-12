@@ -27,6 +27,7 @@ pub struct Config {
     pub color_column: usize,
     pub leader: String,
     pub which_key: WhichKeyConfig,
+    pub zen: ZenConfig,
     pub popups: BTreeMap<String, PopupSize>,
     pub keybindings: BTreeMap<String, BTreeMap<String, String>>,
     pub bind: Vec<BindConfig>,
@@ -44,10 +45,41 @@ impl Default for Config {
             color_column: 79,
             leader: " ".to_string(),
             which_key: WhichKeyConfig::default(),
+            zen: ZenConfig::default(),
             popups: BTreeMap::new(),
             keybindings: BTreeMap::new(),
             bind: Vec::new(),
             themes: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ZenConfig {
+    pub enabled: bool,
+    pub width_percent: u16,
+    pub min_width: u16,
+    pub hide_gutter: bool,
+    pub hide_color_column: bool,
+    pub focus_scope: bool,
+    pub hide_diagnostics: bool,
+    pub minimal_statusline: bool,
+    pub show_toast: bool,
+}
+
+impl Default for ZenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            width_percent: 80,
+            min_width: 80,
+            hide_gutter: true,
+            hide_color_column: true,
+            focus_scope: true,
+            hide_diagnostics: true,
+            minimal_statusline: true,
+            show_toast: true,
         }
     }
 }
@@ -135,6 +167,10 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        validate_percent(Some(self.zen.width_percent), "zen.width_percent")?;
+        if self.zen.min_width == 0 {
+            bail!("zen.min_width must be at least 1");
+        }
         if !(0.0..=1.0).contains(&self.background_dimming) {
             bail!("background_dimming must be between 0.0 and 1.0");
         }
@@ -206,7 +242,7 @@ impl Config {
         }
         let mut style = UiStyle::default();
         style.icons_enabled = self.icons_enabled;
-        style.layout.color_column = self.color_column;
+        style.layout.color_column = Some(self.color_column);
         let Some(theme) = self.themes.get(name) else {
             self.apply_popup_sizes(&mut style);
             style.dim_amount = self.background_dimming;
@@ -217,7 +253,7 @@ impl Config {
         // Re-derive every default role after changing the base palette.
         style = UiStyle::from_theme(style.theme);
         style.icons_enabled = self.icons_enabled;
-        style.layout.color_column = self.color_column;
+        style.layout.color_column = Some(self.color_column);
         for (name, value) in &theme.syntax {
             let pair = color_pair(value, style.theme.bg)
                 .with_context(|| format!("invalid syntax colour {name:?}"))?;
@@ -332,6 +368,9 @@ mod tests {
         assert_eq!(config.leader(), ' ');
         assert!(config.which_key.enabled);
         assert_eq!(config.which_key.delay_ms, DEFAULT_WHICH_KEY_DELAY_MS);
+        assert!(!config.zen.enabled);
+        assert_eq!(config.zen.width_percent, 80);
+        assert_eq!(config.zen.min_width, 80);
         let style = config.style().unwrap();
         assert_eq!(style.theme, UiStyle::default().theme);
         assert_eq!(style.which_key.edge, UiStyle::default().which_key.edge);

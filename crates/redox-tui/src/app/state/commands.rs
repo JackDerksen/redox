@@ -138,6 +138,11 @@ const COMMANDS: &[CommandDefinition] = &[
         run: |state, _| state.command_rain(),
     },
     CommandDefinition {
+        names: &["zen"],
+        editor_context: |_, _| false,
+        run: |state, _| state.toggle_zen(),
+    },
+    CommandDefinition {
         names: &["undo-tree"],
         editor_context: |state, _| !state.undo_tree_is_active(),
         run: |state, _| state.command_toggle_undo_tree(),

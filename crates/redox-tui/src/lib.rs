@@ -30,7 +30,7 @@ use input::{
     ConfiguredBinding, ConfiguredBindingTarget, InputAction, InputState, map_event_with_context,
 };
 
-use crate::ui::helpers::apply_color_column;
+use crate::ui::helpers::{apply_color_column, proportional_size};
 use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
@@ -73,6 +73,43 @@ struct LaunchOptions {
 }
 
 fn draw_buffer_view(
+    state: &mut EditorState,
+    mut style: UiStyle,
+    window: &mut dyn Window,
+    perf: &mut FramePerfSample,
+) -> minui::Result<()> {
+    if state.zen.enabled && state.zen.hide_color_column {
+        style.layout.color_column = None;
+    }
+    let (width, height) = window.get_size();
+    let viewport_width = if state.zen.enabled {
+        proportional_size(width, state.zen.width_percent, state.zen.min_width)
+    } else {
+        width
+    };
+    if viewport_width == width {
+        return draw_editor_view(state, style, window, perf);
+    }
+
+    fill_background(
+        window,
+        width,
+        height,
+        ColorPair::new(style.zen_margin, style.zen_margin),
+    )?;
+    let mut viewport = WindowView {
+        window,
+        x_offset: (width - viewport_width) / 2,
+        y_offset: 0,
+        scroll_x: 0,
+        scroll_y: 0,
+        width: viewport_width,
+        height,
+    };
+    draw_editor_view(state, style, &mut viewport, perf)
+}
+
+fn draw_editor_view(
     state: &mut EditorState,
     style: UiStyle,
     window: &mut dyn Window,
@@ -235,12 +272,7 @@ fn draw_buffer_view(
     let content_x = gutter.content_x;
     let text_w = vw.saturating_sub(content_x);
     state.set_editor_area_size(vw as usize, text_h as usize);
-    state.set_viewport_size(
-        text_w as usize,
-        text_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-    );
     if state.panes().len() > 1 {
-        state.sync_active_pane_view();
         if let Some(rect) = state
             .pane_rects(vw, text_h)
             .into_iter()
@@ -254,6 +286,7 @@ fn draw_buffer_view(
             );
             state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
         }
+        state.sync_active_pane_view();
         let split_background_style = if popup_overlay_active {
             background_style
         } else {
@@ -392,6 +425,7 @@ fn draw_buffer_view(
         return Ok(());
     }
 
+    state.set_viewport_size(text_w as usize, vh as usize);
     state.ensure_rain_animation(text_w, text_h, editor_text, background_style);
 
     if let Some(animation) = state.active_rain_animation() {
@@ -479,23 +513,28 @@ fn draw_buffer_view(
         state.active_git_diff(),
     )?;
 
+    let focus_scope = state.zen.enabled && state.zen.focus_scope;
     let (syntax_time, overlay_time, lines_time) =
         state.with_active_buffer_view_mut(|buffer, view| {
             let cursor = view.cursor.cursor;
             let syntax_start = Instant::now();
             let analysis_version = view.analysis_version();
             let scope_guides_enabled = scope_guides_enabled(syntax_language);
-            let tree_sitter_scope = scope_guides_enabled
+            let syntax_scope = (focus_scope || scope_guides_enabled)
                 .then(|| {
-                    view.syntax_highlighter
-                        .active_scope_pair_for_display_cached(
-                            buffer,
-                            syntax_language,
-                            analysis_version,
-                            cursor,
-                        )
+                    view.syntax_highlighter.active_scope_for_display_cached(
+                        buffer,
+                        syntax_language,
+                        analysis_version,
+                        cursor,
+                    )
                 })
                 .flatten();
+            let focused_lines = focus_scope.then(|| {
+                syntax_scope
+                    .map(|scope| scope.lines())
+                    .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+            });
             let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
             let syntax_spans = view
                 .syntax_highlighter
@@ -511,6 +550,7 @@ fn draw_buffer_view(
                 .map(|analysis| {
                     active_delimiter_highlights(
                         buffer,
+                        syntax_scope,
                         cursor,
                         snapshot.first_line(),
                         snapshot.line_count(),
@@ -520,7 +560,7 @@ fn draw_buffer_view(
                 .unwrap_or_default();
             let active_scope_guides = if scope_guides_enabled {
                 active_scope_indent_guides(
-                    tree_sitter_scope,
+                    syntax_scope,
                     buffer,
                     cursor,
                     snapshot.first_line(),
@@ -552,6 +592,7 @@ fn draw_buffer_view(
                 &diagnostic_lines,
                 visual_selection,
                 one_shot_highlight,
+                focused_lines,
                 use_lexical_fallback,
             )?;
             let lines_time = lines_start.elapsed();
@@ -749,7 +790,7 @@ fn draw_gutter_padding(
     first_line: usize,
     git_diff: Option<&app::GitDiffSnapshot>,
 ) -> minui::Result<()> {
-    if text_h == 0 {
+    if gutter_w == 0 || text_h == 0 {
         return Ok(());
     }
 
@@ -1318,7 +1359,7 @@ struct PaneGutterLayout {
 
 fn pane_gutter_layout(state: &EditorState, pane_id: PaneId) -> PaneGutterLayout {
     let options = state.pane_options(pane_id);
-    if !options.has_line_numbers {
+    if !options.has_line_numbers || (state.zen.enabled && state.zen.hide_gutter) {
         return PaneGutterLayout {
             content_x: 0,
             gutter_w: 0,
@@ -1409,10 +1450,13 @@ fn draw_active_split_rain_pane(
     height: u16,
     window: &mut dyn Window,
 ) -> minui::Result<()> {
-    let total_lines = state.session.active_buffer().len_lines().max(1);
-    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
-    let content_x = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
+    let gutter = pane_gutter_layout(state, state.active_pane_id());
+    let PaneGutterLayout {
+        total_lines,
+        show_git_marker_column,
+        gutter_w,
+        content_x,
+    } = gutter;
     let active_cursor_line = state.active_cursor_pos().line;
     let Some(animation) = state.active_rain_animation() else {
         return Ok(());
@@ -1461,6 +1505,8 @@ fn draw_buffer_snapshot_for_id(
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 ) -> minui::Result<()> {
+    let has_line_numbers = has_line_numbers && !(state.zen.enabled && state.zen.hide_gutter);
+    let focus_scope = state.zen.enabled && state.zen.focus_scope;
     let undo_tree_role = state.undo_tree_surface_role(buffer_id);
     let undo_tree_line_spans = state
         .undo_tree_line_spans(buffer_id)
@@ -1538,17 +1584,21 @@ fn draw_buffer_snapshot_for_id(
         let snapshot = view.render_line_cache.snapshot(buffer, &viewport);
         let analysis_version = view.analysis_version();
         let scope_guides_enabled = scope_guides_enabled(syntax_language);
-        let tree_sitter_scope = scope_guides_enabled
+        let syntax_scope = (focus_scope || scope_guides_enabled)
             .then(|| {
-                view.syntax_highlighter
-                    .active_scope_pair_for_display_cached(
-                        buffer,
-                        syntax_language,
-                        analysis_version,
-                        cursor,
-                    )
+                view.syntax_highlighter.active_scope_for_display_cached(
+                    buffer,
+                    syntax_language,
+                    analysis_version,
+                    cursor,
+                )
             })
             .flatten();
+        let focused_lines = focus_scope.then(|| {
+            syntax_scope
+                .map(|scope| scope.lines())
+                .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+        });
         let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
         let syntax_spans = view
             .syntax_highlighter
@@ -1562,6 +1612,7 @@ fn draw_buffer_snapshot_for_id(
             .map(|analysis| {
                 active_delimiter_highlights(
                     buffer,
+                    syntax_scope,
                     cursor,
                     snapshot.first_line(),
                     snapshot.line_count(),
@@ -1571,7 +1622,7 @@ fn draw_buffer_snapshot_for_id(
             .unwrap_or_default();
         let active_scope_guides = if scope_guides_enabled {
             active_scope_indent_guides(
-                tree_sitter_scope,
+                syntax_scope,
                 buffer,
                 cursor,
                 snapshot.first_line(),
@@ -1623,6 +1674,7 @@ fn draw_buffer_snapshot_for_id(
             diagnostic_lines,
             visual_selection,
             one_shot_highlight,
+            focused_lines,
             use_lexical_fallback,
         )
     }) else {
@@ -1667,6 +1719,7 @@ fn draw_snapshot_lines(
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
     one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    focused_lines: Option<std::ops::Range<usize>>,
     lexical_fallback_enabled: bool,
 ) -> minui::Result<()> {
     let color_column = visible_color_column(
@@ -1679,10 +1732,19 @@ fn draw_snapshot_lines(
         let line_idx = snapshot.first_line() + row;
         let visible_line = render_line.visible();
         let source_line = render_line.source();
-        let fallback_line_spans = lexical_fallback_enabled
+        let is_focused = focused_lines
+            .as_ref()
+            .is_none_or(|lines| lines.contains(&line_idx));
+        let default_colors = if is_focused {
+            default_colors
+        } else {
+            ColorPair::new(style.zen_ghost, default_colors.bg)
+        };
+        let fallback_line_spans = (is_focused && lexical_fallback_enabled)
             .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
         let syntax_line_spans = syntax_spans
+            .filter(|_| is_focused)
             .and_then(|rows| rows.get(row))
             .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
@@ -2685,13 +2747,10 @@ fn draw_visible_ascii_plain_line(
 fn visible_color_column(
     scroll_x: usize,
     text_w: usize,
-    color_column: usize,
+    color_column: Option<usize>,
     bg: Color,
 ) -> Option<(usize, Color)> {
-    if color_column < scroll_x {
-        return None;
-    }
-    let visible_col = color_column - scroll_x;
+    let visible_col = color_column?.checked_sub(scroll_x)?;
     (visible_col < text_w).then_some((visible_col, bg))
 }
 
@@ -2721,6 +2780,8 @@ mod tests {
         height: u16,
         cells: Vec<Vec<char>>,
         backgrounds: Vec<Vec<Option<Color>>>,
+        foregrounds: Vec<Vec<Option<Color>>>,
+        cursor: Option<minui::window::CursorSpec>,
     }
 
     impl TestWindow {
@@ -2730,6 +2791,8 @@ mod tests {
                 height,
                 cells: vec![vec![' '; width as usize]; height as usize],
                 backgrounds: vec![vec![None; width as usize]; height as usize],
+                foregrounds: vec![vec![None; width as usize]; height as usize],
+                cursor: None,
             }
         }
 
@@ -2772,7 +2835,16 @@ mod tests {
                     *cell = Some(colors.bg);
                 }
             }
+            if let Some(row) = self.foregrounds.get_mut(y as usize) {
+                for cell in row.iter_mut().skip(x as usize).take(s.chars().count()) {
+                    *cell = Some(colors.fg);
+                }
+            }
             Ok(())
+        }
+
+        fn request_cursor(&mut self, cursor: minui::window::CursorSpec) {
+            self.cursor = Some(cursor);
         }
 
         fn flush(&mut self) -> minui::Result<()> {
@@ -2855,6 +2927,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             None,
+            None,
             false,
         )
         .expect("plain snapshot draw should succeed");
@@ -2924,6 +2997,194 @@ mod tests {
                         .map(|cell| selected.contains(&cell))
                         .collect::<Vec<_>>()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn zen_rendering_focuses_scope_and_restores_standard_layout() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let source =
+            "fn first() {\n    let value = 1;\n}\n\nfn second() {\n    let other = 2;\n}\n";
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(source);
+        let meta = state.session.active_meta_mut();
+        meta.path = Some(PathBuf::from("source/focus.rs"));
+        meta.display_name = "source/focus.rs".to_string();
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor = redox_core::Pos::new(1, 8);
+            view.syntax_highlighter
+                .replace_cache(ui::syntax::SyntaxHighlighter::compute_cache(
+                    buffer,
+                    ui::syntax::SyntaxLanguage::Rust,
+                ));
+        });
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+        let mut standard = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut standard, &mut perf).unwrap();
+        let content_x = pane_content_x(&state, state.active_pane_id()) as usize;
+        assert!(content_x > 0);
+        let keyword_color = standard.foregrounds[0][content_x];
+
+        state.apply_input(InputAction::ToggleZen, 120, 24);
+        assert_eq!(state.status_msg.as_deref(), Some("zen"));
+        state.clear_status();
+        let mut zen = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut zen, &mut perf).unwrap();
+        assert_eq!(state.viewport_size(), (96, 24));
+        assert_eq!(zen.row_text(0).find("fn first"), Some(12));
+        assert_eq!(zen.foregrounds[0][12], keyword_color);
+        assert_eq!(zen.foregrounds[4][12], Some(style.zen_ghost));
+        assert_eq!(zen.backgrounds[0][0], Some(style.zen_margin));
+        assert_eq!(zen.backgrounds[0][119], Some(style.zen_margin));
+        assert_eq!(
+            zen.backgrounds[3][12 + style.layout.color_column.unwrap()],
+            Some(style.theme.bg)
+        );
+        let cursor = zen.cursor.unwrap();
+        assert!(cursor.visible);
+        assert_eq!((cursor.x, cursor.y), (20, 1));
+        assert!(zen.row_text(23).contains("focus.rs"));
+        assert!(!zen.row_text(23).contains('/'));
+        assert!(zen.row_text(23).contains("2:9"));
+
+        state.zen.focus_scope = false;
+        state.zen.hide_gutter = false;
+        state.zen.hide_color_column = false;
+        let mut configured = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut configured, &mut perf).unwrap();
+        assert_eq!(
+            configured.cells[0]
+                .iter()
+                .position(|character| *character == 'f'),
+            Some(12 + content_x)
+        );
+        assert_eq!(configured.foregrounds[4][12 + content_x], keyword_color);
+        assert_eq!(
+            configured.backgrounds[3][12 + content_x + style.layout.color_column.unwrap()],
+            Some(style.theme.color_column)
+        );
+
+        state.apply_input(InputAction::ToggleZen, 120, 24);
+        assert_eq!(state.status_msg.as_deref(), Some("standard"));
+        state.clear_status();
+        let mut restored = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut restored, &mut perf).unwrap();
+        assert_eq!(restored.cells, standard.cells);
+        assert_eq!(restored.foregrounds, standard.foregrounds);
+        assert_eq!(restored.backgrounds, standard.backgrounds);
+
+        state.zen.show_toast = false;
+        state.toggle_zen();
+        assert!(state.status_msg.is_none());
+        state.zen.hide_gutter = true;
+        for (width, expected) in [(90, 80), (50, 50), (1, 1), (0, 0)] {
+            let mut narrow = TestWindow::new(width, 24);
+            draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+            assert_eq!(state.viewport_size().0, expected);
+        }
+
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&"x".repeat(160));
+        state.with_active_buffer_view_mut(|_, view| {
+            view.cursor.cursor = redox_core::Pos::new(0, 115);
+            view.cursor.scroll_x_cells = 0;
+        });
+        let mut narrow = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+        let cursor = narrow.cursor.unwrap();
+        assert!(cursor.visible);
+        assert!((12..108).contains(&cursor.x));
+
+        state.apply_input(InputAction::SplitVertical, 96, 24);
+        assert_eq!(state.panes().len(), 2);
+        let mut split = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut split, &mut perf).unwrap();
+        let cursor = split.cursor.unwrap();
+        assert!(cursor.visible && (12..108).contains(&cursor.x));
+        assert_eq!(split.cells[cursor.y as usize][cursor.x as usize], 'x');
+        assert_eq!(split.backgrounds[0][0], Some(style.zen_margin));
+    }
+
+    #[test]
+    fn scope_overlays_follow_headers_in_standard_and_zen_views() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let source = "fn main() {\n    match value {\n        Some(value) => {\n            let result = if ready {\n                value\n            } else {\n                fallback\n            };\n        }\n        None => Command::new(\"tool\")\n            .args([\n                \"run\",\n                \"output\",\n            ])\n            .output(),\n    }\n}\n";
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(source);
+        state.session.active_meta_mut().path = Some(PathBuf::from("scope.rs"));
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.syntax_highlighter
+                .replace_cache(ui::syntax::SyntaxHighlighter::compute_cache(
+                    buffer,
+                    ui::syntax::SyntaxLanguage::Rust,
+                ));
+            view.delimiter_pair_cache
+                .install(ui::overlays::compute_delimiter_analysis(buffer));
+        });
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+        for zen in [false, true] {
+            state.zen.enabled = zen;
+            for (cursor, lines, opening_line, closing_line, indent, delimiters) in [
+                (redox_core::Pos::new(1, 4), 1..16, 1, 15, 4, ('{', '}')),
+                (redox_core::Pos::new(2, 8), 2..9, 2, 8, 8, ('{', '}')),
+                (redox_core::Pos::new(3, 12), 3..8, 3, 5, 12, ('{', '}')),
+                (redox_core::Pos::new(5, 14), 5..8, 5, 7, 12, ('{', '}')),
+                (redox_core::Pos::new(7, 12), 5..8, 5, 7, 12, ('{', '}')),
+                (redox_core::Pos::new(7, 13), 3..8, 5, 7, 12, ('{', '}')),
+                (redox_core::Pos::new(10, 14), 9..14, 10, 13, 12, ('(', ')')),
+            ] {
+                state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = cursor);
+                let mut window = TestWindow::new(120, 24);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                let content_x = window.cells[0]
+                    .iter()
+                    .position(|character| *character == 'f')
+                    .unwrap();
+                let opening_col = source
+                    .lines()
+                    .nth(opening_line)
+                    .unwrap()
+                    .rfind(delimiters.0)
+                    .unwrap();
+                let closing_col = source
+                    .lines()
+                    .nth(closing_line)
+                    .unwrap()
+                    .rfind(delimiters.1)
+                    .unwrap();
+                assert_eq!(
+                    window.cells[opening_line + 1][content_x + indent],
+                    '│',
+                    "{cursor:?}, zen={zen}: {:?}",
+                    window.row_text((opening_line + 1) as u16)
+                );
+                for (line, column) in [(opening_line, opening_col), (closing_line, closing_col)] {
+                    assert_eq!(
+                        window.backgrounds[line][content_x + column],
+                        Some(style.theme.scope)
+                    );
+                }
+                for (line, cells) in window.cells.iter().enumerate() {
+                    for (column, character) in cells.iter().enumerate() {
+                        if *character == '│' {
+                            assert!(lines.contains(&line), "guide outside scope at {line}");
+                            assert!(
+                                (opening_line + 1..closing_line).contains(&line),
+                                "guide outside delimiter pair at {line}, cursor={cursor:?}"
+                            );
+                            assert_eq!(column, content_x + indent);
+                        }
+                    }
+                }
+                if zen {
+                    assert_eq!(window.foregrounds[0][content_x], Some(style.zen_ghost));
+                    assert_ne!(
+                        window.foregrounds[cursor.line][content_x + cursor.col],
+                        Some(style.zen_ghost)
+                    );
+                }
             }
         }
     }
@@ -3003,6 +3264,35 @@ mod tests {
                 .contains("write")
         );
 
+        state.zen.enabled = true;
+        let mut zen_window = TestWindow::new(120, 24);
+        let (zen_width, zen_height) = explorer_popup_inner_size(96, 24, style);
+        let zen_stack = popup_stack_layout(
+            &state,
+            style,
+            &TestWindow::new(96, 24),
+            (zen_width, zen_height),
+        );
+        draw_buffer_view(&mut state, style, &mut zen_window, &mut perf).unwrap();
+        let popup_row = &zen_window.cells[zen_stack.popup.y as usize];
+        let left = popup_row
+            .iter()
+            .position(|character| *character == '╭')
+            .unwrap();
+        let right = popup_row
+            .iter()
+            .position(|character| *character == '╮')
+            .unwrap();
+        assert_eq!(left, 12 + zen_stack.popup.x as usize);
+        assert_eq!(right - left + 1, zen_stack.popup.outer_w() as usize);
+        assert_eq!(
+            zen_window.backgrounds[zen_stack.popup.y as usize][0],
+            Some(style.zen_margin)
+        );
+        let cursor = zen_window.cursor.unwrap();
+        assert!(cursor.visible && (12..108).contains(&cursor.x));
+        state.zen.enabled = false;
+
         let mut cramped_window = TestWindow::new(80, 8);
         draw_buffer_view(&mut state, style, &mut cramped_window, &mut perf)
             .expect("cramped draw should succeed");
@@ -3027,6 +3317,10 @@ theme = "live"
 leader = ","
 icons_enabled = true
 
+[zen]
+width_percent = 70
+hide_gutter = false
+
 [keybindings.normal]
 open_finder = "<leader>f"
 undo = "<ctrl-g>"
@@ -3047,6 +3341,7 @@ background = "#010203"
         let mut active_config = config::Config::default();
         let mut active_theme = active_config.theme.clone();
         let mut theme_override = None;
+        state.zen.enabled = true;
         state.request_config_reload();
         reload_runtime_config(
             &mut state,
@@ -3059,6 +3354,9 @@ background = "#010203"
         );
 
         assert_eq!(style.theme.bg, Color::Rgb { r: 1, g: 2, b: 3 });
+        assert!(state.zen.enabled);
+        assert_eq!(state.zen.width_percent, 70);
+        assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
         assert!(
             keyboard.keybinds().values().any(|action| {
@@ -3526,6 +3824,15 @@ fn reload_runtime_config(
 
     match result {
         Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
+            let enabled = if candidate.zen.enabled != active_config.zen.enabled {
+                candidate.zen.enabled
+            } else {
+                state.zen.enabled
+            };
+            state.zen = config::ZenConfig {
+                enabled,
+                ..candidate.zen
+            };
             state.configure_command_completions(candidate.theme_names());
             *active_config = candidate;
             *style = candidate_style;
@@ -3597,6 +3904,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let mut state = EditorState::new(session);
+    state.zen = config.zen;
     state.configure(
         input,
         config.undo_tree_history_size,
@@ -3673,7 +3981,6 @@ pub fn run() -> anyhow::Result<()> {
             previous_terminal_size = (width, height);
             state.request_redraw();
         }
-        state.set_viewport_size(width as usize, height as usize);
         perf_sample.load = state.update_background(Instant::now());
 
         if state.should_quit {
