@@ -412,6 +412,7 @@ pub struct EditorState {
     status_msg_expires_at: Option<Instant>,
     command_history: CommandHistoryState,
     pub should_quit: bool,
+    pub zen: crate::config::ZenConfig,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
     viewport_width_cells: usize,
@@ -488,6 +489,7 @@ impl EditorState {
             status_msg_expires_at: None,
             command_history: CommandHistoryState::default(),
             should_quit: false,
+            zen: crate::config::ZenConfig::default(),
             rain_animation: None,
             rain_pending_start: false,
             viewport_width_cells: 80,
@@ -688,7 +690,24 @@ impl EditorState {
         self.status_msg.is_some() && self.status_msg_expires_at.is_none()
     }
 
+    pub fn toggle_zen(&mut self) {
+        self.zen.enabled = !self.zen.enabled;
+        self.request_redraw();
+        if self.zen.show_toast {
+            self.set_status(if self.zen.enabled { "zen" } else { "standard" });
+        }
+    }
+
     pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {
+        if self.viewport_size() != (width_cells, height_rows) && !self.active_buffer_is_surface() {
+            self.with_active_buffer_view_mut(|buffer, view| {
+                view.cursor.reconcile_scroll(
+                    buffer,
+                    width_cells,
+                    height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS),
+                );
+            });
+        }
         self.viewport_width_cells = width_cells;
         self.viewport_height_rows = height_rows;
     }
@@ -847,7 +866,8 @@ impl EditorState {
             .git
             .diff_for(buffer_id)
             .is_some_and(|diff| !diff.stats.is_empty());
-        let has_line_numbers = self.panes[pane_index].options.has_line_numbers;
+        let has_line_numbers = self.panes[pane_index].options.has_line_numbers
+            && !(self.zen.enabled && self.zen.hide_gutter);
         let content_x = if has_line_numbers {
             split_gutter_width(total_lines, show_git_marker_column).saturating_add(1)
         } else {

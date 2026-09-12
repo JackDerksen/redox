@@ -302,7 +302,7 @@ impl Default for StatusLinePalette {
 pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
-    pub color_column: usize,
+    pub color_column: Option<usize>,
 }
 
 impl Default for Layout {
@@ -310,7 +310,7 @@ impl Default for Layout {
         Self {
             status_left_min_width: 12,
             status_right_min_width: 18,
-            color_column: 79,
+            color_column: Some(79),
         }
     }
 }
@@ -829,6 +829,8 @@ impl Default for SyntaxStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
     pub theme: BaseTheme,
+    pub zen_margin: Color,
+    pub zen_ghost: Color,
     pub icons_enabled: bool,
     pub git: GitStyle,
     pub status_line: StatusLinePalette,
@@ -856,6 +858,8 @@ impl UiStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             theme,
+            zen_margin: dim_foreground_color(theme.bg, Color::Rgb { r: 0, g: 0, b: 0 }, 0.12),
+            zen_ghost: theme.dark_gray,
             icons_enabled: false,
             git: GitStyle::from_theme(theme),
             status_line: StatusLinePalette::from_theme(theme),
@@ -990,6 +994,7 @@ impl UiStyle {
         let bg = self.theme.bg;
         let dimmed_theme = self.theme.dimmed(self.dim_amount);
         style.theme = dimmed_theme;
+        style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, self.dim_amount);
         macro_rules! dim {
             ($($pair:expr),+ $(,)?) => { $(
                 $pair.fg = dim_style_color(
@@ -1164,7 +1169,9 @@ impl UiStyle {
     }
 
     pub(crate) fn set_ui_color(&mut self, name: &str, color: ColorPair) -> anyhow::Result<()> {
-        let which_key_target = match name {
+        let single_color_target = match name {
+            "zen.margin" => Some(&mut self.zen_margin),
+            "zen.ghost" => Some(&mut self.zen_ghost),
             "which_key.background" => Some(&mut self.which_key.background),
             "which_key.edge" => Some(&mut self.which_key.edge),
             "which_key.prefix" => Some(&mut self.which_key.prefix),
@@ -1173,7 +1180,7 @@ impl UiStyle {
             "which_key.text" => Some(&mut self.which_key.text),
             _ => None,
         };
-        if let Some(target) = which_key_target {
+        if let Some(target) = single_color_target {
             *target = color.fg;
             return Ok(());
         }

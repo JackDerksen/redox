@@ -10,6 +10,7 @@ use super::syntax::{SyntaxLanguage, language_for_path};
 pub const PREFIX_WIDTH: u16 = 2;
 pub const GIT_BRANCH: &str = "";
 pub const UNDO_TREE: &str = "";
+pub const ZEN: &str = "󰚀";
 pub const DIAGNOSTIC_ERROR: &str = "";
 pub const DIAGNOSTIC_WARNING: &str = "";
 pub const DIAGNOSTIC_INFORMATION: &str = "";

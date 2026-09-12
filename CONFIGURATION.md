@@ -25,7 +25,8 @@ when needed, so this also works before the file exists. Run `:config reload` to 
 without restarting Redox. A successful reload updates the active theme, all UI and syntax colours,
 dimming, popup sizes, the colour column, undo-history limits, the leader, and both character and
 modified-key bindings. It also updates which-key behaviour and Nerd Font icon rendering
-immediately.
+immediately. Zen settings also update immediately; reloading preserves the current mode unless
+`zen.enabled` changed in the configuration.
 
 Reloading is transactional: if the file cannot be read or contains an invalid option, colour,
 theme, mode, action, or key combination, Redox displays the error and keeps the active
@@ -133,6 +134,52 @@ its other fields are validated, so `[[bind]]` followed by only `keys = ""` is va
 entries in normal and visual modes appear in which-key using their `desc`. Single-key entries
 execute immediately and therefore do not open the popup.
 
+## Zen mode
+
+Press `<leader>z`, or run `:zen`, to toggle a centred editor viewport. The toast says `zen` or
+`standard`. Remap the `toggle_zen` action in normal or visual keybindings as needed.
+
+```toml
+[zen]
+enabled = false
+width_percent = 80
+min_width = 80
+hide_gutter = true
+hide_color_column = true
+focus_scope = true
+hide_diagnostics = true
+minimal_statusline = true
+show_toast = true
+```
+
+| Option | Default | Behaviour |
+| --- | --- | --- |
+| `enabled` | `false` | Start in zen mode. Toggling during a session does not edit the configuration. |
+| `width_percent` | `80` | Percentage of terminal columns used by the centred editor, from 1 to 100. Use 100 to keep full width. |
+| `min_width` | `80` | Minimum editor width in columns. Must be positive; capped at the terminal width. |
+| `hide_gutter` | `true` | Hide line numbers, their padding, and Git markers. |
+| `hide_color_column` | `true` | Hide the configured colour column. |
+| `focus_scope` | `true` | Keep syntax colours in the innermost multiline scope, including its header and closing line. Other lines use `zen.ghost`. Uses the current line when no scope is available. |
+| `hide_diagnostics` | `true` | Hide inline diagnostic text and highlights. Diagnostics continue updating and remain available through `<leader>x`. |
+| `minimal_statusline` | `true` | Show the mode, filename without its path, and all normal modules on the right. Popup labels still identify active tools. |
+| `show_toast` | `true` | Show `zen` or `standard` when toggled. |
+
+The centred area contains existing splits, the statusline, and popups. Popup width percentages
+and minimums in `[popups.<name>]` apply within that area; their height settings are unchanged.
+Selections, search matches, and snippet placeholders remain visible while scope focus is enabled.
+Indent guides share the same scope selection in standard and zen mode. Delimiter highlights stay
+within that scope and identify its body when the cursor is on its header.
+Guides use the delimiter pair's indentation and run only between its opening and closing lines.
+
+Margins default to a slightly darker version of the editor background. Zen and standard ghost text
+both default to the theme's `dark_gray` palette colour. Override the zen colours per theme:
+
+```toml
+[themes.my_theme.ui]
+"zen.margin" = "#111112"
+"zen.ghost" = "#606079"
+```
+
 ## Popup sizes
 
 Popup sections accept `width_percent`, `height_percent`, `min_width`, and `min_height`. Percentage
@@ -216,7 +263,7 @@ description.
 
 | Category | Actions |
 | --- | --- |
-| Files and tools | `open_explorer`, `open_finder`, `toggle_undo_tree`, `toggle_diagnostics`, `code_actions`, `goto_definition`, `symbol_info`, `completion` |
+| Files and tools | `open_explorer`, `open_finder`, `toggle_undo_tree`, `toggle_zen`, `toggle_diagnostics`, `code_actions`, `goto_definition`, `symbol_info`, `completion` |
 | History | `undo`, `redo` |
 | Movement | `move_left`, `move_down`, `move_up`, `move_right`, `word_forward`, `word_backward`, `line_start`, `line_end`, `file_start`, `file_end`, `centre_cursor` (`center_cursor` is also accepted), `viewport_down`, `viewport_up` |
 | Editing modes | `insert`, `append`, `insert_line_start`, `append_line_end`, `open_line_below`, `open_line_above`, `command`, `search`, `visual`, `visual_line`, `visual_block` |
@@ -296,6 +343,8 @@ strings are recommended for all six roles; `which_key.background` controls the p
   `punctuation_delimiter`, `punctuation_bracket`, `punctuation_special`
 
 ### UI colour keys
+
+- Zen mode: `zen.margin`, `zen.ghost`. These use the foreground value as a single colour.
 
 - Git: `git.added`, `git.modified`, `git.conflict`, `git.removed`
 - Status line: `status.bar`, `status.path`, `status.dirty`, `status.mode_normal`,

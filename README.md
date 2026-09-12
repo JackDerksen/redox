@@ -112,7 +112,7 @@ It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.to
 
 Configuration supports features like named themes, the complete base palette, every syntax role,
 UI colour pairs, optional Nerd Font icons, background dimming, popup dimensions, colour-column
-position, undo-tree history size, the leader character, and mode-specific keybindings. See the
+position, zen mode, undo-tree history size, the leader character, and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
 defaults.
@@ -160,6 +160,7 @@ Enter command mode with `:`.
 | `:ex` / `:explorer` | Toggle the file explorer. |
 | `:about` | Toggle the about popup. |
 | `:rain` | Toggle rain mode. |
+| `:zen` | Toggle zen mode. |
 | `:perf` / `:perf popup` | Toggle the performance metrics popup. |
 | `:undo-tree` | Toggle the undo tree pane. |
 | `:lsp list` | Open the language tools marketplace. |
@@ -175,6 +176,7 @@ Command and subcommand completions appear as ghost text at the end of the input.
 | ---- | --------- |
 | `<space><space>` | Open the fuzzy file finder for the launch directory. |
 | `<space>e` | Toggle the file explorer. |
+| `<space>z` | Toggle zen mode, with a centred viewport and syntax colour in the current scope. |
 | `<space>u` | Toggle the undo tree pane. |
 | `<space>x` | Toggle the diagnostics list for the current file. |
 | `<space>ca` | Show quick fixes for the diagnostic under the cursor. |

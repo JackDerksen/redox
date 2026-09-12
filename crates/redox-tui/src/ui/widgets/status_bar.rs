@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
-use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, filetype_icon};
+use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, ZEN, filetype_icon};
 use crate::ui::style::StatusModuleColors;
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -444,11 +444,15 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let (mode_label, mode_colors) =
         status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style);
 
-    let lsp_icon = if style.icons_enabled && state.lsp_provider_installed_for_buffer(buffer_id) {
-        meta.path.as_deref().and_then(filetype_icon)
-    } else {
-        None
-    };
+    let minimal = state.zen.enabled && state.zen.minimal_statusline;
+    let zen_icon = (style.icons_enabled && state.zen.enabled).then_some(ZEN);
+    let icon_colors = ColorPair::new(style.theme.light_gray, style.theme.black);
+    let lsp_icon =
+        if !minimal && style.icons_enabled && state.lsp_provider_installed_for_buffer(buffer_id) {
+            meta.path.as_deref().and_then(filetype_icon)
+        } else {
+            None
+        };
     let lsp_icon_width = u16::from(lsp_icon.is_some());
     let mode_module = StatusModule::new(
         mode_label,
@@ -456,21 +460,33 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         style.status_line.bar.bg,
     );
     let mode_width = mode_module.width();
-    let metadata_module = metadata_text(state, buffer_id, style.icons_enabled)
+    let metadata_module = (!minimal)
+        .then(|| metadata_text(state, buffer_id, style.icons_enabled))
+        .flatten()
         .map(|text| StatusModule::new(text, style.status_line.metadata, style.status_line.bar.bg));
     let metadata_module_width = metadata_module
         .as_ref()
         .map(StatusModule::width)
         .unwrap_or(0);
     let left_text_width = mode_width
+        .saturating_add(u16::from(zen_icon.is_some()))
         .saturating_add(metadata_module_width)
         .saturating_add(lsp_icon_width);
 
     let center_text = if let Some(label) = state.statusline_popup_label() {
         format!(" {label} ")
     } else {
-        let mut name = meta.display_name.to_string();
-        if let Some(load) = state.session.buffer_load_status(buffer_id)
+        let mut name = if minimal {
+            meta.path
+                .as_deref()
+                .and_then(std::path::Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| meta.display_name.to_string())
+        } else {
+            meta.display_name.to_string()
+        };
+        if !minimal
+            && let Some(load) = state.session.buffer_load_status(buffer_id)
             && load.phase == BufferLoadPhase::Loading
         {
             let progress = match load.total_bytes {
@@ -521,6 +537,11 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .with_height(STATUS_BAR_HEIGHT_CELLS)
         .with_bg(style.status_line.bar);
     let status_bar = status_bar.add_module(mode_module);
+    let status_bar = if let Some(icon) = zen_icon {
+        status_bar.add_segment(Segment::new(icon).with_color(icon_colors).with_min_width(1))
+    } else {
+        status_bar
+    };
     let status_bar = if let Some(module) = metadata_module {
         status_bar.add_module(module)
     } else {
@@ -529,7 +550,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let status_bar = if let Some(icon) = lsp_icon {
         status_bar.add_segment(
             Segment::new(icon)
-                .with_color(ColorPair::new(style.theme.light_gray, style.theme.black))
+                .with_color(icon_colors)
                 .with_min_width(lsp_icon_width),
         )
     } else {

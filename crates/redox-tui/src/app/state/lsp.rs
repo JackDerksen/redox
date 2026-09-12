@@ -685,6 +685,9 @@ impl EditorState {
         first_line: usize,
         line_count: usize,
     ) -> BTreeMap<usize, DiagnosticLine> {
+        if self.zen.enabled && self.zen.hide_diagnostics {
+            return BTreeMap::new();
+        }
         let last_line = first_line.saturating_add(line_count);
         let mut by_line: BTreeMap<usize, DiagnosticLine> = BTreeMap::new();
         for diagnostic in self.active_display_diagnostics() {
@@ -4435,6 +4438,21 @@ mod regressions {
         state.poll_lint_runs();
         state.cleanup_orphaned_lsp_state();
         assert!(state.lsp.diagnostics.contains_key(&uri));
+        assert_eq!(state.active_diagnostic_lines(0, 1).len(), 1);
+        state.zen.enabled = true;
+        assert!(state.active_diagnostic_lines(0, 1).is_empty());
+        assert_eq!(
+            state
+                .diagnostic_summary_for_buffer(state.session.active_id())
+                .warnings,
+            1
+        );
+        assert_eq!(state.current_diagnostic_popup_entries().len(), 1);
+        state.zen.hide_diagnostics = false;
+        assert_eq!(state.active_diagnostic_lines(0, 1).len(), 1);
+        state.zen.hide_diagnostics = true;
+        state.zen.enabled = false;
+        assert_eq!(state.active_diagnostic_lines(0, 1).len(), 1);
     }
 
     #[test]

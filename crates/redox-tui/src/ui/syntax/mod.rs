@@ -59,12 +59,27 @@ pub struct SyntaxScopePair {
     pub end: Pos,
 }
 
+/// One selected construct, shared by syntax focus and structural overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxScope {
+    /// Header through closing line, with an exclusive end.
+    pub extent: SyntaxScopePair,
+    /// Delimiter endpoints when present; otherwise the construct's extent.
+    pub body: SyntaxScopePair,
+}
+
+impl SyntaxScope {
+    pub fn lines(self) -> std::ops::Range<usize> {
+        self.extent.start.line..self.extent.end.line
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ActiveScopeCache {
     language: SyntaxLanguage,
     analysis_version: u64,
     cursor_char: usize,
-    scope: Option<SyntaxScopePair>,
+    scope: Option<SyntaxScope>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -526,13 +541,13 @@ impl SyntaxHighlighter {
             .is_some_and(|cache| cache.language == language)
     }
 
-    pub fn active_scope_pair_for_display_cached(
+    pub fn active_scope_for_display_cached(
         &mut self,
         buffer: &TextBuffer,
         language: Option<SyntaxLanguage>,
         analysis_version: u64,
         cursor: Pos,
-    ) -> Option<SyntaxScopePair> {
+    ) -> Option<SyntaxScope> {
         let language = language?;
         let cursor_char = buffer.pos_to_char(cursor);
 
@@ -545,20 +560,10 @@ impl SyntaxHighlighter {
         }
 
         let config = language_config_for(language)?;
-        let cache = self
-            .cache
-            .as_ref()
-            .filter(|cache| cache.language == language)?;
         let cursor_byte = buffer.char_to_byte(cursor_char);
-        let root = cache.tree.root_node();
-        let scope = root
-            .named_descendant_for_byte_range(cursor_byte, cursor_byte)
-            .or_else(|| {
-                cursor_byte
-                    .checked_sub(1)
-                    .and_then(|byte| root.named_descendant_for_byte_range(byte, byte))
-            })
-            .and_then(|node| active_scope_pair_for_node(buffer, config, node));
+        let scope = self
+            .cached_node_at_byte(language, cursor_byte)
+            .and_then(|node| active_scope_for_node(buffer, config, node, cursor_byte));
         self.active_scope_cache = Some(ActiveScopeCache {
             language,
             analysis_version,
@@ -566,6 +571,19 @@ impl SyntaxHighlighter {
             scope,
         });
         scope
+    }
+
+    fn cached_node_at_byte(&self, language: SyntaxLanguage, byte: usize) -> Option<Node<'_>> {
+        let cache = self
+            .cache
+            .as_ref()
+            .filter(|cache| cache.language == language)?;
+        let root = cache.tree.root_node();
+        root.named_descendant_for_byte_range(byte, byte)
+            .or_else(|| {
+                byte.checked_sub(1)
+                    .and_then(|previous| root.named_descendant_for_byte_range(previous, previous))
+            })
     }
 
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
@@ -598,19 +616,70 @@ impl std::ops::Index<usize> for VisibleLineSyntaxSpans<'_> {
     }
 }
 
-fn active_scope_pair_for_node(
+fn active_scope_for_node(
     buffer: &TextBuffer,
     config: &LanguageConfig,
     node: Node<'_>,
-) -> Option<SyntaxScopePair> {
+    cursor_byte: usize,
+) -> Option<SyntaxScope> {
     let mut current = Some(node);
+    let mut scope = None;
     while let Some(candidate) = current {
-        if let Some(pair) = structural_scope_pair_for_node(buffer, config, candidate) {
-            return Some(pair);
+        if candidate.start_position().row < candidate.end_position().row {
+            if let Some(body) = scope_body_for_node(buffer, config, candidate) {
+                // Follow the same ownership chain from either the header or
+                // the body, stopping when an outer construct owns another scope.
+                if cursor_byte < body.start_byte() || scope.is_none_or(|scope| scope == body) {
+                    scope = Some(candidate);
+                } else {
+                    break;
+                }
+            } else if structural_scope_pair_for_node(buffer, config, candidate).is_some() {
+                if scope.is_some() {
+                    break;
+                }
+                scope = Some(candidate);
+            }
         }
         current = candidate.parent();
     }
-    None
+    let owner = scope?;
+    let extent = node_scope_pair(buffer, owner)?;
+    let mut body = owner;
+    while let Some(inner) = scope_body_for_node(buffer, config, body) {
+        body = inner;
+    }
+    Some(SyntaxScope {
+        extent,
+        body: delimiter_wrapped_scope_pair(buffer, body).unwrap_or(extent),
+    })
+}
+
+/// Find the body or trailing scoped expression owned by a syntax header.
+/// Statement lists and delimited containers enclose scopes without owning their headers.
+fn scope_body_for_node<'tree>(
+    buffer: &TextBuffer,
+    config: &LanguageConfig,
+    node: Node<'tree>,
+) -> Option<Node<'tree>> {
+    if node.parent().is_none() || delimiter_wrapped_scope_pair(buffer, node).is_some() {
+        return None;
+    }
+    if let Some(body) = node
+        .child_by_field_name("body")
+        .or_else(|| node.child_by_field_name("consequence"))
+    {
+        return Some(body);
+    }
+
+    let last_child_index = u32::try_from(node.named_child_count().checked_sub(1)?).ok()?;
+    let child = node.named_child(last_child_index)?;
+    let has_header = node.field_name_for_named_child(last_child_index).is_some()
+        || node.child(0).is_some_and(|first| !first.is_named());
+    (has_header
+        && (structural_scope_pair_for_node(buffer, config, child).is_some()
+            || scope_body_for_node(buffer, config, child).is_some()))
+    .then_some(child)
 }
 
 fn structural_scope_pair_for_node(
@@ -2274,7 +2343,7 @@ mod tests {
             SyntaxLanguage::Rust,
         ));
         let scope = highlighter
-            .active_scope_pair_for_display_cached(
+            .active_scope_for_display_cached(
                 &buffer,
                 Some(SyntaxLanguage::Rust),
                 0,
@@ -2282,8 +2351,8 @@ mod tests {
             )
             .expect("scope");
 
-        assert_eq!(scope.start, Pos::new(0, 10));
-        assert_eq!(scope.end, Pos::new(2, 0));
+        assert_eq!(scope.body.start, Pos::new(0, 10));
+        assert_eq!(scope.body.end, Pos::new(2, 0));
     }
 
     #[test]
@@ -2296,13 +2365,13 @@ mod tests {
         ));
         let cursor = Pos::new(1, 15);
         let scope = highlighter
-            .active_scope_pair_for_display_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
+            .active_scope_for_display_cached(&buffer, Some(SyntaxLanguage::Rust), 0, cursor)
             .expect("scope");
 
         highlighter.mark_cache_stale();
 
         assert_eq!(
-            highlighter.active_scope_pair_for_display_cached(
+            highlighter.active_scope_for_display_cached(
                 &buffer,
                 Some(SyntaxLanguage::Rust),
                 1,
@@ -2311,7 +2380,7 @@ mod tests {
             Some(scope)
         );
         assert_eq!(
-            highlighter.active_scope_pair_for_display_cached(
+            highlighter.active_scope_for_display_cached(
                 &buffer,
                 Some(SyntaxLanguage::Rust),
                 1,
@@ -2478,11 +2547,11 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
-            assert_eq!(scope.start, expected_start);
-            assert_eq!(scope.end, Pos::new(2, 0));
+            assert_eq!(scope.body.start, expected_start);
+            assert_eq!(scope.body.end, Pos::new(2, 0));
         }
     }
 
@@ -2495,16 +2564,11 @@ mod tests {
             SyntaxLanguage::Lua,
         ));
         let scope = highlighter
-            .active_scope_pair_for_display_cached(
-                &buffer,
-                Some(SyntaxLanguage::Lua),
-                0,
-                Pos::new(1, 4),
-            )
+            .active_scope_for_display_cached(&buffer, Some(SyntaxLanguage::Lua), 0, Pos::new(1, 4))
             .expect("lua scope");
 
-        assert_eq!(scope.start, Pos::new(0, 0));
-        assert_eq!(scope.end, Pos::new(3, 0));
+        assert_eq!(scope.body.start, Pos::new(0, 0));
+        assert_eq!(scope.body.end, Pos::new(3, 0));
     }
 
     #[test]
@@ -2529,11 +2593,11 @@ mod tests {
             let buffer = TextBuffer::from_text(source);
             highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
             let scope = highlighter
-                .active_scope_pair_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
+                .active_scope_for_display_cached(&buffer, Some(language), 0, Pos::new(1, 4))
                 .expect("scope");
 
-            assert_eq!(scope.start, expected_start);
-            assert_eq!(scope.end.line, expected_end_line);
+            assert_eq!(scope.body.start, expected_start);
+            assert_eq!(scope.body.end.line, expected_end_line);
         }
     }
 
@@ -2546,7 +2610,7 @@ mod tests {
             SyntaxLanguage::Python,
         ));
         let scope = highlighter
-            .active_scope_pair_for_display_cached(
+            .active_scope_for_display_cached(
                 &buffer,
                 Some(SyntaxLanguage::Python),
                 0,
@@ -2554,8 +2618,8 @@ mod tests {
             )
             .expect("scope");
 
-        assert_eq!(scope.start, Pos::new(0, 0));
-        assert_eq!(scope.end.line, 3);
+        assert_eq!(scope.body.start, Pos::new(0, 0));
+        assert_eq!(scope.body.end.line, 3);
     }
 
     #[test]
@@ -2591,16 +2655,11 @@ mod tests {
                 SyntaxLanguage::Python,
             ));
             let scope = highlighter
-                .active_scope_pair_for_display_cached(
-                    &buffer,
-                    Some(SyntaxLanguage::Python),
-                    0,
-                    cursor,
-                )
+                .active_scope_for_display_cached(&buffer, Some(SyntaxLanguage::Python), 0, cursor)
                 .expect("scope");
 
-            assert_eq!(scope.start, expected_start, "{source}");
-            assert_eq!(scope.end.line, cursor.line + 1, "{source}");
+            assert_eq!(scope.body.start, expected_start, "{source}");
+            assert_eq!(scope.body.end.line, cursor.line + 1, "{source}");
         }
     }
 
@@ -2613,7 +2672,7 @@ mod tests {
             SyntaxLanguage::Markdown,
         ));
         let scope = highlighter
-            .active_scope_pair_for_display_cached(
+            .active_scope_for_display_cached(
                 &buffer,
                 Some(SyntaxLanguage::Markdown),
                 0,
@@ -2621,7 +2680,7 @@ mod tests {
             )
             .expect("scope");
 
-        assert_eq!(scope.start, Pos::new(0, 0));
-        assert_eq!(scope.end.line, 3);
+        assert_eq!(scope.body.start, Pos::new(0, 0));
+        assert_eq!(scope.body.end.line, 3);
     }
 }

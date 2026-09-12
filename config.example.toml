@@ -10,6 +10,18 @@ scrolloff = 5 # Keeps this many rows visible above and below the cursor while sc
 color_column = 79 # Renders on top of cl=80
 leader = " "
 
+# Zen mode toggles with <leader>z or :zen. Popup percentages use the zen width.
+[zen]
+enabled = false
+width_percent = 80 # 1..100; use 100 for full width
+min_width = 80 # Columns, clamped to the terminal width
+hide_gutter = true # Includes line numbers and Git markers
+hide_color_column = true
+focus_scope = true # Ghost text outside the current scope; current line if no scope is found
+hide_diagnostics = true # Hide inline diagnostics; the diagnostics list remains available
+minimal_statusline = true # Mode, filename, and the normal modules on the right
+show_toast = true # "zen" / "standard" when toggled
+
 [which_key]
 enabled = true
 delay_ms = 3000
@@ -52,6 +64,7 @@ height_percent = 60
 open_finder = "<leader><leader>"
 open_explorer = "<leader>e"
 toggle_undo_tree = "<leader>u"
+toggle_zen = "<leader>z"
 toggle_diagnostics = "<leader>x"
 code_actions = "<leader>ca"
 goto_definition = "gd"
@@ -63,7 +76,7 @@ completion = "<ctrl-shift-k>"
 [keybindings.visual]
 yank_system = "<leader>y"
 
-# Available actions include open_explorer, toggle_undo_tree, open_finder,
+# Available actions include open_explorer, toggle_undo_tree, toggle_zen, open_finder,
 # toggle_diagnostics, code_actions, goto_definition, symbol_info, completion,
 # undo, redo, movement and insert actions, clipboard operations, splits and
 # focus, popup navigation, and surface navigation. Unknown action names are
@@ -135,6 +148,8 @@ punctuation_bracket = "#cdcdcd"
 punctuation_special = "#b4d4cf"
 
 [themes.vague.ui]
+"zen.margin" = "#111112"
+"zen.ghost" = "#606079"
 "git.added" = { fg = "#7fa563", bg = "#141415" }
 "git.modified" = { fg = "#f3be7c", bg = "#141415" }
 "git.conflict" = { fg = "#f3be7c", bg = "#141415" }
