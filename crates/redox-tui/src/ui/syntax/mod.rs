@@ -203,25 +203,68 @@ impl HighlightCache {
         }
         self.line_spans
             .splice(first_line..=old_end_line, replacement);
-        let point = |source: &TextBuffer, character: usize| {
-            let row = source.char_to_line(character);
-            Point::new(
-                row,
-                source.char_to_byte(character) - source.char_to_byte(source.line_to_char(row)),
-            )
-        };
-        self.tree.edit(&InputEdit {
-            start_byte: region_start + edit_start,
-            old_end_byte: region_start + old_end,
-            new_end_byte: region_start + new_end,
-            start_position: point(&self.source, change.start_char),
-            old_end_position: point(
-                &self.source,
-                change.start_char + change.deleted.chars().count(),
-            ),
-            new_end_position: point(buffer, change.start_char + change.inserted.chars().count()),
-        });
+        self.tree.edit(&tree_edit(&self.source, buffer, &change));
         self.source = buffer.clone();
+    }
+}
+
+fn tree_edit(before: &TextBuffer, after: &TextBuffer, change: &TextDiff) -> InputEdit {
+    let point = |source: &TextBuffer, character: usize| {
+        let row = source.char_to_line(character);
+        Point::new(
+            row,
+            source.char_to_byte(character) - source.char_to_byte(source.line_to_char(row)),
+        )
+    };
+    let start_byte = before.char_to_byte(change.start_char);
+    InputEdit {
+        start_byte,
+        old_end_byte: start_byte + change.deleted.len(),
+        new_end_byte: start_byte + change.inserted.len(),
+        start_position: point(before, change.start_char),
+        old_end_position: point(before, change.start_char + change.deleted.chars().count()),
+        new_end_position: point(after, change.start_char + change.inserted.chars().count()),
+    }
+}
+
+/// Worker-owned parser and queries. Retain only the most recently parsed document.
+#[derive(Default)]
+pub(crate) struct SyntaxParser {
+    engine: Option<QuerySyntaxEngine>,
+    previous: Option<(TextBuffer, Tree)>,
+}
+
+impl SyntaxParser {
+    pub(crate) fn compute_cache(
+        &mut self,
+        buffer: &TextBuffer,
+        language: SyntaxLanguage,
+    ) -> Option<HighlightCache> {
+        if self
+            .engine
+            .as_ref()
+            .is_none_or(|engine| engine.language != language)
+        {
+            self.previous = None;
+            self.engine = QuerySyntaxEngine::new(language_config_for(language)?);
+        }
+        let engine = self.engine.as_mut()?;
+        let mut previous_parse = self.previous.take();
+        if let Some((previous, tree)) = &mut previous_parse
+            && let Some(change) = TextDiff::between(previous, buffer)
+        {
+            tree.edit(&tree_edit(previous, buffer, &change));
+        }
+        let source = buffer.to_string();
+        let (line_spans, tree) =
+            engine.parse_line_spans(&source, previous_parse.as_ref().map(|(_, tree)| tree))?;
+        self.previous = Some((buffer.clone(), tree.clone()));
+        Some(HighlightCache {
+            language,
+            line_spans,
+            tree,
+            source: buffer.clone(),
+        })
     }
 }
 
@@ -286,13 +329,15 @@ impl QuerySyntaxEngine {
         })
     }
 
-    fn parse_line_spans(&mut self, source: &str) -> Option<(Vec<Vec<LineSyntaxSpan>>, Tree)> {
+    fn parse_line_spans(
+        &mut self,
+        source: &str,
+        previous_tree: Option<&Tree>,
+    ) -> Option<(Vec<Vec<LineSyntaxSpan>>, Tree)> {
         let line_starts = compute_line_start_bytes(source);
         let mut line_spans: Vec<Vec<LineSyntaxSpan>> = vec![Vec::new(); line_starts.len().max(1)];
 
-        let Some(tree) = self.parser.parse(source, None) else {
-            return None;
-        };
+        let tree = self.parser.parse(source, previous_tree)?;
 
         let mut tokens = Vec::new();
         collect_query_tokens(
@@ -400,20 +445,12 @@ fn collect_inline_ranges(node: Node<'_>, ranges: &mut Vec<Range>) {
 }
 
 impl SyntaxHighlighter {
+    #[cfg(test)]
     pub(crate) fn compute_cache(
         buffer: &TextBuffer,
         language: SyntaxLanguage,
     ) -> Option<HighlightCache> {
-        let config = language_config_for(language)?;
-        let mut engine = QuerySyntaxEngine::new(config)?;
-        let source = buffer.to_string();
-        let (spans, tree) = engine.parse_line_spans(&source)?;
-        Some(HighlightCache {
-            language,
-            line_spans: spans,
-            tree,
-            source: buffer.clone(),
-        })
+        SyntaxParser::default().compute_cache(buffer, language)
     }
 
     pub fn visible_line_spans_cached(
@@ -655,7 +692,7 @@ pub fn line_spans_for_source(
     let language = language?;
     let config = language_config_for(language)?;
     let mut engine = QuerySyntaxEngine::new(config)?;
-    let (spans, _) = engine.parse_line_spans(source)?;
+    let (spans, _) = engine.parse_line_spans(source, None)?;
     Some(spans)
 }
 
@@ -1714,6 +1751,55 @@ mod tests {
 
     use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
     use crate::ui::style::SyntaxRole;
+
+    #[test]
+    fn incremental_parser_matches_fresh_parses_across_edits_and_languages() {
+        let mut parser = super::SyntaxParser::default();
+        let cases = [
+            (
+                SyntaxLanguage::Rust,
+                vec![
+                    "fn main() { let café = 1; }\n",
+                    "fn main() {\n let café = \"雪\";\n}\n",
+                    "fn main() {\n /* comment */ let café = \"雪\";\n}\n",
+                    "",
+                    "fn other() {}",
+                ],
+            ),
+            (
+                SyntaxLanguage::Markdown,
+                vec![
+                    "# Title\n\n*text*\n",
+                    "# Title\n\n**雪** and `code`\n",
+                    "## Changed\n\n[text](url)\n",
+                ],
+            ),
+            (
+                SyntaxLanguage::Python,
+                vec![
+                    "def hello():\n    return 1\n",
+                    "def hello():\n    return 'é'\n",
+                    "# changed\ndef hello():\n    return 'é'\n",
+                ],
+            ),
+            (SyntaxLanguage::Rust, vec!["fn switched_back() {}\n"]),
+        ];
+        for (language, edits) in cases {
+            for text in edits {
+                let buffer = TextBuffer::from_text(text);
+                let incremental = parser.compute_cache(&buffer, language).unwrap();
+                let fresh = SyntaxHighlighter::compute_cache(&buffer, language).unwrap();
+                assert_eq!(
+                    incremental.line_spans, fresh.line_spans,
+                    "{language:?}: {text:?}"
+                );
+                assert_eq!(
+                    incremental.tree.root_node().to_sexp(),
+                    fresh.tree.root_node().to_sexp()
+                );
+            }
+        }
+    }
 
     #[test]
     fn detects_rust_paths() {

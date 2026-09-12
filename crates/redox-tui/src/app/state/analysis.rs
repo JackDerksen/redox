@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -5,16 +6,18 @@ use std::thread;
 use redox_core::{BufferId, TextBuffer};
 
 use crate::ui::overlays::{DelimiterAnalysis, compute_delimiter_analysis};
-use crate::ui::syntax::{HighlightCache, SyntaxHighlighter, SyntaxLanguage};
+use crate::ui::syntax::{HighlightCache, SyntaxLanguage, SyntaxParser};
 
 #[derive(Debug)]
 pub(super) enum AnalysisResult {
     Syntax {
+        request_id: u64,
         buffer_id: BufferId,
         version: u64,
         syntax_cache: Option<HighlightCache>,
     },
     Delimiters {
+        request_id: u64,
         buffer_id: BufferId,
         version: u64,
         delimiter_analysis: DelimiterAnalysis,
@@ -22,6 +25,7 @@ pub(super) enum AnalysisResult {
 }
 
 struct AnalysisRequest {
+    request_id: u64,
     buffer_id: BufferId,
     version: u64,
     buffer: TextBuffer,
@@ -31,6 +35,8 @@ struct AnalysisRequest {
 pub(super) struct AnalysisWorker {
     requests: LatestRequestSender,
     results: Receiver<AnalysisResult>,
+    last_request_id: Cell<u64>,
+    pending: Cell<Option<(u64, BufferId, u64)>>,
 }
 
 #[derive(Default)]
@@ -61,12 +67,14 @@ impl AnalysisWorker {
         thread::Builder::new()
             .name("redox-analysis".to_string())
             .spawn(move || {
+                let mut syntax_parser = SyntaxParser::default();
                 while let Some(request) = request_rx.recv() {
                     let request = drain_latest_requests(request, &request_rx);
                     // Publish overlays before the more expensive syntax queries.
                     let delimiter_analysis = compute_delimiter_analysis(&request.buffer);
                     if result_tx
                         .send(AnalysisResult::Delimiters {
+                            request_id: request.request_id,
                             buffer_id: request.buffer_id,
                             version: request.version,
                             delimiter_analysis,
@@ -76,10 +84,11 @@ impl AnalysisWorker {
                         return;
                     }
                     let syntax_cache = request.syntax_language.and_then(|language| {
-                        SyntaxHighlighter::compute_cache(&request.buffer, language)
+                        syntax_parser.compute_cache(&request.buffer, language)
                     });
                     if result_tx
                         .send(AnalysisResult::Syntax {
+                            request_id: request.request_id,
                             buffer_id: request.buffer_id,
                             version: request.version,
                             syntax_cache,
@@ -95,6 +104,8 @@ impl AnalysisWorker {
         Self {
             requests: request_tx,
             results: result_rx,
+            last_request_id: Cell::new(0),
+            pending: Cell::new(None),
         }
     }
 
@@ -105,7 +116,15 @@ impl AnalysisWorker {
         buffer: TextBuffer,
         syntax_language: Option<SyntaxLanguage>,
     ) {
+        let request_id = self
+            .last_request_id
+            .get()
+            .checked_add(1)
+            .expect("analysis request ID overflow");
+        self.last_request_id.set(request_id);
+        self.pending.set(Some((request_id, buffer_id, version)));
         self.requests.send_latest(AnalysisRequest {
+            request_id,
             buffer_id,
             version,
             buffer,
@@ -114,7 +133,36 @@ impl AnalysisWorker {
     }
 
     pub(super) fn try_recv(&self) -> Option<AnalysisResult> {
-        self.results.try_recv().ok()
+        loop {
+            let result = self.results.try_recv().ok()?;
+            let identity = match &result {
+                AnalysisResult::Syntax {
+                    request_id,
+                    buffer_id,
+                    version,
+                    ..
+                }
+                | AnalysisResult::Delimiters {
+                    request_id,
+                    buffer_id,
+                    version,
+                    ..
+                } => (*request_id, *buffer_id, *version),
+            };
+            if self.pending.get() != Some(identity) {
+                continue;
+            }
+            if matches!(result, AnalysisResult::Syntax { .. }) {
+                self.pending.set(None);
+            }
+            return Some(result);
+        }
+    }
+}
+
+impl AnalysisWorker {
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.get().is_some()
     }
 }
 
@@ -190,6 +238,7 @@ mod tests {
 
     fn request(buffer_id: BufferId, version: u64) -> AnalysisRequest {
         AnalysisRequest {
+            request_id: version,
             buffer_id,
             version,
             buffer: TextBuffer::from_text("fn main() {}\n"),

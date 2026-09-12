@@ -60,8 +60,6 @@ const GUTTER_CONTENT_PADDING: u16 = 1;
 const ANIMATION_FRAME_RATE_HZ: u64 = 60;
 const ANIMATION_FRAME_INTERVAL: Duration =
     Duration::from_nanos(1_000_000_000 / ANIMATION_FRAME_RATE_HZ);
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const ACTIVE_SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
 enum LaunchTarget {
     Empty,
@@ -95,10 +93,6 @@ fn draw_buffer_view(
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
-    let load_start = Instant::now();
-    state.pump_active_loading(text_h as usize);
-    perf.load += load_start.elapsed();
-    state.refresh_active_git_diff();
 
     if let Some(popup) = state.explorer_popup() {
         let fallback_id = state
@@ -274,7 +268,6 @@ fn draw_buffer_view(
             editor_text,
             !popup_overlay_active,
         )?;
-        state.advance_one_shot_highlight();
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
@@ -567,7 +560,6 @@ fn draw_buffer_view(
     perf.syntax += syntax_time;
     perf.overlays += overlay_time;
     perf.lines += lines_time;
-    state.advance_one_shot_highlight();
 
     let status_start = Instant::now();
     let status = build_editor_status_bar(state, style);
@@ -1475,9 +1467,6 @@ fn draw_buffer_snapshot_for_id(
         .map(<[_]>::to_vec)
         .unwrap_or_default();
     let undo_tree_preview_separator_row = state.undo_tree_preview_separator_row(buffer_id);
-    if undo_tree_role.is_none() {
-        state.refresh_git_diff_for_buffer(buffer_id);
-    }
     let git_diff = undo_tree_role
         .is_none()
         .then(|| state.git_diff_for_buffer(buffer_id).cloned())
@@ -2475,25 +2464,12 @@ fn visual_selection_visible_cells(
                 return None;
             }
 
-            if start.line < line_idx && line_idx < end.line {
-                vec![true; width_cells]
-            } else if let Some(range) =
+            if let Some(range) =
                 buffer.visual_selection_char_range_on_line(selection, mode, line_idx)
             {
-                let mut cells = selected_visible_cells(
-                    source_line,
-                    scroll_x,
-                    width_cells,
-                    range.start,
-                    range.end,
-                );
-                if start.line != end.line && line_idx == start.line {
-                    let line_width = line_cell_width(source_line);
-                    mark_visible_cell_range(&mut cells, line_width, usize::MAX, scroll_x);
-                }
-                cells
+                selected_visible_cells(source_line, scroll_x, width_cells, range.start, range.end)
             } else if start.line < end.line && source_line.is_empty() {
-                vec![true; width_cells]
+                visible_cell_range(0, 1, scroll_x, width_cells)
             } else {
                 return None;
             }
@@ -2730,8 +2706,6 @@ mod tests {
     fn frame_intervals_match_expected_cadence() {
         assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
         assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));
-        assert_eq!(IDLE_POLL_INTERVAL, Duration::from_millis(50));
-        assert_eq!(ACTIVE_SETTLE_INTERVAL, Duration::from_millis(250));
     }
 
     fn temp_dir_path(tag: &str) -> PathBuf {
@@ -2889,7 +2863,7 @@ mod tests {
     }
 
     #[test]
-    fn visual_selection_visible_cells_limit_line_mode_to_contents() {
+    fn visual_selection_visible_cells_limit_highlights_to_contents() {
         let buffer = redox_core::TextBuffer::from_text("alpha\n\nomega\n");
         let selection =
             redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
@@ -2913,21 +2887,44 @@ mod tests {
             ("alpha", 5, 0),
             ("longer than the viewport", 0, 8),
         ] {
-            let cells = visual_selection_visible_cells(
-                &buffer,
-                text,
-                selection,
+            let buffer = redox_core::TextBuffer::from_text(&format!("alpha\n{text}\nomega\n"));
+            for mode in [
                 redox_core::VisualModeKind::Line,
-                1,
-                scroll_x,
-                8,
-            )
-            .unwrap_or_else(|| vec![false; 8]);
-            assert_eq!(
-                cells,
-                (0..8).map(|cell| cell < selected_width).collect::<Vec<_>>(),
-                "{text:?}, scroll {scroll_x}"
-            );
+                redox_core::VisualModeKind::Char,
+            ] {
+                let cells =
+                    visual_selection_visible_cells(&buffer, text, selection, mode, 1, scroll_x, 8)
+                        .unwrap_or_else(|| vec![false; 8]);
+                assert_eq!(
+                    cells,
+                    (0..8).map(|cell| cell < selected_width).collect::<Vec<_>>(),
+                    "{mode:?}, {text:?}, scroll {scroll_x}"
+                );
+            }
+        }
+
+        for selection in [
+            selection,
+            redox_core::Selection::new(redox_core::Pos::new(2, 2), redox_core::Pos::new(0, 1)),
+        ] {
+            for (line, text, selected) in [(0, "alpha", 1..5), (2, "omega", 0..3)] {
+                let cells = visual_selection_visible_cells(
+                    &buffer,
+                    text,
+                    selection,
+                    redox_core::VisualModeKind::Char,
+                    line,
+                    0,
+                    8,
+                )
+                .unwrap();
+                assert_eq!(
+                    cells,
+                    (0..8)
+                        .map(|cell| selected.contains(&cell))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
     }
 
@@ -3623,7 +3620,7 @@ pub fn run() -> anyhow::Result<()> {
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
     let mut pending_wake_event: Option<Event> = None;
-    let mut active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
+    let mut previous_terminal_size = window.get_size();
 
     loop {
         let frame_start = Instant::now();
@@ -3669,50 +3666,39 @@ pub fn run() -> anyhow::Result<()> {
             &mut theme_override,
         );
         if event_count > 0 {
-            active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
+            state.request_redraw();
         }
-        state.poll_analysis_results();
-        state.poll_lsp();
-        state.poll_finder_results();
-        let now = Instant::now();
-        state.poll_external_file_changes(now);
-        state.expire_status_message(now);
-
-        if state.rain_is_active() {
-            state.advance_rain_animation();
+        let (width, height) = window.get_size();
+        if (width, height) != previous_terminal_size {
+            previous_terminal_size = (width, height);
+            state.request_redraw();
         }
-
-        window.clear_cursor_request();
-        let (w, h) = window.get_size();
-        state.set_viewport_size(w as usize, h as usize);
-        state.poll_search_preview(Instant::now());
-        window.clear_screen()?;
-        draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
-        let flush_start = Instant::now();
-        window.end_frame()?;
-        perf_sample.flush = flush_start.elapsed();
-        perf_sample.frame = frame_start.elapsed();
-        state.record_perf_sample(perf_sample);
+        state.set_viewport_size(width as usize, height as usize);
+        perf_sample.load = state.update_background(Instant::now());
 
         if state.should_quit {
             return Ok(());
         }
 
-        let next_interval = if state.rain_is_active()
-            || state.one_shot_highlight().is_some()
-            || state.lsp_needs_fast_poll()
-            || Instant::now() < active_until
-        {
-            ANIMATION_FRAME_INTERVAL
-        } else {
-            IDLE_POLL_INTERVAL
-        };
-        let remaining = next_interval.saturating_sub(frame_start.elapsed());
-        if !remaining.is_zero() {
-            let event = window.get_input_timeout(remaining)?;
-            if !matches!(event, Event::Unknown) {
-                pending_wake_event = Some(event);
+        if state.take_redraw_request() {
+            window.clear_cursor_request();
+            window.clear_screen()?;
+            draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
+            let flush_start = Instant::now();
+            window.end_frame()?;
+            perf_sample.flush = flush_start.elapsed();
+            perf_sample.frame = frame_start.elapsed();
+            state.record_perf_sample(perf_sample);
+        }
+
+        let event = match state.next_wake_deadline(Instant::now()) {
+            Some(deadline) => {
+                window.get_input_timeout(deadline.saturating_duration_since(Instant::now()))?
             }
+            None => window.wait_for_input()?,
+        };
+        if !matches!(event, Event::Unknown) {
+            pending_wake_event = Some(event);
         }
     }
 }

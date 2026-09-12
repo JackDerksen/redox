@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
@@ -11,6 +11,7 @@ use redox_core::{BufferId, BufferKind, EditorSession, TextBuffer};
 use tempfile::NamedTempFile;
 
 const DIRTY_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+const REPO_DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
 const REPO_STATUS_WORKERS: usize = 2;
 const REPO_STATUS_QUEUE_BOUND: usize = 64;
 
@@ -90,11 +91,21 @@ pub struct GitState {
     repo_status_cache: HashMap<PathBuf, GitRepoStatusCacheEntry>,
     repo_status_revision: u64,
     pending_repo_status_dirs: HashSet<PathBuf>,
+    known_repo_dirs: HashMap<PathBuf, KnownRepoDir>,
     repo_status_tx: Sender<GitRepoStatusResult>,
     repo_status_rx: Receiver<GitRepoStatusResult>,
     repo_status_job_tx: SyncSender<GitRepoStatusJob>,
-    diff_tx: Sender<GitDiffResult>,
+    diff_job_tx: SyncSender<GitDiffJob>,
+    next_diff_request: u64,
+    base_generation: u64,
     diff_rx: Receiver<GitDiffResult>,
+    changed: bool,
+}
+
+#[derive(Debug)]
+struct KnownRepoDir {
+    root: Option<PathBuf>,
+    next_discovery_check: Instant,
 }
 
 #[derive(Debug)]
@@ -105,6 +116,7 @@ struct GitDiffCacheEntry {
     stale: bool,
     snapshot: Option<GitDiffSnapshot>,
     pending: bool,
+    request_id: u64,
 }
 
 #[derive(Debug)]
@@ -130,13 +142,16 @@ struct GitRepoStatusJob {
 struct GitDiffResult {
     buffer_id: BufferId,
     path: Option<PathBuf>,
-    dirty: bool,
+    request_id: u64,
     snapshot: Option<GitDiffSnapshot>,
 }
 
-struct GitDiffInput {
+struct GitDiffJob {
+    buffer_id: BufferId,
     path: PathBuf,
     buffer: TextBuffer,
+    request_id: u64,
+    base_generation: u64,
 }
 
 type RepoStatuses = (
@@ -148,22 +163,44 @@ impl Default for GitState {
     fn default() -> Self {
         let (repo_status_tx, repo_status_rx) = mpsc::channel();
         let repo_status_job_tx = start_repo_status_workers();
-        let (diff_tx, diff_rx) = mpsc::channel();
+        let (diff_job_tx, diff_rx) = start_diff_worker();
         Self {
             cache: HashMap::new(),
             repo_status_cache: HashMap::new(),
             repo_status_revision: 0,
             pending_repo_status_dirs: HashSet::new(),
+            known_repo_dirs: HashMap::new(),
             repo_status_tx,
             repo_status_rx,
             repo_status_job_tx,
-            diff_tx,
+            diff_job_tx,
+            next_diff_request: 0,
+            base_generation: 0,
             diff_rx,
+            changed: false,
         }
     }
 }
 
 impl GitState {
+    pub(super) fn remove_closed_buffers(&mut self, session: &EditorSession) {
+        self.cache.retain(|id, _| session.meta(*id).is_some());
+    }
+
+    pub(super) fn take_changed(&mut self) -> bool {
+        self.drain_diff_results();
+        self.drain_repo_status_results();
+        std::mem::take(&mut self.changed)
+    }
+
+    pub(super) fn has_pending_work(&self) -> bool {
+        !self.pending_repo_status_dirs.is_empty()
+            || self
+                .cache
+                .values()
+                .any(|entry| entry.path.is_some() && (entry.pending || entry.stale))
+    }
+
     pub fn diff_for(&self, buffer_id: BufferId) -> Option<&GitDiffSnapshot> {
         self.cache.get(&buffer_id)?.snapshot.as_ref()
     }
@@ -175,6 +212,11 @@ impl GitState {
     }
 
     pub fn mark_all_repo_statuses_stale(&mut self) {
+        self.base_generation = self.base_generation.wrapping_add(1);
+        for entry in self.cache.values_mut() {
+            entry.stale = true;
+        }
+        self.known_repo_dirs.clear();
         for entry in self.repo_status_cache.values_mut() {
             entry.stale = true;
         }
@@ -199,22 +241,45 @@ impl GitState {
         self.repo_status_revision
     }
 
-    pub fn refresh_repo_status_for_dir(&mut self, dir: &Path) {
+    pub(super) fn repo_discovery_deadline(&self, dir: &Path) -> Option<Instant> {
+        let known = self.known_repo_dirs.get(dir)?;
+        (known.root.is_none() && !self.pending_repo_status_dirs.contains(dir))
+            .then_some(known.next_discovery_check)
+    }
+
+    pub fn refresh_repo_status_for_dir(&mut self, dir: &Path, now: Instant) {
         self.drain_repo_status_results();
 
         let dir = dir.to_path_buf();
         if self.pending_repo_status_dirs.contains(&dir) {
             return;
-        };
-        if let Some((repo_root, entry)) = self
-            .repo_status_cache
-            .iter()
-            .filter(|(repo_root, _)| dir.starts_with(repo_root))
-            .max_by_key(|(repo_root, _)| repo_root.components().count())
-            && !entry.stale
-            && (repo_root == &dir || !dir_is_separate_repo_from_cached_root(&dir, repo_root))
-        {
-            return;
+        }
+        if let Some(known) = self.known_repo_dirs.get_mut(&dir) {
+            match &known.root {
+                None => {
+                    if now < known.next_discovery_check {
+                        return;
+                    }
+                    known.next_discovery_check = now + REPO_DISCOVERY_INTERVAL;
+                    // Check metadata cheaply before asking Git to rediscover a repository.
+                    // `.git` may be a directory or a worktree file, including in an ancestor.
+                    if !dir
+                        .ancestors()
+                        .any(|ancestor| ancestor.join(".git").exists())
+                    {
+                        return;
+                    }
+                }
+                Some(root)
+                    if self
+                        .repo_status_cache
+                        .get(root)
+                        .is_some_and(|entry| !entry.stale) =>
+                {
+                    return;
+                }
+                Some(_) => {}
+            }
         }
 
         let tx = self.repo_status_tx.clone();
@@ -269,57 +334,53 @@ impl GitState {
             return;
         }
 
-        let diff_input = path
-            .as_deref()
-            .and_then(|buffer_path| {
-                session
-                    .buffer(buffer_id)
-                    .map(|buffer| (buffer_path, buffer))
-            })
-            .map(|(buffer_path, buffer)| GitDiffInput {
-                path: buffer_path.to_path_buf(),
+        self.next_diff_request = self.next_diff_request.wrapping_add(1);
+        let request_id = self.next_diff_request;
+        let job = path
+            .as_ref()
+            .zip(session.buffer(buffer_id))
+            .map(|(path, buffer)| GitDiffJob {
+                buffer_id,
+                path: path.clone(),
                 buffer: buffer.clone(),
+                request_id,
+                base_generation: self.base_generation,
             });
-
         let previous_snapshot = self
             .cache
-            .get(&buffer_id)
-            .and_then(|entry| entry.snapshot.clone());
-
-        self.cache.insert(
-            buffer_id,
-            GitDiffCacheEntry {
-                path: path.clone(),
-                dirty,
-                last_refreshed_at: now,
-                stale: false,
-                snapshot: previous_snapshot,
-                pending: diff_input.is_some(),
-            },
-        );
-
-        if let Some(input) = diff_input {
-            let tx = self.diff_tx.clone();
-            thread::spawn(move || {
-                let current_text = input.buffer.to_string();
-                let buffer_path = input.path;
-                let snapshot = load_git_diff(&buffer_path, &current_text);
-                let _ = tx.send(GitDiffResult {
-                    buffer_id,
-                    path: Some(buffer_path),
-                    dirty,
-                    snapshot,
-                });
-            });
+            .remove(&buffer_id)
+            .and_then(|entry| entry.snapshot);
+        let entry = self.cache.entry(buffer_id).or_insert(GitDiffCacheEntry {
+            path,
+            dirty,
+            last_refreshed_at: now,
+            stale: false,
+            snapshot: previous_snapshot,
+            pending: job.is_some(),
+            request_id,
+        });
+        if let Some(job) = job
+            && self.diff_job_tx.try_send(job).is_err()
+        {
+            entry.pending = false;
+            entry.stale = true;
         }
     }
 
     fn drain_repo_status_results(&mut self) {
         while let Ok(result) = self.repo_status_rx.try_recv() {
             self.pending_repo_status_dirs.remove(&result.requested_dir);
+            self.known_repo_dirs.insert(
+                result.requested_dir,
+                KnownRepoDir {
+                    root: result.repo_root.clone(),
+                    next_discovery_check: Instant::now() + REPO_DISCOVERY_INTERVAL,
+                },
+            );
             let Some(repo_root) = result.repo_root else {
                 continue;
             };
+            self.changed = true;
             let Some((file_statuses, directory_statuses)) = result.statuses else {
                 if self.repo_status_cache.remove(&repo_root).is_some() {
                     self.repo_status_revision = self.repo_status_revision.wrapping_add(1);
@@ -343,13 +404,17 @@ impl GitState {
             let Some(entry) = self.cache.get_mut(&result.buffer_id) else {
                 continue;
             };
-            if entry.path != result.path || entry.dirty != result.dirty {
+            if entry.path != result.path || entry.request_id != result.request_id {
                 continue;
             }
+            entry.pending = false;
+            // An edit made while the job ran still needs its own diff.
+            if entry.stale {
+                continue;
+            }
+            self.changed |= entry.snapshot != result.snapshot;
             entry.snapshot = result.snapshot;
             entry.last_refreshed_at = Instant::now();
-            entry.stale = false;
-            entry.pending = false;
         }
     }
 }
@@ -383,16 +448,6 @@ fn start_repo_status_workers() -> SyncSender<GitRepoStatusJob> {
     }
 
     tx
-}
-
-fn dir_is_separate_repo_from_cached_root(dir: &Path, cached_repo_root: &Path) -> bool {
-    if dir.join(".git").exists() {
-        return true;
-    }
-
-    git_stdout(dir, &["rev-parse", "--show-toplevel"])
-        .map(|repo_root| PathBuf::from(repo_root.trim()))
-        .is_some_and(|repo_root| repo_root != cached_repo_root)
 }
 
 fn load_repo_statuses_for_dir(dir: &Path) -> Option<(PathBuf, RepoStatuses)> {
@@ -510,44 +565,126 @@ fn set_repo_status(
     }
 }
 
-fn load_git_diff(path: &Path, current_text: &str) -> Option<GitDiffSnapshot> {
-    let repo_root = git_stdout(
-        path.parent().unwrap_or_else(|| Path::new(".")),
-        &["rev-parse", "--show-toplevel"],
-    )?;
-    let repo_root = PathBuf::from(repo_root.trim());
-    let rel_path = path.strip_prefix(&repo_root).ok()?;
-    let rel_path = rel_path.to_string_lossy().replace('\\', "/");
+fn start_diff_worker() -> (SyncSender<GitDiffJob>, Receiver<GitDiffResult>) {
+    let (job_tx, job_rx) = mpsc::sync_channel::<GitDiffJob>(REPO_STATUS_QUEUE_BOUND);
+    let (result_tx, result_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("redox-git-diff".to_string())
+        .spawn(move || {
+            let mut worker = GitDiffWorker::default();
+            while let Ok(job) = job_rx.recv() {
+                let snapshot = worker.diff(&job.path, &job.buffer.to_string(), job.base_generation);
+                if result_tx
+                    .send(GitDiffResult {
+                        buffer_id: job.buffer_id,
+                        path: Some(job.path),
+                        request_id: job.request_id,
+                        snapshot,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .expect("failed to start git diff worker");
+    (job_tx, result_rx)
+}
 
-    let head_spec = format!("HEAD:{rel_path}");
-    let head_text = git_stdout(&repo_root, &["show", &head_spec]).unwrap_or_default();
+#[derive(Default)]
+struct GitDiffWorker {
+    // ponytail: retain one file's baseline; expand only if split-pane profiling warrants it.
+    base: Option<GitDiffBase>,
+    current_file: Option<NamedTempFile>,
+}
 
-    let mut old_file = NamedTempFile::new().ok()?;
-    let mut new_file = NamedTempFile::new().ok()?;
-    old_file.write_all(head_text.as_bytes()).ok()?;
-    new_file.write_all(current_text.as_bytes()).ok()?;
-    let old_path = old_file.path();
-    let new_path = new_file.path();
+struct GitDiffBase {
+    path: PathBuf,
+    repo_root: PathBuf,
+    head: Option<String>,
+    generation: u64,
+    file: NamedTempFile,
+}
 
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&repo_root)
-        .arg("diff")
-        .arg("--no-index")
-        .arg("--no-ext-diff")
-        .arg("--unified=0")
-        .arg("--")
-        .arg(&old_path)
-        .arg(&new_path)
-        .output()
-        .ok()?;
-
-    if !(output.status.success() || output.status.code() == Some(1)) {
-        return None;
+impl GitDiffWorker {
+    fn diff(
+        &mut self,
+        path: &Path,
+        current_text: &str,
+        generation: u64,
+    ) -> Option<GitDiffSnapshot> {
+        let cached_root = self
+            .base
+            .as_ref()
+            .filter(|base| {
+                base.path == path
+                    && base.generation == generation
+                    && base.repo_root.join(".git").exists()
+                    && !path
+                        .ancestors()
+                        .skip(1)
+                        .take_while(|dir| *dir != base.repo_root)
+                        .any(|dir| dir.join(".git").exists())
+            })
+            .map(|base| base.repo_root.clone());
+        let repo_root = match cached_root {
+            Some(root) => root,
+            None => {
+                PathBuf::from(git_stdout(path.parent()?, &["rev-parse", "--show-toplevel"])?.trim())
+            }
+        };
+        // Check HEAD on each job so a commit, checkout, reset, or packed ref cannot leave a stale baseline.
+        let head = git_stdout(&repo_root, &["rev-parse", "--verify", "HEAD"]);
+        if self.base.as_ref().is_none_or(|base| {
+            base.path != path
+                || base.repo_root != repo_root
+                || base.head != head
+                || base.generation != generation
+        }) {
+            let relative = path
+                .strip_prefix(&repo_root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = head
+                .as_ref()
+                .and_then(|head| {
+                    git_stdout(
+                        &repo_root,
+                        &["show", &format!("{}:{relative}", head.trim())],
+                    )
+                })
+                .unwrap_or_default();
+            let mut file = NamedTempFile::new().ok()?;
+            file.write_all(text.as_bytes()).ok()?;
+            self.base = Some(GitDiffBase {
+                path: path.to_path_buf(),
+                repo_root: repo_root.clone(),
+                head,
+                generation,
+                file,
+            });
+        }
+        if self.current_file.is_none() {
+            self.current_file = Some(NamedTempFile::new().ok()?);
+        }
+        let current_file = self.current_file.as_mut()?;
+        current_file.as_file_mut().set_len(0).ok()?;
+        current_file.as_file_mut().seek(SeekFrom::Start(0)).ok()?;
+        current_file.write_all(current_text.as_bytes()).ok()?;
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["diff", "--no-index", "--no-ext-diff", "--unified=0", "--"])
+            .arg(self.base.as_ref()?.file.path())
+            .arg(current_file.path())
+            .output()
+            .ok()?;
+        if !(output.status.success() || output.status.code() == Some(1)) {
+            return None;
+        }
+        Some(parse_git_patch(&String::from_utf8(output.stdout).ok()?))
     }
-
-    let patch = String::from_utf8(output.stdout).ok()?;
-    Some(parse_git_patch(&patch))
 }
 
 fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -722,6 +859,156 @@ mod tests {
         GitDiffStats, GitFileStatusKind, GitGutterKind, GitRepoStatusCacheEntry, GitState,
         parse_git_patch,
     };
+
+    #[test]
+    fn diff_worker_reuses_files_and_refreshes_head_and_worktree_baselines() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| super::git_stdout(&repo, args).expect("git command failed");
+        git(&["init", "-q"]);
+        let path = repo.join("example.txt");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let mut worker = super::GitDiffWorker::default();
+        assert_eq!(worker.diff(&path, "one\ntwo\n", 0).unwrap().stats.added, 2);
+        git(&["add", "example.txt"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "initial",
+        ]);
+        assert!(
+            worker
+                .diff(&path, "one\ntwo\n", 0)
+                .unwrap()
+                .stats
+                .is_empty()
+        );
+        let baseline = worker.base.as_ref().unwrap().file.path().to_path_buf();
+        let current = worker.current_file.as_ref().unwrap().path().to_path_buf();
+        assert_eq!(
+            worker
+                .diff(&path, "one\ntwo\nthree\n", 0)
+                .unwrap()
+                .stats
+                .added,
+            1
+        );
+        assert_eq!(worker.base.as_ref().unwrap().file.path(), baseline);
+        assert_eq!(worker.current_file.as_ref().unwrap().path(), current);
+        // A shorter document must truncate the reused temporary file.
+        assert_eq!(worker.diff(&path, "one\n", 0).unwrap().stats.removed, 1);
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        git(&["add", "example.txt"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "updated",
+        ]);
+        assert!(
+            worker
+                .diff(&path, "one\ntwo\nthree\n", 0)
+                .unwrap()
+                .stats
+                .is_empty()
+        );
+        assert_ne!(worker.base.as_ref().unwrap().file.path(), baseline);
+        git(&["pack-refs", "--all"]);
+        assert!(
+            worker
+                .diff(&path, "one\ntwo\nthree\n", 0)
+                .unwrap()
+                .stats
+                .is_empty()
+        );
+        let linked = root.join("linked");
+        git(&[
+            "worktree",
+            "add",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD~1",
+        ]);
+        assert!(
+            worker
+                .diff(&linked.join("example.txt"), "one\ntwo\n", 0)
+                .unwrap()
+                .stats
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn completed_diff_does_not_hide_an_edit_made_while_it_was_running() {
+        let mut state = GitState::default();
+        let session = redox_core::EditorSession::open_initial_unnamed().unwrap();
+        let buffer_id = session.active_id();
+        let path = Some(PathBuf::from("/example.txt"));
+        state.cache.insert(
+            buffer_id,
+            super::GitDiffCacheEntry {
+                path: path.clone(),
+                dirty: true,
+                last_refreshed_at: std::time::Instant::now(),
+                stale: true,
+                snapshot: None,
+                pending: true,
+                request_id: 1,
+            },
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.diff_rx = receiver;
+        sender
+            .send(super::GitDiffResult {
+                buffer_id,
+                path: path.clone(),
+                request_id: 1,
+                snapshot: Some(Default::default()),
+            })
+            .unwrap();
+        state.drain_diff_results();
+        assert!(!state.cache[&buffer_id].pending);
+        assert!(state.cache[&buffer_id].stale);
+        assert!(state.cache[&buffer_id].snapshot.is_none());
+        let entry = state.cache.get_mut(&buffer_id).unwrap();
+        entry.pending = true;
+        entry.stale = false;
+        entry.request_id = 2;
+        sender
+            .send(super::GitDiffResult {
+                buffer_id,
+                path: path.clone(),
+                request_id: 1,
+                snapshot: Some(Default::default()),
+            })
+            .unwrap();
+        state.drain_diff_results();
+        assert!(state.cache[&buffer_id].pending);
+        sender
+            .send(super::GitDiffResult {
+                buffer_id,
+                path,
+                request_id: 2,
+                snapshot: Some(Default::default()),
+            })
+            .unwrap();
+        state.drain_diff_results();
+        assert!(!state.cache[&buffer_id].pending);
+        assert!(state.cache[&buffer_id].snapshot.is_some());
+    }
 
     #[test]
     fn parse_git_patch_classifies_added_modified_and_removed_lines() {

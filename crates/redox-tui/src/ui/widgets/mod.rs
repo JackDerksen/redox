@@ -21,8 +21,8 @@ pub use completion::{draw_completion_popup, draw_completion_preview};
 pub use explorer::{draw_explorer_popup_view, explorer_popup_inner_size};
 pub use finder::{draw_finder_popup, draw_pin_selector_popup};
 pub use lsp::{
-    build_symbol_info_display_lines, draw_code_actions_popup, draw_diagnostics_popup,
-    draw_symbol_info_popup, symbol_info_content_width_limit,
+    build_symbol_info_source_lines, draw_code_actions_popup, draw_diagnostics_popup,
+    draw_symbol_info_popup, symbol_info_content_width_limit, wrap_symbol_info_lines,
 };
 pub use marketplace::{draw_lsp_marketplace_popup, lsp_marketplace_popup_inner_size};
 pub use pane::draw_pane_split_lines;

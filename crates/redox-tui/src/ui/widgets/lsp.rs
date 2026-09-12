@@ -88,13 +88,10 @@ pub fn draw_symbol_info_popup(
     Ok(())
 }
 
-pub fn build_symbol_info_display_lines(
-    blocks: &[SymbolInfoBlock],
-    width: usize,
-) -> Vec<SymbolInfoDisplayLine> {
+pub fn build_symbol_info_source_lines(blocks: &[SymbolInfoBlock]) -> Vec<SymbolInfoDisplayLine> {
     let mut display = Vec::new();
     for block in blocks {
-        let mut block_lines = symbol_info_block_lines(block, width);
+        let mut block_lines = symbol_info_block_lines(block);
         if block_lines.is_empty() {
             continue;
         }
@@ -141,44 +138,64 @@ fn draw_symbol_info_line(
     )
 }
 
-fn symbol_info_block_lines(block: &SymbolInfoBlock, width: usize) -> Vec<SymbolInfoDisplayLine> {
+fn symbol_info_block_lines(block: &SymbolInfoBlock) -> Vec<SymbolInfoDisplayLine> {
     match &block.kind {
-        SymbolInfoKind::Code { language } => wrapped_render_lines(
+        SymbolInfoKind::Code { language } => source_render_lines(
             &block.text,
             SymbolInfoDisplayKind::Code {
                 language: language.as_deref().and_then(language_for_name),
             },
-            width,
         ),
-        SymbolInfoKind::Markdown => markdown_render_lines(&block.text, width),
-        SymbolInfoKind::PlainText => plain_text_render_lines(&block.text, width),
+        SymbolInfoKind::Markdown => markdown_source_lines(&block.text),
+        SymbolInfoKind::PlainText => plain_text_source_lines(&block.text),
     }
 }
 
-fn wrapped_render_lines(
-    text: &str,
-    kind: SymbolInfoDisplayKind,
+fn source_render_lines(text: &str, kind: SymbolInfoDisplayKind) -> Vec<SymbolInfoDisplayLine> {
+    let language = match kind {
+        SymbolInfoDisplayKind::Markdown => Some(SyntaxLanguage::Markdown),
+        SymbolInfoDisplayKind::Code { language } => language,
+        SymbolInfoDisplayKind::PlainText => None,
+    };
+    let spans = line_spans_for_source(text, language).unwrap_or_default();
+    text.lines()
+        .enumerate()
+        .map(|(line_index, line)| {
+            let mut line_spans = spans.get(line_index).cloned().unwrap_or_default();
+            if line_spans.is_empty()
+                && matches!(kind, SymbolInfoDisplayKind::Code { language: Some(_) })
+            {
+                line_spans = lexical_fallback_line_spans(line);
+            }
+            SymbolInfoDisplayLine {
+                text: line.to_string(),
+                kind: kind.clone(),
+                spans: line_spans,
+            }
+        })
+        .collect()
+}
+
+pub fn wrap_symbol_info_lines(
+    source: &[SymbolInfoDisplayLine],
     width: usize,
 ) -> Vec<SymbolInfoDisplayLine> {
     let mut lines = Vec::new();
-    let mode = match kind {
-        SymbolInfoDisplayKind::Code { .. } => minui::TextWrapMode::Wrap,
-        SymbolInfoDisplayKind::PlainText | SymbolInfoDisplayKind::Markdown => {
-            minui::TextWrapMode::WrapWords
-        }
-    };
-    for source_line in text.lines() {
+    for line in source {
+        let mode = match line.kind {
+            SymbolInfoDisplayKind::Code { .. } => minui::TextWrapMode::Wrap,
+            _ => minui::TextWrapMode::WrapWords,
+        };
         let wrapped = minui::wrap_ranges_to_cells(
-            source_line,
+            &line.text,
             width.min(u16::MAX as usize) as u16,
             mode,
             TabPolicy::Fixed(4),
         );
-        let source_spans = symbol_info_line_spans(source_line, &kind);
         lines.extend(wrapped.into_iter().map(|range| SymbolInfoDisplayLine {
-            spans: clip_line_spans(&source_spans, range.start, range.end),
-            text: source_line[range].to_owned(),
-            kind: kind.clone(),
+            spans: clip_line_spans(&line.spans, range.start, range.end),
+            text: line.text[range].to_owned(),
+            kind: line.kind.clone(),
         }));
     }
     lines
@@ -203,7 +220,7 @@ fn clip_line_spans(
         .collect()
 }
 
-fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine> {
+fn markdown_source_lines(text: &str) -> Vec<SymbolInfoDisplayLine> {
     let mut display = Vec::new();
     let mut paragraph = Vec::new();
     let mut in_code_block = false;
@@ -215,20 +232,18 @@ fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine>
         let trimmed = line.trim();
         if let Some(language) = fenced_code_language(trimmed) {
             if !paragraph.is_empty() {
-                display.extend(wrapped_render_lines(
+                display.extend(source_render_lines(
                     &paragraph.join("\n"),
                     SymbolInfoDisplayKind::Markdown,
-                    width,
                 ));
                 paragraph.clear();
             }
             if in_code_block {
-                display.extend(wrapped_render_lines(
+                display.extend(source_render_lines(
                     &code_lines.join("\n"),
                     SymbolInfoDisplayKind::Code {
                         language: code_language,
                     },
-                    width,
                 ));
                 code_lines.clear();
                 code_language = None;
@@ -242,10 +257,9 @@ fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine>
 
         if !in_code_block && markdown_indented_code_line(line) {
             if !paragraph.is_empty() {
-                display.extend(wrapped_render_lines(
+                display.extend(source_render_lines(
                     &paragraph.join("\n"),
                     SymbolInfoDisplayKind::Markdown,
-                    width,
                 ));
                 paragraph.clear();
             }
@@ -263,10 +277,9 @@ fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine>
                 code_lines.push(strip_markdown_code_indent(line).to_string());
                 continue;
             }
-            display.extend(wrapped_render_lines(
+            display.extend(source_render_lines(
                 &code_lines.join("\n"),
                 SymbolInfoDisplayKind::Code { language: None },
-                width,
             ));
             code_lines.clear();
             in_indented_code_block = false;
@@ -280,31 +293,28 @@ fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine>
     }
 
     if in_code_block {
-        display.extend(wrapped_render_lines(
+        display.extend(source_render_lines(
             &code_lines.join("\n"),
             SymbolInfoDisplayKind::Code {
                 language: code_language,
             },
-            width,
         ));
     } else if in_indented_code_block {
-        display.extend(wrapped_render_lines(
+        display.extend(source_render_lines(
             &code_lines.join("\n"),
             SymbolInfoDisplayKind::Code { language: None },
-            width,
         ));
     } else if !paragraph.is_empty() {
-        display.extend(wrapped_render_lines(
+        display.extend(source_render_lines(
             &paragraph.join("\n"),
             SymbolInfoDisplayKind::Markdown,
-            width,
         ));
     }
 
     display
 }
 
-fn plain_text_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine> {
+fn plain_text_source_lines(text: &str) -> Vec<SymbolInfoDisplayLine> {
     let mut display = Vec::new();
     let mut paragraph = Vec::new();
     let mut in_indented_code_block = false;
@@ -314,10 +324,9 @@ fn plain_text_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLin
         let trimmed = line.trim();
         if !in_indented_code_block && plain_text_indented_code_line(line) {
             if !paragraph.is_empty() {
-                display.extend(wrapped_render_lines(
+                display.extend(source_render_lines(
                     &paragraph.join("\n"),
                     SymbolInfoDisplayKind::PlainText,
-                    width,
                 ));
                 paragraph.clear();
             }
@@ -335,10 +344,9 @@ fn plain_text_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLin
                 code_lines.push(strip_plain_text_code_indent(line).to_string());
                 continue;
             }
-            display.extend(wrapped_render_lines(
+            display.extend(source_render_lines(
                 &code_lines.join("\n"),
                 SymbolInfoDisplayKind::Code { language: None },
-                width,
             ));
             code_lines.clear();
             in_indented_code_block = false;
@@ -348,16 +356,14 @@ fn plain_text_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLin
     }
 
     if in_indented_code_block {
-        display.extend(wrapped_render_lines(
+        display.extend(source_render_lines(
             &code_lines.join("\n"),
             SymbolInfoDisplayKind::Code { language: None },
-            width,
         ));
     } else if !paragraph.is_empty() {
-        display.extend(wrapped_render_lines(
+        display.extend(source_render_lines(
             &paragraph.join("\n"),
             SymbolInfoDisplayKind::PlainText,
-            width,
         ));
     }
 
@@ -398,24 +404,6 @@ fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> Color
     match kind {
         SymbolInfoDisplayKind::PlainText => style.finder.dim,
         SymbolInfoDisplayKind::Markdown | SymbolInfoDisplayKind::Code { .. } => style.finder.text,
-    }
-}
-
-fn symbol_info_line_spans(line: &str, kind: &SymbolInfoDisplayKind) -> Vec<LineSyntaxSpan> {
-    match kind {
-        SymbolInfoDisplayKind::PlainText => Vec::new(),
-        SymbolInfoDisplayKind::Markdown => {
-            line_spans_for_source(line, Some(SyntaxLanguage::Markdown))
-                .and_then(|mut spans| spans.pop())
-                .unwrap_or_default()
-        }
-        SymbolInfoDisplayKind::Code { language: None } => Vec::new(),
-        SymbolInfoDisplayKind::Code {
-            language: Some(language),
-        } => line_spans_for_source(line, Some(*language))
-            .and_then(|mut spans| spans.pop())
-            .filter(|spans| !spans.is_empty())
-            .unwrap_or_else(|| lexical_fallback_line_spans(line)),
     }
 }
 
@@ -948,12 +936,57 @@ fn text_width(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_symbol_info_display_lines, markdown_render_lines, plain_text_render_lines,
-        symbol_info_line_spans,
-    };
+    use super::*;
+
+    fn build_symbol_info_display_lines(
+        blocks: &[SymbolInfoBlock],
+        width: usize,
+    ) -> Vec<SymbolInfoDisplayLine> {
+        wrap_symbol_info_lines(&build_symbol_info_source_lines(blocks), width)
+    }
+
+    fn markdown_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine> {
+        wrap_symbol_info_lines(&markdown_source_lines(text), width)
+    }
+
+    fn plain_text_render_lines(text: &str, width: usize) -> Vec<SymbolInfoDisplayLine> {
+        wrap_symbol_info_lines(&plain_text_source_lines(text), width)
+    }
+
+    fn symbol_info_line_spans(text: &str, kind: &SymbolInfoDisplayKind) -> Vec<LineSyntaxSpan> {
+        source_render_lines(text, kind.clone()).remove(0).spans
+    }
     use crate::app::state::{SymbolInfoBlock, SymbolInfoDisplayKind, SymbolInfoKind};
     use crate::ui::syntax::SyntaxLanguage;
+
+    #[test]
+    fn hover_highlighting_keeps_multiline_context_when_rewrapped() {
+        let blocks = [SymbolInfoBlock {
+            kind: SymbolInfoKind::Code {
+                language: Some("rust".to_string()),
+            },
+            text: "/* a comment\nwith 雪 across lines */\nfn main() {}".to_string(),
+        }];
+        let source = build_symbol_info_source_lines(&blocks);
+        let comment = source[1].spans[0].role;
+        assert_eq!(comment, crate::ui::style::SyntaxRole::Comment);
+        for width in [12, 72, 18] {
+            let wrapped = wrap_symbol_info_lines(&source, width);
+            assert!(wrapped.iter().any(|line| line.text.contains("雪")));
+            for line in &wrapped {
+                assert!(
+                    line.spans
+                        .iter()
+                        .all(|span| span.end_byte <= line.text.len())
+                );
+            }
+            let continued = wrapped
+                .iter()
+                .find(|line| line.text.contains("with"))
+                .unwrap();
+            assert!(continued.spans.iter().all(|span| span.role == comment));
+        }
+    }
 
     #[test]
     fn markdown_render_lines_keeps_untyped_fenced_code_blocks_separate() {
