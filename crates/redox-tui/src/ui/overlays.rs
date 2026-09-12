@@ -264,8 +264,10 @@ impl DelimiterAnalysis {
         syntax_scope: Option<SyntaxScope>,
     ) -> Option<DelimiterPair> {
         pair.filter(|pair| {
+            // Exclude header parameters, but retain later branches within the
+            // construct: body.end may stop at the first branch's closing brace.
             syntax_scope
-                .is_none_or(|scope| pair.start >= scope.extent.start && pair.end < scope.extent.end)
+                .is_none_or(|scope| pair.start >= scope.body.start && pair.end < scope.extent.end)
         })
         .or_else(|| {
             syntax_scope.and_then(|scope| self.scope_pair_for_syntax_scope(buffer, scope.body))
