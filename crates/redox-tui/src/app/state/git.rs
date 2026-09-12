@@ -11,6 +11,7 @@ use redox_core::{BufferId, BufferKind, EditorSession, TextBuffer};
 use tempfile::NamedTempFile;
 
 const DIRTY_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+const REPO_DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
 const REPO_STATUS_WORKERS: usize = 2;
 const REPO_STATUS_QUEUE_BOUND: usize = 64;
 
@@ -90,7 +91,7 @@ pub struct GitState {
     repo_status_cache: HashMap<PathBuf, GitRepoStatusCacheEntry>,
     repo_status_revision: u64,
     pending_repo_status_dirs: HashSet<PathBuf>,
-    known_repo_dirs: HashMap<PathBuf, Option<PathBuf>>,
+    known_repo_dirs: HashMap<PathBuf, KnownRepoDir>,
     repo_status_tx: Sender<GitRepoStatusResult>,
     repo_status_rx: Receiver<GitRepoStatusResult>,
     repo_status_job_tx: SyncSender<GitRepoStatusJob>,
@@ -99,6 +100,12 @@ pub struct GitState {
     base_generation: u64,
     diff_rx: Receiver<GitDiffResult>,
     changed: bool,
+}
+
+#[derive(Debug)]
+struct KnownRepoDir {
+    root: Option<PathBuf>,
+    next_discovery_check: Instant,
 }
 
 #[derive(Debug)]
@@ -234,16 +241,35 @@ impl GitState {
         self.repo_status_revision
     }
 
-    pub fn refresh_repo_status_for_dir(&mut self, dir: &Path) {
+    pub(super) fn repo_discovery_deadline(&self, dir: &Path) -> Option<Instant> {
+        let known = self.known_repo_dirs.get(dir)?;
+        (known.root.is_none() && !self.pending_repo_status_dirs.contains(dir))
+            .then_some(known.next_discovery_check)
+    }
+
+    pub fn refresh_repo_status_for_dir(&mut self, dir: &Path, now: Instant) {
         self.drain_repo_status_results();
 
         let dir = dir.to_path_buf();
         if self.pending_repo_status_dirs.contains(&dir) {
             return;
         }
-        if let Some(root) = self.known_repo_dirs.get(&dir) {
-            match root {
-                None => return,
+        if let Some(known) = self.known_repo_dirs.get_mut(&dir) {
+            match &known.root {
+                None => {
+                    if now < known.next_discovery_check {
+                        return;
+                    }
+                    known.next_discovery_check = now + REPO_DISCOVERY_INTERVAL;
+                    // Check metadata cheaply before asking Git to rediscover a repository.
+                    // `.git` may be a directory or a worktree file, including in an ancestor.
+                    if !dir
+                        .ancestors()
+                        .any(|ancestor| ancestor.join(".git").exists())
+                    {
+                        return;
+                    }
+                }
                 Some(root)
                     if self
                         .repo_status_cache
@@ -344,8 +370,13 @@ impl GitState {
     fn drain_repo_status_results(&mut self) {
         while let Ok(result) = self.repo_status_rx.try_recv() {
             self.pending_repo_status_dirs.remove(&result.requested_dir);
-            self.known_repo_dirs
-                .insert(result.requested_dir, result.repo_root.clone());
+            self.known_repo_dirs.insert(
+                result.requested_dir,
+                KnownRepoDir {
+                    root: result.repo_root.clone(),
+                    next_discovery_check: Instant::now() + REPO_DISCOVERY_INTERVAL,
+                },
+            );
             let Some(repo_root) = result.repo_root else {
                 continue;
             };

@@ -55,7 +55,8 @@ impl EditorState {
             self.git.refresh_for_buffer(&self.session, buffer_id);
         }
         if let Some(explorer) = &self.explorer {
-            self.git.refresh_repo_status_for_dir(&explorer.dir_path);
+            self.git
+                .refresh_repo_status_for_dir(&explorer.dir_path, now);
         }
         if self.git.take_changed() {
             self.request_redraw();
@@ -114,6 +115,9 @@ impl EditorState {
 
         [
             has_file.then_some(self.next_external_file_check_at),
+            self.explorer
+                .as_ref()
+                .and_then(|explorer| self.git.repo_discovery_deadline(&explorer.dir_path)),
             background_pending.then_some(now + BACKGROUND_POLL_INTERVAL),
             self.lsp_poll_deadline(now),
             self.status_msg_expires_at,
@@ -200,20 +204,55 @@ mod tests {
     }
 
     #[test]
-    fn explorer_outside_a_repository_does_not_repeat_git_requests() {
+    fn idle_explorer_discovers_externally_created_repository() {
         let _guard = super::super::global_test_state_lock().lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let path = nested.join("existing.txt");
+        std::fs::write(&path, "unchanged\n").unwrap();
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
-        state
-            .open_explorer_at_path(directory.path().to_path_buf())
-            .unwrap();
+        state.open_explorer_at_path(nested.clone()).unwrap();
         settle(&mut state);
         state.clear_status();
         state.take_redraw_request();
         let now = Instant::now();
         state.update_background(now);
         assert!(!state.take_redraw_request());
-        assert_eq!(state.next_wake_deadline(now), None);
+        let check = state.git.repo_discovery_deadline(&nested).unwrap();
+        assert_eq!(state.next_wake_deadline(now), Some(check));
+        state.update_background(check);
+        assert!(
+            !state.git.has_pending_work(),
+            "missing metadata needs no Git job"
+        );
+        assert!(!state.take_redraw_request());
+        let next_check = state.git.repo_discovery_deadline(&nested).unwrap();
+        assert!(next_check > check);
+
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        state.update_background(check);
+        assert!(
+            !state.git.has_pending_work(),
+            "discovery checks are throttled"
+        );
+        state.update_background(next_check);
+        assert!(state.git.has_pending_work());
+        settle(&mut state);
+        assert_eq!(
+            state.git.status_for_path(&path),
+            Some(super::super::git::GitFileStatusKind::Added)
+        );
+        assert_eq!(state.git.repo_discovery_deadline(&nested), None);
     }
 
     #[test]
