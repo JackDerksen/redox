@@ -681,6 +681,7 @@ impl EditorState {
                 break;
             };
 
+            self.request_redraw();
             match message {
                 FinderIndexMessage::Batch(candidates) => {
                     self.finder_index_files.extend(candidates.iter().cloned());

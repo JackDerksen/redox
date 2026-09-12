@@ -183,6 +183,7 @@ impl EditorState {
             return;
         }
         if self.search_preview_due.is_some_and(|due| now >= due) {
+            self.request_redraw();
             let (width, height) = self.viewport_size();
             self.update_search_preview(
                 width,

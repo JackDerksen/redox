@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -5,7 +6,7 @@ use std::thread;
 use redox_core::{BufferId, TextBuffer};
 
 use crate::ui::overlays::{DelimiterAnalysis, compute_delimiter_analysis};
-use crate::ui::syntax::{HighlightCache, SyntaxHighlighter, SyntaxLanguage};
+use crate::ui::syntax::{HighlightCache, SyntaxLanguage, SyntaxParser};
 
 #[derive(Debug)]
 pub(super) enum AnalysisResult {
@@ -31,6 +32,7 @@ struct AnalysisRequest {
 pub(super) struct AnalysisWorker {
     requests: LatestRequestSender,
     results: Receiver<AnalysisResult>,
+    pending: Cell<Option<(BufferId, u64)>>,
 }
 
 #[derive(Default)]
@@ -61,6 +63,7 @@ impl AnalysisWorker {
         thread::Builder::new()
             .name("redox-analysis".to_string())
             .spawn(move || {
+                let mut syntax_parser = SyntaxParser::default();
                 while let Some(request) = request_rx.recv() {
                     let request = drain_latest_requests(request, &request_rx);
                     // Publish overlays before the more expensive syntax queries.
@@ -76,7 +79,7 @@ impl AnalysisWorker {
                         return;
                     }
                     let syntax_cache = request.syntax_language.and_then(|language| {
-                        SyntaxHighlighter::compute_cache(&request.buffer, language)
+                        syntax_parser.compute_cache(&request.buffer, language)
                     });
                     if result_tx
                         .send(AnalysisResult::Syntax {
@@ -95,6 +98,7 @@ impl AnalysisWorker {
         Self {
             requests: request_tx,
             results: result_rx,
+            pending: Cell::new(None),
         }
     }
 
@@ -105,6 +109,7 @@ impl AnalysisWorker {
         buffer: TextBuffer,
         syntax_language: Option<SyntaxLanguage>,
     ) {
+        self.pending.set(Some((buffer_id, version)));
         self.requests.send_latest(AnalysisRequest {
             buffer_id,
             version,
@@ -114,7 +119,21 @@ impl AnalysisWorker {
     }
 
     pub(super) fn try_recv(&self) -> Option<AnalysisResult> {
-        self.results.try_recv().ok()
+        let result = self.results.try_recv().ok()?;
+        if let AnalysisResult::Syntax {
+            buffer_id, version, ..
+        } = &result
+            && self.pending.get() == Some((*buffer_id, *version))
+        {
+            self.pending.set(None);
+        }
+        Some(result)
+    }
+}
+
+impl AnalysisWorker {
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.get().is_some()
     }
 }
 

@@ -53,7 +53,6 @@ pub fn draw_explorer_popup_view(
     )?;
     let mut view = popup_window_view(window, layout);
 
-    state.refresh_git_repo_status_for_dir(&popup.dir_path);
     let show_git_status_column = state.refresh_explorer_render_model();
 
     let visual_selection = state.active_visual_selection();

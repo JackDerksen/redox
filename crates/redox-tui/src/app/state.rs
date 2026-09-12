@@ -31,6 +31,7 @@ mod finder;
 mod git;
 mod lsp;
 mod rain_mode;
+mod runtime;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
 pub(crate) use explorer::{ExplorerRenderRow, ExplorerRenderRowKind};
@@ -253,7 +254,6 @@ impl BufferViewState {
     }
 
     fn invalidate_render_caches(&mut self) {
-        self.render_line_cache.clear();
         self.syntax_highlighter.mark_cache_stale();
         self.delimiter_pair_cache.mark_stale();
         self.analysis_version = self.analysis_version.wrapping_add(1);
@@ -388,6 +388,7 @@ pub struct PaneRect {
 /// Multi-buffer editor state for the TUI frontend.
 #[derive(Debug)]
 pub struct EditorState {
+    runtime: runtime::RuntimeState,
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
@@ -463,6 +464,7 @@ impl EditorState {
             options: PaneOptions::editor(),
         };
         let state = Self {
+            runtime: runtime::RuntimeState::default(),
             session,
             views,
             about: None,
@@ -641,12 +643,14 @@ impl EditorState {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
+        self.request_redraw();
         self.status_msg = Some(message.into());
         self.status_msg_line_styles.clear();
         self.status_msg_expires_at = Some(Instant::now() + STATUS_MESSAGE_TIMEOUT);
     }
 
     pub fn set_status_sticky_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        self.request_redraw();
         let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
         self.status_msg = Some(lines.join("\n"));
         self.status_msg_line_styles = styles;
@@ -654,6 +658,7 @@ impl EditorState {
     }
 
     pub fn set_status_lines(&mut self, lines: Vec<(String, StatusMessageStyle)>) {
+        self.request_redraw();
         let (lines, styles): (Vec<_>, Vec<_>) = lines.into_iter().unzip();
         self.status_msg = Some(lines.join("\n"));
         self.status_msg_line_styles = styles;
@@ -661,6 +666,9 @@ impl EditorState {
     }
 
     pub fn clear_status(&mut self) {
+        if self.status_msg.is_some() {
+            self.request_redraw();
+        }
         self.status_msg = None;
         self.status_msg_line_styles.clear();
         self.status_msg_expires_at = None;
@@ -1052,7 +1060,21 @@ impl EditorState {
 
     pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {
         let active_id = self.session.active_id();
-        let before_len_chars = self.session.active_buffer().len_chars();
+        let loading_buffers = self
+            .views
+            .keys()
+            .filter_map(|id| {
+                let status = self.session.buffer_load_status(*id)?;
+                if status.phase != redox_core::BufferLoadPhase::Loading {
+                    return None;
+                }
+                Some((
+                    *id,
+                    self.session.buffer(*id).map(TextBuffer::len_chars),
+                    status,
+                ))
+            })
+            .collect::<Vec<_>>();
         let scroll_y = self
             .views
             .get(&active_id)
@@ -1061,16 +1083,25 @@ impl EditorState {
         let target_line = scroll_y
             .saturating_add(viewport_height_rows.saturating_mul(VIEWPORT_PREFETCH_MULTIPLIER));
 
+        let active_was_loading =
+            self.session.active_buffer_load_status().phase == redox_core::BufferLoadPhase::Loading;
         let _ = self.session.poll_loading(PREFETCH_PER_FRAME_BYTES);
-        if let Err(error) = self.session.ensure_buffer_loaded_through_line(
-            active_id,
-            target_line,
-            DEMAND_LOAD_BUDGET_BYTES,
-        ) {
+        if active_was_loading
+            && let Err(error) = self.session.ensure_buffer_loaded_through_line(
+                active_id,
+                target_line,
+                DEMAND_LOAD_BUDGET_BYTES,
+            )
+        {
             self.set_status(format!("load failed: {error}"));
         }
-        if self.session.active_buffer().len_chars() != before_len_chars {
-            self.invalidate_active_render_caches();
+        for (buffer_id, previous_length, previous_status) in loading_buffers {
+            if self.session.buffer(buffer_id).map(TextBuffer::len_chars) != previous_length {
+                self.invalidate_buffer_render_caches(buffer_id);
+            }
+            if self.session.buffer_load_status(buffer_id).as_ref() != Some(&previous_status) {
+                self.request_redraw();
+            }
         }
         self.ensure_buffer_undo_history_loaded(active_id);
     }
@@ -1500,6 +1531,7 @@ impl EditorState {
     }
 
     fn invalidate_buffer_render_caches(&mut self, buffer_id: BufferId) {
+        self.request_redraw();
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             view.invalidate_render_caches();
@@ -1519,6 +1551,7 @@ impl EditorState {
     }
 
     fn reset_buffer_render_caches(&mut self, buffer_id: BufferId) {
+        self.request_redraw();
         let version = {
             let view = self.views.entry(buffer_id).or_default();
             if let Some(buffer) = self.session.buffer(buffer_id) {
@@ -1538,21 +1571,9 @@ impl EditorState {
 
     pub fn poll_analysis_results(&mut self) {
         while let Some(result) = self.analysis_worker.try_recv() {
+            self.request_redraw();
             self.apply_analysis_result(result);
         }
-    }
-
-    pub fn refresh_active_git_diff(&mut self) {
-        let active_id = self.session.active_id();
-        self.refresh_git_diff_for_buffer(active_id);
-    }
-
-    pub fn refresh_git_diff_for_buffer(&mut self, buffer_id: BufferId) {
-        self.git.refresh_for_buffer(&self.session, buffer_id);
-    }
-
-    pub fn refresh_git_repo_status_for_dir(&mut self, dir: &std::path::Path) {
-        self.git.refresh_repo_status_for_dir(dir);
     }
 
     pub fn mark_git_repo_statuses_stale(&mut self) {

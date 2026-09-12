@@ -811,6 +811,10 @@ impl InputState {
         }
     }
 
+    pub(crate) fn which_key_deadline(&self, delay: Duration) -> Option<Instant> {
+        self.which_key_started_at.map(|started| started + delay)
+    }
+
     pub fn which_key_popup(
         &self,
         mode: InputMode,

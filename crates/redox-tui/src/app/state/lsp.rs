@@ -27,11 +27,11 @@ use redox_lsp::{
 use serde_json::{Value, json};
 
 use super::{EditorMode, EditorState, StatusMessageStyle};
-use crate::ui::build_symbol_info_display_lines;
 use crate::ui::language_for_path;
 use crate::ui::style::SyntaxRole;
 use crate::ui::symbol_info_content_width_limit;
 use crate::ui::syntax::{SyntaxLanguage, lexical_fallback_line_spans};
+use crate::ui::{build_symbol_info_source_lines, wrap_symbol_info_lines};
 
 mod completion;
 use completion::*;
@@ -203,7 +203,7 @@ struct DiagnosticsPopupState {
 #[derive(Debug, Clone)]
 struct SymbolInfoState {
     requested_at: Pos,
-    blocks: Vec<SymbolInfoBlock>,
+    source_lines: Vec<SymbolInfoDisplayLine>,
     cached_width: Option<usize>,
     display_lines: Vec<SymbolInfoDisplayLine>,
     scroll: usize,
@@ -419,7 +419,7 @@ impl EditorState {
         self.visible_completion_state().is_some()
     }
 
-    pub(crate) fn lsp_needs_fast_poll(&self) -> bool {
+    fn lsp_needs_fast_poll(&self) -> bool {
         self.lsp.auto_completion.is_some()
             || self.lsp.pending_requests.values().any(|request| {
                 matches!(
@@ -427,6 +427,29 @@ impl EditorState {
                     PendingRequest::Completion { .. } | PendingRequest::SymbolInfo { .. }
                 )
             })
+    }
+
+    pub(super) fn lsp_poll_deadline(&self, now: Instant) -> Option<Instant> {
+        let interval = if self.lsp_needs_fast_poll() {
+            crate::ANIMATION_FRAME_INTERVAL
+        } else {
+            super::runtime::BACKGROUND_POLL_INTERVAL
+        };
+        let background = (!self.lsp.clients.is_empty()
+            || !self.lsp.provider_operations.is_empty()
+            || !self.lsp.lint_runs.is_empty()
+            || !self.lsp.queued_lint_runs.is_empty())
+        .then_some(now + interval);
+        background
+            .into_iter()
+            .chain(self.lsp.retry_after.values().copied())
+            .chain(
+                self.lsp
+                    .auto_completion
+                    .as_ref()
+                    .map(|request| request.due_at),
+            )
+            .min()
     }
 
     pub fn completion_preview(&self) -> Option<CompletionPreview> {
@@ -457,7 +480,7 @@ impl EditorState {
         let width = symbol_info_content_width_limit(term_w);
         self.ensure_symbol_info_layout(width);
         let state = self.lsp.symbol_info.as_ref()?;
-        if self.active_cursor_pos() != state.requested_at || state.blocks.is_empty() {
+        if self.active_cursor_pos() != state.requested_at || state.source_lines.is_empty() {
             return None;
         }
         let inner_h = state
@@ -625,6 +648,7 @@ impl EditorState {
             return;
         }
 
+        self.request_redraw();
         let pending = std::mem::take(&mut self.lsp.deferred_diagnostics);
         for diagnostics in pending {
             if self.diagnostics_are_stale(&diagnostics.uri, diagnostics.version) {
@@ -755,6 +779,7 @@ impl EditorState {
                     break;
                 };
 
+                self.request_redraw();
                 match event {
                     SessionEvent::Initialized { .. } => {
                         let document_ids = self
@@ -1260,7 +1285,7 @@ impl EditorState {
     }
 
     fn sync_lsp_document(&mut self, buffer_id: BufferId, policy: SyncPolicy) -> io::Result<()> {
-        let Some(document) = self.lsp.documents.get(&buffer_id).cloned() else {
+        let Some(document) = self.lsp.documents.get_mut(&buffer_id) else {
             return Ok(());
         };
         let Some(client) = self.lsp.clients.get_mut(&document.workspace) else {
@@ -1276,26 +1301,17 @@ impl EditorState {
         {
             return Ok(());
         }
-        if self.session.buffer(buffer_id).is_none() {
+        let Some(buffer) = self.session.buffer(buffer_id) else {
             return Ok(());
-        }
+        };
         let analysis_version = self
             .views
             .get(&buffer_id)
             .map(|view| view.analysis_version())
             .unwrap_or(0);
 
-        let Some(document) = self.lsp.documents.get_mut(&buffer_id) else {
-            return Ok(());
-        };
         if !document.opened {
-            let Some(text) = self
-                .session
-                .buffer(buffer_id)
-                .map(|buffer| buffer.to_string())
-            else {
-                return Ok(());
-            };
+            let text = buffer.to_string();
             document.document_version = 1;
             client.session.send_did_open(
                 &document.path,
@@ -1317,21 +1333,6 @@ impl EditorState {
             return Ok(());
         }
 
-        let Some(text) = self
-            .session
-            .buffer(buffer_id)
-            .map(|buffer| buffer.to_string())
-        else {
-            return Ok(());
-        };
-
-        if document.last_sent_text.as_deref() == Some(text.as_str()) {
-            document.last_sent_analysis_version = Some(analysis_version);
-            document.pending_sync_since = None;
-            document.pending_sync_analysis_version = None;
-            return Ok(());
-        }
-
         if let SyncPolicy::Debounced { now } = policy {
             if document.pending_sync_analysis_version != Some(analysis_version) {
                 document.pending_sync_since = Some(now);
@@ -1342,6 +1343,15 @@ impl EditorState {
             if now.saturating_duration_since(pending_since) < LSP_CHANGE_DEBOUNCE {
                 return Ok(());
             }
+        }
+
+        let text = buffer.to_string();
+
+        if document.last_sent_text.as_deref() == Some(text.as_str()) {
+            document.last_sent_analysis_version = Some(analysis_version);
+            document.pending_sync_since = None;
+            document.pending_sync_analysis_version = None;
+            return Ok(());
         }
 
         document.document_version = document.document_version.saturating_add(1);
@@ -1676,6 +1686,7 @@ impl EditorState {
             })
             .collect::<Vec<_>>();
         for (key, kind) in timed_out {
+            self.request_redraw();
             if self.lsp.pending_requests.remove(&key).is_none() {
                 continue;
             }
@@ -2257,6 +2268,7 @@ impl EditorState {
             return;
         }
         self.lsp.auto_completion = None;
+        self.request_redraw();
         if self.mode != EditorMode::Insert || self.active_cursor_pos() != request.requested_at {
             return;
         }
@@ -2377,7 +2389,7 @@ impl EditorState {
         if symbol_info.cached_width == Some(width) {
             return;
         }
-        symbol_info.display_lines = build_symbol_info_display_lines(&symbol_info.blocks, width);
+        symbol_info.display_lines = wrap_symbol_info_lines(&symbol_info.source_lines, width);
         symbol_info.cached_width = Some(width);
     }
 
@@ -2588,6 +2600,7 @@ impl EditorState {
         }
         self.lsp.lint_runs = pending;
         for (request, result) in completed {
+            self.request_redraw();
             if self.lint_request_is_current(&request)
                 && let Some(result) = result
             {
@@ -2961,7 +2974,7 @@ impl EditorState {
     ) {
         self.lsp.symbol_info = Some(SymbolInfoState {
             requested_at,
-            blocks,
+            source_lines: build_symbol_info_source_lines(&blocks),
             cached_width: None,
             display_lines: Vec::new(),
             scroll: 0,
@@ -3743,10 +3756,10 @@ mod tests {
         let mut state = EditorState::new(session);
         state.lsp.symbol_info = Some(SymbolInfoState {
             requested_at: Pos::new(0, 0),
-            blocks: vec![SymbolInfoBlock {
+            source_lines: build_symbol_info_source_lines(&[SymbolInfoBlock {
                 kind: SymbolInfoKind::PlainText,
                 text: text.to_string(),
-            }],
+            }]),
             cached_width: None,
             display_lines: Vec::new(),
             scroll,
@@ -4116,6 +4129,135 @@ mod regressions {
         state
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn document_sync_debounces_changes_but_immediate_requests_flush() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.rs");
+        let log = directory.path().join("wire.log");
+        let response = r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#;
+        let script = format!(
+            "printf 'Content-Length: {}\\r\\n\\r\\n%s' '{}'; exec cat > \"$1\"",
+            response.len(),
+            response,
+        );
+        let mut client = LspSession::spawn(
+            &redox_lsp::ServerCommand::new("mock", "sh").args(&[
+                "-c",
+                &script,
+                "mock",
+                log.to_str().unwrap(),
+            ]),
+            directory.path(),
+            ClientInfo {
+                name: "test",
+                version: "1",
+            },
+        )
+        .unwrap();
+        let timeout = Instant::now() + Duration::from_secs(3);
+        while !client.is_initialized() {
+            let _ = client.try_recv();
+            assert!(Instant::now() < timeout, "mock server did not initialize");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut state = state("original", Pos::new(0, 0));
+        let buffer_id = state.session.active_id();
+        let provider = provider_spec(ProviderId::RustAnalyzer).unwrap();
+        let workspace = WorkspaceKey {
+            provider_id: provider.id,
+            root: directory.path().to_path_buf(),
+        };
+        state.lsp.clients.insert(
+            workspace.clone(),
+            ManagedClient {
+                provider,
+                session: client,
+                loading_since: Instant::now(),
+            },
+        );
+        state.lsp.documents.insert(
+            buffer_id,
+            ManagedDocument {
+                workspace,
+                path: path.clone(),
+                uri: file_uri(&path).unwrap(),
+                language_id: "rust",
+                document_version: 0,
+                last_sent_analysis_version: None,
+                last_sent_text: None,
+                pending_sync_since: None,
+                pending_sync_analysis_version: None,
+                opened: false,
+            },
+        );
+        state
+            .sync_lsp_document(buffer_id, SyncPolicy::Immediate)
+            .unwrap();
+        *state.session.active_buffer_mut() = TextBuffer::from_text("changed 雪");
+        state.views.get_mut(&buffer_id).unwrap().analysis_version += 1;
+        let now = Instant::now();
+        state
+            .sync_lsp_document(buffer_id, SyncPolicy::Debounced { now })
+            .unwrap();
+        state
+            .sync_lsp_document(
+                buffer_id,
+                SyncPolicy::Debounced {
+                    now: now + LSP_CHANGE_DEBOUNCE / 2,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            Some("original")
+        );
+        assert_eq!(state.lsp.documents[&buffer_id].document_version, 1);
+        state
+            .sync_lsp_document(
+                buffer_id,
+                SyncPolicy::Debounced {
+                    now: now + LSP_CHANGE_DEBOUNCE,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            Some("changed 雪")
+        );
+        for _ in 0..20 {
+            state
+                .sync_lsp_document(buffer_id, SyncPolicy::Immediate)
+                .unwrap();
+        }
+        assert_eq!(state.lsp.documents[&buffer_id].document_version, 2);
+        *state.session.active_buffer_mut() = TextBuffer::from_text("immediate");
+        state.views.get_mut(&buffer_id).unwrap().analysis_version += 1;
+        state
+            .sync_lsp_document(buffer_id, SyncPolicy::Debounced { now })
+            .unwrap();
+        state
+            .sync_lsp_document(buffer_id, SyncPolicy::Immediate)
+            .unwrap();
+        assert_eq!(
+            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            Some("immediate")
+        );
+        assert_eq!(state.lsp.documents[&buffer_id].document_version, 3);
+        loop {
+            let wire = std::fs::read_to_string(&log).unwrap_or_default();
+            if wire.matches("textDocument/didChange").count() == 2 {
+                assert_eq!(wire.matches("textDocument/didOpen").count(), 1);
+                break;
+            }
+            assert!(
+                Instant::now() < timeout,
+                "missing document notifications: {wire}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn completion_replace_range_tracks_typing_inside_word() {
         for (text, inserted) in [("foobar", 'o'), ("fo𐐀bar", '𐐀')] {
@@ -4156,12 +4298,12 @@ mod regressions {
         state.trigger_symbol_info();
         let info = state.lsp.symbol_info.unwrap();
         assert!(
-            info.blocks
-                .iter()
-                .any(|block| block.kind == SymbolInfoKind::Markdown
-                    && block.text.contains("demo();")),
+            info.source_lines.iter().any(|block| matches!(
+                block.kind,
+                SymbolInfoDisplayKind::Code { .. }
+            ) && block.text.contains("demo();")),
             "{:#?}",
-            info.blocks
+            info.source_lines
         );
     }
 

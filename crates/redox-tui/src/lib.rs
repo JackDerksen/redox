@@ -60,8 +60,6 @@ const GUTTER_CONTENT_PADDING: u16 = 1;
 const ANIMATION_FRAME_RATE_HZ: u64 = 60;
 const ANIMATION_FRAME_INTERVAL: Duration =
     Duration::from_nanos(1_000_000_000 / ANIMATION_FRAME_RATE_HZ);
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const ACTIVE_SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
 enum LaunchTarget {
     Empty,
@@ -95,10 +93,6 @@ fn draw_buffer_view(
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
-    let load_start = Instant::now();
-    state.pump_active_loading(text_h as usize);
-    perf.load += load_start.elapsed();
-    state.refresh_active_git_diff();
 
     if let Some(popup) = state.explorer_popup() {
         let fallback_id = state
@@ -274,7 +268,6 @@ fn draw_buffer_view(
             editor_text,
             !popup_overlay_active,
         )?;
-        state.advance_one_shot_highlight();
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
@@ -567,7 +560,6 @@ fn draw_buffer_view(
     perf.syntax += syntax_time;
     perf.overlays += overlay_time;
     perf.lines += lines_time;
-    state.advance_one_shot_highlight();
 
     let status_start = Instant::now();
     let status = build_editor_status_bar(state, style);
@@ -1475,9 +1467,6 @@ fn draw_buffer_snapshot_for_id(
         .map(<[_]>::to_vec)
         .unwrap_or_default();
     let undo_tree_preview_separator_row = state.undo_tree_preview_separator_row(buffer_id);
-    if undo_tree_role.is_none() {
-        state.refresh_git_diff_for_buffer(buffer_id);
-    }
     let git_diff = undo_tree_role
         .is_none()
         .then(|| state.git_diff_for_buffer(buffer_id).cloned())
@@ -2717,8 +2706,6 @@ mod tests {
     fn frame_intervals_match_expected_cadence() {
         assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
         assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));
-        assert_eq!(IDLE_POLL_INTERVAL, Duration::from_millis(50));
-        assert_eq!(ACTIVE_SETTLE_INTERVAL, Duration::from_millis(250));
     }
 
     fn temp_dir_path(tag: &str) -> PathBuf {
@@ -3633,7 +3620,6 @@ pub fn run() -> anyhow::Result<()> {
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
     let mut pending_wake_event: Option<Event> = None;
-    let mut active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
 
     loop {
         let frame_start = Instant::now();
@@ -3679,50 +3665,35 @@ pub fn run() -> anyhow::Result<()> {
             &mut theme_override,
         );
         if event_count > 0 {
-            active_until = Instant::now() + ACTIVE_SETTLE_INTERVAL;
+            state.request_redraw();
         }
-        state.poll_analysis_results();
-        state.poll_lsp();
-        state.poll_finder_results();
-        let now = Instant::now();
-        state.poll_external_file_changes(now);
-        state.expire_status_message(now);
-
-        if state.rain_is_active() {
-            state.advance_rain_animation();
-        }
-
-        window.clear_cursor_request();
-        let (w, h) = window.get_size();
-        state.set_viewport_size(w as usize, h as usize);
-        state.poll_search_preview(Instant::now());
-        window.clear_screen()?;
-        draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
-        let flush_start = Instant::now();
-        window.end_frame()?;
-        perf_sample.flush = flush_start.elapsed();
-        perf_sample.frame = frame_start.elapsed();
-        state.record_perf_sample(perf_sample);
+        let (width, height) = window.get_size();
+        state.set_viewport_size(width as usize, height as usize);
+        perf_sample.load = state.update_background(Instant::now());
 
         if state.should_quit {
             return Ok(());
         }
 
-        let next_interval = if state.rain_is_active()
-            || state.one_shot_highlight().is_some()
-            || state.lsp_needs_fast_poll()
-            || Instant::now() < active_until
-        {
-            ANIMATION_FRAME_INTERVAL
-        } else {
-            IDLE_POLL_INTERVAL
-        };
-        let remaining = next_interval.saturating_sub(frame_start.elapsed());
-        if !remaining.is_zero() {
-            let event = window.get_input_timeout(remaining)?;
-            if !matches!(event, Event::Unknown) {
-                pending_wake_event = Some(event);
+        if state.take_redraw_request() {
+            window.clear_cursor_request();
+            window.clear_screen()?;
+            draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
+            let flush_start = Instant::now();
+            window.end_frame()?;
+            perf_sample.flush = flush_start.elapsed();
+            perf_sample.frame = frame_start.elapsed();
+            state.record_perf_sample(perf_sample);
+        }
+
+        let event = match state.next_wake_deadline(Instant::now()) {
+            Some(deadline) => {
+                window.get_input_timeout(deadline.saturating_duration_since(Instant::now()))?
             }
+            None => window.wait_for_input()?,
+        };
+        if !matches!(event, Event::Unknown) {
+            pending_wake_event = Some(event);
         }
     }
 }

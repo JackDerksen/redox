@@ -105,7 +105,7 @@ impl<'a> Iterator for RenderLineGraphemes<'a> {
     }
 }
 
-/// LRU-style cache for immutable source lines and their grapheme boundaries.
+/// Bounded content cache for immutable lines and their grapheme boundaries.
 #[derive(Debug)]
 pub struct RenderLineCache {
     max_entries: usize,
@@ -117,7 +117,6 @@ pub struct RenderLineCache {
 
 #[derive(Debug)]
 struct CacheEntry {
-    line_index: usize,
     hash: u64,
     source: Arc<str>,
     grapheme_ranges: Option<Arc<[Range<usize>]>>,
@@ -211,11 +210,21 @@ impl RenderLineCache {
         self.tick = self.tick.wrapping_add(1);
         let hash = hash64_line(buffer, line_index);
 
-        if let Some(entry_index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.line_index == line_index && entry.hash == hash)
-        {
+        if let Some(entry_index) = self.entries.iter().position(|entry| {
+            if entry.hash != hash {
+                return false;
+            }
+            // Check the bytes as well, so hash collisions cannot display stale text.
+            let mut remaining = entry.source.as_ref();
+            buffer.line_slice(line_index).chunks().all(|chunk| {
+                if let Some(suffix) = remaining.strip_prefix(chunk) {
+                    remaining = suffix;
+                    true
+                } else {
+                    false
+                }
+            }) && remaining.is_empty()
+        }) {
             let (line, added_bytes) = {
                 let entry = &mut self.entries[entry_index];
                 entry.last_used_tick = self.tick;
@@ -249,18 +258,9 @@ impl RenderLineCache {
             grapheme_ranges: grapheme_ranges.as_ref().map(Arc::clone),
         };
 
-        if let Some(stale_index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.line_index == line_index)
-        {
-            self.remove_entry(stale_index);
-        }
-
         if size_bytes <= self.max_bytes {
             self.make_room_for(size_bytes);
             self.entries.push(CacheEntry {
-                line_index,
                 hash,
                 source,
                 grapheme_ranges,
