@@ -3620,6 +3620,7 @@ pub fn run() -> anyhow::Result<()> {
     const MAX_EVENTS_PER_FRAME: usize = 256;
 
     let mut pending_wake_event: Option<Event> = None;
+    let mut previous_terminal_size = window.get_size();
 
     loop {
         let frame_start = Instant::now();
@@ -3668,6 +3669,10 @@ pub fn run() -> anyhow::Result<()> {
             state.request_redraw();
         }
         let (width, height) = window.get_size();
+        if (width, height) != previous_terminal_size {
+            previous_terminal_size = (width, height);
+            state.request_redraw();
+        }
         state.set_viewport_size(width as usize, height as usize);
         perf_sample.load = state.update_background(Instant::now());
 
