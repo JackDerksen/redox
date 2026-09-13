@@ -330,6 +330,8 @@ Other language tool commands:
 | `ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l` | Focus the split to the left / down / up / right. |
 | `ctrl+x` | Close the active split. |
 
+Inactive editor panes show their filename centred in a muted strip along the top.
+
 ### Visual modes
 
 | Keys | Behaviour |

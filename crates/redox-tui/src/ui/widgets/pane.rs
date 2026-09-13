@@ -1,7 +1,25 @@
-use minui::{ColorPair, Window};
+use minui::{ColorPair, TabPolicy, Window, cell_width};
 
 use crate::app::PaneRect;
 use crate::ui::style::UiStyle;
+use crate::ui::widgets::popup::clip_text_to_cells;
+
+pub fn draw_pane_filename(
+    window: &mut dyn Window,
+    filename: &str,
+    colors: ColorPair,
+) -> minui::Result<()> {
+    let (width, height) = window.get_size();
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+
+    window.write_str_colored(0, 0, &" ".repeat(width as usize), colors)?;
+    let padding = u16::from(width > 2);
+    let filename = clip_text_to_cells(filename, (width - padding * 2) as usize);
+    let column = width.saturating_sub(cell_width(&filename, TabPolicy::Fixed(4))) / 2;
+    window.write_str_colored(0, column, &filename, colors)
+}
 
 pub fn draw_pane_split_lines(
     window: &mut dyn Window,

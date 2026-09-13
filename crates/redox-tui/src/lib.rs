@@ -42,6 +42,7 @@ use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
     scope_guides_enabled, syntax_color_for_range,
 };
+use ui::widgets::pane::draw_pane_filename;
 use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UNDO_TREE_HEADER_ROWS, UiStyle, about_popup_inner_size,
@@ -1283,6 +1284,20 @@ fn draw_split_editor_panes(
         } else {
             ColorPair::new(pane_style.theme.white, pane_style.theme.bg)
         };
+        let is_active_pane = rect.pane_id == state.active_pane_id();
+        let inactive_filename = state
+            .session
+            .meta(buffer_id)
+            .filter(|meta| !is_active_pane && meta.kind == redox_core::BufferKind::File)
+            .map(|meta| {
+                meta.path
+                    .as_deref()
+                    .and_then(std::path::Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| meta.display_name.clone())
+            });
+        let header_height = u16::from(inactive_filename.is_some()).min(rect.height);
+        let content_height = rect.height - header_height;
         let mut pane_window = WindowView {
             window,
             x_offset: rect.x,
@@ -1292,7 +1307,11 @@ fn draw_split_editor_panes(
             width: rect.width,
             height: rect.height,
         };
-        let is_active_pane = rect.pane_id == state.active_pane_id();
+        if let Some(filename) = inactive_filename {
+            draw_pane_filename(&mut pane_window, &filename, pane_style.status_line.bar)?;
+            pane_window.y_offset = pane_window.y_offset.saturating_add(header_height);
+            pane_window.height = content_height;
+        }
         if is_active_pane && state.active_rain_animation().is_some() {
             draw_active_split_rain_pane(
                 state,
@@ -1312,7 +1331,7 @@ fn draw_split_editor_panes(
                 .map_or(0, |buffer| buffer.len_lines().max(1));
             let (_, scroll_y) = view.cursor.viewport_scroll();
             let first_line = scroll_y.min(total_lines.saturating_sub(1));
-            let visible_len = (rect.height as usize).min(total_lines.saturating_sub(first_line));
+            let visible_len = (content_height as usize).min(total_lines.saturating_sub(first_line));
             let diagnostic_lines = if is_active_pane {
                 state.active_diagnostic_lines(first_line, visible_len)
             } else {
@@ -1333,7 +1352,7 @@ fn draw_split_editor_panes(
                 pane_style,
                 buffer_id,
                 rect.width,
-                rect.height,
+                content_height,
                 options.has_line_numbers,
                 pane_text,
                 &mut pane_window,
@@ -2999,6 +3018,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn inactive_pane_filenames_follow_focus_and_disappear_when_the_split_closes() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        for (axis, focus_back) in [
+            (app::state::SplitAxis::Vertical, InputAction::SplitFocusLeft),
+            (app::state::SplitAxis::Horizontal, InputAction::SplitFocusUp),
+        ] {
+            let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+            let source = format!("first\n{}", "body\n".repeat(39));
+            *state.session.active_buffer_mut() = TextBuffer::from_text(&source);
+            state.session.active_meta_mut().path = Some(PathBuf::from("source/alpha.txt"));
+            let style = UiStyle::default();
+            let mut perf = FramePerfSample::default();
+            let mut window = TestWindow::new(80, 12);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            state.split_active_pane(axis);
+            state.session.open_unnamed_buffer();
+            *state.session.active_buffer_mut() = TextBuffer::from_text(&source);
+
+            for (action, expected_filename) in
+                [(InputAction::None, "alpha.txt"), (focus_back, "[No Name]")]
+            {
+                state.apply_input(action, 80, 12);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                for rect in state.pane_rects(80, 11) {
+                    let row = rect.y as usize;
+                    let columns = rect.x as usize..(rect.x + rect.width) as usize;
+                    let text = window.cells[row][columns.clone()]
+                        .iter()
+                        .collect::<String>();
+                    if rect.pane_id == state.active_pane_id() {
+                        assert!(text.contains("first"), "{text:?}");
+                    } else {
+                        assert_eq!(text.trim(), expected_filename);
+                        assert_eq!(
+                            text.find(expected_filename),
+                            Some((rect.width as usize - expected_filename.len()) / 2)
+                        );
+                        let first_line = window.cells[row + 1][columns.clone()]
+                            .iter()
+                            .collect::<String>();
+                        assert!(first_line.contains("first"), "{first_line:?}");
+                        assert!(
+                            window.backgrounds[row][columns.clone()]
+                                .iter()
+                                .all(|color| { *color == Some(style.dimmed().status_line.bar.bg) })
+                        );
+                        assert!(
+                            window.foregrounds[row][columns]
+                                .iter()
+                                .all(|color| { *color == Some(style.dimmed().status_line.bar.fg) })
+                        );
+                    }
+                }
+                let cursor = window.cursor.unwrap();
+                assert!(cursor.visible);
+                assert_eq!(window.cells[cursor.y as usize][cursor.x as usize], 'f');
+            }
+
+            state.close_active_split();
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert!(window.row_text(0).contains("first"));
+            assert!(window.row_text(10).contains("body"));
+            assert!(!window.row_text(0).contains("[No Name]"));
+        }
+
+        let mut narrow = TestWindow::new(8, 1);
+        draw_pane_filename(&mut narrow, "é界🙂.txt", UiStyle::default().status_line.bar).unwrap();
+        assert_eq!(narrow.row_text(0).trim(), "é界🙂.");
+        assert_eq!(narrow.row_text(0).find('é'), Some(1));
+        let mut empty = TestWindow::new(0, 0);
+        draw_pane_filename(&mut empty, "alpha.txt", UiStyle::default().status_line.bar).unwrap();
     }
 
     #[test]
