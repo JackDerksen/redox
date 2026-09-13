@@ -1844,6 +1844,116 @@ fn visual_line_replace_preserves_line_structure() {
 }
 
 #[test]
+fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
+    let cases = [
+        (
+            InputMode::Visual,
+            "aé🙂z\n",
+            Pos::new(0, 2),
+            Pos::new(0, 1),
+            "a[é🙂]z\n",
+            Pos::new(0, 1),
+        ),
+        (
+            InputMode::Visual,
+            "abc\ndef\nghi\n",
+            Pos::new(0, 1),
+            Pos::new(1, 1),
+            "a[bc\nde]f\nghi\n",
+            Pos::new(0, 1),
+        ),
+        (
+            InputMode::Visual,
+            "abc",
+            Pos::new(0, 2),
+            Pos::new(0, 2),
+            "ab[c]",
+            Pos::new(0, 2),
+        ),
+        (
+            InputMode::Visual,
+            "",
+            Pos::zero(),
+            Pos::zero(),
+            "[]",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualLine,
+            "ab\ncde\nnext\n",
+            Pos::new(1, 2),
+            Pos::new(0, 1),
+            "[ab\ncde]\nnext\n",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualLine,
+            "ab\ncde",
+            Pos::new(0, 1),
+            Pos::new(1, 2),
+            "[ab\ncde]",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualBlock,
+            "ab\ncde\n",
+            Pos::new(0, 0),
+            Pos::new(1, 1),
+            "[ab]\n[cd]e\n",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualBlock,
+            "a\té🙂z\nx\n\nbcd\n",
+            Pos::new(3, 2),
+            Pos::new(0, 1),
+            "a[\té]🙂z\nx\n\nb[cd]\n",
+            Pos::new(0, 1),
+        ),
+    ];
+
+    for (mode, original, anchor, cursor, wrapped, expected_cursor) in cases {
+        let path = temp_file_path("visual_wrap");
+        let mut state = state_with_text(path.clone(), original);
+        let active_id = state.session.active_id();
+        state.private_register = "keep register".to_string();
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
+        let view = state.views.get_mut(&active_id).unwrap();
+        view.visual_anchor = Some(anchor);
+        view.cursor.cursor = cursor;
+
+        for key in [' ', ']'] {
+            let action = crate::input::map_event_with_state(
+                &mut state.input,
+                mode,
+                &minui::prelude::input::Event::Character(key),
+            );
+            state.apply_input(action, 80, 24);
+        }
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            wrapped,
+            "{mode:?}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor);
+        assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.active_visual_selection().is_none());
+        assert_eq!(state.private_register, "keep register");
+        assert!(state.session.active_meta().dirty);
+        assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), original);
+        assert!(!state.session.active_meta().dirty);
+        state.apply_input(InputAction::Redo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), wrapped);
+
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
     let path = temp_file_path("undo_redo_basic");
     let mut state = state_with_text(path.clone(), "hello");

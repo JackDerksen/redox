@@ -663,6 +663,55 @@ impl EditorState {
         self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
     }
 
+    pub(super) fn wrap_active_visual_selection(
+        &mut self,
+        opening: char,
+        closing: char,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        let Some((selection, mode)) = self.active_visual_selection() else {
+            return;
+        };
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+
+        let buffer = self.session.active_buffer();
+        let ranges = match mode {
+            VisualModeKind::Char => vec![buffer.visual_charwise_pos_range(selection)],
+            VisualModeKind::Line => {
+                let (start_line, end_line) = selection.line_range();
+                vec![(
+                    Pos::new(start_line, 0),
+                    Pos::new(end_line, buffer.line_len_chars(end_line)),
+                )]
+            }
+            VisualModeKind::Block => buffer.visual_blockwise_pos_ranges(selection),
+        };
+        let Some(&(new_cursor, _)) = ranges.first() else {
+            return;
+        };
+
+        let before = self.capture_active_undo_checkpoint();
+        let opening = opening.to_string();
+        let closing = closing.to_string();
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            for (start, end) in ranges.into_iter().rev() {
+                let _ = buffer.insert(end, &closing);
+                let _ = buffer.insert(start, &opening);
+            }
+            view.cursor.cursor = new_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
     fn replace_char_under_cursor(
         &mut self,
         replacement: char,

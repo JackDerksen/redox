@@ -116,6 +116,10 @@ pub enum InputAction {
         count: usize,
     },
     ReplaceChar(char),
+    WrapSelection {
+        opening: char,
+        closing: char,
+    },
     MoveVisualSelectionUp {
         count: usize,
     },
@@ -244,6 +248,7 @@ enum SequenceAction {
     TriggerCodeActions,
     GotoDefinition,
     YankSelectionSystem,
+    WrapSelection { opening: char, closing: char },
     PasteSystemClipboard,
     FileStart,
     CenterCursorLine,
@@ -332,11 +337,101 @@ const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
     },
 ];
 
-const VISUAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[SequenceBinding {
-    sequence: " y",
-    fallback: PrefixFallback::Consume,
-    action: Some(SequenceAction::YankSelectionSystem),
-}];
+const VISUAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
+    SequenceBinding {
+        sequence: " y",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::YankSelectionSystem),
+    },
+    SequenceBinding {
+        sequence: " [",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '[',
+            closing: ']',
+        }),
+    },
+    SequenceBinding {
+        sequence: " ]",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '[',
+            closing: ']',
+        }),
+    },
+    SequenceBinding {
+        sequence: " {",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '{',
+            closing: '}',
+        }),
+    },
+    SequenceBinding {
+        sequence: " }",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '{',
+            closing: '}',
+        }),
+    },
+    SequenceBinding {
+        sequence: " (",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '(',
+            closing: ')',
+        }),
+    },
+    SequenceBinding {
+        sequence: " )",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '(',
+            closing: ')',
+        }),
+    },
+    SequenceBinding {
+        sequence: " <",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '<',
+            closing: '>',
+        }),
+    },
+    SequenceBinding {
+        sequence: " >",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '<',
+            closing: '>',
+        }),
+    },
+    SequenceBinding {
+        sequence: " \"",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '"',
+            closing: '"',
+        }),
+    },
+    SequenceBinding {
+        sequence: " '",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '\'',
+            closing: '\'',
+        }),
+    },
+    SequenceBinding {
+        sequence: " `",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WrapSelection {
+            opening: '`',
+            closing: '`',
+        }),
+    },
+];
 
 /// State machine for multi-key sequences and counts.
 #[derive(Debug, Clone)]
@@ -991,6 +1086,7 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
         Some(SequenceAction::TriggerCodeActions) => "Code actions",
         Some(SequenceAction::GotoDefinition) => "Go to definition",
         Some(SequenceAction::YankSelectionSystem) => "Yank to system clipboard",
+        Some(SequenceAction::WrapSelection { .. }) => "Wrap selection",
         Some(SequenceAction::PasteSystemClipboard) => "Paste system clipboard",
         Some(SequenceAction::FileStart) => "Start of file",
         Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
@@ -2412,6 +2508,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::YankSelectionSystem) => {
             state.reset_prefixes();
             InputAction::YankSelectionSystem
+        }
+        Some(SequenceAction::WrapSelection { opening, closing }) => {
+            state.reset_prefixes();
+            InputAction::WrapSelection { opening, closing }
         }
         Some(SequenceAction::PasteSystemClipboard) => {
             state.reset_prefixes();
@@ -3995,6 +4095,51 @@ mod tests {
     }
 
     #[test]
+    fn delimiter_wrapping_uses_the_configured_leader_only_in_visual_modes() {
+        let delimiters = [
+            ('[', '[', ']'),
+            (']', '[', ']'),
+            ('{', '{', '}'),
+            ('}', '{', '}'),
+            ('(', '(', ')'),
+            (')', '(', ')'),
+            ('<', '<', '>'),
+            ('>', '<', '>'),
+            ('"', '"', '"'),
+            ('\'', '\'', '\''),
+            ('`', '`', '`'),
+        ];
+        for leader in [' ', ','] {
+            let mut state = InputState::new();
+            state.configure(leader, &BTreeMap::new()).unwrap();
+            for mode in [
+                InputMode::Normal,
+                InputMode::Visual,
+                InputMode::VisualLine,
+                InputMode::VisualBlock,
+            ] {
+                for (key, opening, closing) in delimiters {
+                    assert_eq!(
+                        map_event_with_state(&mut state, mode, &Event::Character(leader)),
+                        InputAction::None
+                    );
+                    let expected = if mode == InputMode::Normal {
+                        InputAction::None
+                    } else {
+                        InputAction::WrapSelection { opening, closing }
+                    };
+                    assert_eq!(
+                        map_event_with_state(&mut state, mode, &Event::Character(key)),
+                        expected,
+                        "{mode:?}, {leader:?}{key}"
+                    );
+                    assert!(state.pending_input().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn which_key_entries_follow_the_active_mode() {
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
@@ -4012,6 +4157,14 @@ mod tests {
                 entry.key == "y" && entry.description == "Yank to system clipboard"
             })
         );
+        for key in ["[", "]", "{", "}", "(", ")", "<", ">", "\"", "'", "`"] {
+            assert!(
+                popup
+                    .entries
+                    .iter()
+                    .any(|entry| { entry.key == key && entry.description == "Wrap selection" })
+            );
+        }
     }
 
     #[test]

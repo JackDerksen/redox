@@ -341,6 +341,15 @@ Other language tool commands:
 | `<space>y` | Yank the selection to the system clipboard. |
 | `tab` / `shift+tab` | Indent / outdent the selection. |
 | `J` / `K` | Move selected lines down/up. |
+| `<leader>[` / `<leader>]` | Wrap the selection in `[...]`. |
+| `<leader>{` / `<leader>}` | Wrap the selection in `{...}`. |
+| `<leader>(` / `<leader>)` | Wrap the selection in `(...)`. |
+| `<leader><` / `<leader>>` | Wrap the selection in `<...>`. |
+| `<leader>"` / `<leader>'` / <code>&lt;leader&gt;`</code> | Wrap the selection in double quotes, single quotes, or backticks. |
+
+The leader defaults to `Space`. Wrapping returns to normal mode and can be undone in one step.
+Visual line mode wraps the selected lines together, before the final newline. Visual block mode
+wraps each selected row separately, skipping rows with no selected text.
 
 ### Search and text objects
 

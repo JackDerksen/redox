@@ -1030,6 +1030,10 @@ impl EditorState {
                 }
             }
 
+            InputAction::WrapSelection { opening, closing } => {
+                self.wrap_active_visual_selection(opening, closing, viewport_width_cells, text_vh);
+            }
+
             InputAction::MoveVisualSelectionUp { count } => {
                 if matches!(
                     self.mode,
@@ -1526,6 +1530,7 @@ fn undo_tree_blocks_buffer_action(action: &InputAction) -> bool {
         | InputAction::DeleteCharNoYank
         | InputAction::ToggleCase { .. }
         | InputAction::ReplaceChar(_)
+        | InputAction::WrapSelection { .. }
         | InputAction::MoveVisualSelectionUp { .. }
         | InputAction::MoveVisualSelectionDown { .. }
         | InputAction::IndentVisualSelection { .. }
