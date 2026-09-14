@@ -2444,6 +2444,13 @@ impl EditorState {
         self.lsp.active_snippet.take().is_some()
     }
 
+    pub(super) fn has_active_snippet(&self) -> bool {
+        self.lsp
+            .active_snippet
+            .as_ref()
+            .is_some_and(|snippet| snippet.buffer_id == self.session.active_id())
+    }
+
     pub(super) fn accept_completion(
         &mut self,
         viewport_width_cells: usize,
@@ -2473,6 +2480,7 @@ impl EditorState {
         };
         let start_char = buffer.pos_to_char(edit.start);
         let end_char = buffer.pos_to_char(edit.end);
+        let replay_cursor = buffer.pos_to_char(self.active_cursor_pos());
         if additional_edits
             .iter()
             .any(|(start, end, _)| *start == start_char || *end > start_char && *start < end_char)
@@ -2491,6 +2499,7 @@ impl EditorState {
             .unwrap_or(edit.insert);
         let inserted_start = transform_snippet_char_left(start_char, &additional_edits);
         let inserted_end = inserted_start.saturating_add(insert.chars().count());
+        let replay_text = insert.clone();
         let mut edits = additional_edits;
         edits.push((start_char, end_char, insert));
         self.remember_completion_accept(&item);
@@ -2522,6 +2531,13 @@ impl EditorState {
             }
             inserted_end
         };
+        self.record_resolved_completion(
+            replay_cursor,
+            start_char,
+            end_char,
+            replay_text,
+            cursor_char.saturating_sub(inserted_start),
+        );
         let view = self.views.entry(active_id).or_default();
         let buffer = self.session.active_buffer();
         view.cursor.cursor = buffer.char_to_pos(cursor_char.min(buffer.len_chars()));
@@ -4485,6 +4501,54 @@ mod regressions {
             state.lsp.installed[&selected].install_source,
             Some(InstallMethod::Brew)
         );
+    }
+
+    #[test]
+    fn replay_completion_keeps_text_and_snippets_without_repeating_imports() {
+        use crate::input::{InputAction, InputMode};
+        let mut state = state("head\n\n\nkeep\n", Pos::new(2, 0));
+        state.apply_input(InputAction::InsertChar('f'), 80, 24);
+        let items = parse_completion_response(&json!({"result":[{
+            "label":"foo", "insertText":"foo(${1:value})$0", "insertTextFormat":2,
+            "additionalTextEdits":[{
+                "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+                "newText":"use foo;\n"
+            }]
+        }]}));
+        state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
+            selected: 0,
+            requested_at: Pos::new(2, 1),
+            items,
+        });
+        state.apply_input(
+            InputAction::Motion {
+                motion: redox_core::motion::Motion::Down,
+                count: 1,
+            },
+            80,
+            24,
+        );
+        state.apply_input(InputAction::CompletionAccept, 80, 24);
+        state.apply_input(InputAction::InsertChar('x'), 80, 24);
+        state.apply_input(InputAction::SnippetNext, 80, 24);
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        let completed = state.session.active_buffer().to_string();
+        assert_eq!(completed, "use foo;\nhead\n\nfoo(x)\nkeep\n");
+        state
+            .views
+            .get_mut(&state.session.active_id())
+            .unwrap()
+            .cursor
+            .cursor = Pos::new(4, 0);
+        state.apply_input(InputAction::RepeatLastChange { count: None }, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "use foo;\nhead\n\nfoo(x)\nfoo(x)keep\n"
+        );
+        assert_eq!(state.mode, EditorMode::Normal);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), completed);
     }
 
     #[test]

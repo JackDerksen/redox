@@ -49,6 +49,7 @@ pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
 mod commands;
 mod editing;
+mod replay;
 mod search;
 mod surface;
 mod undo_tree;
@@ -403,6 +404,7 @@ pub struct EditorState {
     lsp: lsp::LspState,
     pub mode: EditorMode,
     pub input: InputState,
+    replay: replay::ReplayState,
     pub command_line: String,
     pub command_line_cursor: usize,
     command_completion_index: usize,
@@ -480,6 +482,7 @@ impl EditorState {
             lsp: lsp::LspState::default(),
             mode: EditorMode::Normal,
             input: InputState::new(),
+            replay: replay::ReplayState::default(),
             command_line: String::new(),
             command_line_cursor: 0,
             command_completion_index: 0,

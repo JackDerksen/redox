@@ -36,6 +36,204 @@ fn undo_history_of(state: &EditorState, buffer_id: BufferId) -> &UndoHistory {
         .undo_history
 }
 
+fn apply_keys(state: &mut EditorState, keys: &str) {
+    use minui::prelude::input::Event;
+
+    for character in keys.chars() {
+        let event = if character == '\u{1b}' {
+            Event::Escape
+        } else {
+            Event::Character(character)
+        };
+        let action = crate::input::map_event_with_state(
+            &mut state.input,
+            state.mode.as_input_mode(),
+            &event,
+        );
+        if !matches!(
+            action,
+            InputAction::ToggleMacroRecording | InputAction::StartMacroRecording { .. }
+        ) {
+            state.record_macro_key(&crate::input::macro_key_label(&event));
+        }
+        state.apply_input(action, 80, 24);
+    }
+}
+
+#[test]
+fn replay_dot_preserves_insert_sessions_and_count_override() {
+    let path = temp_file_path("dot_insert_and_count");
+    let mut state = state_with_text(path.clone(), "one two three\n");
+
+    apply_keys(&mut state, "cwnew \u{1b}");
+    assert_eq!(state.session.active_buffer().to_string(), "new two three\n");
+    assert_eq!(state.mode, EditorMode::Normal);
+    apply_keys(&mut state, "w.");
+    assert_eq!(state.session.active_buffer().to_string(), "new new three\n");
+    assert_eq!(state.mode, EditorMode::Normal);
+    apply_keys(&mut state, "u");
+    assert_eq!(state.session.active_buffer().to_string(), "new two three\n");
+
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\nfive\nsix\n");
+    apply_keys(&mut state, "2dd");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "three\nfour\nfive\nsix\n"
+    );
+    apply_keys(&mut state, "3.");
+    assert_eq!(state.session.active_buffer().to_string(), "six\n");
+    apply_keys(&mut state, "u");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "three\nfour\nfive\nsix\n"
+    );
+
+    let mut state = state_with_text(path.clone(), "\n");
+    apply_keys(&mut state, "iab\u{1b}A\u{1b}03.");
+    assert_eq!(state.session.active_buffer().to_string(), "abababab\n");
+    apply_keys(&mut state, "u.");
+    assert_eq!(state.session.active_buffer().to_string(), "abababab\n");
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn replay_counted_macros_undo_as_one_edit_and_list_session_registers() {
+    let path = temp_file_path("counted_macro_undo");
+    for recording in ["QaxQ", "Qaix\u{1b}lQ", "QaxuxQ", "QaxQQb@a@aQ"] {
+        let mut state = state_with_text(path.clone(), "abcdefghijklmnop\n");
+        apply_keys(&mut state, recording);
+        let register = if recording.contains("Qb") { 'b' } else { 'a' };
+        let before = state.session.active_buffer().to_string();
+        let cursor = state.active_cursor_pos();
+        apply_keys(&mut state, &format!("3@{register}"));
+        let after = state.session.active_buffer().to_string();
+        assert_ne!(after, before, "{recording}");
+        apply_keys(&mut state, "u");
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            before,
+            "{recording}"
+        );
+        assert_eq!(state.active_cursor_pos(), cursor, "{recording}");
+        state.apply_input(InputAction::Redo, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            after,
+            "{recording}"
+        );
+    }
+
+    let mut state = state_with_text(path.clone(), "abcdefghij\n");
+    apply_keys(&mut state, "QaxQ@a@a@auuu");
+    let before = state.session.active_buffer().to_string();
+    apply_keys(&mut state, "3@au");
+    assert_eq!(state.session.active_buffer().to_string(), before);
+
+    let mut state = state_with_text(path.clone(), "abcdefghij\n");
+    run_command(&mut state, "macros");
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("no macros recorded in this session")
+    );
+    apply_keys(&mut state, "Q3xQQ!xQ");
+    let before = state.session.active_buffer().to_string();
+    apply_keys(&mut state, "3@3u@!");
+    assert_eq!(state.session.active_buffer().to_string(), before[1..]);
+    run_command(&mut state, "macros");
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("Session macros:\n@!  x\n@3  x")
+    );
+    enter_command_mode(&mut state);
+    apply_keys(&mut state, "mac");
+    assert_eq!(state.command_completion_suffix(), Some("ros"));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn replay_macros_handle_undo_recursion_and_insert_pane_changes() {
+    let path = temp_file_path("macro_boundaries");
+    let mut state = state_with_text(path.clone(), "abc\n");
+    apply_keys(&mut state, "iZ\u{1b}QaxuQ@a");
+    assert_eq!(state.session.active_buffer().to_string(), "Zabc\n");
+    apply_keys(&mut state, "Qb@zQ@b");
+    assert_eq!(state.status_msg.as_deref(), Some("macro @z is empty"));
+    apply_keys(&mut state, "Qc@cQ@c");
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("playback stopped: replay limit reached")
+    );
+    assert_eq!(state.session.active_buffer().to_string(), "Zabc\n");
+
+    state.set_editor_area_size(80, 23);
+    let original_id = state.session.active_id();
+    state.split_active_pane(SplitAxis::Vertical);
+    let second_id = state.session.open_unnamed_buffer();
+    apply_keys(&mut state, "ix");
+    state.apply_input(InputAction::SplitFocusLeft, 80, 24);
+    apply_keys(&mut state, "y\u{1b}.");
+    assert_eq!(state.session.active_id(), original_id);
+    assert_eq!(state.session.buffer(second_id).unwrap().to_string(), "x");
+    assert_eq!(state.session.active_buffer().to_string(), "yyZabc\n");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn replay_dot_restores_visual_wrap_extent() {
+    let path = temp_file_path("dot_visual_wrap");
+    let mut state = state_with_text(path.clone(), "one two\nabc xyz\n");
+
+    apply_keys(&mut state, "v2l [");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "[one] two\nabc xyz\n"
+    );
+    apply_keys(&mut state, "j0.");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "[one] two\n[abc] xyz\n"
+    );
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(state.active_visual_selection().is_none());
+    apply_keys(&mut state, "u");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "[one] two\nabc xyz\n"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn replay_macros_record_calls_once_and_append_registers() {
+    let path = temp_file_path("macro_record_and_replay");
+    let mut state = state_with_text(path.clone(), "abcdefghij\n");
+
+    apply_keys(&mut state, "Qa");
+    assert_eq!(state.recording_macro_register(), Some("a"));
+    apply_keys(&mut state, "xQ");
+    assert_eq!(state.recording_macro_register(), None);
+    assert_eq!(state.session.active_buffer().to_string(), "bcdefghij\n");
+    apply_keys(&mut state, "@a");
+    assert_eq!(state.session.active_buffer().to_string(), "cdefghij\n");
+    apply_keys(&mut state, "@@");
+    assert_eq!(state.session.active_buffer().to_string(), "defghij\n");
+    apply_keys(&mut state, "2@a");
+    assert_eq!(state.session.active_buffer().to_string(), "fghij\n");
+
+    apply_keys(&mut state, "Qb@aQ");
+    assert_eq!(state.session.active_buffer().to_string(), "ghij\n");
+    apply_keys(&mut state, "@b");
+    assert_eq!(state.session.active_buffer().to_string(), "hij\n");
+
+    apply_keys(&mut state, "QAlQ0@a");
+    assert_eq!(state.session.active_buffer().to_string(), "ij\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+
+    let _ = fs::remove_file(path);
+}
+
 #[test]
 fn split_popup_background_preserves_active_surface_buffer() {
     let _guard = global_test_state_lock().lock().unwrap();
@@ -1841,6 +2039,116 @@ fn visual_line_replace_preserves_line_structure() {
     assert_eq!(state.mode, EditorMode::Normal);
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
+    let cases = [
+        (
+            InputMode::Visual,
+            "aé🙂z\n",
+            Pos::new(0, 2),
+            Pos::new(0, 1),
+            "a[é🙂]z\n",
+            Pos::new(0, 1),
+        ),
+        (
+            InputMode::Visual,
+            "abc\ndef\nghi\n",
+            Pos::new(0, 1),
+            Pos::new(1, 1),
+            "a[bc\nde]f\nghi\n",
+            Pos::new(0, 1),
+        ),
+        (
+            InputMode::Visual,
+            "abc",
+            Pos::new(0, 2),
+            Pos::new(0, 2),
+            "ab[c]",
+            Pos::new(0, 2),
+        ),
+        (
+            InputMode::Visual,
+            "",
+            Pos::zero(),
+            Pos::zero(),
+            "[]",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualLine,
+            "ab\ncde\nnext\n",
+            Pos::new(1, 2),
+            Pos::new(0, 1),
+            "[ab\ncde]\nnext\n",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualLine,
+            "ab\ncde",
+            Pos::new(0, 1),
+            Pos::new(1, 2),
+            "[ab\ncde]",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualBlock,
+            "ab\ncde\n",
+            Pos::new(0, 0),
+            Pos::new(1, 1),
+            "[ab]\n[cd]e\n",
+            Pos::zero(),
+        ),
+        (
+            InputMode::VisualBlock,
+            "a\té🙂z\nx\n\nbcd\n",
+            Pos::new(3, 2),
+            Pos::new(0, 1),
+            "a[\té]🙂z\nx\n\nb[cd]\n",
+            Pos::new(0, 1),
+        ),
+    ];
+
+    for (mode, original, anchor, cursor, wrapped, expected_cursor) in cases {
+        let path = temp_file_path("visual_wrap");
+        let mut state = state_with_text(path.clone(), original);
+        let active_id = state.session.active_id();
+        state.private_register = "keep register".to_string();
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
+        let view = state.views.get_mut(&active_id).unwrap();
+        view.visual_anchor = Some(anchor);
+        view.cursor.cursor = cursor;
+
+        for key in [' ', ']'] {
+            let action = crate::input::map_event_with_state(
+                &mut state.input,
+                mode,
+                &minui::prelude::input::Event::Character(key),
+            );
+            state.apply_input(action, 80, 24);
+        }
+
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            wrapped,
+            "{mode:?}"
+        );
+        assert_eq!(state.active_cursor_pos(), expected_cursor);
+        assert_eq!(state.mode, EditorMode::Normal);
+        assert!(state.active_visual_selection().is_none());
+        assert_eq!(state.private_register, "keep register");
+        assert!(state.session.active_meta().dirty);
+        assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), original);
+        assert!(!state.session.active_meta().dirty);
+        state.apply_input(InputAction::Redo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), wrapped);
+
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]
