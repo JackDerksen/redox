@@ -143,7 +143,7 @@ fn replay_counted_macros_undo_as_one_edit_and_list_session_registers() {
     run_command(&mut state, "macros");
     assert_eq!(
         state.status_msg.as_deref(),
-        Some("Session macros\n@!  x\n@3  x")
+        Some("Session macros:\n@!  x\n@3  x")
     );
     enter_command_mode(&mut state);
     apply_keys(&mut state, "mac");
