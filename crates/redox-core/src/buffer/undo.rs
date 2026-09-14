@@ -351,7 +351,7 @@ impl UndoHistory {
         };
 
         if let Some(existing_node) =
-            self.find_equivalent_node(base_node, &base_buffer, after_buffer)
+            self.find_equivalent_child(base_node, &base_buffer, after_buffer)
         {
             self.current = existing_node;
             self.clear_coalesce();
@@ -465,20 +465,19 @@ impl UndoHistory {
             .find(|ancestor| a_ancestors.contains(ancestor))
     }
 
-    fn find_equivalent_node(
+    fn find_equivalent_child(
         &self,
         base_node: UndoNodeId,
         base_buffer: &TextBuffer,
         target_buffer: &TextBuffer,
     ) -> Option<UndoNodeId> {
-        let mut candidates = self.nodes.get(base_node)?.children.clone();
-        while let Some(candidate) = candidates.pop() {
+        // Reusing a deeper descendant would turn one edit into several undo steps.
+        for &candidate in self.nodes.get(base_node)?.children.iter().rev() {
             let mut candidate_buffer = base_buffer.clone();
             self.apply_path_between(&mut candidate_buffer, base_node, candidate)?;
             if candidate_buffer == *target_buffer {
                 return Some(candidate);
             }
-            candidates.extend(self.nodes.get(candidate)?.children.iter().copied());
         }
         None
     }

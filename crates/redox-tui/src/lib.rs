@@ -3780,6 +3780,12 @@ fn handle_editor_event(
     };
 
     let (w, h) = state.viewport_size();
+    if !matches!(
+        action,
+        InputAction::ToggleMacroRecording | InputAction::StartMacroRecording { .. }
+    ) {
+        state.record_macro_key(&input::macro_key_label(&event));
+    }
     match action {
         InputAction::PasteSystemClipboard => match clipboard.as_mut() {
             Some(system_clipboard) => match system_clipboard.paste() {

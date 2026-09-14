@@ -88,6 +88,17 @@ pub enum InputAction {
     CloseSplit,
     Undo,
     Redo,
+    RepeatLastChange {
+        count: Option<usize>,
+    },
+    ToggleMacroRecording,
+    StartMacroRecording {
+        register: String,
+    },
+    PlayMacro {
+        register: Option<String>,
+        count: usize,
+    },
     ConfirmExplorerDelete,
     YankSelectionPrivate,
     DeleteSelectionPrivate,
@@ -198,6 +209,12 @@ pub enum InputAction {
     ClearSearch,
 
     InsertChar(char),
+    ApplyRecordedInsert {
+        start_offset: isize,
+        deleted_chars: usize,
+        text: String,
+        cursor_offset: isize,
+    },
     Backspace,
     Enter,
 
@@ -441,6 +458,7 @@ pub struct InputState {
     pending_operator: Option<PendingOperator>,
     pending_search_motion: Option<PendingSearchMotion>,
     pending_replace: bool,
+    pending_macro_register: Option<PendingMacroRegister>,
     which_key_started_at: Option<Instant>,
     leader: char,
     custom_bindings: Vec<CustomBinding>,
@@ -482,6 +500,7 @@ impl Default for InputState {
             pending_operator: None,
             pending_search_motion: None,
             pending_replace: false,
+            pending_macro_register: None,
             which_key_started_at: None,
             leader: ' ',
             custom_bindings: Vec::new(),
@@ -513,6 +532,20 @@ enum SearchMotionKind {
     TillBefore,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingMacroRegister {
+    Record,
+    Play { count: Option<usize> },
+}
+
+fn macro_register_prefix(pending: PendingMacroRegister) -> String {
+    match pending {
+        PendingMacroRegister::Record => "Q".to_string(),
+        PendingMacroRegister::Play { count: Some(count) } => format!("{count}@"),
+        PendingMacroRegister::Play { count: None } => "@".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingInput {
     sequence: String,
@@ -520,10 +553,14 @@ struct PendingInput {
     operator: Option<PendingOperator>,
     search_motion: Option<PendingSearchMotion>,
     replace: bool,
+    macro_register: Option<PendingMacroRegister>,
 }
 
 impl PendingInput {
     fn typed_prefix(&self) -> String {
+        if let Some(pending) = self.macro_register {
+            return macro_register_prefix(pending);
+        }
         if let Some(search) = self.search_motion {
             return search_motion_prefix(search);
         }
@@ -753,6 +790,7 @@ impl InputState {
         self.pending_operator = None;
         self.pending_search_motion = None;
         self.pending_replace = false;
+        self.pending_macro_register = None;
         self.which_key_started_at = None;
     }
 
@@ -763,13 +801,15 @@ impl InputState {
             operator: self.pending_operator,
             search_motion: self.pending_search_motion,
             replace: self.pending_replace,
+            macro_register: self.pending_macro_register,
         };
         (!pending.sequence.is_empty()
             || pending.count.is_some()
             || pending.operator.is_some()
             || pending.search_motion.is_some()
-            || pending.replace)
-            .then_some(pending)
+            || pending.replace
+            || pending.macro_register.is_some())
+        .then_some(pending)
     }
 
     fn update_which_key_timer(&mut self, previous: Option<PendingInput>) {
@@ -933,6 +973,21 @@ impl InputState {
     }
 
     fn which_key_contents(&self, mode: InputMode) -> Option<(String, Vec<WhichKeyEntry>)> {
+        if let Some(pending) = self.pending_macro_register {
+            let entries = match pending {
+                PendingMacroRegister::Record => vec![
+                    which_key_entry("key", "Record macro"),
+                    which_key_entry("A-Z", "Append to macro"),
+                    which_key_entry("Esc", "Cancel"),
+                ],
+                PendingMacroRegister::Play { .. } => vec![
+                    which_key_entry("key", "Play macro"),
+                    which_key_entry("@", "Play last macro"),
+                    which_key_entry("Esc", "Cancel"),
+                ],
+            };
+            return Some((macro_register_prefix(pending), entries));
+        }
         if let Some(search) = self.pending_search_motion {
             let description = match search.kind {
                 SearchMotionKind::Find => "Find character forwards",
@@ -1176,6 +1231,8 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
             which_key_entry("d", "+delete"),
             which_key_entry("c", "+change"),
             which_key_entry("y", "+yank"),
+            which_key_entry(".", "Repeat last change"),
+            which_key_entry("@", "Play macro"),
         ]);
     }
     entries
@@ -1248,7 +1305,10 @@ pub fn map_event_with_context(
             state.reset_prefixes();
             return InputAction::None;
         }
-        if pending_backspace_event(event) && state.backspace_pending() {
+        if state.pending_macro_register.is_none()
+            && pending_backspace_event(event)
+            && state.backspace_pending()
+        {
             return InputAction::None;
         }
     }
@@ -1275,12 +1335,86 @@ fn pending_backspace_event(event: &Event) -> bool {
         }) if unmodified(*mods))
 }
 
+pub(crate) fn macro_key_label(event: &Event) -> String {
+    fn character_label(character: char) -> String {
+        match character {
+            ' ' => "<Space>".to_string(),
+            '\n' | '\r' => "<Enter>".to_string(),
+            '\t' => "<Tab>".to_string(),
+            '\u{1b}' => "<Esc>".to_string(),
+            '\u{8}' | '\u{7f}' => "<BS>".to_string(),
+            character if character.is_control() => character.escape_debug().to_string(),
+            _ => character.to_string(),
+        }
+    }
+
+    match event {
+        Event::Character(character) => character_label(*character),
+        Event::Escape => "<Esc>".to_string(),
+        Event::Enter => "<Enter>".to_string(),
+        Event::Backspace => "<BS>".to_string(),
+        Event::Paste(text) => format!("<Paste:{}>", text.escape_debug()),
+        Event::Keybind(KeybindAction::Custom(action)) => match action.as_str() {
+            "trigger-completion" => "<ctrl-shift-k>".to_string(),
+            "trigger-symbol-info" => "<ctrl-i>".to_string(),
+            _ => action.strip_prefix("redox-key:").unwrap_or("").to_string(),
+        },
+        Event::KeyWithModifiers(KeyWithModifiers {
+            key: KeyKind::Char(character),
+            mods,
+        }) if text_mods(*mods) => character_label(replacement_char_from_key(*character, *mods)),
+        Event::KeyWithModifiers(KeyWithModifiers { mods, .. }) if mods.super_key => String::new(),
+        Event::KeyWithModifiers(KeyWithModifiers { key, mods }) => special_key_token(*key, *mods)
+            .unwrap_or_else(|| match key {
+                KeyKind::Escape => "<Esc>".to_string(),
+                KeyKind::Enter => "<Enter>".to_string(),
+                KeyKind::Backspace => "<BS>".to_string(),
+                KeyKind::Tab => "<Tab>".to_string(),
+                KeyKind::Delete => "<Del>".to_string(),
+                KeyKind::Up => "<Up>".to_string(),
+                KeyKind::Down => "<Down>".to_string(),
+                KeyKind::Left => "<Left>".to_string(),
+                KeyKind::Right => "<Right>".to_string(),
+                KeyKind::Function(number) => format!("<F{number}>"),
+                KeyKind::CapsLock => "<CapsLock>".to_string(),
+                _ => String::new(),
+            }),
+        _ => String::new(),
+    }
+}
+
 fn map_event_with_context_inner(
     state: &mut InputState,
     mode: InputMode,
     confirm_explorer_delete: bool,
     event: &Event,
 ) -> InputAction {
+    if let Some(pending) = state.pending_macro_register {
+        state.reset_prefixes();
+        let register = macro_key_label(event);
+        let function_key = register
+            .strip_suffix('>')
+            .and_then(|token| token.rsplit(['<', '-']).next())
+            .and_then(|key| key.strip_prefix(['F', 'f']))
+            .is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|digit| digit.is_ascii_digit())
+            });
+        if mode != InputMode::Normal
+            || register.is_empty()
+            || register == "<Esc>"
+            || function_key
+            || matches!(event, Event::Paste(_))
+        {
+            return InputAction::None;
+        }
+        return match pending {
+            PendingMacroRegister::Record => InputAction::StartMacroRecording { register },
+            PendingMacroRegister::Play { count } => InputAction::PlayMacro {
+                register: (register != "@").then_some(register),
+                count: count.unwrap_or(1).max(1),
+            },
+        };
+    }
     let custom_character = match event {
         Event::Character(c) => Some(*c),
         Event::KeyWithModifiers(KeyWithModifiers {
@@ -1499,6 +1633,22 @@ fn modal_char_action(
     }
 
     match c {
+        '.' if mode == InputMode::Normal => {
+            let count = state.pending_count;
+            state.reset_prefixes();
+            InputAction::RepeatLastChange { count }
+        }
+        'Q' if mode == InputMode::Normal => {
+            state.reset_prefixes();
+            state.pending_macro_register = Some(PendingMacroRegister::Record);
+            InputAction::ToggleMacroRecording
+        }
+        '@' if mode == InputMode::Normal => {
+            let count = state.pending_count;
+            state.reset_prefixes();
+            state.pending_macro_register = Some(PendingMacroRegister::Play { count });
+            InputAction::None
+        }
         'v' => {
             state.reset_prefixes();
             match mode {
@@ -2099,8 +2249,10 @@ fn custom_special_action(state: &InputState, mode: InputMode, key: &str) -> Opti
 }
 
 fn finish_custom_action(state: &mut InputState, mut action: InputAction) -> InputAction {
-    if let InputAction::Motion { count, .. } = &mut action {
-        *count = state.take_count_or_1();
+    match &mut action {
+        InputAction::Motion { count, .. } => *count = state.take_count_or_1(),
+        InputAction::RepeatLastChange { count } => *count = state.pending_count,
+        _ => {}
     }
     state.reset_prefixes();
     action
@@ -2279,6 +2431,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
         "completion" => InputAction::TriggerCompletion,
         "undo" => InputAction::Undo,
         "redo" => InputAction::Redo,
+        "repeat_last_change" => InputAction::RepeatLastChange { count: None },
         "move_left" => InputAction::Motion {
             motion: Motion::Left,
             count: 1,
@@ -2393,6 +2546,7 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::TriggerCompletion => "Completion",
         InputAction::Undo => "Undo",
         InputAction::Redo => "Redo",
+        InputAction::RepeatLastChange { .. } => "Repeat last change",
         InputAction::Motion { motion, .. } => motion_description(motion),
         InputAction::EnterInsert(InsertKind::Insert) => "Insert",
         InputAction::EnterInsert(InsertKind::Append) => "Append",

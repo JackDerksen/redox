@@ -9,7 +9,7 @@ use crate::ui::syntax::{auto_closing_tag, smart_newline_insert};
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
 
 impl EditorState {
-    pub fn apply_input(
+    pub(super) fn apply_input_inner(
         &mut self,
         action: InputAction,
         viewport_width_cells: usize,
@@ -42,6 +42,25 @@ impl EditorState {
         }
 
         match action {
+            InputAction::ApplyRecordedInsert {
+                start_offset,
+                deleted_chars,
+                text,
+                cursor_offset,
+            } => {
+                self.apply_recorded_insert(
+                    start_offset,
+                    deleted_chars,
+                    &text,
+                    cursor_offset,
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
+            InputAction::RepeatLastChange { .. }
+            | InputAction::ToggleMacroRecording
+            | InputAction::StartMacroRecording { .. }
+            | InputAction::PlayMacro { .. } => {}
             InputAction::ReplaySequence(sequence) => {
                 match self
                     .input
@@ -1536,6 +1555,7 @@ fn undo_tree_blocks_buffer_action(action: &InputAction) -> bool {
         | InputAction::IndentVisualSelection { .. }
         | InputAction::OutdentVisualSelection { .. }
         | InputAction::InsertChar(_)
+        | InputAction::ApplyRecordedInsert { .. }
         | InputAction::Backspace
         | InputAction::Enter => true,
         _ => false,

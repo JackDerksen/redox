@@ -157,6 +157,7 @@ Enter command mode with `:`.
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
 | `:ls` | Show a compact summary of open buffers. |
+| `:macros` | List the current session's macro registers and recorded key sequences. |
 | `:ex` / `:explorer` | Toggle the file explorer. |
 | `:about` | Toggle the about popup. |
 | `:rain` | Toggle rain mode. |
@@ -317,6 +318,7 @@ Other language tool commands:
 | `p` / `P` | Paste after/before from the private register. |
 | `<space>p` | Paste from the system clipboard. |
 | `u` / `ctrl+r` | Undo / redo. |
+| `.` | Repeat the last edit at the cursor. A count replaces the edit's previous count. |
 | `ctrl+d` / `ctrl+u` | Scroll down/up by one viewport. |
 | `zz` | Centre the cursor line in the viewport. |
 | `~` | Toggle character case, or the whole visual selection. |
@@ -331,6 +333,33 @@ Other language tool commands:
 | `ctrl+x` | Close the active split. |
 
 Inactive editor panes show their filename centred in a muted strip along the top.
+
+### Repeating edits and macros
+
+`.` repeats the last edit, including its inserted text or visual selection dimensions.
+Moving, searching, yanking, and undoing leave that edit available to repeat.
+
+| Keys | Behaviour |
+| ---- | --------- |
+| `Qa` ... `Q` | Record a macro into register `a`, then stop. |
+| `QA` ... `Q` | Append to the macro in register `a`. |
+| `@a` / `3@a` | Play macro `a` once / three times. |
+| `Q3` ... `Q` / `@3` | Record / play numeric register `3`. |
+| `Q!` ... `Q` / `@!` | Record / play punctuation register `!`. |
+| `@@` | Play the last-used macro again. |
+
+Registers accept letters, digits, punctuation, Space, Tab, Enter, Backspace, arrow keys,
+and supported Ctrl/Alt combinations. Function keys are excluded. Escape cancels register
+selection, and `@` is reserved for `@@`. Uppercase letters append to their lowercase register.
+Counts go before `@`: `3@a` plays register `a` three times, while `@3` plays register `3`.
+
+A persistent toast shows the recording register. Stopping displays
+the recorded key sequence. Lowercase `q` is unused; `Q` is ordinary text in insert mode.
+Macros last for the current editor session and replay recorded actions, including captured
+clipboard text. `:macros` lists saved registers and their sequences in a toast, like `:ls`.
+Playback groups the entire invocation into one undo step per buffer, including every repetition,
+nested macro call, and any undo/redo commands in the macro. Recursive or excessively long playback
+stops at a limit.
 
 ### Visual modes
 

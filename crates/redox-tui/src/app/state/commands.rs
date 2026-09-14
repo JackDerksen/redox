@@ -95,6 +95,11 @@ const COMMANDS: &[CommandDefinition] = &[
         run: |state, _| state.command_lsp_status(),
     },
     CommandDefinition {
+        names: &["macros"],
+        editor_context: |_, _| false,
+        run: |state, _| state.command_list_macros(),
+    },
+    CommandDefinition {
         names: &["perf"],
         editor_context: |_, argument| argument.is_empty(),
         run: |state, argument| {

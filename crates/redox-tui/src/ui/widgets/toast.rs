@@ -23,28 +23,30 @@ pub fn draw_status_toast(
     style: UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<PopupLayout>> {
-    let Some(message) = &state.status_msg else {
-        return Ok(None);
+    let recording_toast = state.recording_macro_register().map(|register| {
+        let mut message = format!("Recording @{register} (Q to stop)");
+        let mut line_styles = vec![StatusMessageStyle::Normal];
+        if let Some(status) = &state.status_msg {
+            message.push('\n');
+            message.push_str(status);
+            line_styles.extend_from_slice(&state.status_msg_line_styles);
+        }
+        (message, line_styles)
+    });
+    let (message, line_styles) = match &recording_toast {
+        Some((message, line_styles)) => (message.as_str(), line_styles.as_slice()),
+        None => match &state.status_msg {
+            Some(message) => (message.as_str(), state.status_msg_line_styles.as_slice()),
+            None => return Ok(None),
+        },
     };
 
     let (term_w, term_h) = window.get_size();
     let perf_popup = status_toast_perf_popup_layout(state, term_w, term_h, style);
     let toast = if let Some(search) = search_toast_layout(state, term_w, term_h) {
-        toast_layout_below(
-            message,
-            &state.status_msg_line_styles,
-            term_w,
-            term_h,
-            search,
-        )
+        toast_layout_below(message, line_styles, term_w, term_h, search)
     } else {
-        toast_layout(
-            message,
-            &state.status_msg_line_styles,
-            term_w,
-            term_h,
-            perf_popup,
-        )
+        toast_layout(message, line_styles, term_w, term_h, perf_popup)
     };
     let Some(toast) = toast else {
         return Ok(None);
