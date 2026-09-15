@@ -107,6 +107,14 @@ impl VisualExtent {
 }
 
 impl EditorState {
+    pub(super) fn remember_inserted_text(&mut self, text: String) {
+        self.replay.last_change = Some(RecordedChange {
+            actions: vec![InputAction::Paste(text)],
+            visual: None,
+            repetitions: 1,
+        });
+    }
+
     pub(super) fn command_list_macros(&mut self) {
         if self.replay.macros.is_empty() {
             self.set_status("no macros recorded in this session");

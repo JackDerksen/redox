@@ -61,6 +61,69 @@ fn apply_keys(state: &mut EditorState, keys: &str) {
 }
 
 #[test]
+fn calculator_commands_preview_insert_and_cancel_without_changing_registers() {
+    let path = temp_file_path("calculator");
+    let original = "ab猫cd\n";
+    let mut state = state_with_text(path.clone(), original);
+    state
+        .views
+        .entry(state.session.active_id())
+        .or_default()
+        .cursor
+        .cursor = Pos::new(0, 2);
+    state.private_register = "keep".to_string();
+    enter_command_mode(&mut state);
+    apply_keys(&mut state, "5+(2*3)");
+    assert_eq!(
+        state.command_calculation_preview().as_deref(),
+        Some(" = 11")
+    );
+    assert_eq!(state.session.active_buffer().to_string(), original);
+    state.apply_input(InputAction::CommandMoveLeft, 80, 24);
+    assert_eq!(state.command_calculation_preview(), None);
+    state.apply_input(InputAction::CommandMoveRight, 80, 24);
+    state.apply_input(InputAction::CommandComplete, 80, 24);
+    assert_eq!(state.command_line, "5+(2*3)");
+    state.apply_input(InputAction::CommandEnter, 80, 24);
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.session.active_buffer().to_string(), "ab11猫cd\n");
+    assert_eq!(state.private_register, "keep");
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), original);
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "ab11猫cd\n");
+    state.apply_input(InputAction::RepeatLastChange { count: None }, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "ab1111猫cd\n");
+    state.apply_input(InputAction::Undo, 80, 24);
+
+    enter_command_mode(&mut state);
+    apply_keys(&mut state, "5+(2x3)");
+    assert_eq!(
+        state.command_calculation_preview().as_deref(),
+        Some(" = 11")
+    );
+    state.apply_input(InputAction::CommandCancel, 80, 24);
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.session.active_buffer().to_string(), "ab11猫cd\n");
+    assert_eq!(state.status_msg, None);
+
+    enter_command_mode(&mut state);
+    apply_keys(&mut state, "1/0");
+    assert_eq!(state.command_calculation_preview(), None);
+    state.apply_input(InputAction::CommandEnter, 80, 24);
+    assert_eq!(state.mode, EditorMode::Command);
+    assert_eq!(state.command_line, "1/0");
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("calculator: division by zero")
+    );
+    assert_eq!(state.session.active_buffer().to_string(), "ab11猫cd\n");
+    state.apply_input(InputAction::CommandCancel, 80, 24);
+    assert_eq!(state.private_register, "keep");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn replay_dot_preserves_insert_sessions_and_count_override() {
     let path = temp_file_path("dot_insert_and_count");
     let mut state = state_with_text(path.clone(), "one two three\n");

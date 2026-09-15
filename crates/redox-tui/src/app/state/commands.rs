@@ -3,8 +3,9 @@ use std::process::{Command, Stdio};
 
 use redox_core::{Pos, Selection, TextBuffer};
 
-use super::{EditorMode, EditorState};
+use super::{EditorMode, EditorState, calculator};
 use crate::indentation::width_for_text;
+use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::language_for_path;
 use crate::ui::syntax::{SyntaxLanguage, smart_open_line_insert};
@@ -240,6 +241,14 @@ impl EditorState {
             .filter(|suffix| !suffix.is_empty())
     }
 
+    pub(crate) fn command_calculation_preview(&self) -> Option<String> {
+        if self.mode != EditorMode::Command || self.command_line_cursor != self.command_line.len() {
+            return None;
+        }
+        let result = calculator::evaluate(calculator::expression(&self.command_line)?).ok()?;
+        Some(format!(" = {result}"))
+    }
+
     pub(super) fn cycle_command_completion(&mut self, forward: bool) {
         let count = self.command_completions().count();
         if count > 0 {
@@ -274,6 +283,14 @@ impl EditorState {
         }
 
         let cmd_raw = self.command_line.trim().to_string();
+        let calculation = match calculator::expression(&cmd_raw).map(calculator::evaluate) {
+            Some(Ok(result)) => Some(result),
+            Some(Err(error)) => {
+                self.set_status(format!("calculator: {error}"));
+                return;
+            }
+            None => None,
+        };
         self.command_line.clear();
         self.command_line_cursor = 0;
         self.mode = EditorMode::Normal;
@@ -284,6 +301,21 @@ impl EditorState {
         }
 
         self.push_command_history(cmd_raw.clone());
+
+        if let Some(result) = calculation {
+            if !self.close_active_surfaces_for_command() {
+                self.set_status("cannot return to an editor buffer");
+                return;
+            }
+            if !self.ensure_active_fully_loaded_for_edit_or_save() {
+                return;
+            }
+            self.clear_status();
+            let (width, height) = self.viewport_size();
+            self.apply_input(InputAction::Paste(result.clone()), width, height);
+            self.remember_inserted_text(result);
+            return;
+        }
 
         let mut parts = cmd_raw.splitn(2, char::is_whitespace);
         let cmd = parts.next().unwrap_or("");

@@ -47,6 +47,7 @@ pub use lsp::{
 mod perf;
 pub use perf::{FramePerfSample, FramePerfStats, PerfPopup};
 mod actions;
+mod calculator;
 mod commands;
 mod editing;
 mod replay;
