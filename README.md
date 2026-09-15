@@ -98,6 +98,24 @@ If needed, add that location to your `PATH` (example for zsh):
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
+### Updates
+
+Redox checks GitHub's latest stable release in the background on startup and shows a
+toast when a newer version is available. Successful checks are cached for 24 hours
+under the Redox state directory. Checks require `curl`; missing `curl`, offline
+connections, and other startup check failures stay quiet.
+
+Run `:check-update` to check immediately, bypassing the cache, and see the result or
+any connection error. Set `check_updates = false` in your configuration to disable
+automatic checks (manual checks remain available).
+
+For Cargo installs, run `cargo install redox-editor --locked` in your terminal to
+install the newest published crate. For release binaries, download the matching
+archive from [GitHub releases](https://github.com/JackDerksen/redox/releases/latest)
+and replace your installed `redox` binary after closing the editor. GitHub releases
+may appear before the corresponding crate is published. Redox only notifies you;
+it does not download or install updates itself.
+
 
 ## Usage guide
 
@@ -153,6 +171,7 @@ Enter command mode with `:`.
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |

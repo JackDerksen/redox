@@ -3967,6 +3967,9 @@ fn reload_runtime_config(
                 ..candidate.zen
             };
             state.configure_command_completions(candidate.theme_names());
+            if candidate.check_updates != active_config.check_updates {
+                state.configure_update_checks(candidate.check_updates);
+            }
             *active_config = candidate;
             *style = candidate_style;
             *active_theme = candidate_theme;
@@ -4057,6 +4060,7 @@ pub fn run() -> anyhow::Result<()> {
     install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
+    state.configure_update_checks(config.check_updates);
 
     const MAX_EVENTS_PER_FRAME: usize = 256;
 

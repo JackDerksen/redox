@@ -34,6 +34,17 @@ const COMMANDS: &[CommandDefinition] = &[
         run: |state, _| state.command_buffer_cycle_prev(),
     },
     CommandDefinition {
+        names: &["check-update"],
+        editor_context: |_, _| false,
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.start_update_check(true);
+            } else {
+                state.set_status("usage: check-update");
+            }
+        },
+    },
+    CommandDefinition {
         names: &["colorscheme"],
         editor_context: |_, _| false,
         run: |state, argument| state.request_colorscheme(argument),
