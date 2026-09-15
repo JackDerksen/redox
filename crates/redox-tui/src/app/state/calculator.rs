@@ -121,6 +121,10 @@ impl Parser<'_> {
         if !value.is_finite() {
             return Err("number is too large");
         }
+        // Beyond 2^53 - 1 (max safe int), parsing can silently round distinct integers to the same f64.
+        if value > 9_007_199_254_740_991.0 {
+            return Err("number exceeds the exact integer range");
+        }
         Ok(value)
     }
 }
@@ -128,6 +132,26 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_literals_must_stay_within_f64_safe_range() {
+        assert_eq!(
+            evaluate("9007199254740991"),
+            Ok("9007199254740991".to_string())
+        );
+        for input in [
+            "9007199254740993",
+            "-9007199254740993",
+            "9007199254740993.0",
+            "9.007199254740993e15",
+        ] {
+            assert_eq!(
+                evaluate(input),
+                Err("number exceeds the exact integer range"),
+                "{input}"
+            );
+        }
+    }
 
     #[test]
     fn arithmetic_respects_precedence_and_rejects_invalid_input() {
