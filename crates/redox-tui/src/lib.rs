@@ -3723,7 +3723,7 @@ desc = "Open notes again"
     }
 }
 
-fn parse_launch_options() -> anyhow::Result<LaunchOptions> {
+fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
     let mut args = env::args().skip(1);
     let mut config_path = None;
     let mut target_path = None;
@@ -3731,6 +3731,18 @@ fn parse_launch_options() -> anyhow::Result<LaunchOptions> {
     while let Some(raw) = args.next() {
         if parse_options && raw == "--" {
             parse_options = false;
+        } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
+            println!("redox {}", env!("CARGO_PKG_VERSION"));
+            return Ok(None);
+        } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
+            println!(
+                "Redox - A tasteful text editor\n\n\
+                 Usage: redox [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
+                 Options:\n  --config <PATH>  Use a configuration file\n  \
+                 -h, --help       Print help\n  -V, --version    Print version\n  \
+                 --               Treat remaining arguments as paths"
+            );
+            return Ok(None);
         } else if parse_options && raw == "--config" {
             config_path =
                 Some(PathBuf::from(args.next().ok_or_else(|| {
@@ -3745,21 +3757,21 @@ fn parse_launch_options() -> anyhow::Result<LaunchOptions> {
         }
     }
     let Some(path) = target_path else {
-        return Ok(LaunchOptions {
+        return Ok(Some(LaunchOptions {
             target: LaunchTarget::Empty,
             config_path,
-        });
+        }));
     };
     if path.is_dir() {
-        return Ok(LaunchOptions {
+        return Ok(Some(LaunchOptions {
             target: LaunchTarget::Explorer(path),
             config_path,
-        });
+        }));
     }
-    Ok(LaunchOptions {
+    Ok(Some(LaunchOptions {
         target: LaunchTarget::File(path),
         config_path,
-    })
+    }))
 }
 
 fn is_cancel_event(event: &Event) -> bool {
@@ -3967,6 +3979,9 @@ fn reload_runtime_config(
                 ..candidate.zen
             };
             state.configure_command_completions(candidate.theme_names());
+            if candidate.check_updates != active_config.check_updates {
+                state.configure_update_checks(candidate.check_updates);
+            }
             *active_config = candidate;
             *style = candidate_style;
             *active_theme = candidate_theme;
@@ -4015,10 +4030,12 @@ fn apply_runtime_colorscheme(
 }
 
 pub fn run() -> anyhow::Result<()> {
+    let Some(options) = parse_launch_options()? else {
+        return Ok(());
+    };
     if let Err(error) = storage::migrate_legacy_state() {
         eprintln!("warning: could not migrate legacy Redox state: {error}");
     }
-    let options = parse_launch_options()?;
     let explicit_config_path = options.config_path.clone();
     let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
     let input = configured_input(&config)?;
@@ -4057,6 +4074,7 @@ pub fn run() -> anyhow::Result<()> {
     install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
+    state.configure_update_checks(config.check_updates);
 
     const MAX_EVENTS_PER_FRAME: usize = 256;
 

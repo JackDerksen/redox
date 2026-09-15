@@ -67,14 +67,33 @@ This split keeps buffer operations, indexing, motions, fuzzy scoring, session be
 
 ### Requirements
 
-- Rust toolchain (`cargo` + `rustc`)
+- Rust toolchain (`cargo` + `rustc`) for Cargo installs and source builds. Homebrew installs build tools automatically.
 - A terminal that supports basic ANSI features and raw mode (and ideally full colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for the best experience!
 - Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see [Language tools](#language-tools) for setup.
 
 
-### Install via CLI
+### Install with Homebrew
 
-The easiest way to install the editor is to just install the binary from Crates.io:
+On macOS or Linux:
+
+```sh
+brew install jackderksen/tap/redox
+```
+
+To update:
+
+```sh
+brew update
+brew upgrade redox
+```
+
+The [personal tap](https://github.com/JackDerksen/homebrew-tap) builds from a pinned
+release source archive. It checks for new stable releases hourly and tests formula
+updates on macOS and Linux before publishing them.
+
+### Install with Cargo
+
+Install the binary from Crates.io:
 ```
 cargo install redox-editor
 ```
@@ -97,6 +116,25 @@ If needed, add that location to your `PATH` (example for zsh):
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
+
+### Updates
+
+Redox checks GitHub's latest stable release in the background on startup and shows a
+toast when a newer version is available. Successful checks are cached for 24 hours
+under the Redox state directory. **Note**: Checks require `curl`; missing `curl`,
+offline connections, and other startup check failures stay quiet.
+
+Run `:check-update` to check immediately, bypassing the cache, and see the result or
+any connection error. Set `check_updates = false` in your configuration to disable
+automatic checks (manual checks remain available).
+
+For Homebrew installs, run `brew update && brew upgrade redox`. For Cargo installs,
+run `cargo install redox-editor --locked` in your terminal to install the newest
+published crate. For release binaries, download the matching archive from
+[GitHub releases](https://github.com/JackDerksen/redox/releases/latest) and replace
+your installed `redox` binary after closing the editor. GitHub releases may appear
+before the corresponding crate is published. Redox only notifies you; it does not
+download or install updates itself.
 
 
 ## Usage guide
@@ -129,6 +167,8 @@ Editor-managed data (such as undo history and LSP metadata) lives separately und
 redox <file_path>
 ```
 
+Use `redox --help` for launch options and `redox --version` to print the installed version.
+
 Example:
 ```bash
 redox ./README.md
@@ -153,6 +193,7 @@ Enter command mode with `:`.
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |

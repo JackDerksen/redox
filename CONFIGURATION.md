@@ -65,6 +65,7 @@ legacy data is preserved rather than deleted.
 ```toml
 theme = "default"
 icons_enabled = false
+check_updates = true
 scrolloff = 5 
 background_dimming = 0.5
 undo_tree_history_size = 1000
@@ -76,6 +77,7 @@ leader = " "
 | --- | --- | --- | --- |
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
 | `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
+| `check_updates` | boolean | `true` | Check GitHub for a newer release on startup. Successful checks are cached for 24 hours and require `curl`. `:check-update` performs a manual check at any time. |
 | `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |

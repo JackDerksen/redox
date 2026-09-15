@@ -45,6 +45,7 @@ impl EditorState {
         self.poll_finder_results();
         self.poll_external_file_changes(now);
         self.expire_status_message(now);
+        self.poll_update_check();
         let load_start = Instant::now();
         self.pump_active_loading(self.viewport_height_rows.saturating_sub(1));
         let load_time = load_start.elapsed();
@@ -101,6 +102,7 @@ impl EditorState {
                 .is_some_and(|status| status.phase == redox_core::BufferLoadPhase::Loading)
         });
         let background_pending = loading
+            || self.update_check_can_notify()
             || self.analysis_worker.is_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();

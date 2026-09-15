@@ -21,6 +21,7 @@ pub const DEFAULT_WHICH_KEY_DELAY_MS: u64 = 3_000;
 pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
+    pub check_updates: bool,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
     pub scrolloff: usize,
@@ -39,6 +40,7 @@ impl Default for Config {
         Self {
             theme: "default".to_string(),
             icons_enabled: false,
+            check_updates: true,
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
             scrolloff: DEFAULT_SCROLLOFF_ROWS,
@@ -365,6 +367,12 @@ mod tests {
         assert_eq!(config.scrolloff, DEFAULT_SCROLLOFF_ROWS);
         assert_eq!(config.color_column, 79);
         assert!(!config.icons_enabled);
+        assert!(config.check_updates);
+        assert!(
+            !toml::from_str::<Config>("check_updates = false")
+                .unwrap()
+                .check_updates
+        );
         assert_eq!(config.leader(), ' ');
         assert!(config.which_key.enabled);
         assert_eq!(config.which_key.delay_ms, DEFAULT_WHICH_KEY_DELAY_MS);

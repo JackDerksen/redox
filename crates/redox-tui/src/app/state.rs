@@ -54,6 +54,7 @@ mod replay;
 mod search;
 mod surface;
 mod undo_tree;
+mod updates;
 use undo_tree::UndoTreeState;
 pub use undo_tree::{UndoTreeLineRole, UndoTreeLineSpan, UndoTreeSurfaceRole};
 
@@ -391,6 +392,7 @@ pub struct PaneRect {
 #[derive(Debug)]
 pub struct EditorState {
     runtime: runtime::RuntimeState,
+    update_check: Option<updates::UpdateCheck>,
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
@@ -469,6 +471,7 @@ impl EditorState {
         };
         let state = Self {
             runtime: runtime::RuntimeState::default(),
+            update_check: None,
             session,
             views,
             about: None,
