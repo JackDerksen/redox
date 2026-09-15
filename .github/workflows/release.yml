@@ -2,69 +2,122 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check-version:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Match the stable tag to both binary packages
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("release tags must be stable versions such as v0.9.0")
+          for manifest in ["Cargo.toml", "crates/redox-tui/Cargo.toml"]:
+              version = tomllib.loads(Path(manifest).read_text())["package"]["version"]
+              if tag != f"v{version}":
+                  raise SystemExit(f"{tag} does not match {manifest}: {version}")
+          PY
+
+  checks:
+    needs: check-version
+    uses: ./.github/workflows/ci.yml
+
   build-binaries:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.platform }})
+    needs: checks
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            artifact_suffix: linux
-            archive_ext: tar.gz
-          - os: macos-latest
-            artifact_suffix: macos
-            archive_ext: tar.gz
-
+          - os: ubuntu-24.04
+            platform: linux-X64
+          - os: ubuntu-24.04-arm
+            platform: linux-ARM64
+          - os: macos-15
+            platform: macos-ARM64
+          - os: macos-15-intel
+            platform: macos-X64
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build release binary
-        run: cargo build --release --locked -p redox-editor
-
-      - name: Prepare archive
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo build --release --locked -p redox-editor
+      - name: Package and verify the executable
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cp target/release/redox dist/redox
-          tar -C dist -czf redox-${{ github.ref_name }}-${{ matrix.artifact_suffix }}-${{ runner.arch }}.${{ matrix.archive_ext }} redox
-
-      - name: Upload packaged binary
-        uses: actions/upload-artifact@v4
+          test "$(target/release/redox --version)" = "redox ${GITHUB_REF_NAME#v}"
+          mkdir -p dist package
+          cp target/release/redox README.md LICENSE package/
+          tar -C package -czf "dist/redox-${GITHUB_REF_NAME}-${PLATFORM}.tar.gz" redox README.md LICENSE
+          mkdir unpacked
+          tar -xzf "dist/redox-${GITHUB_REF_NAME}-${PLATFORM}.tar.gz" -C unpacked
+          test "$(unpacked/redox --version)" = "redox ${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: redox-${{ matrix.artifact_suffix }}-${{ runner.arch }}
-          path: redox-${{ github.ref_name }}-${{ matrix.artifact_suffix }}-${{ runner.arch }}.${{ matrix.archive_ext }}
+          name: redox-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   github-release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
+    name: Publish GitHub release
     needs: build-binaries
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          pattern: redox-*
           path: dist
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: dist/**/*
+          merge-multiple: true
+      - name: Generate and verify checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          test "$(find . -name '*.tar.gz' | wc -l)" -eq 4
+          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish all assets together
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft); then
+            test "$draft" = true || { echo 'Refusing to modify a published release'; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --draft
+          fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
