@@ -2781,6 +2781,40 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn calculator_ghost_text_inserts_on_enter_and_cancels_on_escape() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        let mut clipboard = None;
+        for character in ":5+(2x3)".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        let style = UiStyle::default();
+        let mut window = TestWindow::new(80, 24);
+        let mut perf = FramePerfSample::default();
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        let row = (0..24)
+            .find(|row| window.row_text(*row).contains("5+(2x3) = 11"))
+            .expect("calculation preview");
+        let line = window.row_text(row);
+        let answer = line[..line.find("11").unwrap()].chars().count();
+        assert_eq!(
+            window.foregrounds[usize::from(row)][answer],
+            Some(style.command_line.ghost.fg)
+        );
+        assert!(state.session.active_buffer().to_string().is_empty());
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        assert_eq!(state.mode, app::EditorMode::Normal);
+        assert!(state.session.active_buffer().to_string().is_empty());
+        for character in ":5+(2x3)".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        assert_eq!(state.mode, app::EditorMode::Normal);
+        assert_eq!(state.session.active_buffer().to_string(), "11");
+        assert_eq!(state.status_msg, None);
+    }
+
+    #[test]
     fn frame_intervals_match_expected_cadence() {
         assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
         assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));

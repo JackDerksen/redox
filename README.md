@@ -169,6 +169,8 @@ Enter command mode with `:`.
 
 Command and subcommand completions appear as ghost text at the end of the input. Press `Tab` to accept, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
 
+Arithmetic expressions can be evaluated in the command line with live result previews. `Enter` will paste the result at the buffer cursor as one undoable edit.
+
 `:colorscheme ` also completes theme names from your configuration, plus the built-in `default`. Commands from `[[bind]]` entries with a `command` field are included too. Suggestions refresh after `:config reload`.
 
 ### File navigation

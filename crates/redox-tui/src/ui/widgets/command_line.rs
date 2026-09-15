@@ -151,7 +151,11 @@ fn draw_command_line_popup_after(
             minui::ColorPair::new(style.theme.red, style.theme.bg),
         )?;
     }
-    if let Some(suffix) = state.command_completion_suffix() {
+    let calculation = state.command_calculation_preview();
+    if let Some(suffix) = calculation
+        .as_deref()
+        .or_else(|| state.command_completion_suffix())
+    {
         let ghost =
             clip_text_to_cells(suffix, (input_width as usize).saturating_sub(cursor_offset));
         if !ghost.is_empty() {
