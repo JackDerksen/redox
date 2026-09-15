@@ -104,7 +104,7 @@ fn update_message(latest: &Version, current: &Version, manual: bool) -> Option<S
         Some(format!(
             "Redox {latest} is available (you're running {current})\n\
              Homebrew: brew update && brew upgrade redox\n\
-             Cargo installs: cargo install redox-editor --locked\n\
+             Cargo installs: cargo install redox-editor --version {latest} --locked\n\
              Release binaries: {RELEASE_PAGE}"
         ))
     } else {
