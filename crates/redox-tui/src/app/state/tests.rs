@@ -80,8 +80,10 @@ fn calculator_commands_preview_insert_and_cancel_without_changing_registers() {
     );
     assert_eq!(state.session.active_buffer().to_string(), original);
     state.apply_input(InputAction::CommandMoveLeft, 80, 24);
-    assert_eq!(state.command_calculation_preview(), None);
-    state.apply_input(InputAction::CommandMoveRight, 80, 24);
+    assert_eq!(
+        state.command_calculation_preview().as_deref(),
+        Some(" = 11")
+    );
     state.apply_input(InputAction::CommandComplete, 80, 24);
     assert_eq!(state.command_line, "5+(2*3)");
     state.apply_input(InputAction::CommandEnter, 80, 24);
@@ -120,6 +122,47 @@ fn calculator_commands_preview_insert_and_cancel_without_changing_registers() {
     assert_eq!(state.session.active_buffer().to_string(), "ab11猫cd\n");
     state.apply_input(InputAction::CommandCancel, 80, 24);
     assert_eq!(state.private_register, "keep");
+
+    for (command, result) in [
+        ("100 binary to decimal", "4"),
+        ("e hex to decimal", "14"),
+        ("100 km/h to mph", "62.1371192237334"),
+        ("1 mebibyte to kibibytes", "1024"),
+        ("90 minutes to seconds", "5400"),
+        ("FF8000 hex to rgb", "rgb(255, 128, 0)"),
+    ] {
+        let command = format!("convert {command}");
+        let before = state.session.active_buffer().to_string();
+        let cursor = state.active_cursor_pos();
+        enter_command_mode(&mut state);
+        apply_keys(&mut state, &command);
+        assert_eq!(
+            state.command_calculation_preview(),
+            Some(format!(": {result}"))
+        );
+        state.apply_input(InputAction::CommandCancel, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), before);
+        enter_command_mode(&mut state);
+        apply_keys(&mut state, &command);
+        state.apply_input(InputAction::CommandEnter, 80, 24);
+        let mut expected = before.clone();
+        let byte = before
+            .char_indices()
+            .nth(cursor.col)
+            .expect("cursor within line")
+            .0;
+        expected.insert_str(byte, result);
+        assert_eq!(state.session.active_buffer().to_string(), expected);
+        assert_eq!(state.private_register, "keep");
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), before);
+    }
+    for command in ["e 16 to 10", "ex 36 to 10"] {
+        enter_command_mode(&mut state);
+        apply_keys(&mut state, command);
+        assert_eq!(state.command_calculation_preview(), None);
+        state.apply_input(InputAction::CommandCancel, 80, 24);
+    }
     let _ = fs::remove_file(path);
 }
 
@@ -3177,8 +3220,10 @@ fn config_commands_request_runtime_actions() {
     for character in "config re".chars() {
         state.apply_input(InputAction::CommandChar(character), 80, 24);
     }
+    state.apply_input(InputAction::CommandMoveLeft, 80, 24);
     assert_eq!(state.command_completion_suffix(), Some("load"));
     state.apply_input(InputAction::CommandComplete, 80, 24);
+    assert_eq!(state.command_line_cursor, state.command_line.len());
     state.apply_input(InputAction::CommandEnter, 80, 24);
     assert!(state.take_config_reload_request());
     assert!(!state.take_config_reload_request());

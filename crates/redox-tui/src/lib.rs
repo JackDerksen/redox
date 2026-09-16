@@ -2788,18 +2788,26 @@ mod tests {
         for character in ":5+(2x3)".chars() {
             handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
         }
+        state.apply_input(InputAction::CommandMoveLeft, 80, 24);
+        state.apply_input(InputAction::CommandBackspace, 80, 24);
+        state.apply_input(InputAction::CommandChar('4'), 80, 24);
         let style = UiStyle::default();
         let mut window = TestWindow::new(80, 24);
         let mut perf = FramePerfSample::default();
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         let row = (0..24)
-            .find(|row| window.row_text(*row).contains("5+(2x3) = 11"))
+            .find(|row| window.row_text(*row).contains("5+(2x4) = 13"))
             .expect("calculation preview");
         let line = window.row_text(row);
-        let answer = line[..line.find("11").unwrap()].chars().count();
+        let answer = line[..line.find("13").unwrap()].chars().count();
         assert_eq!(
             window.foregrounds[usize::from(row)][answer],
             Some(style.command_line.ghost.fg)
+        );
+        let cursor = window.cursor.as_ref().expect("command cursor");
+        assert_eq!(
+            window.cells[usize::from(cursor.y)][usize::from(cursor.x)],
+            ')'
         );
         assert!(state.session.active_buffer().to_string().is_empty());
         handle_editor_event(&mut state, &mut clipboard, Event::Escape);
@@ -2812,6 +2820,51 @@ mod tests {
         assert_eq!(state.mode, app::EditorMode::Normal);
         assert_eq!(state.session.active_buffer().to_string(), "11");
         assert_eq!(state.status_msg, None);
+    }
+
+    #[test]
+    fn command_completion_renders_after_input_and_accepts_from_inside_it() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.configure_command_completions(["étoile", "été"]);
+        for (prefix, suffix) in [
+            ("config re", "load"),
+            ("  colorscheme é", "toile"),
+            ("conver", "t"),
+        ] {
+            state.apply_input(InputAction::EnterCommand, 80, 24);
+            for character in prefix.chars() {
+                state.apply_input(InputAction::CommandChar(character), 80, 24);
+            }
+            state.apply_input(InputAction::CommandMoveLeft, 80, 24);
+            state.apply_input(InputAction::CommandCompletionNext, 80, 24);
+            state.apply_input(InputAction::CommandCompletionPrev, 80, 24);
+            assert_eq!(state.command_completion_suffix(), Some(suffix));
+
+            let style = UiStyle::default();
+            let mut window = TestWindow::new(80, 24);
+            let mut perf = FramePerfSample::default();
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            let expected = format!("{prefix}{suffix}");
+            let row = (0..24)
+                .find(|row| window.row_text(*row).contains(&expected))
+                .expect("completion preview after the full input");
+            let line = window.row_text(row);
+            let input_start = line[..line.find(&expected).unwrap()].chars().count();
+            assert_eq!(
+                window.foregrounds[usize::from(row)][input_start + prefix.chars().count()],
+                Some(style.command_line.ghost.fg)
+            );
+            assert_eq!(
+                usize::from(window.cursor.as_ref().unwrap().x),
+                input_start + prefix[..state.command_line_cursor].chars().count()
+            );
+
+            state.apply_input(InputAction::CommandComplete, 80, 24);
+            assert_eq!(state.command_line, expected);
+            assert_eq!(state.command_line_cursor, expected.len());
+            assert_eq!(state.mode, app::EditorMode::Command);
+        }
     }
 
     #[test]
