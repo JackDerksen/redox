@@ -193,6 +193,7 @@ Enter command mode with `:`.
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
 | `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
@@ -208,9 +209,86 @@ Enter command mode with `:`.
 | `:lsp list` | Open the language tools marketplace. |
 | `:lsp status` | Show the active buffer's detected language tools. |
 
-Command and subcommand completions appear as ghost text at the end of the input. Press `Tab` to accept, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
+Command and subcommand completions appear as ghost text at the end of the input, regardless of cursor position. Press `Tab` from anywhere in the input to accept and move the cursor to the end, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
 
-Arithmetic expressions can be evaluated in the command line with live result previews. `Enter` will paste the result at the buffer cursor as one undoable edit.
+The command line calculator supports arithmetic, base and unit conversions, and RGB/hex colours, with live result previews. `Enter` pastes the result at the buffer cursor as one undoable edit.
+
+<details>
+<summary>Calculator usage</summary>
+
+Type an arithmetic expression after `:`, or use `:convert` for base, unit and colour conversions. The answer appears as ghost text and updates while you edit anywhere in the input. `Enter` inserts the result at the buffer cursor; `Escape` leaves the buffer untouched. Number and unit conversions insert just the resulting number. Colour conversions insert `#rrggbb` or `rgb(r, g, b)`.
+
+| Input | Result |
+| ----- | ------ |
+| `5+(2x3)` | `11` |
+| `convert 100 binary to decimal` | `4` |
+| `convert 255 decimal to hex` | `ff` |
+| `convert FF hex to decimal` | `255` |
+| `convert 5 kg to lbs` | `11.0231131092439` |
+| `convert (5+2) kg to g` | `7000` |
+| `convert 12 in to ft` | `1` |
+| `convert 1 acre to m2` | `4046.8564224` |
+| `convert 1 usgal to L` | `3.785411784` |
+| `convert 100 km/h to mph` | `62.1371192237334` |
+| `convert 90 min to h` | `1.5` |
+| `convert 90 minutes to seconds` | `5400` |
+| `convert 5 kilograms to pounds` | `11.0231131092439` |
+| `convert 180 deg to rad` | `3.14159265358979` |
+| `convert 0 C to F` | `32` |
+| `convert 273.15 K to C` | `0` |
+| `convert 1 MiB to B` | `1048576` |
+| `convert 8 Mb to MB` | `1` |
+| `convert rgb(255, 128, 0) to hex` | `#ff8000` |
+| `convert 255,128,0 rgb to hex` | `#ff8000` |
+| `convert #ff8000 to rgb` | `rgb(255, 128, 0)` |
+| `convert FF8000 hex to rgb` | `rgb(255, 128, 0)` |
+| `convert #abc to rgb` | `rgb(170, 187, 204)` |
+
+Arithmetic supports `+`, `-`, `*` or `x`, `/`, `%`, `^`, parentheses, decimals and scientific notation.
+
+Conversions use `convert value source to target`, such as `convert 100 km/h to mph`. All supported units accept spaces. Underscores remain accepted between the value and source, and before the target, within the `convert` command. Unit conversions can take an arithmetic expression as their value, such as `convert (5 + 2) kg to g`.
+
+Base conversions take signed integers. Use `binary` / `bin`, `octal` / `oct`, `decimal` / `dec`, or `hexadecimal` / `hex`. Any base from 2 through 36 can also be written as a number, such as `convert z 36 to decimal`. Hexadecimal numbers and colours share the name `hex`; the other format makes the conversion clear, as in `convert FF hex to decimal` and `convert FF8000 hex to rgb`.
+
+Base conversions retain exact values within the signed 128-bit range, including integers beyond the arithmetic calculator's safe literal range of ±9,007,199,254,740,991. Unit conversions use the calculator's floating-point precision.
+
+Unit symbols are case-sensitive and must measure the same quantity:
+
+| Quantity | Units and aliases |
+| -------- | ----------------- |
+| Distance | `mm`, `cm`, `m`, `km`, `in`, `ft`, `yd`, `mi`, `nmi` |
+| Mass | `mg`, `g`, `kg`, `t`, `oz`, `lb` / `lbs`, `st` |
+| Area | `mm2`, `cm2`, `m2`, `km2`, `in2`, `ft2`, `ha`, `acre` / `acres` |
+| Volume | `ml` / `mL` / `cm3`, `l` / `L`, `m3`, `usgal`, `impgal`, `uscup`, `usfloz`, `impfloz` |
+| Speed | `m/s`, `km/h` / `kph`, `mph`, `kn` / `knots` |
+| Time | `ns`, `us`, `ms`, `s` / `sec`, `min`, `h` / `hr`, `d` / `day`, `wk` |
+| Temperature | `C`, `F`, `K` |
+| Angles | `deg`, `rad`, `turn` |
+| Data sizes | `b` / `bit`, `B` / `byte`, `kb`, `Mb`, `Gb`, `Tb`, `kB` / `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, `TiB` |
+
+Full names accept singular and plural forms, including irregular plurals such as `feet` and `inches`. They ignore case and accept Canadian/European and American spellings, so `metres` / `meters` and `litres` / `liters` both work. This applies on either side of `to`, and full names can be mixed with symbols.
+
+| Quantity | Full name examples |
+| -------- | ------------------ |
+| Distance | `millimetres`, `centimetres`, `metres`, `kilometres`, `inches`, `feet`, `yards`, `miles`, `nautical miles` |
+| Mass | `milligrams`, `grams`, `kilograms`, `tonnes`, `metric tons`, `ounces`, `pounds`, `stones` |
+| Area | `square millimetres`, `square centimetres`, `square metres`, `square kilometres`, `square inches`, `square feet`, `hectares`, `acres` |
+| Volume | `millilitres`, `litres`, `cubic centimetres`, `cubic metres`, `US gallons`, `Imperial gallons`, `US cups`, `US fluid ounces`, `Imperial fluid ounces` |
+| Speed | `metres per second`, `kilometres per hour`, `miles per hour`, `knots` |
+| Time | `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `days`, `weeks` |
+| Temperature | `Celsius`, `degrees Celsius`, `Fahrenheit`, `degrees Fahrenheit`, `kelvins` |
+| Angles | `degrees`, `radians`, `turns` |
+| Data sizes | `bits`, `bytes`, `kilobits`, `megabits`, `gigabits`, `terabits`, `kilobytes`, `megabytes`, `gigabytes`, `terabytes`, `kibibytes`, `mebibytes`, `gibibytes`, `tebibytes` |
+
+For example, `convert 100 kilometres per hour to miles per hour` and `convert (5 + 2) square metres to square feet` work directly. `secs`, `mins`, `hrs`, and `wks` are also accepted. Regional measures still need their qualifier: use `US gallons`, `Imperial gallons`, or `metric tons` rather than bare `gallons` or `tons`.
+
+`t` is a metric tonne, `st` is a stone, and `oz` is an ounce of mass. Volume names beginning with `us` use US customary measures; `imp` means Imperial. A day is 24 hours and a week is seven days. Months, years and currencies are excluded because their conversions depend on context. Temperature conversions use absolute temperatures, with `C` for Celsius, `F` for Fahrenheit and `K` for kelvin.
+
+`MB` is decimal megabytes; `MiB` is binary mebibytes. Lowercase `b` denotes bits and uppercase `B` denotes bytes. These distinctions follow the [NIST binary prefix definitions](https://physics.nist.gov/cuu/Units/binary.html). Physical units follow standard definitions documented in the [NIST conversion reference](https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b9).
+
+RGB inputs require three integers from 0 to 255. Hex colours accept three or six digits, with an optional `#` when specifying `hex` as the source. Alpha channels are not supported.
+
+</details>
 
 `:colorscheme ` also completes theme names from your configuration, plus the built-in `default`. Commands from `[[bind]]` entries with a `command` field are included too. Suggestions refresh after `:config reload`.
 

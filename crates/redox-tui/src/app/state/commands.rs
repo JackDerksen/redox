@@ -220,7 +220,10 @@ impl EditorState {
             .into_iter()
             .map(|name| format!("colorscheme {name}"))
             .chain(self.input.configured_commands().map(str::to_owned))
-            .filter(|candidate| !builtin_commands().any(|(name, _)| name == candidate))
+            .filter(|candidate| {
+                candidate != calculator::CONVERT_COMMAND
+                    && !builtin_commands().any(|(name, _)| name == candidate)
+            })
             .collect();
         self.configured_command_completions.sort();
         self.configured_command_completions.dedup();
@@ -232,16 +235,14 @@ impl EditorState {
         let has_prefix = !prefix.is_empty();
         builtin_commands()
             .map(|(name, _)| name)
+            .chain([calculator::CONVERT_COMMAND])
             .chain(
                 self.configured_command_completions
                     .iter()
                     .map(String::as_str),
             )
             .filter(move |candidate| {
-                has_prefix
-                    && self.mode == EditorMode::Command
-                    && self.command_line_cursor == self.command_line.len()
-                    && candidate.starts_with(prefix)
+                has_prefix && self.mode == EditorMode::Command && candidate.starts_with(prefix)
             })
     }
 
@@ -253,11 +254,18 @@ impl EditorState {
     }
 
     pub(crate) fn command_calculation_preview(&self) -> Option<String> {
-        if self.mode != EditorMode::Command || self.command_line_cursor != self.command_line.len() {
+        if self.mode != EditorMode::Command {
             return None;
         }
-        let result = calculator::evaluate(calculator::expression(&self.command_line)?).ok()?;
-        Some(format!(" = {result}"))
+        let expression = calculator::expression(&self.command_line)?;
+        let result = calculator::evaluate(expression).ok()?;
+        let separator = if expression.split_whitespace().next() == Some(calculator::CONVERT_COMMAND)
+        {
+            ": "
+        } else {
+            " = "
+        };
+        Some(format!("{separator}{result}"))
     }
 
     pub(super) fn cycle_command_completion(&mut self, forward: bool) {
