@@ -2813,12 +2813,12 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         assert_eq!(state.mode, app::EditorMode::Normal);
         assert!(state.session.active_buffer().to_string().is_empty());
-        for character in ":5+(2x3)".chars() {
+        for character in ":5+(2x4)".chars() {
             handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
         }
         handle_editor_event(&mut state, &mut clipboard, Event::Enter);
         assert_eq!(state.mode, app::EditorMode::Normal);
-        assert_eq!(state.session.active_buffer().to_string(), "11");
+        assert_eq!(state.session.active_buffer().to_string(), "13");
         assert_eq!(state.status_msg, None);
     }
 
