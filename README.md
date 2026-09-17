@@ -218,6 +218,7 @@ Enter command mode with `:`.
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
 | `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
+| `:s/pattern/replacement[/g]` | Preview and apply regex replacements in the whole file, or just the visual selection. |
 | `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
 | `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |

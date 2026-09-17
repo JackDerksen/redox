@@ -50,6 +50,7 @@ impl EditorState {
         self.pump_active_loading(self.viewport_height_rows.saturating_sub(1));
         let load_time = load_start.elapsed();
         self.poll_search_preview(now);
+        self.refresh_substitute_preview();
 
         self.git.remove_closed_buffers(&self.session);
         for buffer_id in self.views.keys().copied() {

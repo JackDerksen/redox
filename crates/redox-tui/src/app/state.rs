@@ -53,6 +53,7 @@ mod commands;
 mod editing;
 mod replay;
 mod search;
+pub(crate) mod substitute;
 mod surface;
 mod undo_tree;
 mod updates;
@@ -418,6 +419,7 @@ pub struct EditorState {
     pub status_msg_line_styles: Vec<StatusMessageStyle>,
     status_msg_expires_at: Option<Instant>,
     command_history: CommandHistoryState,
+    substitution: substitute::SubstituteState,
     pub should_quit: bool,
     pub zen: crate::config::ZenConfig,
     rain_animation: Option<RainAnimation>,
@@ -498,6 +500,7 @@ impl EditorState {
             status_msg_line_styles: Vec::new(),
             status_msg_expires_at: None,
             command_history: CommandHistoryState::default(),
+            substitution: substitute::SubstituteState::default(),
             should_quit: false,
             zen: crate::config::ZenConfig::default(),
             rain_animation: None,

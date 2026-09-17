@@ -119,7 +119,8 @@ fn draw_editor_view(
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
     let which_key_popup = state.which_key_popup(Instant::now());
-    let popup_overlay_active = state.mode.has_popup_overlay()
+    let popup_overlay_active = (state.mode.has_popup_overlay()
+        && state.substitute_preview().is_none())
         || state.explorer_popup().is_some()
         || state.about_popup().is_some()
         || which_key_popup.is_some();
@@ -487,6 +488,31 @@ fn draw_editor_view(
         return Ok(());
     }
 
+    if state
+        .substitute_preview()
+        .is_some_and(|preview| preview.buffer.is_some())
+    {
+        draw_buffer_snapshot_for_id(
+            state,
+            background_style,
+            state.session.active_id(),
+            vw,
+            text_h,
+            state.pane_options(state.active_pane_id()).has_line_numbers,
+            editor_text,
+            window,
+            None,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )?;
+        build_editor_status_bar(state, style).draw(window)?;
+        draw_command_line_popup(state, style, window)?;
+        let _ = draw_notification_toast(state, style, window)?;
+        return Ok(());
+    }
+
     let visual_selection = state.active_visual_selection();
     let one_shot_highlight = state.one_shot_highlight();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
@@ -538,6 +564,9 @@ fn draw_editor_view(
     )?;
 
     let focus_scope = state.zen.enabled && state.zen.focus_scope;
+    let substitution_colors = state
+        .substitute_preview()
+        .map(|preview| background_style.substitute_colors(preview.replacing));
     let (syntax_time, overlay_time, lines_time) =
         state.with_active_buffer_view_mut(|buffer, view| {
             let cursor = view.cursor.cursor;
@@ -612,6 +641,7 @@ fn draw_editor_view(
                 &delimiter_highlights,
                 &active_scope_guides,
                 &search_highlights,
+                substitution_colors,
                 &snippet_placeholders,
                 &diagnostic_lines,
                 visual_selection,
@@ -925,7 +955,7 @@ fn draw_line_with_highlights(
     color_column: Option<(usize, Color)>,
     style: UiStyle,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
-    highlight_layers: &[(&[bool], Color)],
+    highlight_layers: &[(&[bool], Color, Option<Color>)],
     highlight_empty_line: bool,
 ) -> minui::Result<()> {
     if width_cells == 0 {
@@ -945,7 +975,7 @@ fn draw_line_with_highlights(
             )?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
-                && highlight_bg_at_cell(highlight_layers, visible_col).is_none()
+                && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
             {
                 window.write_str_colored(
                     row,
@@ -998,16 +1028,22 @@ fn draw_line_with_highlights(
         let base_color = syntax_spans
             .map(|spans| syntax_color_for_range(normal_color, style, spans, start_byte, end_byte))
             .unwrap_or(normal_color);
-        let highlight_bg = highlight_layers.iter().find_map(|(cells, bg)| {
-            (visible_start < visible_end
-                && visible_end <= cells.len()
-                && cells[visible_start..visible_end]
-                    .iter()
-                    .any(|selected| *selected))
-            .then_some(*bg)
-        });
-        let color = if let Some(bg) = highlight_bg {
-            ColorPair::new(base_color.fg, bg)
+        let highlight_color =
+            highlight_layers
+                .iter()
+                .find_map(|(cells, background, foreground)| {
+                    (visible_start < visible_end
+                        && visible_end <= cells.len()
+                        && cells[visible_start..visible_end]
+                            .iter()
+                            .any(|selected| *selected))
+                    .then_some(ColorPair::new(
+                        foreground.unwrap_or(base_color.fg),
+                        *background,
+                    ))
+                });
+        let color = if let Some(color) = highlight_color {
+            color
         } else {
             apply_color_column(base_color, color_column, start_cell, end_cell)
         };
@@ -1034,7 +1070,7 @@ fn draw_line_with_highlights(
     if let Some((visible_col, bg)) = color_column
         && visible_col < width_cells
         && visible_col >= used_cells
-        && highlight_bg_at_cell(highlight_layers, visible_col).is_none()
+        && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
     {
         window.write_str_colored(
             row,
@@ -1054,36 +1090,46 @@ fn draw_highlight_spaces(
     start_cell: usize,
     width_cells: usize,
     fg: Color,
-    highlight_layers: &[(&[bool], Color)],
+    highlight_layers: &[(&[bool], Color, Option<Color>)],
 ) -> minui::Result<()> {
     let mut cell = start_cell;
     while cell < width_cells {
-        let Some(bg) = highlight_bg_at_cell(highlight_layers, cell) else {
+        let Some(colors) = highlight_color_at_cell(highlight_layers, cell, fg) else {
             cell += 1;
             continue;
         };
 
         let run_start = cell;
         cell += 1;
-        while cell < width_cells && highlight_bg_at_cell(highlight_layers, cell) == Some(bg) {
+        while cell < width_cells
+            && highlight_color_at_cell(highlight_layers, cell, fg) == Some(colors)
+        {
             cell += 1;
         }
         let spaces = " ".repeat(cell - run_start);
-        window.write_str_colored(
-            row,
-            col.saturating_add(run_start as u16),
-            &spaces,
-            ColorPair::new(fg, bg),
-        )?;
+        window.write_str_colored(row, col.saturating_add(run_start as u16), &spaces, colors)?;
     }
 
     Ok(())
 }
 
-fn highlight_bg_at_cell(highlight_layers: &[(&[bool], Color)], cell: usize) -> Option<Color> {
+fn highlight_color_at_cell(
+    highlight_layers: &[(&[bool], Color, Option<Color>)],
+    cell: usize,
+    foreground: Color,
+) -> Option<ColorPair> {
     highlight_layers
         .iter()
-        .find_map(|(cells, bg)| cells.get(cell).copied().unwrap_or(false).then_some(*bg))
+        .find_map(|(cells, background, override_foreground)| {
+            cells
+                .get(cell)
+                .copied()
+                .unwrap_or(false)
+                .then_some(ColorPair::new(
+                    override_foreground.unwrap_or(foreground),
+                    *background,
+                ))
+        })
 }
 
 fn fill_background(
@@ -1554,6 +1600,10 @@ fn draw_buffer_snapshot_for_id(
 ) -> minui::Result<()> {
     let has_line_numbers = has_line_numbers && !(state.zen.enabled && state.zen.hide_gutter);
     let focus_scope = state.zen.enabled && state.zen.focus_scope;
+    let substitution_colors = state
+        .substitute_preview()
+        .filter(|_| buffer_id == state.session.active_id())
+        .map(|preview| style.substitute_colors(preview.replacing));
     let undo_tree_role = state.undo_tree_surface_role(buffer_id);
     let undo_tree_line_spans = state
         .undo_tree_line_spans(buffer_id)
@@ -1574,8 +1624,18 @@ fn draw_buffer_snapshot_for_id(
                 .and_then(|meta| language_for_path(meta.path.as_deref()))
         })
         .flatten();
-    let Some(result) = state.with_buffer_view_mut(buffer_id, |buffer, view| {
-        let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
+    let source = state.session.buffer(buffer_id).cloned();
+    let Some(result) = state.with_buffer_display_view_mut(buffer_id, |buffer, view, preview| {
+        let (scroll_x, mut scroll_y) = view.cursor.viewport_scroll();
+        let mut cursor = view.cursor.cursor;
+        if let Some(preview) = preview
+            && let Some(source) = &source
+        {
+            cursor = preview.display_position(source, cursor);
+            scroll_y = preview
+                .display_position(source, redox_core::Pos::new(scroll_y, 0))
+                .line;
+        }
         if let Some(role) = undo_tree_role {
             return match role {
                 UndoTreeSurfaceRole::Tree => {
@@ -1609,7 +1669,6 @@ fn draw_buffer_snapshot_for_id(
             };
         }
 
-        let cursor = view.cursor.cursor;
         let total_lines = buffer.len_lines().max(1);
         let gutter_w = if has_line_numbers {
             line_number_gutter_width(total_lines, show_git_marker_column)
@@ -1633,12 +1692,23 @@ fn draw_buffer_snapshot_for_id(
         let scope_guides_enabled = scope_guides_enabled(syntax_language);
         let syntax_scope = (focus_scope || scope_guides_enabled)
             .then(|| {
-                view.syntax_highlighter.active_scope_for_display_cached(
-                    buffer,
-                    syntax_language,
-                    analysis_version,
-                    cursor,
-                )
+                let source = source.as_ref().unwrap_or(buffer);
+                view.syntax_highlighter
+                    .active_scope_for_display_cached(
+                        source,
+                        syntax_language,
+                        analysis_version,
+                        view.cursor.cursor,
+                    )
+                    .map(|mut scope| {
+                        if let Some(preview) = preview {
+                            for pair in [&mut scope.extent, &mut scope.body] {
+                                pair.start = preview.display_position(source, pair.start);
+                                pair.end = preview.display_position(source, pair.end);
+                            }
+                        }
+                        scope
+                    })
             })
             .flatten();
         let focused_lines = focus_scope.then(|| {
@@ -1647,14 +1717,17 @@ fn draw_buffer_snapshot_for_id(
                 .unwrap_or(cursor.line..cursor.line.saturating_add(1))
         });
         let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
-        let syntax_spans = view
-            .syntax_highlighter
-            .visible_line_spans_for_display_cached(
-                syntax_language,
-                snapshot.first_line(),
-                snapshot.line_count(),
-            );
-        let delimiter_analysis = view.delimiter_pair_cache.get_for_display();
+        let syntax_highlighter =
+            preview.map_or(&view.syntax_highlighter, |preview| &preview.syntax);
+        let syntax_spans = syntax_highlighter.visible_line_spans_for_display_cached(
+            syntax_language,
+            snapshot.first_line(),
+            snapshot.line_count(),
+        );
+        let delimiter_analysis = preview
+            .is_none()
+            .then(|| view.delimiter_pair_cache.get_for_display())
+            .flatten();
         let delimiter_highlights = delimiter_analysis
             .map(|analysis| {
                 active_delimiter_highlights(
@@ -1690,7 +1763,7 @@ fn draw_buffer_snapshot_for_id(
                 height,
                 show_git_marker_column,
                 snapshot.first_line(),
-                view.cursor.cursor.line,
+                cursor.line,
                 total_lines,
             )?;
             draw_gutter_padding(
@@ -1700,10 +1773,15 @@ fn draw_buffer_snapshot_for_id(
                 height,
                 GUTTER_CONTENT_PADDING,
                 snapshot.first_line(),
-                git_diff.as_ref(),
+                git_diff.as_ref().filter(|_| preview.is_none()),
             )?;
         }
 
+        let preview_highlights = preview.map(|preview| {
+            preview.highlight_ranges(buffer, snapshot.first_line(), snapshot.line_count())
+        });
+        let empty_diagnostics = BTreeMap::new();
+        let empty_snippets = BTreeMap::new();
         draw_snapshot_lines(
             window,
             buffer,
@@ -1716,11 +1794,20 @@ fn draw_buffer_snapshot_for_id(
             syntax_spans,
             &delimiter_highlights,
             &active_scope_guides,
-            search_highlights,
-            snippet_placeholders,
-            diagnostic_lines,
-            visual_selection,
-            one_shot_highlight,
+            preview_highlights.as_ref().unwrap_or(search_highlights),
+            substitution_colors,
+            if preview.is_some() {
+                &empty_snippets
+            } else {
+                snippet_placeholders
+            },
+            if preview.is_some() {
+                &empty_diagnostics
+            } else {
+                diagnostic_lines
+            },
+            visual_selection.filter(|_| preview.is_none()),
+            one_shot_highlight.filter(|_| preview.is_none()),
             focused_lines,
             use_lexical_fallback,
         )
@@ -1762,6 +1849,7 @@ fn draw_snapshot_lines(
     delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &BTreeMap<usize, Vec<usize>>,
     search_highlights: &BTreeMap<usize, app::state::SearchLineHighlights>,
+    substitution_colors: Option<ColorPair>,
     snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
@@ -1769,6 +1857,9 @@ fn draw_snapshot_lines(
     focused_lines: Option<std::ops::Range<usize>>,
     lexical_fallback_enabled: bool,
 ) -> minui::Result<()> {
+    let search_background =
+        substitution_colors.map_or(style.theme.selection_bg, |colors| colors.bg);
+    let search_foreground = substitution_colors.map(|colors| colors.fg);
     let color_column = visible_color_column(
         scroll_x,
         text_w,
@@ -1799,16 +1890,20 @@ fn draw_snapshot_lines(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let filtered_delimiters;
-        let highlighted_chars = if let Some(active) = search_highlights
-            .get(&line_idx)
-            .and_then(|line| line.active.as_ref())
-        {
+        let highlighted_chars = if let Some(highlights) = search_highlights.get(&line_idx) {
             filtered_delimiters = highlighted_chars
                 .iter()
                 .copied()
                 .filter(|column| {
-                    !(*column >= active.start
-                        && *column < active.end.max(active.start.saturating_add(1)))
+                    let overlaps = |range: &std::ops::Range<usize>| {
+                        *column >= range.start
+                            && *column < range.end.max(range.start.saturating_add(1))
+                    };
+                    if substitution_colors.is_some() {
+                        !highlights.ranges.iter().any(overlaps)
+                    } else {
+                        !highlights.active.as_ref().is_some_and(overlaps)
+                    }
                 })
                 .collect::<Vec<_>>();
             filtered_delimiters.as_slice()
@@ -1817,6 +1912,7 @@ fn draw_snapshot_lines(
         };
         let visible_indent_guides = active_scope_guides
             .get(&line_idx)
+            .filter(|_| substitution_colors.is_none())
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let diagnostic_line = diagnostic_lines.get(&line_idx);
@@ -1906,28 +2002,34 @@ fn draw_snapshot_lines(
                 let highlight_empty_line = source_line.is_empty();
                 let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
                     let mut layers = vec![
-                        (selected_cells.as_slice(), selection_bg),
-                        (search_cells.as_slice(), style.theme.selection_bg),
+                        (selected_cells.as_slice(), selection_bg, None),
+                        (
+                            search_cells.as_slice(),
+                            search_background,
+                            search_foreground,
+                        ),
                     ];
                     if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
                         layers.push((
                             diagnostic.0.as_slice(),
                             style.diagnostic_inline.background(diagnostic.1.severity),
+                            None,
                         ));
                     }
                     layers
                 } else {
-                    let mut layers = vec![(selected_cells.as_slice(), selection_bg)];
+                    let mut layers = vec![(selected_cells.as_slice(), selection_bg, None)];
                     if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
                         layers.push((
                             diagnostic.0.as_slice(),
                             style.diagnostic_inline.background(diagnostic.1.severity),
+                            None,
                         ));
                     }
                     layers
                 };
                 if let Some(active) = &active_search_cells {
-                    highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray));
+                    highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
                 }
                 draw_line_with_highlights(
                     window,
@@ -1996,17 +2098,26 @@ fn draw_snapshot_lines(
             let mut highlight_layers =
                 if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
                     vec![
-                        (search_cells.as_slice(), style.theme.selection_bg),
+                        (
+                            search_cells.as_slice(),
+                            search_background,
+                            search_foreground,
+                        ),
                         (
                             diagnostic.0.as_slice(),
                             style.diagnostic_inline.background(diagnostic.1.severity),
+                            None,
                         ),
                     ]
                 } else {
-                    vec![(search_cells.as_slice(), style.theme.selection_bg)]
+                    vec![(
+                        search_cells.as_slice(),
+                        search_background,
+                        search_foreground,
+                    )]
                 };
             if let Some(active) = &active_search_cells {
-                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray));
+                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
             }
             draw_line_with_highlights(
                 window,
@@ -2077,6 +2188,7 @@ fn draw_snapshot_lines(
                 let highlight_layers = [(
                     diagnostic.0.as_slice(),
                     style.diagnostic_inline.background(diagnostic.1.severity),
+                    None,
                 )];
                 draw_line_with_highlights(
                     window,
@@ -2156,6 +2268,7 @@ fn draw_snapshot_lines(
             let highlight_layers = [(
                 diagnostic.0.as_slice(),
                 style.diagnostic_inline.background(diagnostic.1.severity),
+                None,
             )];
             draw_line_with_highlights(
                 window,
@@ -3045,6 +3158,203 @@ mod tests {
     }
 
     #[test]
+    fn substitution_preview_renders_in_buffer_without_editing() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text("foo foo\nkeep\n");
+        let mut clipboard = None;
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+        for character in ":s/foo".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        assert_eq!(state.substitute_preview().unwrap().match_count(), 2);
+        for (characters, expected_line, highlighted) in [
+            (
+                "",
+                "foo foo",
+                &[true, true, true, false, true, true, true][..],
+            ),
+            ("/B", "B foo", &[true, false, false, false, false][..]),
+            (
+                "AR/g",
+                "BAR BAR",
+                &[true, true, true, false, true, true, true][..],
+            ),
+        ] {
+            for character in characters.chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            let mut window = TestWindow::new(100, 30);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            let row = window.row_text(0);
+            let column = row[..row.find(expected_line).expect(expected_line)]
+                .chars()
+                .count();
+            let match_colors = style.substitute_colors(!characters.is_empty());
+            for offset in 0..expected_line.len() {
+                assert_eq!(
+                    window.backgrounds[0][column + offset],
+                    Some(if highlighted[offset] {
+                        match_colors.bg
+                    } else {
+                        style.theme.bg
+                    }),
+                    "{expected_line}, column {offset}",
+                );
+            }
+            for (offset, selected) in highlighted.iter().enumerate() {
+                if *selected {
+                    assert_eq!(
+                        window.foregrounds[0][column + offset],
+                        Some(match_colors.fg)
+                    );
+                }
+            }
+            assert!(window.row_text(1).contains("keep"));
+            assert!(!(0..window.height).any(|row| window.row_text(row).contains("- 1  foo")));
+            assert!(
+                window
+                    .cursor
+                    .is_some_and(|cursor| cursor.y < window.height && cursor.x < window.width)
+            );
+            assert_eq!(state.session.active_buffer().to_string(), "foo foo\nkeep\n");
+            assert!(!state.session.active_meta().dirty);
+        }
+        for (width, height) in [(32, 14), (10, 4), (1, 1), (0, 0)] {
+            let mut window = TestWindow::new(width, height);
+            draw_command_line_popup(&state, style, &mut window).unwrap();
+            assert!(
+                window
+                    .cursor
+                    .is_none_or(|cursor| cursor.x < width && cursor.y < height)
+            );
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        let mut window = TestWindow::new(100, 30);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert!(window.row_text(0).contains("foo foo"));
+        assert!(state.substitute_preview().is_none());
+        assert_eq!(state.session.active_buffer().to_string(), "foo foo\nkeep\n");
+
+        for (text, command, expected_lines) in [
+            (
+                "foo\nkeep\n",
+                r":s/foo/one\rtwo/g",
+                vec!["one", "two", "keep"],
+            ),
+            (
+                "foo\nfoo\nkeep\n",
+                r":s/foo\nfoo/joined/g",
+                vec!["joined", "keep"],
+            ),
+            ("foo foo\nkeep\n", ":s/foo//g", vec![" ", "keep"]),
+        ] {
+            *state.session.active_buffer_mut() = TextBuffer::from_text(text);
+            for character in command.chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            let mut window = TestWindow::new(100, 30);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            for (row, expected) in expected_lines.iter().enumerate() {
+                assert!(
+                    window.row_text(row as u16).contains(expected),
+                    "{command}, row {row}"
+                );
+            }
+            assert_eq!(state.session.active_buffer().to_string(), text);
+            handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                expected_lines.join("\n") + "\n"
+            );
+            handle_editor_event(&mut state, &mut clipboard, Event::Character('u'));
+            assert_eq!(state.session.active_buffer().to_string(), text);
+        }
+    }
+
+    #[test]
+    fn substitution_preview_preserves_scrolled_split_views_and_syntax() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        let source = format!(
+            "// foo\n{}fn main() {{\n    let foo = 1;\n    let foo = 2;\n}}\n{}",
+            "// heading\n".repeat(39),
+            "// trailing\n".repeat(40)
+        );
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&source);
+        state.session.active_meta_mut().path = Some(PathBuf::from("preview.rs"));
+        state.set_editor_area_size(100, 29);
+        state.split_active_pane(app::state::SplitAxis::Vertical);
+        let pane_ids: Vec<_> = state.panes().iter().map(|pane| pane.id).collect();
+        state.with_active_buffer_view_mut(|_, view| {
+            view.cursor.cursor = redox_core::Pos::new(46, 0);
+            view.cursor.scroll_y_lines = 41;
+        });
+        for pane_id in pane_ids {
+            state.sync_rendered_pane_view(pane_id, state.session.active_id());
+        }
+        let mut clipboard = None;
+        for character in r":s/foo/long_name\r    next/g".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        let style = UiStyle::default();
+        let mut window = TestWindow::new(100, 30);
+        let mut perf = FramePerfSample::default();
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        for rect in state.pane_rects(100, 29) {
+            let first_row = rect.y + u16::from(rect.pane_id != state.active_pane_id());
+            let row = window.row_text(first_row);
+            let pane_text: String = row
+                .chars()
+                .skip(rect.x as usize)
+                .take(rect.width as usize)
+                .collect();
+            assert!(pane_text.contains("let long_name"), "{pane_text}");
+            let column = rect.x as usize
+                + pane_text[..pane_text.find("long_name").unwrap()]
+                    .chars()
+                    .count();
+            let pane_style = if rect.pane_id == state.active_pane_id() {
+                style
+            } else {
+                style.dimmed()
+            };
+            assert_eq!(
+                window.backgrounds[first_row as usize][column],
+                Some(pane_style.substitute_colors(true).bg)
+            );
+            assert_eq!(
+                window.foregrounds[first_row as usize][column],
+                Some(pane_style.substitute_colors(true).fg)
+            );
+            let keyword =
+                rect.x as usize + pane_text[..pane_text.find("let ").unwrap()].chars().count();
+            assert_eq!(
+                window.foregrounds[first_row as usize][keyword],
+                Some(pane_style.syntax.keyword.fg)
+            );
+        }
+        assert_eq!(state.session.active_buffer().to_string(), source);
+        assert_eq!(
+            state.views[&state.session.active_id()]
+                .cursor
+                .scroll_y_lines,
+            41
+        );
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        let mut window = TestWindow::new(100, 30);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert!(window.row_text(0).contains("let foo"));
+        assert_eq!(
+            state.views[&state.session.active_id()]
+                .cursor
+                .scroll_y_lines,
+            41
+        );
+    }
+
+    #[test]
     fn calculator_ghost_text_inserts_on_enter_and_cancels_on_escape() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
@@ -3293,6 +3603,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
             &BTreeMap::new(),
             &BTreeMap::new(),
             None,

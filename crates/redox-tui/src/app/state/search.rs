@@ -35,47 +35,25 @@ impl EditorState {
     ) -> BTreeMap<usize, SearchLineHighlights> {
         self.ensure_search_state_current();
 
-        let mut ranges = BTreeMap::new();
-        let last_line = first_line.saturating_add(line_count);
-        let Some(search) = self.search_state.as_ref() else {
-            return ranges;
+        let (matches, active_match) = if let Some(preview) = self.substitute_preview() {
+            (preview.matches.as_slice(), None)
+        } else {
+            let Some(search) = self.search_state.as_ref().filter(|search| search.visible) else {
+                return BTreeMap::new();
+            };
+            (
+                search.matches.as_slice(),
+                (self.mode == EditorMode::Search)
+                    .then_some(search.active_match)
+                    .flatten(),
+            )
         };
-        if !search.visible {
-            return ranges;
-        }
 
-        for (index, matched) in search.matches.iter().enumerate() {
-            for line in matched.start.line.max(first_line)
-                ..=matched.end.line.min(last_line.saturating_sub(1))
-            {
-                if line >= last_line
-                    || (line > matched.start.line
-                        && line == matched.end.line
-                        && matched.end.col == 0)
-                {
-                    continue;
-                }
-                let start = if line == matched.start.line {
-                    matched.start.col
-                } else {
-                    0
-                };
-                let end = if line == matched.end.line {
-                    matched.end.col
-                } else {
-                    self.session.active_buffer().line_len_chars(line)
-                };
-                let highlights = ranges
-                    .entry(line)
-                    .or_insert_with(SearchLineHighlights::default);
-                highlights.ranges.push(start..end);
-                if self.mode == EditorMode::Search && search.active_match == Some(index) {
-                    highlights.active = Some(start..end);
-                }
-            }
-        }
-
-        ranges
+        let buffer = self
+            .substitute_preview()
+            .and_then(|preview| preview.buffer.as_ref())
+            .unwrap_or_else(|| self.session.active_buffer());
+        match_highlight_ranges(buffer, matches, active_match, first_line, line_count)
     }
 
     pub(super) fn remember_motion_search(&mut self, motion: Motion, count: usize) {
@@ -542,4 +520,45 @@ fn next_match_index_from_cursor(
             .iter()
             .rposition(|matched| buffer.pos_to_char(matched.start) <= cursor_char)
     }
+}
+
+pub(super) fn match_highlight_ranges(
+    buffer: &redox_core::TextBuffer,
+    matches: &[SearchMatch],
+    active_match: Option<usize>,
+    first_line: usize,
+    line_count: usize,
+) -> BTreeMap<usize, SearchLineHighlights> {
+    let mut ranges = BTreeMap::new();
+    let last_line = first_line.saturating_add(line_count);
+    for (index, matched) in matches.iter().enumerate() {
+        for line in
+            matched.start.line.max(first_line)..=matched.end.line.min(last_line.saturating_sub(1))
+        {
+            if line >= last_line
+                || (line > matched.start.line && line == matched.end.line && matched.end.col == 0)
+            {
+                continue;
+            }
+            let start = if line == matched.start.line {
+                matched.start.col
+            } else {
+                0
+            };
+            let end = if line == matched.end.line {
+                matched.end.col
+            } else {
+                buffer.line_len_chars(line)
+            };
+            let highlights = ranges
+                .entry(line)
+                .or_insert_with(SearchLineHighlights::default);
+            highlights.ranges.push(start..end);
+            if active_match == Some(index) {
+                highlights.active = Some(start..end);
+            }
+        }
+    }
+
+    ranges
 }

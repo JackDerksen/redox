@@ -854,7 +854,34 @@ impl Default for UiStyle {
     }
 }
 
+const SUBSTITUTE_BACKGROUND_DIM_AMOUNT: f32 = 0.9;
+
 impl UiStyle {
+    pub(crate) fn substitute_colors(self, replacing: bool) -> ColorPair {
+        if replacing {
+            ColorPair::new(
+                self.theme.light_green,
+                dim_foreground_color(
+                    self.theme.light_green,
+                    self.theme.bg,
+                    SUBSTITUTE_BACKGROUND_DIM_AMOUNT,
+                ),
+            )
+        } else {
+            /*
+            ColorPair::new(
+                self.theme.light_red,
+                dim_foreground_color(
+                    self.theme.light_red,
+                    self.theme.bg,
+                    SUBSTITUTE_BACKGROUND_DIM_AMOUNT,
+                ),
+            )
+            */
+            self.diagnostic_inline.error
+        }
+    }
+
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             theme,
