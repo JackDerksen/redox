@@ -1156,8 +1156,13 @@ impl EditorState {
         marketplace_spec(selected.item_id)
     }
 
-    fn ensure_active_lsp_client(&mut self) {
+    pub(super) fn ensure_active_lsp_client(&mut self) {
         let active_id = self.session.active_id();
+        if self.lsp.documents.get(&active_id).is_some_and(|document| {
+            self.session.active_meta().path.as_deref() != Some(document.path.as_path())
+        }) {
+            self.close_lsp_document(active_id);
+        }
         let Some(meta) = self.session.meta(active_id) else {
             return;
         };

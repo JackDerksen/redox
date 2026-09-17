@@ -310,6 +310,46 @@ fn sessions_manage_multiple_buffers_and_dirty_state() {
 }
 
 #[test]
+fn unnamed_buffers_adopt_a_path_only_after_a_successful_write() {
+    let directory = tempdir().unwrap();
+    let destination = directory.path().join("new file.rs");
+    let occupied = directory.path().join("existing.rs");
+    fs::write(&occupied, "keep this\n").unwrap();
+    let mut session = EditorSession::open_initial_unnamed().unwrap();
+    let original_id = session.active_id();
+    session
+        .active_buffer_mut()
+        .insert(Pos::zero(), "fn main() {}");
+    session.recompute_active_dirty();
+
+    assert!(
+        session
+            .save_active()
+            .unwrap_err()
+            .to_string()
+            .contains(":w <path>")
+    );
+    for path in [&occupied, &directory.path().join("missing/file.rs")] {
+        assert!(session.save_active_as(path).is_err());
+        assert!(session.active_meta().path.is_none());
+        assert!(session.active_meta().dirty);
+        assert_eq!(session.active_buffer().to_string(), "fn main() {}");
+    }
+    assert_eq!(fs::read_to_string(&occupied).unwrap(), "keep this\n");
+    session.save_active_as(&destination).unwrap();
+    assert!(!session.active_meta().dirty);
+    assert!(!session.active_meta().is_new_file);
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "fn main() {}\n");
+    assert_eq!(session.open_file(&destination).unwrap(), original_id);
+    session.save_active().unwrap();
+
+    let empty = directory.path().join("empty.txt");
+    session.open_unnamed_buffer();
+    session.save_active_as(&empty).unwrap();
+    assert_eq!(fs::read(&empty).unwrap(), b"");
+}
+
+#[test]
 fn saving_normalises_the_final_newline_and_rejects_external_changes() {
     let mut file = NamedTempFile::new().expect("temp file");
     file.write_all(b"hello").expect("fixture write");

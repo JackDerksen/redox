@@ -5,11 +5,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use redox_core::{TextBuffer, UndoHistory};
+use redox_core::{Pos, TextBuffer, UndoHistory};
 use serde::{Deserialize, Serialize};
 
 const APP_DIR: &str = "redox";
 const UNDO_HISTORY_VERSION: u32 = 1;
+const HASH_HEX_DIGITS: usize = u64::BITS as usize / 4;
 
 #[derive(Serialize, Deserialize)]
 struct UndoHistorySnapshot {
@@ -18,6 +19,51 @@ struct UndoHistorySnapshot {
     content_hash: u64,
     content_len_chars: usize,
     history: UndoHistory,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SessionSnapshot {
+    pub directory: PathBuf,
+    // Most recently used first, so the first entry is the active file.
+    pub files: Vec<SessionFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SessionFile {
+    pub path: PathBuf,
+    pub cursor: Pos,
+}
+
+pub(crate) fn session_path(directory: &Path) -> PathBuf {
+    state_root().join("sessions").join(format!(
+        "{:0HASH_HEX_DIGITS$x}.json",
+        stable_hash(directory.as_os_str().as_encoded_bytes())
+    ))
+}
+
+pub(crate) fn load_session(path: &Path) -> io::Result<Option<SessionSnapshot>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(io::Error::other),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn save_session(path: &Path, snapshot: &SessionSnapshot) -> io::Result<()> {
+    // Visiting the dashboard or an empty buffer must not erase the previous session.
+    if snapshot.files.is_empty() {
+        return Ok(());
+    }
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(&mut temporary, snapshot).map_err(io::Error::other)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 pub fn state_root() -> PathBuf {
@@ -152,7 +198,7 @@ pub fn remove_undo_history(path: &Path) -> io::Result<()> {
 
 fn undo_history_path(path: &Path) -> PathBuf {
     undo_history_root().join(format!(
-        "{:016x}.json",
+        "{:0HASH_HEX_DIGITS$x}.json",
         stable_hash(path.to_string_lossy().as_bytes())
     ))
 }

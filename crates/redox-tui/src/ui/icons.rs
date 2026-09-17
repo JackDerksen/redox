@@ -46,6 +46,18 @@ pub fn popup_title(kind: PopupKind, title: &str, enabled: bool) -> String {
     format!("{} {title}", popup_icon(kind))
 }
 
+pub fn dashboard_icon(hotkey: char) -> &'static str {
+    match hotkey {
+        'r' => UNDO_TREE,
+        'f' => popup_icon(PopupKind::Finder),
+        'e' => folder_icon(false),
+        'n' => popup_icon(PopupKind::FilePreview),
+        'c' => popup_icon(PopupKind::LanguageTools),
+        'q' => "",
+        _ => "",
+    }
+}
+
 pub fn file_icon(path: &Path) -> &'static str {
     let file_name = path
         .file_name()

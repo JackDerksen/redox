@@ -22,6 +22,7 @@ use crate::ui::{
     RainAnimation, RenderLineCache, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
 mod about;
+pub(crate) mod dashboard;
 pub use about::AboutPopup;
 use about::AboutState;
 mod analysis;
@@ -396,6 +397,7 @@ pub struct EditorState {
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
     about: Option<AboutState>,
+    dashboard: Option<dashboard::DashboardState>,
     explorer: Option<ExplorerState>,
     undo_tree: Option<UndoTreeState>,
     finder: Option<FinderState>,
@@ -475,6 +477,7 @@ impl EditorState {
             session,
             views,
             about: None,
+            dashboard: None,
             explorer: None,
             undo_tree: None,
             finder: None,
@@ -580,6 +583,7 @@ impl EditorState {
             )
             || self.explorer.is_some()
             || self.about.is_some()
+            || self.dashboard_selection().is_some()
             || self.rain_animation.is_some()
             || self.perf_visible
         {
@@ -731,10 +735,11 @@ impl EditorState {
     pub fn sync_active_pane_view(&mut self) {
         let active_id = self.session.active_id();
         self.apply_configured_scrolloff(active_id);
-        if self
-            .session
-            .meta(active_id)
-            .is_some_and(|meta| meta.kind == BufferKind::Ui)
+        if self.dashboard_selection().is_some()
+            || self
+                .session
+                .meta(active_id)
+                .is_some_and(|meta| meta.kind == BufferKind::Ui)
         {
             return;
         }

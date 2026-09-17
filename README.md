@@ -1,5 +1,5 @@
 <p align="center">
-    <img width="250" height="130" alt="Redox Logo" src="assets/redox-logo.png" />
+    <img width="385" height="230" alt="Redox Logo" src="assets/redox-logo.png" />
 </p>
 
 <h1 align="center">
@@ -169,6 +169,30 @@ redox <file_path>
 
 Use `redox --help` for launch options and `redox --version` to print the installed version.
 
+Run `redox` without a path to open the startup dashboard. Press a shortcut directly,
+or move with `j`/`k` and press `Enter`:
+
+| Key | Action |
+| --- | --- |
+| `r` | Restore the previous session for the current directory. |
+| `f` | Open Finder. |
+| `e` | Open the file explorer. |
+| `n` | Create an empty, unnamed file. |
+| `c` | Open the configuration file. |
+| `q` | Quit. |
+
+Use `:dashboard` to reopen it while editing. Open buffers and unsaved edits are
+preserved; `Escape` returns to the previous buffer.
+
+Sessions remember saved files, their cursor positions, and the active file when Redox
+exits. They live under the Redox state directory in `sessions/`. Exiting an empty
+dashboard leaves the previous session intact. Unsaved contents and split layouts
+are not restored.
+
+Name a new buffer on its first write, for example `:w file.rs`. The extension selects
+syntax highlighting and the existing formatting tools. A failed write keeps the
+buffer's previous name and contents, and a different existing file is never overwritten.
+
 Example:
 ```bash
 redox ./README.md
@@ -185,14 +209,15 @@ Enter command mode with `:`.
 
 | Command | Behaviour |
 | ------- | --------- |
-| `:w` | Write the current buffer. Explorer buffers apply pending filesystem edits. |
+| `:w [path]` | Write the current buffer, optionally saving under a new name. Explorer buffers apply pending filesystem edits. |
 | `:q` / `:quit` | Quit when all buffers are clean, or close the active surface buffer. |
 | `:q!` | Force quit. |
-| `:wq` | Write the current buffer, then quit when all buffers are clean. |
+| `:wq [path]` | Write the current buffer, optionally saving under a new name, then quit when all buffers are clean. |
 | `:e <path>` | Open or switch to a file buffer. |
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
 | `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
 | `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |

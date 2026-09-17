@@ -296,6 +296,7 @@ impl EditorState {
             .map(|about| about.return_to_buffer_id)
             .unwrap_or(explorer.return_to_buffer_id);
         self.is_empty_unnamed_startup_buffer(background_id)
+            && self.dashboard_selection_for_buffer(background_id).is_none()
     }
 
     pub(super) fn command_open_explorer(&mut self) {

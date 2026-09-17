@@ -155,8 +155,12 @@ pub fn draw_explorer_popup_view(
         visible: true,
     });
 
-    let status = build_editor_status_bar(state, style);
-    status.draw(window)?;
+    if state
+        .dashboard_selection_for_buffer(state.statusline_buffer_id())
+        .is_none()
+    {
+        build_editor_status_bar(state, style).draw(window)?;
+    }
 
     Ok(cursor)
 }

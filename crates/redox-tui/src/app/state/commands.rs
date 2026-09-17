@@ -71,6 +71,11 @@ const COMMANDS: &[CommandDefinition] = &[
         run: |state, argument| state.command_edit(argument),
     },
     CommandDefinition {
+        names: &["dashboard"],
+        editor_context: |_, _| false,
+        run: |state, _| state.open_dashboard(),
+    },
+    CommandDefinition {
         names: &["e!", "reload"],
         editor_context: |_, _| true,
         run: |state, _| state.command_reload_active(),
@@ -167,15 +172,15 @@ const COMMANDS: &[CommandDefinition] = &[
     CommandDefinition {
         names: &["w"],
         editor_context: |state, _| state.active_buffer_is_surface() && !state.explorer_is_active(),
-        run: |state, _| {
-            state.write_current_file();
+        run: |state, argument| {
+            state.write_current_file(argument);
         },
     },
     CommandDefinition {
         names: &["wq"],
         editor_context: |state, _| state.active_buffer_is_surface() && !state.explorer_is_active(),
-        run: |state, _| {
-            if state.write_current_file() {
+        run: |state, argument| {
+            if state.write_current_file(argument) {
                 if state.session.any_dirty() {
                     state.set_status(state.unsaved_changes_message());
                 } else {
@@ -525,8 +530,12 @@ impl EditorState {
         self.set_status(message);
     }
 
-    pub(super) fn write_current_file(&mut self) -> bool {
+    pub(super) fn write_current_file(&mut self, path_arg: &str) -> bool {
         if self.explorer_is_active() {
+            if !path_arg.is_empty() {
+                self.set_status("explorer writes do not accept a file name");
+                return false;
+            }
             return self.write_explorer_directory();
         }
 
@@ -540,9 +549,19 @@ impl EditorState {
 
         self.sync_active_lsp_before_save();
 
-        if let Err(error) = self.session.save_active() {
+        let previous_path = self.session.active_meta().path.clone();
+        let saved = if path_arg.is_empty() {
+            self.session.save_active()
+        } else {
+            self.session.save_active_as(path_arg)
+        };
+        if let Err(error) = saved {
             self.set_status(format!("write failed: {error}"));
             return false;
+        }
+        if self.session.active_meta().path != previous_path {
+            self.reset_active_render_caches();
+            self.ensure_active_lsp_client();
         }
 
         let format_result =

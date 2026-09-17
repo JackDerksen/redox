@@ -42,6 +42,7 @@ use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
     scope_guides_enabled, syntax_color_for_range,
 };
+use ui::widgets::dashboard::draw_dashboard;
 use ui::widgets::pane::draw_pane_filename;
 use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
 use ui::{
@@ -131,6 +132,28 @@ fn draw_editor_view(
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
+
+    if let Some(selected) = state.dashboard_selection()
+        && matches!(
+            state.mode,
+            app::EditorMode::Normal | app::EditorMode::Finder | app::EditorMode::PinSelect
+        )
+    {
+        state.set_viewport_size(vw as usize, vh as usize);
+        draw_dashboard(
+            window,
+            background_style,
+            selected,
+            state.mode == app::EditorMode::Normal,
+        )?;
+        if let Some(popup) = state.finder_popup() {
+            draw_finder_popup(&popup, style, window)?;
+        } else if let Some(popup) = state.pin_selector_popup() {
+            draw_pin_selector_popup(&popup, style, window)?;
+        }
+        let _ = draw_notification_toast(state, style, window)?;
+        return Ok(());
+    }
 
     if let Some(popup) = state.explorer_popup() {
         let fallback_id = state
@@ -1221,6 +1244,11 @@ fn draw_popup_background(
     editor_text: ColorPair,
     fallback_buffer_id: Option<BufferId>,
 ) -> minui::Result<()> {
+    if let Some(selected) =
+        fallback_buffer_id.and_then(|id| state.dashboard_selection_for_buffer(id))
+    {
+        return draw_dashboard(window, style, selected, false);
+    }
     if state.panes().len() > 1 {
         let active_before_draw = state.session.active_id();
         state.sync_active_pane_view();
@@ -2781,6 +2809,242 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn dashboard_navigation_and_shortcuts_reach_the_existing_editor_flows() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        let mut clipboard = None;
+        state.open_dashboard();
+        assert!(state.about_popup().is_none());
+        assert_eq!(state.dashboard_selection(), Some(0));
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+        for (icons_enabled, expected_menu_width, expected_icon_prefix_width) in
+            [(false, 30u16, 0), (true, 33, 3)]
+        {
+            let style = UiStyle {
+                icons_enabled,
+                ..style
+            };
+            for (width, height, shows_full_menu) in [
+                (120, 40, true),
+                (80, 24, true),
+                (32, 14, true),
+                (10, 4, false),
+                (1, 1, false),
+                (0, 0, false),
+            ] {
+                let mut window = TestWindow::new(width, height);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                if width > 0 && height > 0 {
+                    let cursor = window.cursor.expect("dashboard cursor");
+                    let menu_width = expected_menu_width.min(width);
+                    let menu_left = (width - menu_width) / 2;
+                    assert_eq!(cursor.x, menu_left + menu_width - 1);
+                    assert_eq!(window.cells[cursor.y as usize][cursor.x as usize], 'r');
+                    if shows_full_menu {
+                        let row = &window.cells[cursor.y as usize];
+                        let label_column = (menu_left + expected_icon_prefix_width) as usize;
+                        assert_eq!(row[label_column], 'R');
+                        if icons_enabled {
+                            assert_eq!(
+                                row[menu_left as usize],
+                                ui::icons::UNDO_TREE.chars().next().unwrap()
+                            );
+                            assert!(
+                                row[menu_left as usize + 1..label_column]
+                                    .iter()
+                                    .all(|cell| *cell == ' ')
+                            );
+                        }
+                        let screen = window
+                            .cells
+                            .iter()
+                            .map(|row| row.iter().collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        assert!(!screen.contains("j/k to move"));
+                        for (hotkey, label) in app::state::dashboard::DASHBOARD_ITEMS {
+                            let row = window
+                                .cells
+                                .iter()
+                                .find(|row| row.iter().collect::<String>().contains(label))
+                                .unwrap_or_else(|| {
+                                    panic!("missing {label} at {width}x{height}: {screen}")
+                                });
+                            assert_eq!(row[cursor.x as usize], hotkey);
+                        }
+                    }
+                }
+            }
+        }
+        for hotkey in ['f', 'e'] {
+            assert!(handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(hotkey)
+            ));
+            if hotkey == 'f' {
+                assert_eq!(state.mode, app::EditorMode::Finder);
+            } else {
+                assert!(state.explorer_popup().is_some());
+            }
+            let mut popup_window = TestWindow::new(120, 40);
+            draw_buffer_view(&mut state, style, &mut popup_window, &mut perf).unwrap();
+            assert!(
+                popup_window
+                    .row_text(popup_window.get_size().1 - 1)
+                    .trim()
+                    .is_empty()
+            );
+            assert!(handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Escape
+            ));
+            assert_eq!(state.mode, app::EditorMode::Normal);
+            assert_eq!(state.dashboard_selection(), Some(0));
+        }
+        for hotkey in "jjjkj".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(hotkey));
+        }
+        assert_eq!(state.dashboard_selection(), Some(3));
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        assert!(state.dashboard_selection().is_none());
+        assert!(state.session.active_meta().path.is_none());
+        assert!(state.session.active_buffer().is_empty());
+        assert_eq!(state.session.summaries().len(), 1);
+
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("new file.rs");
+        for character in "ifn main() {}   ".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        for character in format!(":w {}", destination.display()).chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "fn main() {}\n");
+        assert_eq!(
+            language_for_path(state.session.active_meta().path.as_deref()),
+            Some(ui::syntax::SyntaxLanguage::Rust)
+        );
+        assert!(!state.session.active_meta().dirty);
+
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.open_dashboard();
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('c'));
+        assert!(state.take_config_open_request());
+        state.open_config_file(&directory.path().join("config.toml"));
+        assert!(state.dashboard_selection().is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.open_dashboard();
+        assert!(!handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::Character('q')
+        ));
+    }
+
+    #[test]
+    fn dashboard_command_preserves_edits_and_panes_and_hides_only_its_statusline() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.txt");
+        fs::write(&path, "saved\n").unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_file(&path).unwrap());
+        let original_id = state.session.active_id();
+        state
+            .session
+            .active_buffer_mut()
+            .insert(redox_core::Pos::zero(), "unsaved ");
+        state.session.recompute_active_dirty();
+        state.split_active_pane(app::state::SplitAxis::Vertical);
+        state
+            .with_active_buffer_view_mut(|_, view| view.cursor.cursor = redox_core::Pos::new(0, 4));
+        let original_panes = state
+            .panes()
+            .iter()
+            .map(|pane| pane.buffer_id)
+            .collect::<Vec<_>>();
+        let mut clipboard = None;
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+
+        for character in ":dash".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        state.apply_input(InputAction::CommandComplete, 120, 40);
+        assert_eq!(state.command_line, "dashboard");
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        assert_eq!(state.dashboard_selection(), Some(0));
+        state.apply_input(InputAction::RunCommand("dashboard".to_string()), 120, 40);
+        assert_eq!(
+            state.session.summaries().len(),
+            2,
+            "reuse the dashboard buffer"
+        );
+
+        for hotkey in ['f', 'e'] {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(hotkey));
+            let mut window = TestWindow::new(120, 40);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert!(window.row_text(window.get_size().1 - 1).trim().is_empty());
+            assert!(
+                !window
+                    .cells
+                    .iter()
+                    .any(|row| row.iter().collect::<String>().contains("unsaved saved"))
+            );
+            handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+            assert_eq!(state.dashboard_selection(), Some(0));
+        }
+        assert_eq!(
+            state
+                .panes()
+                .iter()
+                .map(|pane| pane.buffer_id)
+                .collect::<Vec<_>>(),
+            original_panes
+        );
+        assert!(handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::Character('q')
+        ));
+        assert!(state.session.any_dirty());
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        assert!(state.dashboard_selection().is_none());
+        assert_eq!(state.session.summaries().len(), 1);
+        assert_eq!(state.session.active_id(), original_id);
+        assert_eq!(state.session.active_buffer().to_string(), "unsaved saved\n");
+        assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(0, 4));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "saved\n");
+
+        for action in [
+            InputAction::OpenFinder,
+            InputAction::RunCommand("explorer".to_string()),
+        ] {
+            state.apply_input(action, 120, 40);
+            let mut window = TestWindow::new(120, 40);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert!(window.row_text(window.get_size().1 - 1).contains("NORMAL"));
+            handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        }
+        state.apply_input(InputAction::RunCommand("dashboard".to_string()), 120, 40);
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('n'));
+        assert!(state.dashboard_selection().is_none());
+        assert!(state.session.active_meta().path.is_none());
+        assert!(state.session.active_buffer().is_empty());
+        assert_eq!(
+            state.session.buffer(original_id).unwrap().to_string(),
+            "unsaved saved\n"
+        );
+    }
+
+    #[test]
     fn calculator_ghost_text_inserts_on_enter_and_cancels_on_escape() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
@@ -3597,9 +3861,15 @@ background = "#010203"
         state.request_config_open();
         open_runtime_config(&mut state, Some(&config_path));
 
+        let expected_path = config_path
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("config.toml");
         assert_eq!(
             state.session.active_meta().path.as_deref(),
-            Some(config_path.as_path())
+            Some(expected_path.as_path())
         );
         assert!(config_path.parent().is_some_and(std::path::Path::is_dir));
 
@@ -3852,6 +4122,9 @@ fn handle_editor_event(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
+    if state.handle_dashboard_event(&event) {
+        return !state.should_quit;
+    }
     if state.rain_is_active() {
         if is_cancel_event(&event) {
             state.stop_rain_animation();
@@ -4120,7 +4393,7 @@ pub fn run() -> anyhow::Result<()> {
         state.open_explorer_at_path(dir_path)?;
     }
     if launch_empty {
-        state.command_open_about();
+        state.open_dashboard();
     }
 
     let mut window = TerminalWindow::new()?;
@@ -4134,7 +4407,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut pending_wake_event: Option<Event> = None;
     let mut previous_terminal_size = window.get_size();
 
-    loop {
+    'editor: loop {
         let frame_start = Instant::now();
         let mut perf_sample = FramePerfSample::default();
         let input_start = Instant::now();
@@ -4143,7 +4416,7 @@ pub fn run() -> anyhow::Result<()> {
         if let Some(event) = pending_wake_event.take() {
             event_count += 1;
             if !handle_editor_event(&mut state, &mut clipboard, event) {
-                return Ok(());
+                break 'editor;
             }
         }
 
@@ -4152,7 +4425,7 @@ pub fn run() -> anyhow::Result<()> {
                 Some(event) => {
                     event_count += 1;
                     if !handle_editor_event(&mut state, &mut clipboard, event) {
-                        return Ok(());
+                        break 'editor;
                     }
                 }
                 None => break,
@@ -4188,7 +4461,7 @@ pub fn run() -> anyhow::Result<()> {
         perf_sample.load = state.update_background(Instant::now());
 
         if state.should_quit {
-            return Ok(());
+            break;
         }
 
         if state.take_redraw_request() {
@@ -4212,4 +4485,7 @@ pub fn run() -> anyhow::Result<()> {
             pending_wake_event = Some(event);
         }
     }
+    drop(window);
+    state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
+    Ok(())
 }
