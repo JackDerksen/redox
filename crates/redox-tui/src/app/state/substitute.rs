@@ -565,7 +565,7 @@ fn expand_replacement(parts: &[ReplacementPart], captures: &Captures<'_>) -> Str
 mod tests {
     use super::*;
     use crate::input::InputAction;
-    use redox_core::{EditorSession, Pos};
+    use redox_core::EditorSession;
 
     fn state_with_text(text: &str) -> EditorState {
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
