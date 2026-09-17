@@ -716,9 +716,11 @@ impl InputState {
         reject_ambiguous_sequence_prefixes(&next_bindings)?;
         let mut validator = self.clone();
         validator.custom_bindings = next_bindings.clone();
-        for binding in &next_bindings {
-            if let InputAction::ReplaySequence(sequence) = &binding.action {
-                validator.expand_replay_sequence(binding.mode, sequence)?;
+        for mode in MODAL_SEQUENCE_MODES {
+            for binding in custom_bindings_for_mode(&next_bindings, mode) {
+                if let InputAction::ReplaySequence(sequence) = &binding.action {
+                    validator.expand_replay_sequence(mode, sequence)?;
+                }
             }
         }
         self.custom_bindings = next_bindings;
@@ -1098,13 +1100,10 @@ fn sequence_entries(state: &InputState, mode: InputMode, prefix: &str) -> Vec<Wh
             false,
         );
     }
-    for binding in &state.custom_bindings {
+    for binding in custom_bindings_for_mode(&state.custom_bindings, mode) {
         let CustomKey::Sequence(sequence) = &binding.key else {
             continue;
         };
-        if binding.mode != mode {
-            continue;
-        }
         let Some(remainder) = sequence.strip_prefix(prefix) else {
             continue;
         };
@@ -2209,18 +2208,30 @@ fn starts_sequence(mode: InputMode, c: char, leader: char) -> bool {
     })
 }
 
-fn custom_sequence_starts(state: &InputState, mode: InputMode, c: char) -> bool {
-    state.custom_bindings.iter().any(|binding| {
+fn custom_bindings_for_mode(
+    bindings: &[CustomBinding],
+    mode: InputMode,
+) -> impl Iterator<Item = &CustomBinding> {
+    bindings.iter().filter(move |binding| {
         binding.mode == mode
-            && matches!(&binding.key, CustomKey::Sequence(sequence) if sequence.starts_with(c))
+            || (matches!(mode, InputMode::VisualLine | InputMode::VisualBlock)
+                && binding.mode == InputMode::Visual
+                && !bindings
+                    .iter()
+                    .any(|specific| specific.mode == mode && specific.key == binding.key))
+    })
+}
+
+fn custom_sequence_starts(state: &InputState, mode: InputMode, character: char) -> bool {
+    custom_bindings_for_mode(&state.custom_bindings, mode).any(|binding| {
+        matches!(&binding.key, CustomKey::Sequence(sequence) if sequence.starts_with(character))
     })
 }
 
 fn custom_sequence_has_children(state: &InputState, mode: InputMode, candidate: &str) -> bool {
-    state.custom_bindings.iter().any(|binding| {
-        binding.mode == mode
-            && matches!(&binding.key, CustomKey::Sequence(sequence)
-                if sequence.starts_with(candidate) && sequence.len() > candidate.len())
+    custom_bindings_for_mode(&state.custom_bindings, mode).any(|binding| {
+        matches!(&binding.key, CustomKey::Sequence(sequence)
+            if sequence.starts_with(candidate) && sequence.len() > candidate.len())
     })
 }
 
@@ -2229,24 +2240,18 @@ fn custom_sequence_action(
     mode: InputMode,
     candidate: &str,
 ) -> Option<InputAction> {
-    state
-        .custom_bindings
-        .iter()
+    custom_bindings_for_mode(&state.custom_bindings, mode)
         .find(|binding| {
-            binding.mode == mode
-                && matches!(&binding.key, CustomKey::Sequence(sequence) if sequence == candidate)
+            matches!(&binding.key, CustomKey::Sequence(sequence) if sequence == candidate)
         })
         .map(|binding| binding.action.clone())
 }
 
 fn custom_special_action(state: &InputState, mode: InputMode, key: &str) -> Option<InputAction> {
-    state
-        .custom_bindings
-        .iter()
-        .find(|binding| {
-            binding.mode == mode
-                && matches!(&binding.key, CustomKey::Special(binding_key) if binding_key == key)
-        })
+    custom_bindings_for_mode(&state.custom_bindings, mode)
+        .find(
+            |binding| matches!(&binding.key, CustomKey::Special(binding_key) if binding_key == key),
+        )
         .map(|binding| binding.action.clone())
 }
 
@@ -2319,11 +2324,15 @@ fn builtin_sequence(sequence: &str, leader: char) -> Cow<'_, str> {
     }
 }
 
+const MODAL_SEQUENCE_MODES: [InputMode; 4] = [
+    InputMode::Normal,
+    InputMode::Visual,
+    InputMode::VisualLine,
+    InputMode::VisualBlock,
+];
+
 fn modal_sequence_mode(mode: InputMode) -> bool {
-    matches!(
-        mode,
-        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
-    )
+    MODAL_SEQUENCE_MODES.contains(&mode)
 }
 
 fn normalize_special_key(keys: &str) -> anyhow::Result<String> {
@@ -2383,19 +2392,20 @@ fn ensure_unique_binding(
 }
 
 fn reject_ambiguous_sequence_prefixes(bindings: &[CustomBinding]) -> anyhow::Result<()> {
-    for binding in bindings {
-        let CustomKey::Sequence(sequence) = &binding.key else {
-            continue;
-        };
-        if bindings.iter().any(|candidate| {
-            candidate.mode == binding.mode
-                && matches!(&candidate.key, CustomKey::Sequence(candidate_sequence)
+    for mode in MODAL_SEQUENCE_MODES {
+        let effective = custom_bindings_for_mode(bindings, mode).collect::<Vec<_>>();
+        for binding in &effective {
+            let CustomKey::Sequence(sequence) = &binding.key else {
+                continue;
+            };
+            if effective.iter().any(|candidate| {
+                matches!(&candidate.key, CustomKey::Sequence(candidate_sequence)
                     if candidate_sequence != sequence && candidate_sequence.starts_with(sequence))
-        }) {
-            anyhow::bail!(
-                "keybinding {sequence:?} in mode {:?} is a prefix of another binding",
-                binding.mode
-            );
+            }) {
+                anyhow::bail!(
+                    "keybinding {sequence:?} in mode {mode:?} is a prefix of another binding"
+                );
+            }
         }
     }
     Ok(())
@@ -4269,6 +4279,20 @@ mod tests {
             ]),
         )]);
         assert!(state.configure(' ', &ambiguous).is_err());
+
+        for (visual, specific) in [("g", "gg"), ("gg", "g")] {
+            let inherited_prefix = BTreeMap::from([
+                (
+                    "visual".into(),
+                    BTreeMap::from([("undo".into(), visual.into())]),
+                ),
+                (
+                    "visual_line".into(),
+                    BTreeMap::from([("redo".into(), specific.into())]),
+                ),
+            ]);
+            assert!(state.configure(' ', &inherited_prefix).is_err());
+        }
 
         let unsupported = BTreeMap::from([(
             "insert".to_string(),
