@@ -69,7 +69,13 @@ impl EditorState {
             });
         let should_quit_after_close = (is_explorer || is_about)
             && !suppress_quit_after_close
-            && return_to.is_some_and(|id| self.is_empty_unnamed_startup_buffer(id));
+            && return_to.is_some_and(|id| {
+                self.is_empty_unnamed_startup_buffer(id)
+                    && !self
+                        .dashboard
+                        .as_ref()
+                        .is_some_and(|dashboard| dashboard.buffer_id == id)
+            });
 
         if !self.session.close_active_buffer() {
             return false;
@@ -83,12 +89,6 @@ impl EditorState {
         if is_about {
             self.about = None;
         }
-
-        /*
-        if is_undo_tree {
-            self.undo_tree = None;
-        }
-        */
 
         if (is_explorer || is_about)
             && let Some(target) = return_to
@@ -117,7 +117,7 @@ impl EditorState {
 
         self.session
             .buffer(id)
-            .is_some_and(|buffer| buffer.to_string().is_empty())
+            .is_some_and(|buffer| buffer.is_empty())
     }
 
     pub(super) fn close_inactive_empty_unnamed_startup_buffer(&mut self, id: BufferId) -> bool {
@@ -127,6 +127,13 @@ impl EditorState {
 
         if self.session.close_buffer(id) {
             self.views.remove(&id);
+            if self
+                .dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.buffer_id == id)
+            {
+                self.dashboard = None;
+            }
             true
         } else {
             false

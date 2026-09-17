@@ -757,6 +757,44 @@ impl EditorSession {
         self.close_buffer(self.active_id())
     }
 
+    /// Save to a new path and adopt that name only after the write succeeds.
+    /// Existing destinations and paths owned by another buffer are never overwritten.
+    pub fn save_active_as(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = normalize_path(path.as_ref())?;
+        let id = self.active_id();
+        let previous_meta = self.active_meta().clone();
+        if previous_meta.kind != BufferKind::File {
+            bail!("cannot save UI buffer");
+        }
+        if previous_meta.path.as_ref() == Some(&path) {
+            return self.save_active();
+        }
+        if self.path_index.contains_key(&path) || path.try_exists()? {
+            bail!("destination already exists: {}", path.display());
+        }
+        self.ensure_buffer_fully_loaded(id)?;
+        let display_name = self.display_path(&path);
+        let record = self.buffers.get_mut(&id).expect("active buffer must exist");
+        let previous_stamp = record.disk_stamp;
+        record.meta.path = Some(path.clone());
+        record.meta.display_name = display_name;
+        record.meta.is_new_file = true;
+        record.meta.external_changed = false;
+        record.disk_stamp = None;
+
+        if let Err(error) = self.save_active() {
+            let record = self.buffers.get_mut(&id).expect("active buffer must exist");
+            record.meta = previous_meta;
+            record.disk_stamp = previous_stamp;
+            return Err(error);
+        }
+        if let Some(previous_path) = previous_meta.path {
+            self.path_index.remove(&previous_path);
+        }
+        self.path_index.insert(path, id);
+        Ok(())
+    }
+
     /// Save the active file-backed buffer.
     pub fn save_active(&mut self) -> Result<()> {
         let id = self.active_id();
@@ -772,7 +810,7 @@ impl EditorSession {
                     .meta
                     .path
                     .as_ref()
-                    .context("file buffer is missing path metadata")?;
+                    .context("no file name; use :w <path>")?;
                 if rec.meta.is_new_file && path.exists() {
                     rec.meta.external_changed = true;
                     bail!("file appeared on disk; reload or resolve before writing");
@@ -828,10 +866,13 @@ impl EditorSession {
                     .as_file()
                     .sync_all()
                     .with_context(|| format!("failed to write file: {}", path.display()))?;
-                temporary
-                    .persist(path)
-                    .map_err(|error| error.error)
-                    .with_context(|| format!("failed to write file: {}", path.display()))?;
+                if rec.meta.is_new_file {
+                    temporary.persist_noclobber(path)
+                } else {
+                    temporary.persist(path)
+                }
+                .map_err(|error| error.error)
+                .with_context(|| format!("failed to write file: {}", path.display()))?;
 
                 if needs_final_newline {
                     rec.buffer.append("\n");
@@ -1127,7 +1168,17 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
             .join(path)
     };
 
-    Ok(std::fs::canonicalize(&path).unwrap_or(path))
+    if let Ok(canonical) = std::fs::canonicalize(&path) {
+        return Ok(canonical);
+    }
+    // A new file cannot be canonicalized yet, but its parent may contain symlinks.
+    if let Some(parent) = path.parent()
+        && let Some(name) = path.file_name()
+        && let Ok(parent) = std::fs::canonicalize(parent)
+    {
+        return Ok(parent.join(name));
+    }
+    Ok(path)
 }
 
 fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathBuf) {

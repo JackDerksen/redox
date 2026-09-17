@@ -3,6 +3,7 @@
 pub mod about;
 pub mod command_line;
 pub mod completion;
+pub(crate) mod dashboard;
 pub mod explorer;
 pub mod finder;
 pub mod lsp;
