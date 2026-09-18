@@ -609,7 +609,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Custom configuration support
 - [x] More extendable leader key system with "whichkey" functionality
 - [ ] Grep-based finder for searching text patterns across files
-- [ ] A dashboard screen with similar functionality to nvim dashboards
+- [x] A dashboard screen with similar functionality to nvim dashboards
 - [ ] More persistent project/session state
 - [ ] Broader fuzzy finder indexing and async refresh for very large repositories
 - [ ] Editor command palette, making use of the fuzzy matching logic
