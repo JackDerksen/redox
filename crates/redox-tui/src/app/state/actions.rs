@@ -370,14 +370,14 @@ impl EditorState {
             }
 
             InputAction::CompletionAccept => {
-                if self.mode == EditorMode::Insert {
-                    if !self.accept_completion(viewport_width_cells, text_vh) {
-                        self.apply_input(
-                            InputAction::Enter,
-                            viewport_width_cells,
-                            viewport_height_rows,
-                        );
-                    }
+                if self.mode == EditorMode::Insert
+                    && !self.accept_completion(viewport_width_cells, text_vh)
+                {
+                    self.apply_input(
+                        InputAction::Enter,
+                        viewport_width_cells,
+                        viewport_height_rows,
+                    );
                 }
             }
 
@@ -1324,12 +1324,20 @@ fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCha
         '(' => InsertCharBehavior::InsertPair(")".into()),
         '[' => InsertCharBehavior::InsertPair("]".into()),
         '{' => InsertCharBehavior::InsertPair("}".into()),
-        '"' | '`' => should_auto_pair_symmetric_delimiter(buffer, cursor, ch)
-            .then(|| InsertCharBehavior::InsertPair(ch.to_string()))
-            .unwrap_or(InsertCharBehavior::Plain),
-        '\'' => should_auto_pair_single_quote(buffer, cursor)
-            .then(|| InsertCharBehavior::InsertPair("'".into()))
-            .unwrap_or(InsertCharBehavior::Plain),
+        '"' | '`' => {
+            if should_auto_pair_symmetric_delimiter(buffer, cursor, ch) {
+                InsertCharBehavior::InsertPair(ch.to_string())
+            } else {
+                InsertCharBehavior::Plain
+            }
+        }
+        '\'' => {
+            if should_auto_pair_single_quote(buffer, cursor) {
+                InsertCharBehavior::InsertPair("'".into())
+            } else {
+                InsertCharBehavior::Plain
+            }
+        }
         _ => InsertCharBehavior::Plain,
     }
 }
@@ -1456,13 +1464,13 @@ fn visual_column(line: &str, char_col: usize) -> usize {
 }
 
 pub(super) fn insert_at_cursor(text: &mut String, cursor: &mut usize, ch: char) {
-    clamp_string_cursor(text, cursor);
+    clamp_str_cursor(text, cursor);
     text.insert(*cursor, ch);
     *cursor += ch.len_utf8();
 }
 
 pub(super) fn backspace_at_cursor(text: &mut String, cursor: &mut usize) {
-    clamp_string_cursor(text, cursor);
+    clamp_str_cursor(text, cursor);
     let Some(prev) = previous_char_boundary(text, *cursor) else {
         return;
     };
@@ -1487,10 +1495,6 @@ pub(super) fn move_cursor_right(text: &str, cursor: &mut usize) {
         .next()
         .map(char::len_utf8)
         .unwrap_or(0);
-}
-
-pub(super) fn clamp_string_cursor(text: &mut String, cursor: &mut usize) {
-    clamp_str_cursor(text, cursor);
 }
 
 pub(super) fn clamp_str_cursor(text: &str, cursor: &mut usize) {

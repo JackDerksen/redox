@@ -483,10 +483,7 @@ impl EditorState {
         if self.active_cursor_pos() != state.requested_at || state.source_lines.is_empty() {
             return None;
         }
-        let inner_h = state
-            .display_lines
-            .len()
-            .clamp(1, SYMBOL_INFO_MAX_HEIGHT as usize);
+        let inner_h = state.display_lines.len().clamp(1, SYMBOL_INFO_MAX_HEIGHT);
         let max_scroll = state.display_lines.len().saturating_sub(inner_h);
         Some(SymbolInfoPopup {
             title: "Symbol info",
@@ -2257,14 +2254,12 @@ impl EditorState {
                 .placeholders
                 .get(snippet.current)
                 .is_none_or(|placeholder| placeholder.tabstop != tabstop)
-        {
-            if let Some(idx) = snippet
+            && let Some(idx) = snippet
                 .placeholders
                 .iter()
                 .position(|placeholder| placeholder.tabstop == tabstop)
-            {
-                snippet.current = idx;
-            }
+        {
+            snippet.current = idx;
         }
     }
 
@@ -3038,10 +3033,9 @@ impl EditorState {
             .syntax_highlighter
             .visible_line_spans_cached(language, line, 1)
             .and_then(|visible| visible.get(0))
+            && let Some(role) = syntax_role_covering_byte(spans, probe_byte)
         {
-            if let Some(role) = syntax_role_covering_byte(spans, probe_byte) {
-                return Some(role);
-            }
+            return Some(role);
         }
 
         let fallback = lexical_fallback_line_spans(&line_text);

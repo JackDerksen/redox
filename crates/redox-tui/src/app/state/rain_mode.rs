@@ -59,8 +59,7 @@ impl EditorState {
             crate::ui::RainAnimation::capture(
                 &snapshot,
                 scroll_x,
-                text_width as usize,
-                text_height as usize,
+                (text_width as usize, text_height as usize),
                 default_colors,
                 style,
                 syntax_spans,

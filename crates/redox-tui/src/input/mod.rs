@@ -1267,7 +1267,11 @@ fn search_motion_prefix(search: PendingSearchMotion) -> String {
 }
 
 fn count_prefix(count: usize, explicit: bool) -> String {
-    explicit.then(|| count.to_string()).unwrap_or_default()
+    if explicit {
+        count.to_string()
+    } else {
+        Default::default()
+    }
 }
 
 fn operator_key(operator: TextObjectOperator) -> char {
@@ -1600,16 +1604,16 @@ fn modal_char_action(
         return resolve_pending_search_motion(state, c, pending_search_motion);
     }
 
-    if let Some(operator) = state.pending_operator {
-        if let Some(action) = resolve_pending_operator(state, c, operator) {
-            return action;
-        }
+    if let Some(operator) = state.pending_operator
+        && let Some(action) = resolve_pending_operator(state, c, operator)
+    {
+        return action;
     }
 
-    if !state.pending_sequence.is_empty() {
-        if let Some(action) = resolve_pending_sequence(state, mode, c) {
-            return action;
-        }
+    if !state.pending_sequence.is_empty()
+        && let Some(action) = resolve_pending_sequence(state, mode, c)
+    {
+        return action;
     }
 
     if custom_sequence_starts(state, mode, c) {
@@ -2072,9 +2076,7 @@ fn resolve_pending_operator(
             (_, None, 'i' | 'a' | 'f' | 't')
         ) || !state.pending_sequence.is_empty());
 
-    if !matches!(action, Some(InputAction::None)) {
-        state.pending_operator = None;
-    } else if !keep_pending_operator {
+    if !matches!(action, Some(InputAction::None)) || !keep_pending_operator {
         state.pending_operator = None;
     }
 
@@ -3153,7 +3155,7 @@ fn map_key_with_state(
     match key {
         KeyKind::Escape => {
             state.reset_prefixes();
-            return if matches!(
+            if matches!(
                 mode,
                 InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
             ) {
@@ -3162,7 +3164,7 @@ fn map_key_with_state(
                 InputAction::ClearSearch
             } else {
                 InputAction::None
-            };
+            }
         }
         KeyKind::Enter => {
             if mode != InputMode::Normal || !unmodified(mods) {

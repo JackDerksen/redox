@@ -331,7 +331,7 @@ impl TextBuffer {
 
         let mut containing_pairs = Vec::new();
         let mut same_line_pairs = Vec::new();
-        for pair in quote_chars.chunks_exact(2) {
+        for pair in quote_chars.as_chunks::<2>().0 {
             let start = pair[0];
             let end_inclusive = pair[1];
             if pair_contains_cursor(start, end_inclusive, cursor_char, anchor_before) {

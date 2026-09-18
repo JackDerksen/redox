@@ -177,8 +177,8 @@ impl CursorController {
         let visible = vx < viewport_width_cells && vy < viewport_height_rows;
 
         CursorSpec {
-            x: (vx as u16).min(u16::MAX),
-            y: (vy as u16).min(u16::MAX),
+            x: vx as u16,
+            y: vy as u16,
             visible,
         }
     }

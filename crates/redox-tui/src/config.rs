@@ -242,8 +242,10 @@ impl Config {
         if !self.has_theme(name) {
             bail!("unknown colorscheme {name:?}");
         }
-        let mut style = UiStyle::default();
-        style.icons_enabled = self.icons_enabled;
+        let mut style = UiStyle {
+            icons_enabled: self.icons_enabled,
+            ..UiStyle::default()
+        };
         style.layout.color_column = Some(self.color_column);
         let Some(theme) = self.themes.get(name) else {
             self.apply_popup_sizes(&mut style);

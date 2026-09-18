@@ -20,8 +20,7 @@ pub fn draw_undo_tree_lines(
     style: UndoTreeStyle,
     lines: &[String],
     line_spans: &[Vec<UndoTreeLineSpan>],
-    first_line: usize,
-    selected_line: usize,
+    (first_line, selected_line): (usize, usize),
     icons_enabled: bool,
 ) -> Result<()> {
     draw_undo_tree_header(window, width, style, icons_enabled)?;
@@ -307,8 +306,10 @@ mod tests {
 
     #[test]
     fn preview_diff_lines_use_explicit_separator_colours() {
-        let mut style = UndoTreeStyle::default();
-        style.preview_separator = ColorPair::new(Color::Yellow, Color::Blue);
+        let style = UndoTreeStyle {
+            preview_separator: ColorPair::new(Color::Yellow, Color::Blue),
+            ..UndoTreeStyle::default()
+        };
         let lines = vec![
             "Node: 12".to_string(),
             String::new(),

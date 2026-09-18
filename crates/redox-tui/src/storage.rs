@@ -123,7 +123,7 @@ pub fn installed_tools_path() -> PathBuf {
 pub fn undo_history_root() -> PathBuf {
     #[cfg(test)]
     {
-        return env::temp_dir().join(format!("redox-test-undo-history-{}", std::process::id()));
+        env::temp_dir().join(format!("redox-test-undo-history-{}", std::process::id()))
     }
 
     #[cfg(not(test))]
@@ -246,6 +246,7 @@ fn migrate_path(source: &Path, destination: &Path) -> io::Result<()> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(parent.join(".redox-migration.lock"))?;
     migration_lock.lock()?;
 

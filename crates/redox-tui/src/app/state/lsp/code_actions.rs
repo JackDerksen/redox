@@ -324,7 +324,6 @@ impl EditorState {
                     } else {
                         self.set_status(format!("quick fix command failed: {error}"));
                     }
-                    return;
                 }
             }
         } else {

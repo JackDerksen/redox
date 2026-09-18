@@ -14,15 +14,15 @@ const SEARCH_PREVIEW_DELAY: Duration = Duration::from_millis(100);
 impl SearchQuery {
     fn landing_pos(&self, start: Pos) -> Pos {
         match self.landing {
-            SearchLanding::OnMatch => start,
-            SearchLanding::BeforeMatch => {
+            SearchLanding::On => start,
+            SearchLanding::Before => {
                 if start.col > 0 {
                     Pos::new(start.line, start.col - 1)
                 } else {
                     start
                 }
             }
-            SearchLanding::AfterMatch => Pos::new(start.line, start.col.saturating_add(1)),
+            SearchLanding::After => Pos::new(start.line, start.col.saturating_add(1)),
         }
     }
 }
@@ -184,7 +184,7 @@ impl EditorState {
         let query = SearchQuery {
             term: self.command_line.clone(),
             regex: true,
-            landing: SearchLanding::OnMatch,
+            landing: SearchLanding::On,
         };
         let buffer_id = self.session.active_id();
         let cursor = self
@@ -261,9 +261,9 @@ impl EditorState {
                 return;
             };
 
-            if search.matches.is_empty() {
-                None
-            } else if search.matches.len() == 1 && search.active_match.is_some() {
+            if search.matches.is_empty()
+                || (search.matches.len() == 1 && search.active_match.is_some())
+            {
                 None
             } else if let Some(active) = search.active_match {
                 Some(if forward {
@@ -373,22 +373,22 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
         Motion::FindChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
-            landing: SearchLanding::OnMatch,
+            landing: SearchLanding::On,
         }),
         Motion::TillChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
-            landing: SearchLanding::BeforeMatch,
+            landing: SearchLanding::Before,
         }),
         Motion::FindCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
-            landing: SearchLanding::OnMatch,
+            landing: SearchLanding::On,
         }),
         Motion::TillCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
-            landing: SearchLanding::AfterMatch,
+            landing: SearchLanding::After,
         }),
         _ => None,
     }

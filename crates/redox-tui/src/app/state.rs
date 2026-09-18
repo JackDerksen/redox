@@ -88,9 +88,9 @@ struct OneShotHighlight {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchLanding {
-    OnMatch,
-    BeforeMatch,
-    AfterMatch,
+    On,
+    Before,
+    After,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -825,14 +825,11 @@ impl EditorState {
     ) -> Option<PaneId> {
         self.sync_active_pane_view();
         self.nudge_active_pane_cursor_before_split(axis);
-        let Some(active) = self
+        let active = self
             .panes
             .iter()
             .find(|pane| pane.id == self.active_pane)
-            .cloned()
-        else {
-            return None;
-        };
+            .cloned()?;
         let new_id = PaneId(self.next_pane_id);
         self.next_pane_id = self.next_pane_id.saturating_add(1);
         let mut new_view = active.view.clone();

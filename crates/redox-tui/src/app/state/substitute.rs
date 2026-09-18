@@ -672,18 +672,6 @@ mod tests {
         state
     }
 
-    fn settle_preview(state: &mut EditorState) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while state.substitute_preview_pending() {
-            state.update_background(std::time::Instant::now());
-            assert!(
-                std::time::Instant::now() < deadline,
-                "preview worker timed out"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-
     #[test]
     fn substitution_supports_vim_patterns_captures_and_flags() {
         let _lock = super::super::global_test_state_lock().lock().unwrap();

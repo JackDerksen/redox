@@ -123,7 +123,7 @@ fn toast_layout(
         }
     }
 
-    let y = TOAST_MARGIN_ROWS.min(term_h.saturating_sub(3));
+    let y = TOAST_MARGIN_ROWS;
     let popup_max_w = term_w.saturating_sub(TOAST_MARGIN_COLS);
     let popup_max_h = term_h.saturating_sub(y).saturating_sub(TOAST_MARGIN_ROWS);
     let (lines, inner_w, inner_h) =

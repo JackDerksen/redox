@@ -42,8 +42,7 @@ impl RainAnimation {
     pub fn capture(
         snapshot: &RenderSnapshot,
         scroll_x: usize,
-        width: usize,
-        height: usize,
+        (width, height): (usize, usize),
         default_colors: ColorPair,
         style: UiStyle,
         syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,

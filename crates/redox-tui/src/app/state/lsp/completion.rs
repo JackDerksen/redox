@@ -381,8 +381,7 @@ pub(super) fn completion_context(
     let trimmed_before = before.trim_end();
     let last_word = trimmed_before
         .split(|ch: char| !(ch == '_' || ch.is_alphanumeric()))
-        .filter(|word| !word.is_empty())
-        .next_back()
+        .rfind(|word| !word.is_empty())
         .unwrap_or_default();
     let kind = if trimmed_before.ends_with('.') {
         CompletionContextKind::Member

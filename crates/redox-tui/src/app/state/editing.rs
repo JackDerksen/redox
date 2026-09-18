@@ -995,10 +995,10 @@ impl EditorState {
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        if let Some(anchor) = view.visual_anchor.as_mut() {
-            if let Some((_, added)) = added_by_line.iter().find(|(line, _)| *line == anchor.line) {
-                anchor.col = anchor.col.saturating_add(*added);
-            }
+        if let Some(anchor) = view.visual_anchor.as_mut()
+            && let Some((_, added)) = added_by_line.iter().find(|(line, _)| *line == anchor.line)
+        {
+            anchor.col = anchor.col.saturating_add(*added);
         }
         if let Some((_, added)) = added_by_line
             .iter()
@@ -1038,13 +1038,12 @@ impl EditorState {
 
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        if let Some(anchor) = view.visual_anchor.as_mut() {
-            if let Some((_, removed)) = removed_by_line
+        if let Some(anchor) = view.visual_anchor.as_mut()
+            && let Some((_, removed)) = removed_by_line
                 .iter()
                 .find(|(line, _)| *line == anchor.line)
-            {
-                anchor.col = anchor.col.saturating_sub(*removed);
-            }
+        {
+            anchor.col = anchor.col.saturating_sub(*removed);
         }
         if let Some((_, removed)) = removed_by_line
             .iter()

@@ -1,3 +1,4 @@
+use crate::ui::render::LineViewport;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
@@ -370,8 +371,7 @@ pub(crate) fn active_scope_indent_guides(
     syntax_scope: Option<SyntaxScope>,
     buffer: &TextBuffer,
     cursor: Pos,
-    first_line: usize,
-    line_count: usize,
+    (first_line, line_count): (usize, usize),
     scroll_x: usize,
     width_cells: usize,
     cached_delimiter_analysis: Option<&DelimiterAnalysis>,
@@ -452,16 +452,20 @@ fn filter_visible_indent_guides(
 
 pub(crate) fn draw_delimiter_highlights(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
     delimiter_highlight_chars: &[usize],
     normal_color: ColorPair,
     style: UiStyle,
     syntax_spans: Option<&[LineSyntaxSpan]>,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        scroll_x,
+        width: width_cells,
+    } = viewport;
+
     let visible = visible_delimiter_cells(
         source_line,
         scroll_x,
@@ -889,8 +893,7 @@ mod tests {
             Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(1, 4),
-            0,
-            3,
+            (0, 3),
             0,
             20,
             None,
@@ -909,8 +912,7 @@ mod tests {
             Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(2, 8),
-            0,
-            3,
+            (0, 3),
             0,
             20,
             None,
@@ -945,8 +947,7 @@ mod tests {
             Some(SyntaxScope { extent: body, body }),
             &buffer,
             Pos::new(2, 8),
-            0,
-            5,
+            (0, 5),
             0,
             20,
             Some(&analysis),

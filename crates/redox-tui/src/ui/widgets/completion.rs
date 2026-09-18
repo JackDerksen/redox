@@ -349,7 +349,7 @@ mod tests {
             entries: vec![CompletionEntry {
                 kind: Some("function".to_string()),
                 keyword: "very_long_completion_keyword".to_string(),
-                highlights: vec![0..4],
+                highlights: std::iter::once(0..4).collect(),
             }],
             selected: 0,
             scroll: 0,

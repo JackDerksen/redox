@@ -47,8 +47,7 @@ pub fn draw_which_key_popup(
         .min(popup.entries.len());
     let available_body_rows = (text_bottom as usize)
         .saturating_sub(HEADER_ROWS)
-        .min(MAX_BODY_ROWS)
-        .max(1);
+        .clamp(1, MAX_BODY_ROWS);
     let capacity = columns.saturating_mul(available_body_rows);
     let entries = visible_entries(&popup.entries, capacity);
     let body_rows = entries.len().div_ceil(columns).max(1);
@@ -99,8 +98,7 @@ pub fn draw_which_key_popup(
             entry,
             style,
             popup_bg,
-            entry_x,
-            entry_y,
+            (entry_x, entry_y),
             column_width,
             key_widths[column],
         )?;
@@ -150,8 +148,7 @@ fn draw_entry(
     entry: &WhichKeyEntry,
     style: UiStyle,
     popup_bg: minui::Color,
-    x: u16,
-    y: u16,
+    (x, y): (u16, u16),
     width: usize,
     key_width: usize,
 ) -> minui::Result<()> {

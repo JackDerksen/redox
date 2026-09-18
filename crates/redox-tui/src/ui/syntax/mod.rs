@@ -1,5 +1,6 @@
 //! Tree-sitter-backed syntax highlighting for the editor viewport.
 
+use crate::ui::render::LineViewport;
 mod languages;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -1273,16 +1274,20 @@ fn source_line_start_byte(source: &str, line: usize) -> Option<usize> {
 
 pub fn draw_line_with_syntax(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
     base_color: ColorPair,
     color_column: Option<(usize, minui::Color)>,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        scroll_x,
+        width: width_cells,
+    } = viewport;
+
     if width_cells == 0 {
         return Ok(());
     }
@@ -1336,8 +1341,7 @@ pub fn draw_line_with_syntax(
         if g == "\t" {
             flush_pending_syntax_span(
                 window,
-                row,
-                col,
+                (row, col),
                 source_line,
                 pending_start.take(),
                 pending_end,
@@ -1360,8 +1364,7 @@ pub fn draw_line_with_syntax(
 
         flush_pending_syntax_span(
             window,
-            row,
-            col,
+            (row, col),
             source_line,
             pending_start.take(),
             pending_end,
@@ -1376,8 +1379,7 @@ pub fn draw_line_with_syntax(
 
     flush_pending_syntax_span(
         window,
-        row,
-        col,
+        (row, col),
         source_line,
         pending_start,
         pending_end,
@@ -1398,8 +1400,7 @@ pub fn draw_line_with_syntax(
 
 fn flush_pending_syntax_span(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    (row, col): (u16, u16),
     source_line: &str,
     start: Option<usize>,
     end: usize,

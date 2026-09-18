@@ -294,11 +294,7 @@ impl EditorStatusBar {
             .count() as u16;
 
         let remaining = width.saturating_sub(fixed_sum);
-        let default_flex = if flexible_count > 0 {
-            remaining / flexible_count
-        } else {
-            0
-        };
+        let default_flex = remaining.checked_div(flexible_count).unwrap_or(0);
 
         // Distribute any remainder to the first few flexible segments so total sums to `width`.
         let mut remainder = if flexible_count > 0 {
@@ -670,9 +666,7 @@ fn git_diff_summary(
     buffer_id: redox_core::BufferId,
     icons_enabled: bool,
 ) -> Option<String> {
-    let Some(diff) = state.git_diff_for_buffer(buffer_id) else {
-        return None;
-    };
+    let diff = state.git_diff_for_buffer(buffer_id)?;
     if diff.stats.is_empty() {
         return None;
     }

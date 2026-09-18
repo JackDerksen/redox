@@ -1,3 +1,4 @@
+use crate::ui::render::LineViewport;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -72,6 +73,52 @@ enum LaunchTarget {
 struct LaunchOptions {
     target: LaunchTarget,
     config_path: Option<PathBuf>,
+}
+
+struct LineHighlights<'a> {
+    color_column: Option<(usize, Color)>,
+    layers: &'a [(&'a [bool], Color, Option<Color>)],
+    empty_line: bool,
+}
+
+struct BufferDrawOptions {
+    width: u16,
+    height: u16,
+    has_line_numbers: bool,
+    colors: ColorPair,
+}
+
+struct BufferHighlights<'a> {
+    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
+    diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
+    snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+}
+
+struct SnapshotViewport {
+    content_x: u16,
+    scroll_x: usize,
+    text_w: usize,
+}
+
+struct SnapshotStyle<'a> {
+    default_colors: ColorPair,
+    style: UiStyle,
+    syntax_spans: Option<VisibleLineSyntaxSpans<'a>>,
+    lexical_fallback_enabled: bool,
+}
+
+struct SnapshotOverlays<'a> {
+    delimiter_highlights: &'a BTreeMap<usize, Vec<usize>>,
+    active_scope_guides: &'a BTreeMap<usize, Vec<usize>>,
+    search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
+    substitution_colors: Option<ColorPair>,
+    snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
+    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    focused_lines: Option<std::ops::Range<usize>>,
 }
 
 fn draw_buffer_view(
@@ -181,10 +228,9 @@ fn draw_editor_view(
         if matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
-        ) {
-            if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-                draw_command_line_popup(state, style, window)?;
-            }
+        ) && !draw_command_line_below_popup(state, style, window, stack_layout)?
+        {
+            draw_command_line_popup(state, style, window)?;
         }
         let toast_layout = draw_notification_toast(state, style, window)?;
         if !matches!(
@@ -239,11 +285,9 @@ fn draw_editor_view(
         let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            style,
-            background_style,
+            (style, background_style),
             window,
-            vw,
-            text_h,
+            (vw, text_h),
             editor_text,
             Some(state.session.active_id()),
             inner_size,
@@ -258,11 +302,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            style,
-            background_style,
+            (style, background_style),
             window,
-            vw,
-            text_h,
+            (vw, text_h),
             editor_text,
             Some(state.session.active_id()),
             inner_size,
@@ -277,11 +319,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            style,
-            background_style,
+            (style, background_style),
             window,
-            vw,
-            text_h,
+            (vw, text_h),
             editor_text,
             Some(state.session.active_id()),
             inner_size,
@@ -399,11 +439,13 @@ fn draw_editor_view(
                     {
                         draw_inline_diagnostic_shifted(
                             window,
-                            context.y,
-                            context.content_x,
+                            LineViewport {
+                                row: context.y,
+                                column: context.content_x,
+                                scroll_x: context.scroll_x,
+                                width: context.text_w as usize,
+                            },
                             source_line,
-                            context.scroll_x,
-                            context.text_w as usize,
                             background_style,
                             diagnostic,
                             preview_width,
@@ -457,8 +499,7 @@ fn draw_editor_view(
         draw_relative_line_numbers(
             window,
             background_style,
-            gutter.gutter_w,
-            text_h,
+            (gutter.gutter_w, text_h),
             gutter.show_git_marker_column,
             animation.first_line(),
             active_cursor_line,
@@ -496,16 +537,20 @@ fn draw_editor_view(
             state,
             background_style,
             state.session.active_id(),
-            vw,
-            text_h,
-            state.pane_options(state.active_pane_id()).has_line_numbers,
-            editor_text,
+            BufferDrawOptions {
+                width: vw,
+                height: text_h,
+                has_line_numbers: state.pane_options(state.active_pane_id()).has_line_numbers,
+                colors: editor_text,
+            },
             window,
-            None,
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            BufferHighlights {
+                visual_selection: None,
+                one_shot_highlight: None,
+                search_highlights: &BTreeMap::new(),
+                diagnostic_lines: &BTreeMap::new(),
+                snippet_placeholders: &BTreeMap::new(),
+            },
         )?;
         build_editor_status_bar(state, style).draw(window)?;
         draw_command_line_popup(state, style, window)?;
@@ -546,8 +591,7 @@ fn draw_editor_view(
     draw_relative_line_numbers(
         window,
         background_style,
-        gutter.gutter_w,
-        text_h,
+        (gutter.gutter_w, text_h),
         gutter.show_git_marker_column,
         snapshot.first_line(),
         active_cursor_line,
@@ -626,8 +670,7 @@ fn draw_editor_view(
                     syntax_scope,
                     buffer,
                     cursor,
-                    snapshot.first_line(),
-                    snapshot.line_count(),
+                    (snapshot.first_line(), snapshot.line_count()),
                     scroll_x,
                     text_w as usize,
                     delimiter_analysis,
@@ -642,22 +685,28 @@ fn draw_editor_view(
                 window,
                 buffer,
                 &snapshot,
-                content_x,
-                scroll_x,
-                text_w as usize,
-                editor_text,
-                background_style,
-                syntax_spans,
-                &delimiter_highlights,
-                &active_scope_guides,
-                &search_highlights,
-                substitution_colors,
-                &snippet_placeholders,
-                &diagnostic_lines,
-                visual_selection,
-                one_shot_highlight,
-                focused_lines,
-                use_lexical_fallback,
+                SnapshotViewport {
+                    content_x,
+                    scroll_x,
+                    text_w: text_w as usize,
+                },
+                SnapshotStyle {
+                    default_colors: editor_text,
+                    style: background_style,
+                    syntax_spans,
+                    lexical_fallback_enabled: use_lexical_fallback,
+                },
+                SnapshotOverlays {
+                    delimiter_highlights: &delimiter_highlights,
+                    active_scope_guides: &active_scope_guides,
+                    search_highlights: &search_highlights,
+                    substitution_colors,
+                    snippet_placeholders: &snippet_placeholders,
+                    diagnostic_lines: &diagnostic_lines,
+                    visual_selection,
+                    one_shot_highlight,
+                    focused_lines,
+                },
             )?;
             let lines_time = lines_start.elapsed();
             Ok::<_, minui::Error>((syntax_time, overlay_time, lines_time))
@@ -735,11 +784,13 @@ fn draw_editor_view(
                 {
                     draw_inline_diagnostic_shifted(
                         window,
-                        spec.y,
-                        content_x,
+                        LineViewport {
+                            row: spec.y,
+                            column: content_x,
+                            scroll_x,
+                            width: text_w as usize,
+                        },
                         source_line,
-                        scroll_x,
-                        text_w as usize,
                         background_style,
                         diagnostic,
                         preview_width,
@@ -895,8 +946,7 @@ fn line_number_gutter_width(total_lines: usize, show_git_marker_column: bool) ->
 fn draw_relative_line_numbers(
     window: &mut dyn Window,
     style: UiStyle,
-    gutter_w: u16,
-    text_h: u16,
+    (gutter_w, text_h): (u16, u16),
     show_git_marker_column: bool,
     first_line: usize,
     cursor_line: usize,
@@ -956,18 +1006,25 @@ fn draw_relative_line_numbers(
 
 fn draw_line_with_highlights(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
     normal_color: ColorPair,
-    color_column: Option<(usize, Color)>,
+    highlights: LineHighlights<'_>,
     style: UiStyle,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
-    highlight_layers: &[(&[bool], Color, Option<Color>)],
-    highlight_empty_line: bool,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        scroll_x,
+        width: width_cells,
+    } = viewport;
+    let LineHighlights {
+        color_column,
+        layers: highlight_layers,
+        empty_line: highlight_empty_line,
+    } = highlights;
+
     if width_cells == 0 {
         return Ok(());
     }
@@ -1254,11 +1311,9 @@ fn draw_command_line_below_popup(
 
 fn draw_modal_popup_background(
     state: &mut EditorState,
-    style: UiStyle,
-    background_style: UiStyle,
+    (style, background_style): (UiStyle, UiStyle),
     window: &mut dyn Window,
-    width: u16,
-    text_height: u16,
+    (width, text_height): (u16, u16),
     editor_text: ColorPair,
     fallback_buffer_id: Option<BufferId>,
     inner_size: (u16, u16),
@@ -1318,16 +1373,20 @@ fn draw_popup_background(
             state,
             style,
             buffer_id,
-            width,
-            height,
-            true,
-            editor_text,
+            BufferDrawOptions {
+                width,
+                height,
+                has_line_numbers: true,
+                colors: editor_text,
+            },
             window,
-            None,
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            BufferHighlights {
+                visual_selection: None,
+                one_shot_highlight: None,
+                search_highlights: &BTreeMap::new(),
+                diagnostic_lines: &BTreeMap::new(),
+                snippet_placeholders: &BTreeMap::new(),
+            },
         )?;
     }
     Ok(())
@@ -1435,16 +1494,20 @@ fn draw_split_editor_panes(
                 state,
                 pane_style,
                 buffer_id,
-                rect.width,
-                content_height,
-                options.has_line_numbers,
-                pane_text,
+                BufferDrawOptions {
+                    width: rect.width,
+                    height: content_height,
+                    has_line_numbers: options.has_line_numbers,
+                    colors: pane_text,
+                },
                 &mut pane_window,
-                visual_selection,
-                one_shot_highlight,
-                &search_highlights,
-                &diagnostic_lines,
-                &snippet_placeholders,
+                BufferHighlights {
+                    visual_selection,
+                    one_shot_highlight,
+                    search_highlights: &search_highlights,
+                    diagnostic_lines: &diagnostic_lines,
+                    snippet_placeholders: &snippet_placeholders,
+                },
             )?;
         }
         state.sync_rendered_pane_view(rect.pane_id, buffer_id);
@@ -1568,8 +1631,7 @@ fn draw_active_split_rain_pane(
     draw_relative_line_numbers(
         window,
         style,
-        gutter_w,
-        height,
+        (gutter_w, height),
         show_git_marker_column,
         animation.first_line(),
         active_cursor_line,
@@ -1597,17 +1659,24 @@ fn draw_buffer_snapshot_for_id(
     state: &mut EditorState,
     style: UiStyle,
     buffer_id: BufferId,
-    width: u16,
-    height: u16,
-    has_line_numbers: bool,
-    colors: ColorPair,
+    options: BufferDrawOptions,
     window: &mut dyn Window,
-    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    search_highlights: &BTreeMap<usize, app::state::SearchLineHighlights>,
-    diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
-    snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
+    highlights: BufferHighlights<'_>,
 ) -> minui::Result<()> {
+    let BufferDrawOptions {
+        width,
+        height,
+        has_line_numbers,
+        colors,
+    } = options;
+    let BufferHighlights {
+        visual_selection,
+        one_shot_highlight,
+        search_highlights,
+        diagnostic_lines,
+        snippet_placeholders,
+    } = highlights;
+
     let has_line_numbers = has_line_numbers && !(state.zen.enabled && state.zen.hide_gutter);
     let focus_scope = state.zen.enabled && state.zen.focus_scope;
     let substitution_colors = state
@@ -1658,8 +1727,7 @@ fn draw_buffer_snapshot_for_id(
                         style.undo_tree,
                         &lines,
                         &undo_tree_line_spans,
-                        first_line,
-                        view.cursor.cursor.line,
+                        (first_line, view.cursor.cursor.line),
                         style.icons_enabled,
                     )
                 }
@@ -1765,8 +1833,7 @@ fn draw_buffer_snapshot_for_id(
                 syntax_scope,
                 buffer,
                 cursor,
-                snapshot.first_line(),
-                snapshot.line_count(),
+                (snapshot.first_line(), snapshot.line_count()),
                 scroll_x,
                 width.saturating_sub(content_x) as usize,
                 delimiter_analysis,
@@ -1779,8 +1846,7 @@ fn draw_buffer_snapshot_for_id(
             draw_relative_line_numbers(
                 window,
                 style,
-                gutter_w,
-                height,
+                (gutter_w, height),
                 show_git_marker_column,
                 snapshot.first_line(),
                 cursor.line,
@@ -1806,30 +1872,36 @@ fn draw_buffer_snapshot_for_id(
             window,
             buffer,
             &snapshot,
-            content_x,
-            scroll_x,
-            width.saturating_sub(content_x) as usize,
-            colors,
-            style,
-            syntax_spans,
-            &delimiter_highlights,
-            &active_scope_guides,
-            preview_highlights.as_ref().unwrap_or(search_highlights),
-            substitution_colors,
-            if preview.is_some() {
-                &empty_snippets
-            } else {
-                snippet_placeholders
+            SnapshotViewport {
+                content_x,
+                scroll_x,
+                text_w: width.saturating_sub(content_x) as usize,
             },
-            if preview.is_some() {
-                &empty_diagnostics
-            } else {
-                diagnostic_lines
+            SnapshotStyle {
+                default_colors: colors,
+                style,
+                syntax_spans,
+                lexical_fallback_enabled: use_lexical_fallback,
             },
-            visual_selection.filter(|_| preview.is_none()),
-            one_shot_highlight.filter(|_| preview.is_none()),
-            focused_lines,
-            use_lexical_fallback,
+            SnapshotOverlays {
+                delimiter_highlights: &delimiter_highlights,
+                active_scope_guides: &active_scope_guides,
+                search_highlights: preview_highlights.as_ref().unwrap_or(search_highlights),
+                substitution_colors,
+                snippet_placeholders: if preview.is_some() {
+                    &empty_snippets
+                } else {
+                    snippet_placeholders
+                },
+                diagnostic_lines: if preview.is_some() {
+                    &empty_diagnostics
+                } else {
+                    diagnostic_lines
+                },
+                visual_selection: visual_selection.filter(|_| preview.is_none()),
+                one_shot_highlight: one_shot_highlight.filter(|_| preview.is_none()),
+                focused_lines,
+            },
         )
     }) else {
         return Ok(());
@@ -1860,23 +1932,33 @@ fn draw_snapshot_lines(
     window: &mut dyn Window,
     buffer: &redox_core::TextBuffer,
     snapshot: &ui::render::RenderSnapshot,
-    content_x: u16,
-    scroll_x: usize,
-    text_w: usize,
-    default_colors: ColorPair,
-    style: UiStyle,
-    syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
-    delimiter_highlights: &BTreeMap<usize, Vec<usize>>,
-    active_scope_guides: &BTreeMap<usize, Vec<usize>>,
-    search_highlights: &BTreeMap<usize, app::state::SearchLineHighlights>,
-    substitution_colors: Option<ColorPair>,
-    snippet_placeholders: &BTreeMap<usize, Vec<std::ops::Range<usize>>>,
-    diagnostic_lines: &BTreeMap<usize, app::DiagnosticLine>,
-    visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    focused_lines: Option<std::ops::Range<usize>>,
-    lexical_fallback_enabled: bool,
+    viewport: SnapshotViewport,
+    appearance: SnapshotStyle<'_>,
+    overlays: SnapshotOverlays<'_>,
 ) -> minui::Result<()> {
+    let SnapshotViewport {
+        content_x,
+        scroll_x,
+        text_w,
+    } = viewport;
+    let SnapshotStyle {
+        default_colors,
+        style,
+        syntax_spans,
+        lexical_fallback_enabled,
+    } = appearance;
+    let SnapshotOverlays {
+        delimiter_highlights,
+        active_scope_guides,
+        search_highlights,
+        substitution_colors,
+        snippet_placeholders,
+        diagnostic_lines,
+        visual_selection,
+        one_shot_highlight,
+        focused_lines,
+    } = overlays;
+
     let search_background =
         substitution_colors.map_or(style.theme.selection_bg, |colors| colors.bg);
     let search_foreground = substitution_colors.map(|colors| colors.fg);
@@ -1887,6 +1969,12 @@ fn draw_snapshot_lines(
         style.theme.color_column,
     );
     for (row, render_line) in snapshot.iter().enumerate() {
+        let line_viewport = LineViewport {
+            row: row as u16,
+            column: content_x,
+            scroll_x,
+            width: text_w,
+        };
         let line_idx = snapshot.first_line() + row;
         let visible_line = render_line.visible();
         let source_line = render_line.source();
@@ -1981,16 +2069,7 @@ fn draw_snapshot_lines(
                 color_column,
             )?;
             if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    style,
-                    diagnostic,
-                )?;
+                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
             continue;
         }
@@ -2009,8 +2088,8 @@ fn draw_snapshot_lines(
             .map(|range| {
                 search_highlight_cells(source_line, scroll_x, text_w, std::slice::from_ref(range))
             });
-        if let Some((selection, mode, selection_bg)) = transient_selection {
-            if let Some(selected_cells) = visual_selection_visible_cells(
+        if let Some((selection, mode, selection_bg)) = transient_selection
+            && let Some(selected_cells) = visual_selection_visible_cells(
                 buffer,
                 source_line,
                 selection,
@@ -2018,98 +2097,76 @@ fn draw_snapshot_lines(
                 line_idx,
                 scroll_x,
                 text_w,
-            ) {
-                let highlight_empty_line = source_line.is_empty();
-                let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
-                    let mut layers = vec![
-                        (selected_cells.as_slice(), selection_bg, None),
-                        (
-                            search_cells.as_slice(),
-                            search_background,
-                            search_foreground,
-                        ),
-                    ];
-                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                        layers.push((
-                            diagnostic.0.as_slice(),
-                            style.diagnostic_inline.background(diagnostic.1.severity),
-                            None,
-                        ));
-                    }
-                    layers
-                } else {
-                    let mut layers = vec![(selected_cells.as_slice(), selection_bg, None)];
-                    if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                        layers.push((
-                            diagnostic.0.as_slice(),
-                            style.diagnostic_inline.background(diagnostic.1.severity),
-                            None,
-                        ));
-                    }
-                    layers
-                };
-                if let Some(active) = &active_search_cells {
-                    highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
+            )
+        {
+            let highlight_empty_line = source_line.is_empty();
+            let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
+                let mut layers = vec![
+                    (selected_cells.as_slice(), selection_bg, None),
+                    (
+                        search_cells.as_slice(),
+                        search_background,
+                        search_foreground,
+                    ),
+                ];
+                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                    layers.push((
+                        diagnostic.0.as_slice(),
+                        style.diagnostic_inline.background(diagnostic.1.severity),
+                        None,
+                    ));
                 }
-                draw_line_with_highlights(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    default_colors,
-                    color_column,
-                    style,
-                    syntax_line_spans,
-                    &highlight_layers,
-                    highlight_empty_line,
-                )?;
-                draw_indent_guides(
-                    window,
-                    row as u16,
-                    content_x,
-                    visible_indent_guides,
-                    &occupied_text_cells,
-                    style,
-                    Some((&selected_cells, selection_bg)),
-                )?;
-                draw_delimiter_highlights(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    highlighted_chars,
-                    default_colors,
-                    style,
-                    syntax_line_spans,
-                )?;
-                draw_snippet_placeholders(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    snippet_ranges,
-                    style,
-                )?;
-                if let Some(diagnostic) = diagnostic_line {
-                    draw_inline_diagnostic(
-                        window,
-                        row as u16,
-                        content_x,
-                        source_line,
-                        scroll_x,
-                        text_w,
-                        style,
-                        diagnostic,
-                    )?;
+                layers
+            } else {
+                let mut layers = vec![(selected_cells.as_slice(), selection_bg, None)];
+                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
+                    layers.push((
+                        diagnostic.0.as_slice(),
+                        style.diagnostic_inline.background(diagnostic.1.severity),
+                        None,
+                    ));
                 }
-                continue;
+                layers
+            };
+            if let Some(active) = &active_search_cells {
+                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
             }
+            draw_line_with_highlights(
+                window,
+                line_viewport,
+                source_line,
+                default_colors,
+                LineHighlights {
+                    color_column,
+                    layers: &highlight_layers,
+                    empty_line: highlight_empty_line,
+                },
+                style,
+                syntax_line_spans,
+            )?;
+            draw_indent_guides(
+                window,
+                row as u16,
+                content_x,
+                visible_indent_guides,
+                &occupied_text_cells,
+                style,
+                Some((&selected_cells, selection_bg)),
+            )?;
+            draw_delimiter_highlights(
+                window,
+                line_viewport,
+                source_line,
+                highlighted_chars,
+                default_colors,
+                style,
+                syntax_line_spans,
+            )?;
+            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
+            if let Some(diagnostic) = diagnostic_line {
+                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
+            }
+            continue;
         }
 
         if let Some(search_cells) = search_cells.as_ref()
@@ -2141,17 +2198,16 @@ fn draw_snapshot_lines(
             }
             draw_line_with_highlights(
                 window,
-                row as u16,
-                content_x,
+                line_viewport,
                 source_line,
-                scroll_x,
-                text_w,
                 default_colors,
-                color_column,
+                LineHighlights {
+                    color_column,
+                    layers: &highlight_layers,
+                    empty_line: source_line.is_empty(),
+                },
                 style,
                 syntax_line_spans,
-                &highlight_layers,
-                source_line.is_empty(),
             )?;
             draw_indent_guides(
                 window,
@@ -2166,37 +2222,16 @@ fn draw_snapshot_lines(
             )?;
             draw_delimiter_highlights(
                 window,
-                row as u16,
-                content_x,
+                line_viewport,
                 source_line,
-                scroll_x,
-                text_w,
                 highlighted_chars,
                 default_colors,
                 style,
                 syntax_line_spans,
             )?;
-            draw_snippet_placeholders(
-                window,
-                row as u16,
-                content_x,
-                source_line,
-                scroll_x,
-                text_w,
-                snippet_ranges,
-                style,
-            )?;
+            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
             if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    style,
-                    diagnostic,
-                )?;
+                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
             continue;
         }
@@ -2212,26 +2247,22 @@ fn draw_snapshot_lines(
                 )];
                 draw_line_with_highlights(
                     window,
-                    row as u16,
-                    content_x,
+                    line_viewport,
                     source_line,
-                    scroll_x,
-                    text_w,
                     default_colors,
-                    color_column,
+                    LineHighlights {
+                        color_column,
+                        layers: &highlight_layers,
+                        empty_line: false,
+                    },
                     style,
                     Some(spans),
-                    &highlight_layers,
-                    false,
                 )?;
             } else {
                 draw_line_with_syntax(
                     window,
-                    row as u16,
-                    content_x,
+                    line_viewport,
                     source_line,
-                    scroll_x,
-                    text_w,
                     default_colors,
                     color_column,
                     style,
@@ -2249,37 +2280,16 @@ fn draw_snapshot_lines(
             )?;
             draw_delimiter_highlights(
                 window,
-                row as u16,
-                content_x,
+                line_viewport,
                 source_line,
-                scroll_x,
-                text_w,
                 highlighted_chars,
                 default_colors,
                 style,
                 Some(spans),
             )?;
-            draw_snippet_placeholders(
-                window,
-                row as u16,
-                content_x,
-                source_line,
-                scroll_x,
-                text_w,
-                snippet_ranges,
-                style,
-            )?;
+            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
             if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(
-                    window,
-                    row as u16,
-                    content_x,
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    style,
-                    diagnostic,
-                )?;
+                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
             continue;
         }
@@ -2292,40 +2302,27 @@ fn draw_snapshot_lines(
             )];
             draw_line_with_highlights(
                 window,
-                row as u16,
-                content_x,
+                line_viewport,
                 source_line,
-                scroll_x,
-                text_w,
                 default_colors,
-                color_column,
+                LineHighlights {
+                    color_column,
+                    layers: &highlight_layers,
+                    empty_line: false,
+                },
                 style,
                 None,
-                &highlight_layers,
-                false,
             )?;
         } else {
             draw_plain_line(
                 window,
-                row as u16,
-                content_x,
+                line_viewport,
                 source_line,
-                scroll_x,
-                text_w,
                 default_colors,
                 color_column,
             )?;
         }
-        draw_snippet_placeholders(
-            window,
-            row as u16,
-            content_x,
-            source_line,
-            scroll_x,
-            text_w,
-            snippet_ranges,
-            style,
-        )?;
+        draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
         draw_indent_guides(
             window,
             row as u16,
@@ -2337,27 +2334,15 @@ fn draw_snapshot_lines(
         )?;
         draw_delimiter_highlights(
             window,
-            row as u16,
-            content_x,
+            line_viewport,
             source_line,
-            scroll_x,
-            text_w,
             highlighted_chars,
             default_colors,
             style,
             syntax_line_spans,
         )?;
         if let Some(diagnostic) = diagnostic_line {
-            draw_inline_diagnostic(
-                window,
-                row as u16,
-                content_x,
-                source_line,
-                scroll_x,
-                text_w,
-                style,
-                diagnostic,
-            )?;
+            draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
         }
     }
 
@@ -2379,20 +2364,24 @@ fn selected_visible_cells(
         source_line,
         scroll_x,
         width_cells,
-        &[sel_start_char..sel_end_char_exclusive],
+        std::slice::from_ref(&(sel_start_char..sel_end_char_exclusive)),
     )
 }
 
 fn draw_snippet_placeholders(
     window: &mut dyn Window,
-    row: u16,
-    content_x: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    text_w: usize,
     ranges: &[std::ops::Range<usize>],
     style: UiStyle,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: content_x,
+        scroll_x,
+        width: text_w,
+    } = viewport;
+
     if ranges.is_empty() || text_w == 0 {
         return Ok(());
     }
@@ -2449,25 +2438,12 @@ fn draw_snippet_placeholders(
 
 fn draw_inline_diagnostic(
     window: &mut dyn Window,
-    row: u16,
-    content_x: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    text_w: usize,
     style: UiStyle,
     diagnostic: &app::DiagnosticLine,
 ) -> minui::Result<()> {
-    draw_inline_diagnostic_shifted(
-        window,
-        row,
-        content_x,
-        source_line,
-        scroll_x,
-        text_w,
-        style,
-        diagnostic,
-        0,
-    )
+    draw_inline_diagnostic_shifted(window, viewport, source_line, style, diagnostic, 0)
 }
 
 fn clear_inline_diagnostic(
@@ -2497,15 +2473,19 @@ fn clear_inline_diagnostic(
 
 fn draw_inline_diagnostic_shifted(
     window: &mut dyn Window,
-    row: u16,
-    content_x: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    text_w: usize,
     style: UiStyle,
     diagnostic: &app::DiagnosticLine,
     shift_cells: usize,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: content_x,
+        scroll_x,
+        width: text_w,
+    } = viewport;
+
     if text_w == 0 {
         return Ok(());
     }
@@ -2660,9 +2640,7 @@ fn highlighted_visible_cells(
 
         let visible_start = start_cell.max(scroll_x).saturating_sub(scroll_x);
         let visible_end = end_cell.min(max_visible_cell).saturating_sub(scroll_x);
-        for cell in visible_start..visible_end {
-            selected[cell] = true;
-        }
+        selected[visible_start..visible_end].fill(true);
     }
 
     selected
@@ -2800,14 +2778,18 @@ fn occupied_visible_cells(source_line: &str, scroll_x: usize, width_cells: usize
 
 fn draw_plain_line(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
     default_colors: ColorPair,
     color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        scroll_x,
+        width: width_cells,
+    } = viewport;
+
     if width_cells == 0 {
         return Ok(());
     }
@@ -2932,6 +2914,450 @@ fn visible_color_column(
 ) -> Option<(usize, Color)> {
     let visible_col = color_column?.checked_sub(scroll_x)?;
     (visible_col < text_w).then_some((visible_col, bg))
+}
+
+fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
+    let mut args = env::args().skip(1);
+    let mut config_path = None;
+    let mut target_path = None;
+    let mut parse_options = true;
+    while let Some(raw) = args.next() {
+        if parse_options && raw == "--" {
+            parse_options = false;
+        } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
+            println!("redox {}", env!("CARGO_PKG_VERSION"));
+            return Ok(None);
+        } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
+            println!(
+                "Redox - A tasteful text editor\n\n\
+                 Usage: redox [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
+                 Options:\n  --config <PATH>  Use a configuration file\n  \
+                 -h, --help       Print help\n  -V, --version    Print version\n  \
+                 --               Treat remaining arguments as paths"
+            );
+            return Ok(None);
+        } else if parse_options && raw == "--config" {
+            config_path =
+                Some(PathBuf::from(args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--config requires a path")
+                })?));
+        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
+            config_path = Some(PathBuf::from(path));
+        } else if parse_options && raw.starts_with('-') {
+            anyhow::bail!("unknown option: {raw}");
+        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
+            anyhow::bail!("only one file or directory may be opened at launch");
+        }
+    }
+    let Some(path) = target_path else {
+        return Ok(Some(LaunchOptions {
+            target: LaunchTarget::Empty,
+            config_path,
+        }));
+    };
+    if path.is_dir() {
+        return Ok(Some(LaunchOptions {
+            target: LaunchTarget::Explorer(path),
+            config_path,
+        }));
+    }
+    Ok(Some(LaunchOptions {
+        target: LaunchTarget::File(path),
+        config_path,
+    }))
+}
+
+fn is_cancel_event(event: &Event) -> bool {
+    matches!(event, Event::Escape)
+        || matches!(
+            event,
+            Event::KeyWithModifiers(key)
+                if matches!(key.key, KeyKind::Escape)
+                    && !key.mods.ctrl
+                    && !key.mods.alt
+                    && !key.mods.super_key
+        )
+        || matches!(
+            event,
+            Event::KeyWithModifiers(key)
+                if key.mods.ctrl
+                    && !key.mods.alt
+                    && !key.mods.super_key
+                    && matches!(key.key, KeyKind::Char('c') | KeyKind::Char('C'))
+        )
+}
+
+fn handle_editor_event(
+    state: &mut EditorState,
+    clipboard: &mut Option<Clipboard>,
+    event: Event,
+) -> bool {
+    if state.handle_dashboard_event(&event) {
+        return !state.should_quit;
+    }
+    if state.rain_is_active() {
+        if is_cancel_event(&event) {
+            state.stop_rain_animation();
+        }
+        return !state.should_quit;
+    }
+
+    if is_cancel_event(&event) && state.handle_normal_mode_escape_on_surface() {
+        return !state.should_quit;
+    }
+
+    if is_cancel_event(&event) && state.dismiss_perf_popup() {
+        return !state.should_quit;
+    }
+
+    let confirm_explorer_delete = state.has_pending_explorer_delete_confirmation();
+    let action = match &event {
+        Event::Paste(text) => InputAction::Paste(text.clone()),
+        _ => map_event_with_context(
+            &mut state.input,
+            state.mode.as_input_mode(),
+            confirm_explorer_delete,
+            &event,
+        ),
+    };
+
+    let (w, h) = state.viewport_size();
+    if !matches!(
+        action,
+        InputAction::ToggleMacroRecording | InputAction::StartMacroRecording { .. }
+    ) {
+        state.record_macro_key(&input::macro_key_label(&event));
+    }
+    match action {
+        InputAction::PasteSystemClipboard => match clipboard.as_mut() {
+            Some(system_clipboard) => match system_clipboard.paste() {
+                Ok(text) => state.apply_input(InputAction::PasteSystemClipboardText(text), w, h),
+                Err(error) => state.set_status(format!("clipboard paste failed: {error}")),
+            },
+            None => state.set_status("system clipboard unavailable"),
+        },
+        action => state.apply_input(action, w, h),
+    }
+    if let Some(text) = state.take_pending_system_clipboard() {
+        match clipboard.as_mut() {
+            Some(system_clipboard) => {
+                if let Err(error) = system_clipboard.copy(&text) {
+                    state.set_status(format!("clipboard copy failed: {error}"));
+                } else {
+                    state.set_status("yanked to system clipboard");
+                }
+            }
+            None => {
+                state.set_status("system clipboard unavailable");
+            }
+        }
+    }
+
+    !state.should_quit
+}
+
+fn install_keyboard_bindings(
+    keyboard: &mut KeyboardHandler,
+    input: &InputState,
+) -> minui::Result<()> {
+    keyboard.clear_keybinds();
+
+    let symbol_info = KeybindAction::Custom("trigger-symbol-info".to_string());
+    keyboard.add_keybind("ctrl-i", symbol_info)?;
+    let completion = KeybindAction::Custom("trigger-completion".to_string());
+    keyboard.add_keybind("ctrl-shift-k", completion)?;
+
+    for key in input.special_keys() {
+        let binding = key
+            .strip_prefix('<')
+            .and_then(|key| key.strip_suffix('>'))
+            .expect("configured special keys are normalized");
+        keyboard.add_keybind(binding, KeybindAction::Custom(format!("redox-key:{key}")))?;
+    }
+    Ok(())
+}
+
+fn configured_input(config: &config::Config) -> anyhow::Result<InputState> {
+    let mut input = InputState::new();
+    input.configure(config.leader(), &config.keybindings)?;
+    let custom_bindings = config
+        .bind
+        .iter()
+        .filter(|binding| !binding.keys.is_empty())
+        .map(|binding| {
+            let target = match (&binding.sequence, &binding.command) {
+                (Some(sequence), None) => ConfiguredBindingTarget::Sequence(sequence.clone()),
+                (None, Some(command)) => ConfiguredBindingTarget::Command(command.clone()),
+                (Some(_), Some(_)) => anyhow::bail!(
+                    "custom binding {:?} must set exactly one of sequence or command",
+                    binding.keys
+                ),
+                (None, None) => anyhow::bail!(
+                    "custom binding {:?} must set either sequence or command",
+                    binding.keys
+                ),
+            };
+            Ok(ConfiguredBinding {
+                mode: binding.mode.clone(),
+                keys: binding.keys.clone(),
+                target,
+                description: binding.desc.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    input.configure_custom_bindings(&custom_bindings)?;
+    install_keyboard_bindings(&mut KeyboardHandler::new(), &input)?;
+    Ok(input)
+}
+
+fn open_runtime_config(state: &mut EditorState, explicit_path: Option<&std::path::Path>) {
+    if !state.take_config_open_request() {
+        return;
+    }
+
+    let path = config::Config::path(explicit_path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        state.set_status(format!(
+            "cannot create configuration directory {}: {error}",
+            parent.display()
+        ));
+        return;
+    }
+    state.open_config_file(&path);
+}
+
+fn reload_runtime_config(
+    state: &mut EditorState,
+    keyboard: &mut KeyboardHandler,
+    style: &mut UiStyle,
+    active_config: &mut config::Config,
+    active_theme: &mut String,
+    theme_override: &mut Option<String>,
+    explicit_path: Option<&std::path::Path>,
+) {
+    if !state.take_config_reload_request() {
+        return;
+    }
+
+    let result = (|| -> anyhow::Result<(config::Config, UiStyle, String, Option<PathBuf>)> {
+        let (candidate, loaded_path) = config::Config::load(explicit_path)?;
+        let candidate_theme = theme_override
+            .as_ref()
+            .filter(|name| candidate.has_theme(name))
+            .cloned()
+            .unwrap_or_else(|| candidate.theme.clone());
+        let candidate_style = candidate.style_for_theme(&candidate_theme)?;
+        let candidate_input = configured_input(&candidate)?;
+        install_keyboard_bindings(keyboard, &candidate_input)?;
+        state.configure(
+            candidate_input,
+            candidate.undo_tree_history_size,
+            candidate.scrolloff,
+            candidate.which_key.enabled,
+            Duration::from_millis(candidate.which_key.delay_ms),
+        );
+        Ok((candidate, candidate_style, candidate_theme, loaded_path))
+    })();
+
+    match result {
+        Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
+            let enabled = if candidate.zen.enabled != active_config.zen.enabled {
+                candidate.zen.enabled
+            } else {
+                state.zen.enabled
+            };
+            state.zen = config::ZenConfig {
+                enabled,
+                ..candidate.zen
+            };
+            state.configure_command_completions(candidate.theme_names());
+            if candidate.check_updates != active_config.check_updates {
+                state.configure_update_checks(candidate.check_updates);
+            }
+            *active_config = candidate;
+            *style = candidate_style;
+            *active_theme = candidate_theme;
+            if theme_override
+                .as_ref()
+                .is_some_and(|name| !active_config.has_theme(name))
+            {
+                *theme_override = None;
+            }
+            match loaded_path {
+                Some(path) => {
+                    state.set_status(format!("configuration reloaded: {}", path.display()))
+                }
+                None => state.set_status(
+                    "configuration reloaded with built-in defaults (no config file found)",
+                ),
+            }
+        }
+        Err(error) => state.set_status(format!("configuration reload failed: {error:#}")),
+    }
+}
+
+fn apply_runtime_colorscheme(
+    state: &mut EditorState,
+    style: &mut UiStyle,
+    config: &config::Config,
+    active_theme: &mut String,
+    theme_override: &mut Option<String>,
+) {
+    let Some(name) = state.take_colorscheme_request() else {
+        return;
+    };
+    if name.is_empty() {
+        state.set_status(format!("colorscheme: {active_theme}"));
+        return;
+    }
+    match config.style_for_theme(&name) {
+        Ok(candidate) => {
+            *style = candidate;
+            *active_theme = name.clone();
+            *theme_override = Some(name);
+            state.set_status(format!("colorscheme set to {active_theme}"));
+        }
+        Err(error) => state.set_status(error.to_string()),
+    }
+}
+
+pub fn run() -> anyhow::Result<()> {
+    let Some(options) = parse_launch_options()? else {
+        return Ok(());
+    };
+    if let Err(error) = storage::migrate_legacy_state() {
+        eprintln!("warning: could not migrate legacy Redox state: {error}");
+    }
+    let explicit_config_path = options.config_path.clone();
+    let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
+    let input = configured_input(&config)?;
+    let mut style = config.style()?;
+    let mut active_theme = config.theme.clone();
+    let mut theme_override = None;
+    let launch = options.target;
+    let launch_empty = matches!(&launch, LaunchTarget::Empty);
+    let launch_explorer_dir = match &launch {
+        LaunchTarget::Explorer(dir) => Some(dir.clone()),
+        LaunchTarget::Empty | LaunchTarget::File(_) => None,
+    };
+    let session = match launch {
+        LaunchTarget::Empty | LaunchTarget::Explorer(_) => EditorSession::open_initial_unnamed()?,
+        LaunchTarget::File(path) => EditorSession::open_initial_file(path)?,
+    };
+
+    let mut state = EditorState::new(session);
+    state.zen = config.zen;
+    state.configure(
+        input,
+        config.undo_tree_history_size,
+        config.scrolloff,
+        config.which_key.enabled,
+        Duration::from_millis(config.which_key.delay_ms),
+    );
+    state.configure_command_completions(config.theme_names());
+    if let Some(dir_path) = launch_explorer_dir {
+        state.open_explorer_at_path(dir_path)?;
+    }
+    if launch_empty {
+        state.open_dashboard();
+    }
+
+    let mut window = TerminalWindow::new()?;
+    install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
+    window.set_auto_flush(false);
+    let mut clipboard = Clipboard::new().ok();
+    state.configure_update_checks(config.check_updates);
+
+    const MAX_EVENTS_PER_FRAME: usize = 256;
+
+    let mut pending_wake_event: Option<Event> = None;
+    let mut previous_terminal_size = window.get_size();
+
+    'editor: loop {
+        let frame_start = Instant::now();
+        let mut perf_sample = FramePerfSample::default();
+        let input_start = Instant::now();
+        let mut event_count = 0usize;
+
+        if let Some(event) = pending_wake_event.take() {
+            event_count += 1;
+            if !handle_editor_event(&mut state, &mut clipboard, event) {
+                break 'editor;
+            }
+        }
+
+        for _ in 0..MAX_EVENTS_PER_FRAME {
+            match window.poll_input()? {
+                Some(event) => {
+                    event_count += 1;
+                    if !handle_editor_event(&mut state, &mut clipboard, event) {
+                        break 'editor;
+                    }
+                }
+                None => break,
+            }
+        }
+        perf_sample.input = input_start.elapsed();
+        perf_sample.event_count = event_count;
+        open_runtime_config(&mut state, explicit_config_path.as_deref());
+        reload_runtime_config(
+            &mut state,
+            window.keyboard_mut(),
+            &mut style,
+            &mut config,
+            &mut active_theme,
+            &mut theme_override,
+            explicit_config_path.as_deref(),
+        );
+        apply_runtime_colorscheme(
+            &mut state,
+            &mut style,
+            &config,
+            &mut active_theme,
+            &mut theme_override,
+        );
+        if event_count > 0 {
+            state.request_redraw();
+        }
+        let (width, height) = window.get_size();
+        if (width, height) != previous_terminal_size {
+            previous_terminal_size = (width, height);
+            state.request_redraw();
+        }
+        perf_sample.load = state.update_background(Instant::now());
+
+        if state.should_quit {
+            break;
+        }
+
+        if state.take_redraw_request() {
+            window.clear_cursor_request();
+            window.clear_screen()?;
+            draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
+            let flush_start = Instant::now();
+            window.end_frame()?;
+            perf_sample.flush = flush_start.elapsed();
+            perf_sample.frame = frame_start.elapsed();
+            state.record_perf_sample(perf_sample);
+        }
+
+        let event = match state.next_wake_deadline(Instant::now()) {
+            Some(deadline) => {
+                window.get_input_timeout(deadline.saturating_duration_since(Instant::now()))?
+            }
+            None => window.wait_for_input()?,
+        };
+        if !matches!(event, Event::Unknown) {
+            pending_wake_event = Some(event);
+        }
+    }
+    drop(window);
+    state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3212,10 +3638,10 @@ mod tests {
                 .chars()
                 .count();
             let match_colors = style.substitute_colors(!characters.is_empty());
-            for offset in 0..expected_line.len() {
+            for (offset, selected) in highlighted.iter().enumerate().take(expected_line.len()) {
                 assert_eq!(
                     window.backgrounds[0][column + offset],
-                    Some(if highlighted[offset] {
+                    Some(if *selected {
                         match_colors.bg
                     } else {
                         style.theme.bg
@@ -3614,22 +4040,28 @@ mod tests {
             &mut window,
             &buffer,
             &snapshot,
-            0,
-            8,
-            8,
-            default_colors,
-            style,
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
-            None,
-            None,
-            false,
+            SnapshotViewport {
+                content_x: 0,
+                scroll_x: 8,
+                text_w: 8,
+            },
+            SnapshotStyle {
+                default_colors,
+                style,
+                syntax_spans: None,
+                lexical_fallback_enabled: false,
+            },
+            SnapshotOverlays {
+                delimiter_highlights: &BTreeMap::new(),
+                active_scope_guides: &BTreeMap::new(),
+                search_highlights: &BTreeMap::new(),
+                substitution_colors: None,
+                snippet_placeholders: &BTreeMap::new(),
+                diagnostic_lines: &BTreeMap::new(),
+                visual_selection: None,
+                one_shot_highlight: None,
+                focused_lines: None,
+            },
         )
         .expect("plain snapshot draw should succeed");
 
@@ -4375,448 +4807,4 @@ desc = "Open notes again"
         assert_eq!(state.command_line, "colorscheme étoile");
         let _ = fs::remove_dir_all(dir);
     }
-}
-
-fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
-    let mut args = env::args().skip(1);
-    let mut config_path = None;
-    let mut target_path = None;
-    let mut parse_options = true;
-    while let Some(raw) = args.next() {
-        if parse_options && raw == "--" {
-            parse_options = false;
-        } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
-            println!("redox {}", env!("CARGO_PKG_VERSION"));
-            return Ok(None);
-        } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
-            println!(
-                "Redox - A tasteful text editor\n\n\
-                 Usage: redox [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
-                 Options:\n  --config <PATH>  Use a configuration file\n  \
-                 -h, --help       Print help\n  -V, --version    Print version\n  \
-                 --               Treat remaining arguments as paths"
-            );
-            return Ok(None);
-        } else if parse_options && raw == "--config" {
-            config_path =
-                Some(PathBuf::from(args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--config requires a path")
-                })?));
-        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
-            config_path = Some(PathBuf::from(path));
-        } else if parse_options && raw.starts_with('-') {
-            anyhow::bail!("unknown option: {raw}");
-        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
-            anyhow::bail!("only one file or directory may be opened at launch");
-        }
-    }
-    let Some(path) = target_path else {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Empty,
-            config_path,
-        }));
-    };
-    if path.is_dir() {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Explorer(path),
-            config_path,
-        }));
-    }
-    Ok(Some(LaunchOptions {
-        target: LaunchTarget::File(path),
-        config_path,
-    }))
-}
-
-fn is_cancel_event(event: &Event) -> bool {
-    matches!(event, Event::Escape)
-        || matches!(
-            event,
-            Event::KeyWithModifiers(key)
-                if matches!(key.key, KeyKind::Escape)
-                    && !key.mods.ctrl
-                    && !key.mods.alt
-                    && !key.mods.super_key
-        )
-        || matches!(
-            event,
-            Event::KeyWithModifiers(key)
-                if key.mods.ctrl
-                    && !key.mods.alt
-                    && !key.mods.super_key
-                    && matches!(key.key, KeyKind::Char('c') | KeyKind::Char('C'))
-        )
-}
-
-fn handle_editor_event(
-    state: &mut EditorState,
-    clipboard: &mut Option<Clipboard>,
-    event: Event,
-) -> bool {
-    if state.handle_dashboard_event(&event) {
-        return !state.should_quit;
-    }
-    if state.rain_is_active() {
-        if is_cancel_event(&event) {
-            state.stop_rain_animation();
-        }
-        return !state.should_quit;
-    }
-
-    if is_cancel_event(&event) && state.handle_normal_mode_escape_on_surface() {
-        return !state.should_quit;
-    }
-
-    if is_cancel_event(&event) && state.dismiss_perf_popup() {
-        return !state.should_quit;
-    }
-
-    let confirm_explorer_delete = state.has_pending_explorer_delete_confirmation();
-    let action = match &event {
-        Event::Paste(text) => InputAction::Paste(text.clone()),
-        _ => map_event_with_context(
-            &mut state.input,
-            state.mode.as_input_mode(),
-            confirm_explorer_delete,
-            &event,
-        ),
-    };
-
-    let (w, h) = state.viewport_size();
-    if !matches!(
-        action,
-        InputAction::ToggleMacroRecording | InputAction::StartMacroRecording { .. }
-    ) {
-        state.record_macro_key(&input::macro_key_label(&event));
-    }
-    match action {
-        InputAction::PasteSystemClipboard => match clipboard.as_mut() {
-            Some(system_clipboard) => match system_clipboard.paste() {
-                Ok(text) => state.apply_input(InputAction::PasteSystemClipboardText(text), w, h),
-                Err(error) => state.set_status(format!("clipboard paste failed: {error}")),
-            },
-            None => state.set_status("system clipboard unavailable"),
-        },
-        action => state.apply_input(action, w, h),
-    }
-    if let Some(text) = state.take_pending_system_clipboard() {
-        match clipboard.as_mut() {
-            Some(system_clipboard) => {
-                if let Err(error) = system_clipboard.copy(&text) {
-                    state.set_status(format!("clipboard copy failed: {error}"));
-                } else {
-                    state.set_status("yanked to system clipboard");
-                }
-            }
-            None => {
-                state.set_status("system clipboard unavailable");
-            }
-        }
-    }
-
-    !state.should_quit
-}
-
-fn install_keyboard_bindings(
-    keyboard: &mut KeyboardHandler,
-    input: &InputState,
-) -> minui::Result<()> {
-    keyboard.clear_keybinds();
-
-    let symbol_info = KeybindAction::Custom("trigger-symbol-info".to_string());
-    keyboard.add_keybind("ctrl-i", symbol_info)?;
-    let completion = KeybindAction::Custom("trigger-completion".to_string());
-    keyboard.add_keybind("ctrl-shift-k", completion)?;
-
-    for key in input.special_keys() {
-        let binding = key
-            .strip_prefix('<')
-            .and_then(|key| key.strip_suffix('>'))
-            .expect("configured special keys are normalized");
-        keyboard.add_keybind(binding, KeybindAction::Custom(format!("redox-key:{key}")))?;
-    }
-    Ok(())
-}
-
-fn configured_input(config: &config::Config) -> anyhow::Result<InputState> {
-    let mut input = InputState::new();
-    input.configure(config.leader(), &config.keybindings)?;
-    let custom_bindings = config
-        .bind
-        .iter()
-        .filter(|binding| !binding.keys.is_empty())
-        .map(|binding| {
-            let target = match (&binding.sequence, &binding.command) {
-                (Some(sequence), None) => ConfiguredBindingTarget::Sequence(sequence.clone()),
-                (None, Some(command)) => ConfiguredBindingTarget::Command(command.clone()),
-                (Some(_), Some(_)) => anyhow::bail!(
-                    "custom binding {:?} must set exactly one of sequence or command",
-                    binding.keys
-                ),
-                (None, None) => anyhow::bail!(
-                    "custom binding {:?} must set either sequence or command",
-                    binding.keys
-                ),
-            };
-            Ok(ConfiguredBinding {
-                mode: binding.mode.clone(),
-                keys: binding.keys.clone(),
-                target,
-                description: binding.desc.clone(),
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    input.configure_custom_bindings(&custom_bindings)?;
-    install_keyboard_bindings(&mut KeyboardHandler::new(), &input)?;
-    Ok(input)
-}
-
-fn open_runtime_config(state: &mut EditorState, explicit_path: Option<&std::path::Path>) {
-    if !state.take_config_open_request() {
-        return;
-    }
-
-    let path = config::Config::path(explicit_path);
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        state.set_status(format!(
-            "cannot create configuration directory {}: {error}",
-            parent.display()
-        ));
-        return;
-    }
-    state.open_config_file(&path);
-}
-
-fn reload_runtime_config(
-    state: &mut EditorState,
-    keyboard: &mut KeyboardHandler,
-    style: &mut UiStyle,
-    active_config: &mut config::Config,
-    active_theme: &mut String,
-    theme_override: &mut Option<String>,
-    explicit_path: Option<&std::path::Path>,
-) {
-    if !state.take_config_reload_request() {
-        return;
-    }
-
-    let result = (|| -> anyhow::Result<(config::Config, UiStyle, String, Option<PathBuf>)> {
-        let (candidate, loaded_path) = config::Config::load(explicit_path)?;
-        let candidate_theme = theme_override
-            .as_ref()
-            .filter(|name| candidate.has_theme(name))
-            .cloned()
-            .unwrap_or_else(|| candidate.theme.clone());
-        let candidate_style = candidate.style_for_theme(&candidate_theme)?;
-        let candidate_input = configured_input(&candidate)?;
-        install_keyboard_bindings(keyboard, &candidate_input)?;
-        state.configure(
-            candidate_input,
-            candidate.undo_tree_history_size,
-            candidate.scrolloff,
-            candidate.which_key.enabled,
-            Duration::from_millis(candidate.which_key.delay_ms),
-        );
-        Ok((candidate, candidate_style, candidate_theme, loaded_path))
-    })();
-
-    match result {
-        Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
-            let enabled = if candidate.zen.enabled != active_config.zen.enabled {
-                candidate.zen.enabled
-            } else {
-                state.zen.enabled
-            };
-            state.zen = config::ZenConfig {
-                enabled,
-                ..candidate.zen
-            };
-            state.configure_command_completions(candidate.theme_names());
-            if candidate.check_updates != active_config.check_updates {
-                state.configure_update_checks(candidate.check_updates);
-            }
-            *active_config = candidate;
-            *style = candidate_style;
-            *active_theme = candidate_theme;
-            if theme_override
-                .as_ref()
-                .is_some_and(|name| !active_config.has_theme(name))
-            {
-                *theme_override = None;
-            }
-            match loaded_path {
-                Some(path) => {
-                    state.set_status(format!("configuration reloaded: {}", path.display()))
-                }
-                None => state.set_status(
-                    "configuration reloaded with built-in defaults (no config file found)",
-                ),
-            }
-        }
-        Err(error) => state.set_status(format!("configuration reload failed: {error:#}")),
-    }
-}
-
-fn apply_runtime_colorscheme(
-    state: &mut EditorState,
-    style: &mut UiStyle,
-    config: &config::Config,
-    active_theme: &mut String,
-    theme_override: &mut Option<String>,
-) {
-    let Some(name) = state.take_colorscheme_request() else {
-        return;
-    };
-    if name.is_empty() {
-        state.set_status(format!("colorscheme: {active_theme}"));
-        return;
-    }
-    match config.style_for_theme(&name) {
-        Ok(candidate) => {
-            *style = candidate;
-            *active_theme = name.clone();
-            *theme_override = Some(name);
-            state.set_status(format!("colorscheme set to {active_theme}"));
-        }
-        Err(error) => state.set_status(error.to_string()),
-    }
-}
-
-pub fn run() -> anyhow::Result<()> {
-    let Some(options) = parse_launch_options()? else {
-        return Ok(());
-    };
-    if let Err(error) = storage::migrate_legacy_state() {
-        eprintln!("warning: could not migrate legacy Redox state: {error}");
-    }
-    let explicit_config_path = options.config_path.clone();
-    let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
-    let input = configured_input(&config)?;
-    let mut style = config.style()?;
-    let mut active_theme = config.theme.clone();
-    let mut theme_override = None;
-    let launch = options.target;
-    let launch_empty = matches!(&launch, LaunchTarget::Empty);
-    let launch_explorer_dir = match &launch {
-        LaunchTarget::Explorer(dir) => Some(dir.clone()),
-        LaunchTarget::Empty | LaunchTarget::File(_) => None,
-    };
-    let session = match launch {
-        LaunchTarget::Empty | LaunchTarget::Explorer(_) => EditorSession::open_initial_unnamed()?,
-        LaunchTarget::File(path) => EditorSession::open_initial_file(path)?,
-    };
-
-    let mut state = EditorState::new(session);
-    state.zen = config.zen;
-    state.configure(
-        input,
-        config.undo_tree_history_size,
-        config.scrolloff,
-        config.which_key.enabled,
-        Duration::from_millis(config.which_key.delay_ms),
-    );
-    state.configure_command_completions(config.theme_names());
-    if let Some(dir_path) = launch_explorer_dir {
-        state.open_explorer_at_path(dir_path)?;
-    }
-    if launch_empty {
-        state.open_dashboard();
-    }
-
-    let mut window = TerminalWindow::new()?;
-    install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
-    window.set_auto_flush(false);
-    let mut clipboard = Clipboard::new().ok();
-    state.configure_update_checks(config.check_updates);
-
-    const MAX_EVENTS_PER_FRAME: usize = 256;
-
-    let mut pending_wake_event: Option<Event> = None;
-    let mut previous_terminal_size = window.get_size();
-
-    'editor: loop {
-        let frame_start = Instant::now();
-        let mut perf_sample = FramePerfSample::default();
-        let input_start = Instant::now();
-        let mut event_count = 0usize;
-
-        if let Some(event) = pending_wake_event.take() {
-            event_count += 1;
-            if !handle_editor_event(&mut state, &mut clipboard, event) {
-                break 'editor;
-            }
-        }
-
-        for _ in 0..MAX_EVENTS_PER_FRAME {
-            match window.poll_input()? {
-                Some(event) => {
-                    event_count += 1;
-                    if !handle_editor_event(&mut state, &mut clipboard, event) {
-                        break 'editor;
-                    }
-                }
-                None => break,
-            }
-        }
-        perf_sample.input = input_start.elapsed();
-        perf_sample.event_count = event_count;
-        open_runtime_config(&mut state, explicit_config_path.as_deref());
-        reload_runtime_config(
-            &mut state,
-            window.keyboard_mut(),
-            &mut style,
-            &mut config,
-            &mut active_theme,
-            &mut theme_override,
-            explicit_config_path.as_deref(),
-        );
-        apply_runtime_colorscheme(
-            &mut state,
-            &mut style,
-            &config,
-            &mut active_theme,
-            &mut theme_override,
-        );
-        if event_count > 0 {
-            state.request_redraw();
-        }
-        let (width, height) = window.get_size();
-        if (width, height) != previous_terminal_size {
-            previous_terminal_size = (width, height);
-            state.request_redraw();
-        }
-        perf_sample.load = state.update_background(Instant::now());
-
-        if state.should_quit {
-            break;
-        }
-
-        if state.take_redraw_request() {
-            window.clear_cursor_request();
-            window.clear_screen()?;
-            draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
-            let flush_start = Instant::now();
-            window.end_frame()?;
-            perf_sample.flush = flush_start.elapsed();
-            perf_sample.frame = frame_start.elapsed();
-            state.record_perf_sample(perf_sample);
-        }
-
-        let event = match state.next_wake_deadline(Instant::now()) {
-            Some(deadline) => {
-                window.get_input_timeout(deadline.saturating_duration_since(Instant::now()))?
-            }
-            None => window.wait_for_input()?,
-        };
-        if !matches!(event, Event::Unknown) {
-            pending_wake_event = Some(event);
-        }
-    }
-    drop(window);
-    state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
-    Ok(())
 }

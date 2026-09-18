@@ -324,11 +324,7 @@ impl EditorState {
         let rendered = render_undo_tree(&entries, rendered_at_ms);
         let selected_node = if update_clock {
             source_view.undo_history.current()
-        } else if rendered
-            .display_rows
-            .iter()
-            .any(|node| *node == Some(tree.selected_node))
-        {
+        } else if rendered.display_rows.contains(&Some(tree.selected_node)) {
             tree.selected_node
         } else {
             source_view.undo_history.current()
@@ -1040,133 +1036,6 @@ fn format_undo_tree_connector_line(tree: &str) -> (String, Vec<UndoTreeLineSpan>
     (format!("  {tree}"), undo_tree_graph_spans(tree, 2))
 }
 
-#[cfg(test)]
-mod render_tests {
-    use super::*;
-    use redox_core::Edit;
-
-    #[test]
-    fn slot_renderer_keeps_newest_first_rows_with_connected_branch() {
-        let entries = vec![
-            test_entry(0, None, 0, false, 1),
-            test_entry(1, Some(0), 1, false, 1),
-            test_entry(2, Some(1), 2, false, 2),
-            test_entry(3, Some(2), 3, false, 0),
-            test_entry(4, Some(2), 4, true, 0),
-        ];
-
-        let rendered = render_undo_tree(&entries, 1_000);
-        let lines = rendered.text.lines().collect::<Vec<_>>();
-
-        assert_eq!(
-            rendered.display_rows,
-            vec![Some(4), Some(3), None, Some(2), Some(1), Some(0)]
-        );
-        assert!(lines[0].contains(">4<"), "{lines:?}");
-        assert!(lines[2].contains("├┘"), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains('\\')), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains('/')), "{lines:?}");
-    }
-
-    #[test]
-    fn slot_renderer_marks_redo_target_and_aligns_wide_labels() {
-        let entries = (0..=11)
-            .map(|id| {
-                test_entry(
-                    id,
-                    if id == 0 { None } else { Some(id - 1) },
-                    id as u64,
-                    id == 8,
-                    if id == 11 { 0 } else { 1 },
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let rendered = render_undo_tree(&entries, 1_000);
-        let lines = rendered.text.lines().collect::<Vec<_>>();
-
-        assert!(lines[0].contains("11"), "{lines:?}");
-        assert!(lines[1].contains("10"), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains(" {9} ")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains(" >8< ")), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains("{ 9}")), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains("> 8<")), "{lines:?}");
-
-        let timestamp_col = char_position(lines[0], '(');
-        assert!(
-            lines
-                .iter()
-                .take(4)
-                .all(|line| char_position(line, '(') == timestamp_col)
-        );
-    }
-
-    #[test]
-    fn original_preview_separates_title_from_empty_message() {
-        assert_eq!(
-            undo_tree_diff_text(0, None),
-            (
-                "Original state\n\nNo edit is recorded for this point.\n".to_string(),
-                None
-            )
-        );
-    }
-
-    #[test]
-    fn diff_preview_trims_shared_indent_and_expands_changed_line() {
-        let before = TextBuffer::from_text("        word");
-        let after = TextBuffer::from_text("        wordasdf");
-        let diff = TextDiff::between(&before, &after).expect("missing diff");
-        let (deleted, inserted) = diff_preview_lines(&before, &after, &diff);
-
-        assert_eq!(deleted, vec!["word"]);
-        assert_eq!(inserted, vec!["wordasdf"]);
-    }
-
-    #[test]
-    fn undo_tree_preview_coalesces_delete_then_insert_at_same_position() {
-        let mut history = UndoHistory::default();
-        let mut buffer = TextBuffer::from_text("word old tail");
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 5));
-        let _ = buffer.apply_edit(Edit::delete(5..8));
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 5)));
-
-        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 5));
-        let _ = buffer.apply_edit(Edit::insert(5, "new"));
-        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 8)));
-
-        let preview = undo_tree_preview_change(&buffer, &history, history.current())
-            .expect("missing preview");
-        let (deleted, inserted) =
-            diff_preview_lines(&preview.before, &preview.after, &preview.diff);
-
-        assert_eq!(deleted, vec!["word old tail"]);
-        assert_eq!(inserted, vec!["word new tail"]);
-    }
-
-    fn test_entry(
-        id: UndoNodeId,
-        parent: Option<UndoNodeId>,
-        sequence: u64,
-        is_current: bool,
-        child_count: usize,
-    ) -> UndoTreeEntry {
-        UndoTreeEntry {
-            id,
-            parent,
-            sequence,
-            created_at_ms: 0,
-            is_current,
-            child_count,
-        }
-    }
-
-    fn char_position(line: &str, needle: char) -> Option<usize> {
-        line.chars().position(|ch| ch == needle)
-    }
-}
-
 fn undo_tree_preview_change(
     current_buffer: &TextBuffer,
     history: &UndoHistory,
@@ -1373,9 +1242,9 @@ fn undo_tree_node_for_line(
     if let Some(Some(node)) = display_rows.get(line) {
         return Some((line, *node));
     }
-    for next in line.saturating_add(1)..display_rows.len() {
-        if let Some(node) = display_rows[next] {
-            return Some((next, node));
+    for (next, node) in display_rows.iter().enumerate().skip(line.saturating_add(1)) {
+        if let Some(node) = node {
+            return Some((next, *node));
         }
     }
     (0..line.min(display_rows.len()))
@@ -1401,4 +1270,131 @@ fn current_time_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use redox_core::Edit;
+
+    #[test]
+    fn slot_renderer_keeps_newest_first_rows_with_connected_branch() {
+        let entries = vec![
+            test_entry(0, None, 0, false, 1),
+            test_entry(1, Some(0), 1, false, 1),
+            test_entry(2, Some(1), 2, false, 2),
+            test_entry(3, Some(2), 3, false, 0),
+            test_entry(4, Some(2), 4, true, 0),
+        ];
+
+        let rendered = render_undo_tree(&entries, 1_000);
+        let lines = rendered.text.lines().collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered.display_rows,
+            vec![Some(4), Some(3), None, Some(2), Some(1), Some(0)]
+        );
+        assert!(lines[0].contains(">4<"), "{lines:?}");
+        assert!(lines[2].contains("├┘"), "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains('\\')), "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains('/')), "{lines:?}");
+    }
+
+    #[test]
+    fn slot_renderer_marks_redo_target_and_aligns_wide_labels() {
+        let entries = (0..=11)
+            .map(|id| {
+                test_entry(
+                    id,
+                    if id == 0 { None } else { Some(id - 1) },
+                    id as u64,
+                    id == 8,
+                    if id == 11 { 0 } else { 1 },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let rendered = render_undo_tree(&entries, 1_000);
+        let lines = rendered.text.lines().collect::<Vec<_>>();
+
+        assert!(lines[0].contains("11"), "{lines:?}");
+        assert!(lines[1].contains("10"), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains(" {9} ")), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains(" >8< ")), "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("{ 9}")), "{lines:?}");
+        assert!(lines.iter().all(|line| !line.contains("> 8<")), "{lines:?}");
+
+        let timestamp_col = char_position(lines[0], '(');
+        assert!(
+            lines
+                .iter()
+                .take(4)
+                .all(|line| char_position(line, '(') == timestamp_col)
+        );
+    }
+
+    #[test]
+    fn original_preview_separates_title_from_empty_message() {
+        assert_eq!(
+            undo_tree_diff_text(0, None),
+            (
+                "Original state\n\nNo edit is recorded for this point.\n".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn diff_preview_trims_shared_indent_and_expands_changed_line() {
+        let before = TextBuffer::from_text("        word");
+        let after = TextBuffer::from_text("        wordasdf");
+        let diff = TextDiff::between(&before, &after).expect("missing diff");
+        let (deleted, inserted) = diff_preview_lines(&before, &after, &diff);
+
+        assert_eq!(deleted, vec!["word"]);
+        assert_eq!(inserted, vec!["wordasdf"]);
+    }
+
+    #[test]
+    fn undo_tree_preview_coalesces_delete_then_insert_at_same_position() {
+        let mut history = UndoHistory::default();
+        let mut buffer = TextBuffer::from_text("word old tail");
+
+        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 5));
+        let _ = buffer.apply_edit(Edit::delete(5..8));
+        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 5)));
+
+        let checkpoint = history.checkpoint(buffer.clone(), Pos::new(0, 5));
+        let _ = buffer.apply_edit(Edit::insert(5, "new"));
+        assert!(history.record_if_changed(checkpoint, &buffer, Pos::new(0, 8)));
+
+        let preview = undo_tree_preview_change(&buffer, &history, history.current())
+            .expect("missing preview");
+        let (deleted, inserted) =
+            diff_preview_lines(&preview.before, &preview.after, &preview.diff);
+
+        assert_eq!(deleted, vec!["word old tail"]);
+        assert_eq!(inserted, vec!["word new tail"]);
+    }
+
+    fn test_entry(
+        id: UndoNodeId,
+        parent: Option<UndoNodeId>,
+        sequence: u64,
+        is_current: bool,
+        child_count: usize,
+    ) -> UndoTreeEntry {
+        UndoTreeEntry {
+            id,
+            parent,
+            sequence,
+            created_at_ms: 0,
+            is_current,
+            child_count,
+        }
+    }
+
+    fn char_position(line: &str, needle: char) -> Option<usize> {
+        line.chars().position(|ch| ch == needle)
+    }
 }

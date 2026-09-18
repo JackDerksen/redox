@@ -17,6 +17,15 @@ use unicode_segmentation::UnicodeSegmentation;
 const LONG_LINE_FAST_PATH_THRESHOLD_CHARS: usize = 8 * 1024;
 const RENDER_LINE_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Terminal position and horizontal clipping bounds for one rendered line.
+#[derive(Debug, Clone, Copy)]
+pub struct LineViewport {
+    pub row: u16,
+    pub column: u16,
+    pub scroll_x: usize,
+    pub width: usize,
+}
+
 /// Viewport parameters for rendering a slice of the buffer.
 ///
 /// `scroll_x` is measured in **terminal cells** (columns), not graphemes/chars/bytes.

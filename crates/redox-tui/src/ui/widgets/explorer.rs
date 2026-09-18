@@ -1,3 +1,4 @@
+use crate::ui::render::LineViewport;
 use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
@@ -99,8 +100,7 @@ pub fn draw_explorer_popup_view(
     draw_relative_line_numbers(
         &mut view,
         style,
-        gutter_w,
-        inner_h,
+        (gutter_w, inner_h),
         show_git_status_column,
         snapshot.first_line(),
         cursor_line,
@@ -131,11 +131,13 @@ pub fn draw_explorer_popup_view(
         {
             draw_line_with_selection(
                 &mut view,
-                row as u16,
-                content_x,
+                LineViewport {
+                    row: row as u16,
+                    column: content_x,
+                    scroll_x,
+                    width: inner_w.saturating_sub(content_x) as usize,
+                },
                 source_line,
-                scroll_x,
-                inner_w.saturating_sub(content_x) as usize,
                 sel_range.start,
                 sel_range.end,
                 row_style.text,
@@ -250,8 +252,7 @@ fn line_number_gutter_width(total_lines: usize, show_git_status_column: bool) ->
 fn draw_relative_line_numbers(
     view: &mut WindowView<'_>,
     style: UiStyle,
-    gutter_w: u16,
-    text_h: u16,
+    (gutter_w, text_h): (u16, u16),
     show_git_status_column: bool,
     first_line: usize,
     cursor_line: usize,
@@ -310,16 +311,20 @@ fn draw_relative_line_numbers(
 
 fn draw_line_with_selection(
     view: &mut WindowView<'_>,
-    row: u16,
-    col: u16,
+    viewport: LineViewport,
     source_line: &str,
-    scroll_x: usize,
-    width_cells: usize,
     sel_start_char: usize,
     sel_end_char_exclusive: usize,
     normal_color: ColorPair,
     selected_color: ColorPair,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        scroll_x,
+        width: width_cells,
+    } = viewport;
+
     if width_cells == 0 {
         return Ok(());
     }

@@ -83,7 +83,7 @@ pub fn draw_symbol_info_popup(
         .take(inner_h as usize)
         .enumerate()
     {
-        draw_symbol_info_line(&mut view, idx as u16, &line, content_width as usize, style)?;
+        draw_symbol_info_line(&mut view, idx as u16, line, content_width as usize, style)?;
     }
     Ok(())
 }
@@ -128,8 +128,7 @@ fn draw_symbol_info_line(
     let base_color = symbol_info_base_color(style, &line.kind);
     draw_symbol_info_spans(
         window,
-        row,
-        0,
+        (row, 0),
         &clipped,
         max_width,
         base_color,
@@ -409,8 +408,7 @@ fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> Color
 
 fn draw_symbol_info_spans(
     window: &mut WindowView<'_>,
-    row: u16,
-    base_col: u16,
+    (row, base_col): (u16, u16),
     source_line: &str,
     width_cells: usize,
     base_color: ColorPair,
@@ -450,8 +448,7 @@ fn draw_symbol_info_spans(
         if grapheme == "\t" {
             flush_symbol_info_span(
                 window,
-                row,
-                base_col,
+                (row, base_col),
                 source_line,
                 pending_start.take(),
                 pending_end,
@@ -478,8 +475,7 @@ fn draw_symbol_info_spans(
 
         flush_symbol_info_span(
             window,
-            row,
-            base_col,
+            (row, base_col),
             source_line,
             pending_start.take(),
             pending_end,
@@ -495,8 +491,7 @@ fn draw_symbol_info_spans(
 
     flush_symbol_info_span(
         window,
-        row,
-        base_col,
+        (row, base_col),
         source_line,
         pending_start,
         pending_end,
@@ -507,8 +502,7 @@ fn draw_symbol_info_spans(
 
 fn flush_symbol_info_span(
     window: &mut WindowView<'_>,
-    row: u16,
-    base_col: u16,
+    (row, base_col): (u16, u16),
     source_line: &str,
     start: Option<usize>,
     end: usize,
@@ -580,8 +574,7 @@ pub fn draw_diagnostics_popup(
     let list_capacity = (view.height as usize)
         .saturating_sub(1)
         .saturating_sub(reserved_rows)
-        .max(1)
-        .min(DIAGNOSTIC_VISIBLE_ROWS);
+        .clamp(1, DIAGNOSTIC_VISIBLE_ROWS);
     let mut start = popup.scroll.min(popup.entries.len());
     if popup.selected < start {
         start = popup.selected;
@@ -836,7 +829,7 @@ fn draw_code_action_entries(
     active: bool,
     style: UiStyle,
 ) -> minui::Result<()> {
-    let list_capacity = view.height.saturating_sub(list_start_row).max(1).min(12) as usize;
+    let list_capacity = view.height.saturating_sub(list_start_row).clamp(1, 12) as usize;
     let mut start = scroll.min(entries.len());
     if selected_index < start {
         start = selected_index;

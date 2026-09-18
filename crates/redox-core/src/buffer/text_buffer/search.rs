@@ -126,7 +126,7 @@ impl TextBuffer {
             }
         }
 
-        delimiters.chunks_exact(2).find_map(|pair| {
+        delimiters.as_chunks::<2>().0.iter().find_map(|pair| {
             if char_idx == pair[0] {
                 Some(self.char_to_pos(pair[1]))
             } else if char_idx == pair[1] {

@@ -390,13 +390,12 @@ impl FinderIndexWorker {
                         path,
                     });
 
-                    if batch.len() >= FINDER_INDEX_BATCH_SIZE {
-                        if result_tx
+                    if batch.len() >= FINDER_INDEX_BATCH_SIZE
+                        && result_tx
                             .send(FinderIndexMessage::Batch(std::mem::take(&mut batch)))
                             .is_err()
-                        {
-                            return;
-                        }
+                    {
+                        return;
                     }
                 }
 
@@ -555,7 +554,7 @@ impl PinnedFilesState {
 
 fn parse_pinned_files(contents: &str) -> Vec<Option<PathBuf>> {
     serde_json::from_str::<Vec<Option<String>>>(contents)
-        .map(|entries| parse_json_pinned_files(entries))
+        .map(parse_json_pinned_files)
         .unwrap_or_else(|_| parse_legacy_pinned_files(contents))
 }
 
