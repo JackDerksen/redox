@@ -294,15 +294,17 @@ impl EditorState {
     }
 
     pub(super) fn execute_configured_command(&mut self, command: String) {
+        self.begin_command();
         self.command_line = command;
         self.command_line_cursor = self.command_line.len();
-        self.clear_active_visual_anchor();
-        self.mode = EditorMode::Command;
         self.execute_command_line();
     }
 
     pub(super) fn execute_command_line(&mut self) {
         if self.mode != EditorMode::Command {
+            return;
+        }
+        if self.execute_substitute_command() {
             return;
         }
 
@@ -407,7 +409,7 @@ impl EditorState {
         self.command_line_cursor = self.command_line.len();
     }
 
-    fn push_command_history(&mut self, command: String) {
+    pub(super) fn push_command_history(&mut self, command: String) {
         if self
             .command_history
             .entries

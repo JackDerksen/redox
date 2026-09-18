@@ -250,14 +250,7 @@ impl EditorState {
             }
 
             InputAction::EnterCommand => {
-                self.close_completion();
-                self.clear_active_visual_anchor();
-                self.mode = EditorMode::Command;
-                self.command_line.clear();
-                self.command_line_cursor = 0;
-                self.reset_command_history_navigation();
-                self.clear_status();
-                self.input.reset_prefixes();
+                self.begin_command();
             }
 
             InputAction::EnterSearch => {
@@ -1097,6 +1090,7 @@ impl EditorState {
             InputAction::None => {}
         }
 
+        self.refresh_substitute_preview();
         self.clamp_active_cursor_for_normal_mode();
     }
 

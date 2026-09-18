@@ -62,9 +62,23 @@ fn draw_command_line_popup_after(
     window: &mut dyn Window,
     popup: Option<(PopupLayout, u16)>,
 ) -> minui::Result<bool> {
+    let substitution = state.substitute_preview();
     let (title, prompt) = match state.mode {
         EditorMode::Command => (
-            popup_title(PopupKind::Command, COMMAND_TITLE, style.icons_enabled),
+            popup_title(
+                PopupKind::Command,
+                &substitution.map_or_else(
+                    || COMMAND_TITLE.to_owned(),
+                    |preview| {
+                        if preview.pending {
+                            "Substitute: previewing...".to_owned()
+                        } else {
+                            format!("Substitute: {} matches", preview.match_count())
+                        }
+                    },
+                ),
+                style.icons_enabled,
+            ),
             COMMAND_PROMPT,
         ),
         EditorMode::Search => (
@@ -87,13 +101,22 @@ fn draw_command_line_popup_after(
 
     let (term_w, term_h) = window.get_size();
     let searching = state.mode == EditorMode::Search;
+    if term_w < 4 || term_h < 3 {
+        return Ok(false);
+    }
+    let substitution_error = substitution.and_then(|preview| preview.error.as_deref());
     let (inner_w, inner_h, x, y) = if searching {
         let Some(layout) = search_toast_layout(state, term_w, term_h) else {
             return Ok(false);
         };
         (layout.inner_w, layout.inner_h, layout.x, layout.y)
     } else {
-        let inner_h = style.command_line.inner_height_rows.max(1);
+        let inner_h = style
+            .command_line
+            .inner_height_rows
+            .max(1)
+            .max(1 + u16::from(substitution_error.is_some()))
+            .min(term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS + 2).max(1));
         let (inner_w, _) = popup_inner_size(
             term_w,
             term_h,
@@ -125,7 +148,21 @@ fn draw_command_line_popup_after(
     }
     let layout = draw_popup_frame_at(window, x, y, inner_w, inner_h, &title, chrome)?;
     let mut view = popup_window_view(window, layout);
-    let row = if searching { 0 } else { inner_h / 2 };
+    let row = if searching || substitution_error.is_some() {
+        0
+    } else {
+        inner_h / 2
+    };
+    if let Some(error) = substitution_error
+        && inner_h > 1
+    {
+        view.write_str_colored(
+            inner_h - 1,
+            1,
+            &clip_text_to_cells(error, inner_w.saturating_sub(2) as usize),
+            minui::ColorPair::new(style.theme.red, style.theme.bg),
+        )?;
+    }
     let prompt_col = 1u16.min(inner_w.saturating_sub(1));
     view.write_str_colored(row, prompt_col, prompt, style.command_line.prompt)?;
 

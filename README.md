@@ -218,6 +218,7 @@ Enter command mode with `:`.
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
 | `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
+| `:s/pattern/replacement[/g]` | Preview and apply regex replacements in the whole file, or just the visual selection. |
 | `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
 | `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
@@ -608,7 +609,7 @@ These have roughly been categorized, and so aren't necessarily in chronological 
 - [x] Custom configuration support
 - [x] More extendable leader key system with "whichkey" functionality
 - [ ] Grep-based finder for searching text patterns across files
-- [ ] A dashboard screen with similar functionality to nvim dashboards
+- [x] A dashboard screen with similar functionality to nvim dashboards
 - [ ] More persistent project/session state
 - [ ] Broader fuzzy finder indexing and async refresh for very large repositories
 - [ ] Editor command palette, making use of the fuzzy matching logic

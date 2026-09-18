@@ -241,6 +241,11 @@ not remove unrelated defaults. Duplicate bindings and ambiguous prefixes such as
 the same mode are rejected. Configured multi-key normal-mode bindings are automatically included in
 the which-key tree one key at a time.
 
+`visual` bindings also apply in `visual_line` and `visual_block` mode, including
+modified keys and `[[bind]]` sequences. A binding for the same key in a more specific
+visual mode takes precedence. Prefix validation and which-key hints include the
+inherited bindings.
+
 The `[keybindings.<mode>]` tables remap named built-in actions. Use `[[bind]]` when a key
 sequence should replay a motion sequence or execute an editor command with its own which-key
 description.
