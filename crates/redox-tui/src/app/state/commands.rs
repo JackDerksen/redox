@@ -328,6 +328,11 @@ impl EditorState {
 
         self.push_command_history(cmd_raw.clone());
 
+        if cmd_raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            self.command_goto_line(cmd_raw.parse().unwrap_or(usize::MAX));
+            return;
+        }
+
         if let Some(result) = calculation {
             if !self.close_active_surfaces_for_command() {
                 self.set_status("cannot return to an editor buffer");
@@ -356,6 +361,29 @@ impl EditorState {
             return;
         }
         (definition.run)(self, arg);
+    }
+
+    fn command_goto_line(&mut self, line_number: usize) {
+        if !self.close_active_surfaces_for_command() {
+            self.set_status("cannot return to an editor buffer");
+            return;
+        }
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let (width, height) = self.viewport_size();
+        self.with_active_buffer_view_mut(|buffer, view| {
+            let line = buffer.clamp_line(line_number.saturating_sub(1));
+            view.cursor.cursor = Pos::new(line, buffer.line_first_non_whitespace_col(line));
+            view.cursor.reconcile_after_edit(
+                buffer,
+                width,
+                height.saturating_sub(STATUS_BAR_HEIGHT_ROWS),
+            );
+        });
+        self.center_active_cursor_line(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
+        self.clear_search_highlights();
+        self.clear_status();
     }
 
     pub(super) fn reset_command_history_navigation(&mut self) {

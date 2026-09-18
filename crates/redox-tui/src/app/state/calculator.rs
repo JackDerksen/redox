@@ -4,6 +4,9 @@ pub(super) const CONVERT_COMMAND: &str = "convert";
 
 pub(super) fn expression(command: &str) -> Option<&str> {
     let expression = command.trim();
+    if expression.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     (expression.starts_with(|character: char| {
         character.is_ascii_digit() || matches!(character, '.' | '(' | '+' | '-')
     }) || expression.split_whitespace().next() == Some(CONVERT_COMMAND))

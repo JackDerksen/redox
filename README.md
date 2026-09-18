@@ -209,6 +209,7 @@ Enter command mode with `:`.
 
 | Command | Behaviour |
 | ------- | --------- |
+| `:<number>` | Jump to that line's first non-blank character. Line numbers start at 1; out-of-range numbers clamp to the first or last line. |
 | `:w [path]` | Write the current buffer, optionally saving under a new name. Explorer buffers apply pending filesystem edits. |
 | `:q` / `:quit` | Quit when all buffers are clean, or close the active surface buffer. |
 | `:q!` | Force quit. |
