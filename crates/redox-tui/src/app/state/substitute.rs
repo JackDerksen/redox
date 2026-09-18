@@ -1,14 +1,19 @@
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
 use redox_core::{BufferId, BufferKind, Edit, Pos, Selection, TextBuffer, VisualModeKind};
 use regex::{Captures, Regex, RegexBuilder};
 
 use super::{BufferViewState, EditorMode, EditorState, SearchMatch};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
-use crate::ui::syntax::{SyntaxHighlighter, SyntaxParser, language_for_path};
+use crate::ui::syntax::{SyntaxHighlighter, SyntaxLanguage, SyntaxParser, language_for_path};
+
+const SUBSTITUTE_WORKER_MIN_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct SubstituteState {
     scope: Option<CommandScope>,
     preview: Option<SubstitutePreview>,
+    worker: Option<Receiver<SubstitutePreview>>,
 }
 
 #[derive(Debug)]
@@ -27,11 +32,27 @@ pub(crate) struct SubstitutePreview {
     edits: Vec<Edit>,
     pub error: Option<String>,
     pub replacing: bool,
+    pub pending: bool,
     pub buffer: Option<TextBuffer>,
     pub syntax: SyntaxHighlighter,
 }
 
 impl SubstitutePreview {
+    fn new(buffer_id: BufferId, version: u64, command: String) -> Self {
+        Self {
+            buffer_id,
+            version,
+            command,
+            matches: Vec::new(),
+            edits: Vec::new(),
+            error: None,
+            replacing: false,
+            pending: false,
+            buffer: None,
+            syntax: SyntaxHighlighter::default(),
+        }
+    }
+
     pub(crate) fn match_count(&self) -> usize {
         self.matches.len()
     }
@@ -91,7 +112,7 @@ impl EditorState {
                     .map_or(0, |view| view.analysis_version),
                 visual: self.active_visual_selection(),
             }),
-            preview: None,
+            ..SubstituteState::default()
         };
         self.close_completion();
         self.clear_active_visual_anchor();
@@ -117,24 +138,13 @@ impl EditorState {
             .views
             .get(&buffer_id)
             .map_or(0, |view| view.analysis_version);
-        if self.substitution.preview.as_ref().is_some_and(|preview| {
-            preview.buffer_id == buffer_id
-                && preview.version == version
-                && preview.command == self.command_line
-        }) {
+        if self
+            .substitute_preview()
+            .is_some_and(|preview| !preview.pending || self.substitution.worker.is_some())
+        {
             return;
         }
-        let mut preview = SubstitutePreview {
-            buffer_id,
-            version,
-            command: self.command_line.clone(),
-            matches: Vec::new(),
-            edits: Vec::new(),
-            error: None,
-            replacing: false,
-            buffer: None,
-            syntax: SyntaxHighlighter::default(),
-        };
+        let mut preview = SubstitutePreview::new(buffer_id, version, self.command_line.clone());
         let scope = self.substitution.scope.as_ref();
         if self.session.active_meta().kind != BufferKind::File {
             preview.error = Some("substitution requires a file buffer".into());
@@ -161,18 +171,94 @@ impl EditorState {
             match Substitution::parse(&self.command_line) {
                 Ok(substitution) => {
                     preview.replacing = substitution.replacement.is_some();
-                    substitution.plan(self.session.active_buffer(), selection, &mut preview);
-                    if let Some(buffer) = &preview.buffer
-                        && let Some(language) =
-                            language_for_path(self.session.active_meta().path.as_deref())
+                    let language = language_for_path(self.session.active_meta().path.as_deref());
+                    if preview.replacing
+                        && self.session.active_buffer().len_bytes() >= SUBSTITUTE_WORKER_MIN_BYTES
                     {
-                        preview
-                            .syntax
-                            .replace_cache(SyntaxParser::default().compute_cache(buffer, language));
+                        let mut pending = SubstitutePreview::new(
+                            buffer_id,
+                            preview.version,
+                            preview.command.clone(),
+                        );
+                        pending.replacing = true;
+                        pending.pending = true;
+                        // A running job finishes first; the next refresh dispatches only
+                        // the latest command, without queuing a buffer per keystroke.
+                        if self.substitution.worker.is_none() {
+                            let buffer = self.session.active_buffer().clone();
+                            let (sender, receiver) = mpsc::channel();
+                            match std::thread::Builder::new()
+                                .name("redox-substitute".into())
+                                .spawn(move || {
+                                    substitution.plan(&buffer, selection, language, &mut preview);
+                                    let _ = sender.send(preview);
+                                }) {
+                                Ok(_) => self.substitution.worker = Some(receiver),
+                                Err(error) => {
+                                    pending.pending = false;
+                                    pending.error =
+                                        Some(format!("could not start preview: {error}"));
+                                }
+                            }
+                        }
+                        preview = pending;
+                    } else {
+                        substitution.plan(
+                            self.session.active_buffer(),
+                            selection,
+                            language,
+                            &mut preview,
+                        );
                     }
                 }
                 Err(error) => preview.error = Some(error),
             }
+        }
+        self.substitution.preview = Some(preview);
+        self.request_redraw();
+    }
+
+    pub(super) fn substitute_preview_pending(&self) -> bool {
+        self.substitution.worker.is_some()
+    }
+
+    pub(super) fn poll_substitute_preview(&mut self) {
+        self.receive_substitute_preview(false);
+    }
+
+    fn receive_substitute_preview(&mut self, wait: bool) {
+        let Some(receiver) = &self.substitution.worker else {
+            return;
+        };
+        let result = match if wait {
+            receiver.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            receiver.try_recv()
+        } {
+            Err(TryRecvError::Empty) => return,
+            result => result,
+        };
+        self.substitution.worker = None;
+        let Ok(preview) = result else {
+            if let Some(preview) = self
+                .substitution
+                .preview
+                .as_mut()
+                .filter(|preview| preview.pending)
+            {
+                preview.pending = false;
+                preview.error = Some("preview worker stopped".into());
+                self.request_redraw();
+            }
+            return;
+        };
+        if !self.substitute_preview().is_some_and(|current| {
+            current.pending
+                && current.buffer_id == preview.buffer_id
+                && current.version == preview.version
+                && current.command == preview.command
+        }) {
+            return;
         }
         self.substitution.preview = Some(preview);
         self.request_redraw();
@@ -218,6 +304,14 @@ impl EditorState {
             return false;
         }
         self.refresh_substitute_preview();
+        // Submission must finish before a macro or mapped sequence runs its next action.
+        while self
+            .substitute_preview()
+            .is_some_and(|preview| preview.pending)
+        {
+            self.receive_substitute_preview(true);
+            self.refresh_substitute_preview();
+        }
         let Some(preview) = self.substitution.preview.as_ref() else {
             return true;
         };
@@ -347,6 +441,7 @@ impl Substitution {
         &self,
         buffer: &TextBuffer,
         selection: Option<(Selection, VisualModeKind)>,
+        language: Option<SyntaxLanguage>,
         preview: &mut SubstitutePreview,
     ) {
         let scopes = match selection {
@@ -359,17 +454,14 @@ impl Substitution {
                 buffer.char_to_pos(buffer.len_chars()),
             )],
         };
-        let source = buffer.to_string();
         let mut last_line = None;
         let mut replacement_ranges = Vec::new();
         let mut removed_chars = 0;
         let mut inserted_chars = 0;
-        // ponytail: cache scans per command/source version; move to a worker if large files exceed the frame budget.
         for (start, end) in scopes {
             let start_byte = buffer.char_to_byte(buffer.pos_to_char(start));
-            let end_byte = buffer.char_to_byte(buffer.pos_to_char(end));
-            let selected_text = &source[start_byte..end_byte];
-            for captures in self.pattern.captures_iter(selected_text) {
+            let selected_text = buffer.slice_pos_range(start, end);
+            for captures in self.pattern.captures_iter(&selected_text) {
                 let matched = captures.get(0).unwrap();
                 let match_start = start_byte + matched.start();
                 if matched.start() == selected_text.len() && selected_text.ends_with('\n') {
@@ -412,6 +504,13 @@ impl Substitution {
                 })
                 .collect();
             preview.buffer = Some(changed);
+        }
+        if let Some(buffer) = &preview.buffer
+            && let Some(language) = language
+        {
+            preview
+                .syntax
+                .replace_cache(SyntaxParser::default().compute_cache(buffer, language));
         }
     }
 }
@@ -571,6 +670,18 @@ mod tests {
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         *state.session.active_buffer_mut() = TextBuffer::from_text(text);
         state
+    }
+
+    fn settle_preview(state: &mut EditorState) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state.substitute_preview_pending() {
+            state.update_background(std::time::Instant::now());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "preview worker timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]

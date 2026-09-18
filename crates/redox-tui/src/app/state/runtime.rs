@@ -50,6 +50,7 @@ impl EditorState {
         self.pump_active_loading(self.viewport_height_rows.saturating_sub(1));
         let load_time = load_start.elapsed();
         self.poll_search_preview(now);
+        self.poll_substitute_preview();
         self.refresh_substitute_preview();
 
         self.git.remove_closed_buffers(&self.session);
@@ -105,6 +106,7 @@ impl EditorState {
         let background_pending = loading
             || self.update_check_can_notify()
             || self.analysis_worker.is_pending()
+            || self.substitute_preview_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();
         let animation = self.rain_is_active() || self.one_shot_highlight().is_some();
