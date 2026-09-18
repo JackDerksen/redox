@@ -1,5 +1,5 @@
 <p align="center">
-    <img width="385" height="230" alt="Redox Logo" src="assets/redox-logo.png" />
+    <img width="390" height="230" alt="Redox Logo" src="assets/redox-logo.png" />
 </p>
 
 <h1 align="center">
