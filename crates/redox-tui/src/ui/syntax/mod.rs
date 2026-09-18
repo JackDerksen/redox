@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
 use minui::{ColorPair, TabPolicy, Window, cell_width};
-use redox_core::{Pos, TextBuffer, TextDiff};
+use redox_core::{Pos, Selection, TextBuffer, TextDiff};
 use tree_sitter::{
     InputEdit, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree,
 };
@@ -571,6 +571,26 @@ impl SyntaxHighlighter {
             scope,
         });
         scope
+    }
+
+    pub fn visual_scope_lines_for_display_cached(
+        &mut self,
+        buffer: &TextBuffer,
+        language: Option<SyntaxLanguage>,
+        analysis_version: u64,
+        selection: Selection,
+    ) -> std::ops::Range<usize> {
+        let (start, end) = selection.line_range();
+        let mut lines = start..end.saturating_add(1);
+        for position in [selection.anchor, selection.cursor] {
+            if let Some(scope) =
+                self.active_scope_for_display_cached(buffer, language, analysis_version, position)
+            {
+                lines.start = lines.start.min(scope.lines().start);
+                lines.end = lines.end.max(scope.lines().end);
+            }
+        }
+        lines
     }
 
     fn cached_node_at_byte(&self, language: SyntaxLanguage, byte: usize) -> Option<Node<'_>> {

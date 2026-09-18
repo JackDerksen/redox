@@ -584,9 +584,19 @@ fn draw_editor_view(
                 })
                 .flatten();
             let focused_lines = focus_scope.then(|| {
-                syntax_scope
-                    .map(|scope| scope.lines())
-                    .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+                if let Some((selection, _)) = visual_selection {
+                    view.syntax_highlighter
+                        .visual_scope_lines_for_display_cached(
+                            buffer,
+                            syntax_language,
+                            analysis_version,
+                            selection,
+                        )
+                } else {
+                    syntax_scope
+                        .map(|scope| scope.lines())
+                        .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+                }
             });
             let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
             let syntax_spans = view
@@ -1712,9 +1722,19 @@ fn draw_buffer_snapshot_for_id(
             })
             .flatten();
         let focused_lines = focus_scope.then(|| {
-            syntax_scope
-                .map(|scope| scope.lines())
-                .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+            if let Some((selection, _)) = visual_selection.filter(|_| preview.is_none()) {
+                view.syntax_highlighter
+                    .visual_scope_lines_for_display_cached(
+                        buffer,
+                        syntax_language,
+                        analysis_version,
+                        selection,
+                    )
+            } else {
+                syntax_scope
+                    .map(|scope| scope.lines())
+                    .unwrap_or(cursor.line..cursor.line.saturating_add(1))
+            }
         });
         let use_lexical_fallback = should_use_lexical_fallback(syntax_language);
         let syntax_highlighter =
