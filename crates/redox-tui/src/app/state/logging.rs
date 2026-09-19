@@ -78,7 +78,8 @@ impl EventLog {
                 continue;
             }
             let contents = fs::read(&path)?;
-            let mut count = contents.split_inclusive(|byte| *byte == b'\n').count();
+            let complete = recent_events(&contents, usize::MAX);
+            let mut count = complete.split_inclusive(|byte| *byte == b'\n').count();
             if path == current {
                 let retained = recent_events(&contents, limit);
                 if retained.len() != contents.len() {
