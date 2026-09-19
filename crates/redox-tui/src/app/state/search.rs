@@ -220,6 +220,7 @@ impl EditorState {
             self.cancel_search();
             return;
         }
+        self.log_event("search", serde_json::json!(self.command_line));
         if self.search_preview_due.is_some()
             || self
                 .search_state

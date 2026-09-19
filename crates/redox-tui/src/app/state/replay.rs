@@ -143,6 +143,7 @@ impl EditorState {
     }
 
     pub fn apply_input(&mut self, action: InputAction, width: usize, height: usize) {
+        self.log_action(&action);
         if self.replay.dispatching {
             self.apply_input_inner(action, width, height);
             return;

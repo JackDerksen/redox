@@ -30,6 +30,7 @@ use analysis::AnalysisWorker;
 mod explorer;
 mod finder;
 mod git;
+mod logging;
 mod lsp;
 mod rain_mode;
 mod runtime;
@@ -393,6 +394,8 @@ pub struct PaneRect {
 /// Multi-buffer editor state for the TUI frontend.
 #[derive(Debug)]
 pub struct EditorState {
+    event_log: Option<logging::EventLog>,
+    log_key: Option<String>,
     runtime: runtime::RuntimeState,
     update_check: Option<updates::UpdateCheck>,
     pub session: EditorSession,
@@ -474,6 +477,8 @@ impl EditorState {
             options: PaneOptions::editor(),
         };
         let state = Self {
+            event_log: None,
+            log_key: None,
             runtime: runtime::RuntimeState::default(),
             update_check: None,
             session,
@@ -844,6 +849,10 @@ impl EditorState {
         if replace_pane_with_split(&mut self.split_root, self.active_pane, axis, size, new_id) {
             let _ = self.activate_pane(new_id);
             self.refresh_active_split_viewport_size();
+            self.log_event(
+                "split_created",
+                serde_json::json!({"axis": format!("{axis:?}")}),
+            );
             Some(new_id)
         } else {
             self.panes.retain(|pane| pane.id != new_id);
@@ -911,6 +920,7 @@ impl EditorState {
             let next = next.unwrap_or_else(|| first_pane_id(&self.split_root));
             let _ = self.activate_pane(next);
             self.refresh_active_split_viewport_size();
+            self.log_event("split_closed", serde_json::json!({"pane": closing.0}));
         }
     }
 
@@ -1156,6 +1166,13 @@ impl EditorState {
         let mut diagnostics_error = None;
 
         for change in changes {
+            self.log_event(
+                "external_file_change",
+                serde_json::json!({
+                    "buffer": change.id.get(), "kind": format!("{:?}", change.kind),
+                    "file": change.display_name,
+                }),
+            );
             match change.kind {
                 ExternalFileChangeKind::Reloaded => {
                     reloaded = reloaded.saturating_add(1);
@@ -1540,6 +1557,10 @@ impl EditorState {
     }
 
     pub(super) fn ensure_buffer_analysis(&mut self, buffer_id: BufferId) {
+        self.log_event(
+            "buffer_activated",
+            serde_json::json!({"buffer": buffer_id.get()}),
+        );
         let Some(meta) = self.session.meta(buffer_id) else {
             return;
         };
