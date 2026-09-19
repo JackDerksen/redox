@@ -309,10 +309,10 @@ impl EditorState {
         if self.mode != EditorMode::Command {
             return;
         }
-        self.log_event("command", serde_json::json!(self.command_line.trim()));
         if self.execute_substitute_command() {
             return;
         }
+        self.log_event("command", serde_json::json!(self.command_line.trim()));
 
         let cmd_raw = self.command_line.trim().to_string();
         let calculation = match calculator::expression(&cmd_raw).map(calculator::evaluate) {
