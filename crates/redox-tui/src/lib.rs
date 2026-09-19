@@ -2992,21 +2992,39 @@ fn handle_editor_event(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
+    state.begin_log_input(&event);
+    let keep_running = handle_editor_event_inner(state, clipboard, event);
+    state.finish_log_input();
+    keep_running
+}
+
+fn handle_editor_event_inner(
+    state: &mut EditorState,
+    clipboard: &mut Option<Clipboard>,
+    event: Event,
+) -> bool {
     if state.handle_dashboard_event(&event) {
+        state.log_event("dashboard_input", serde_json::Value::Null);
         return !state.should_quit;
     }
     if state.rain_is_active() {
-        if is_cancel_event(&event) {
+        state.log_event("rain_input", serde_json::Value::Null);
+        let enter_command = input::macro_key_label(&event) == ":";
+        if is_cancel_event(&event) || enter_command {
             state.stop_rain_animation();
         }
-        return !state.should_quit;
+        if !enter_command {
+            return !state.should_quit;
+        }
     }
 
     if is_cancel_event(&event) && state.handle_normal_mode_escape_on_surface() {
+        state.log_event("surface_dismissed", serde_json::Value::Null);
         return !state.should_quit;
     }
 
     if is_cancel_event(&event) && state.dismiss_perf_popup() {
+        state.log_event("perf_dismissed", serde_json::Value::Null);
         return !state.should_quit;
     }
 
@@ -3152,6 +3170,7 @@ fn reload_runtime_config(
             .unwrap_or_else(|| candidate.theme.clone());
         let candidate_style = candidate.style_for_theme(&candidate_theme)?;
         let candidate_input = configured_input(&candidate)?;
+        state.configure_logging(candidate.logging)?;
         install_keyboard_bindings(keyboard, &candidate_input)?;
         state.configure(
             candidate_input,
@@ -3250,6 +3269,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let mut state = EditorState::new(session);
+    let logging_result = state.configure_logging(config.logging);
     state.zen = config.zen;
     state.configure(
         input,
@@ -3264,6 +3284,9 @@ pub fn run() -> anyhow::Result<()> {
     }
     if launch_empty {
         state.open_dashboard();
+    }
+    if let Err(error) = logging_result {
+        state.set_status(format!("could not enable logging: {error}"));
     }
 
     let mut window = TerminalWindow::new()?;
@@ -3326,9 +3349,11 @@ pub fn run() -> anyhow::Result<()> {
         let (width, height) = window.get_size();
         if (width, height) != previous_terminal_size {
             previous_terminal_size = (width, height);
+            state.log_event("resize", serde_json::json!([width, height]));
             state.request_redraw();
         }
         perf_sample.load = state.update_background(Instant::now());
+        state.report_logging_error();
 
         if state.should_quit {
             break;
@@ -3356,6 +3381,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
     drop(window);
+    state.log_event("session_end", serde_json::Value::Null);
     state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
     Ok(())
 }
@@ -3366,6 +3392,117 @@ mod tests {
     use minui::{ColorPair, Window};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn command_prompt_is_visible_and_executable_after_rain_and_modal_input() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        for context in [
+            "insert",
+            "search",
+            "finder",
+            "pins",
+            "dashboard",
+            "rain",
+            "lsp",
+            "about",
+            "perf",
+            "explorer",
+            "prefix",
+        ] {
+            let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+            let mut clipboard = None;
+            for character in "iabc".chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            if context != "insert" {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                match context {
+                    "search" => state.apply_input(InputAction::EnterSearch, 80, 24),
+                    "finder" | "pins" => {
+                        state.apply_input(InputAction::OpenFinder, 80, 24);
+                        if context == "pins" {
+                            state.apply_input(InputAction::FinderBeginPin, 80, 24);
+                        }
+                    }
+                    "prefix" => {
+                        handle_editor_event(&mut state, &mut clipboard, Event::Character(' '));
+                    }
+                    command => {
+                        state.apply_input(InputAction::RunCommand(command.to_string()), 80, 24);
+                    }
+                }
+            }
+            if matches!(
+                context,
+                "insert" | "search" | "finder" | "pins" | "lsp" | "prefix"
+            ) {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                if context == "pins" {
+                    handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                }
+            }
+            if context == "rain" {
+                assert!(state.rain_is_active());
+                handle_editor_event(&mut state, &mut clipboard, Event::Character('i'));
+                assert!(state.rain_is_active());
+                assert_eq!(state.mode, app::EditorMode::Normal);
+            }
+            assert!(handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(':')
+            ));
+            assert_eq!(state.mode, app::EditorMode::Command, "{context}");
+            assert!(!state.rain_is_active(), "{context}");
+            assert!(state.finder_popup().is_none(), "{context}");
+            assert!(state.pin_selector_popup().is_none(), "{context}");
+            assert!(state.lsp_marketplace_popup().is_none(), "{context}");
+
+            if context == "rain" {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                assert_eq!(state.mode, app::EditorMode::Normal);
+                for character in ":rain".chars() {
+                    handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+                }
+                handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+                assert!(state.rain_is_active());
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                assert!(!state.rain_is_active());
+                assert_eq!(state.mode, app::EditorMode::Normal);
+                state.apply_input(InputAction::RunCommand("rain".to_string()), 80, 24);
+                let shifted_colon =
+                    Event::KeyWithModifiers(minui::prelude::input::KeyWithModifiers {
+                        key: KeyKind::Char(':'),
+                        mods: minui::prelude::input::KeyModifiers::shift(),
+                    });
+                handle_editor_event(&mut state, &mut clipboard, shifted_colon);
+                assert_eq!(state.mode, app::EditorMode::Command);
+                assert!(!state.rain_is_active());
+            }
+            for character in "q!".chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            let mut window = TestWindow::new(80, 24);
+            draw_buffer_view(
+                &mut state,
+                UiStyle::default(),
+                &mut window,
+                &mut FramePerfSample::default(),
+            )
+            .unwrap();
+            assert!(
+                (0..24).any(|row| window.row_text(row).contains("q!")),
+                "command line hidden in {context}"
+            );
+            assert!(window.cursor.is_some(), "{context}");
+            assert!(!handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Enter
+            ));
+            assert!(state.should_quit, "{context}");
+        }
+    }
 
     #[test]
     fn dashboard_navigation_and_shortcuts_reach_the_existing_editor_flows() {

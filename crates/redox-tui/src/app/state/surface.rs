@@ -12,7 +12,7 @@ impl EditorState {
             return false;
         }
 
-        if self.close_active_surface_buffer() {
+        if self.close_active_surface_buffer_without_quit() {
             self.mode = EditorMode::Normal;
             self.clear_status();
             return true;
