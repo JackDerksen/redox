@@ -11,7 +11,7 @@ scrolloff = 5 # Keeps this many rows visible above and below the cursor while sc
 color_column = 79 # Renders on top of cl=80
 leader = " "
 
-# Optional local bug history. Nothing is uploaded. Use :log "What happened" to
+# Optional local logging history. Nothing is uploaded. Use :log "What happened" to
 # preserve a report under ~/.local/state/redox/logs/reports/.
 [logging]
 enabled = false
