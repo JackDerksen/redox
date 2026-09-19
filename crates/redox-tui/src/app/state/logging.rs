@@ -292,7 +292,6 @@ impl EditorState {
                 json!({
                     "version": env!("CARGO_PKG_VERSION"),
                     "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
-                    "directory": self.session.launch_dir(),
                 }),
             );
         }
@@ -304,7 +303,6 @@ impl EditorState {
         json!({
             "mode": format!("{:?}", self.mode),
             "buffer": self.session.active_id().get(),
-            "path": self.session.active_meta().path,
             "cursor": [cursor.line + 1, cursor.col + 1],
             "pane": self.active_pane.0, "panes": self.panes.len(),
         })
@@ -405,7 +403,6 @@ impl EditorState {
             InputAction::ApplyRecordedInsert { .. } => {
                 "ApplyRecordedInsert (text omitted)".to_string()
             }
-            // Command text is recorded only when the command is actually executed.
             InputAction::RunCommand(_) => "RunCommand".to_string(),
             InputAction::ReplaySequence(_) => "ReplaySequence".to_string(),
             _ => format!("{action:?}"),
@@ -554,6 +551,73 @@ mod tests {
     }
 
     #[test]
+    fn reports_omit_search_command_and_file_values_at_the_source() {
+        let _guard = super::super::global_test_state_lock().lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-file-name.txt");
+        fs::write(&path, "initial\n").unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_file(&path).unwrap());
+        state.event_log = Some(EventLog::open(directory.path().join("logs"), 5_000).unwrap());
+
+        // Exercise the sources directly, without the input wrapper or finish_log_input.
+        state.enter_search_mode();
+        state.command_line = "private-search-value".into();
+        state.execute_search_line(80, 24);
+        state.begin_command();
+        state.command_line = "private-command-value private-argument".into();
+        state.execute_command_line();
+        let destination = directory.path().join("private-existing-destination.txt");
+        fs::write(&destination, "existing\n").unwrap();
+        state.apply_input(
+            InputAction::RunCommand(format!("w {}", destination.display())),
+            80,
+            24,
+        );
+        assert!(
+            state
+                .status_msg
+                .as_ref()
+                .unwrap()
+                .starts_with("write failed:")
+        );
+        fs::write(&path, "changed externally\n").unwrap();
+        state.poll_external_file_changes(state.next_external_file_check_at);
+        state.command_log("Bug report note");
+        assert!(state.status_msg.as_ref().unwrap().starts_with("log saved:"));
+
+        let log = state.event_log.as_ref().unwrap();
+        let report = fs::read_dir(log.root.join("reports"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        for file in [log.session_path(), report] {
+            let text = fs::read_to_string(file).unwrap();
+            assert!(!text.contains("private-"));
+            assert!(!text.contains(directory.path().to_str().unwrap()));
+            let events: Vec<Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            for kind in ["search", "command", "write_failed"] {
+                assert!(events.iter().any(|event| event["event"] == kind));
+            }
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["event"] == "external_file_change"
+                        && event["details"]["kind"] == "Reloaded"
+                        && event["details"]["buffer"] == state.session.active_id().get())
+            );
+            for event in events {
+                assert_eq!(event["context"]["buffer"], state.session.active_id().get());
+                assert!(event["context"].get("path").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn editor_logging_omits_typing_and_drafts_but_keeps_actions_commands_and_notes() {
         let _guard = super::super::global_test_state_lock().lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -598,16 +662,17 @@ mod tests {
         let history = recent(state.event_log.as_ref().unwrap());
         let text = serde_json::to_string(&history).unwrap();
         assert!(!text.contains("private-"));
+        assert!(!text.contains("submitted-search"));
         assert!(!text.contains("InsertChar"));
         assert!(!text.contains("CommandChar"));
         assert!(history.iter().any(|event| event["event"] == "search"
-            && event["details"] == "submitted-search"
+            && event.get("details").is_none()
             && event["key"] == "<Enter>"));
         assert!(!history.iter().any(|event| event["event"] == "action"
             && event["key"] == "<Enter>"
             && event["context"]["mode"] == "Insert"));
         assert!(history.iter().any(|event| event["event"] == "command"
-            && event["details"] == "zen"
+            && event.get("details").is_none()
             && event["key"] == "<Enter>"));
         assert!(history.iter().any(|event| {
             event["key"] == "h"

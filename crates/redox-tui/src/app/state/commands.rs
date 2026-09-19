@@ -312,7 +312,7 @@ impl EditorState {
         if self.execute_substitute_command() {
             return;
         }
-        self.log_event("command", serde_json::json!(self.command_line.trim()));
+        self.log_event("command", serde_json::Value::Null);
 
         let cmd_raw = self.command_line.trim().to_string();
         let calculation = match calculator::expression(&cmd_raw).map(calculator::evaluate) {
@@ -592,7 +592,7 @@ impl EditorState {
             self.session.save_active_as(path_arg)
         };
         if let Err(error) = saved {
-            self.log_event("write_failed", serde_json::json!(error.to_string()));
+            self.log_event("write_failed", serde_json::Value::Null);
             self.set_status(format!("write failed: {error}"));
             return false;
         }

@@ -117,14 +117,15 @@ session's log, making it eligible for later pruning.
 Redox records navigation and action keys, pending key sequences, executed commands and searches, accepted
 completions, split and buffer changes, file writes and external changes, terminal resizing, and
 language-server event metadata. Events include timestamps, the current mode,
-file path, cursor position, and pane context. Command text is captured when you press Enter or
-execute a configured command binding. Accepted buffer completions include their label and inserted
-text. Command-line completion records the acceptance action; its text is only recorded on execution.
+numeric buffer and pane identifiers, and cursor position. Commands and searches record the event
+and associated key without their text, including commands executed through configured bindings.
+File events identify buffers by number and omit file names and paths. Accepted buffer completions
+include their label and inserted text. Command-line completion records only the acceptance action.
 
 Ordinary buffer typing, pasted buffer text, command drafts, and unfinished search or finder
-queries are omitted. Search text is captured only on submission. This is an action history for investigating a bug, not a complete recording of
-file contents or an automatic replay script. Executed commands, paths, notes, and accepted
-completions can contain sensitive information, so review a report before sharing it.
+queries are omitted. This is an action history for investigating a bug, not a complete recording of
+file contents or an automatic replay script. Notes and accepted buffer completions can contain
+sensitive information, so review a report before sharing it.
 
 When you notice a bug occurs, run:
 

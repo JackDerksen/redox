@@ -1170,7 +1170,6 @@ impl EditorState {
                 "external_file_change",
                 serde_json::json!({
                     "buffer": change.id.get(), "kind": format!("{:?}", change.kind),
-                    "file": change.display_name,
                 }),
             );
             match change.kind {
