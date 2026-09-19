@@ -782,6 +782,7 @@ impl EditorState {
                 self.request_redraw();
                 match event {
                     SessionEvent::Initialized { .. } => {
+                        self.log_event("lsp_initialized", serde_json::Value::Null);
                         let document_ids = self
                             .lsp
                             .documents
@@ -795,6 +796,7 @@ impl EditorState {
                         }
                     }
                     SessionEvent::InitializationFailed { message } => {
+                        self.log_event("lsp_initialization_failed", serde_json::Value::Null);
                         let label = self
                             .lsp
                             .clients
@@ -808,6 +810,10 @@ impl EditorState {
                         break;
                     }
                     SessionEvent::Message(message) => {
+                        self.log_event("lsp_message", serde_json::json!({
+                            "method": message.get("method"), "id": message.get("id"),
+                            "error_code": message.get("error").and_then(|error| error.get("code")),
+                        }));
                         if let Some((uri, version, diagnostics)) =
                             parse_publish_diagnostics(&message)
                         {
@@ -846,6 +852,10 @@ impl EditorState {
                         }
                     }
                     SessionEvent::Terminated { error } => {
+                        self.log_event(
+                            "lsp_terminated",
+                            serde_json::json!({"failed": error.is_some()}),
+                        );
                         terminated.push((
                             workspace.clone(),
                             error.map(|error| format!("language server stopped: {error}")),
@@ -2502,6 +2512,10 @@ impl EditorState {
         let replay_text = insert.clone();
         let mut edits = additional_edits;
         edits.push((start_char, end_char, insert));
+        self.log_event("completion_accepted", serde_json::json!({
+            "label": item.label, "insert": replay_text,
+            "range": [start_char, end_char], "additional_edits": item.additional_text_edits.len(),
+        }));
         self.remember_completion_accept(&item);
         let before = self.capture_active_insert_coalesced_checkpoint();
         apply_character_edits(self.session.active_buffer_mut(), &edits);

@@ -40,6 +40,7 @@ impl EditorState {
     }
 
     pub(crate) fn update_background(&mut self, now: Instant) -> Duration {
+        self.maintain_logging(now);
         self.poll_analysis_results();
         self.poll_lsp();
         self.poll_finder_results();
@@ -119,6 +120,7 @@ impl EditorState {
             });
 
         [
+            self.event_log.as_ref().map(|log| log.next_maintenance),
             has_file.then_some(self.next_external_file_check_at),
             self.explorer
                 .as_ref()

@@ -159,6 +159,14 @@ Editor-managed data (such as undo history and LSP metadata) lives separately und
 `$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the configuration directory for
 `config.toml` alone. Existing legacy state is migrated automatically.
 
+Optional logging is disabled by default and stays entirely on your machine. Enable
+`[logging] enabled = true` in your config to retain up to 5,000 recent events per session (about 2 MB), or set
+`max_events` to another positive limit. Older session logs are pruned as needed. Run
+`:log "This is a description of what happened"` to preserve a report under
+`~/.local/state/redox/logs/reports/`. Redox never sends logs anywhere; share a report with the
+developer only if you choose to. See [optional logging](CONFIGURATION.md#optional-logging)
+for recorded events, exclusions, and storage details.
+
 <details>
 <summary>Command, navigation, editing, and search reference</summary>
 
@@ -205,7 +213,7 @@ redox src
 
 ### Command mode
 
-Enter command mode with `:`.
+Enter command mode with `:`. This also stops rain mode and opens the command line.
 
 | Command | Behaviour |
 | ------- | --------- |
@@ -218,6 +226,7 @@ Enter command mode with `:`.
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
+| `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |
 | `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
 | `:s/pattern/replacement[/g]` | Preview and apply regex replacements in the whole file, or just the visual selection. |
 | `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |

@@ -2992,21 +2992,39 @@ fn handle_editor_event(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
+    state.begin_log_input(&event);
+    let keep_running = handle_editor_event_inner(state, clipboard, event);
+    state.finish_log_input();
+    keep_running
+}
+
+fn handle_editor_event_inner(
+    state: &mut EditorState,
+    clipboard: &mut Option<Clipboard>,
+    event: Event,
+) -> bool {
     if state.handle_dashboard_event(&event) {
+        state.log_event("dashboard_input", serde_json::Value::Null);
         return !state.should_quit;
     }
     if state.rain_is_active() {
-        if is_cancel_event(&event) {
+        state.log_event("rain_input", serde_json::Value::Null);
+        let enter_command = input::macro_key_label(&event) == ":";
+        if is_cancel_event(&event) || enter_command {
             state.stop_rain_animation();
         }
-        return !state.should_quit;
+        if !enter_command {
+            return !state.should_quit;
+        }
     }
 
     if is_cancel_event(&event) && state.handle_normal_mode_escape_on_surface() {
+        state.log_event("surface_dismissed", serde_json::Value::Null);
         return !state.should_quit;
     }
 
     if is_cancel_event(&event) && state.dismiss_perf_popup() {
+        state.log_event("perf_dismissed", serde_json::Value::Null);
         return !state.should_quit;
     }
 
@@ -3143,7 +3161,7 @@ fn reload_runtime_config(
         return;
     }
 
-    let result = (|| -> anyhow::Result<(config::Config, UiStyle, String, Option<PathBuf>)> {
+    let result = (|| -> anyhow::Result<Option<PathBuf>> {
         let (candidate, loaded_path) = config::Config::load(explicit_path)?;
         let candidate_theme = theme_override
             .as_ref()
@@ -3160,42 +3178,38 @@ fn reload_runtime_config(
             candidate.which_key.enabled,
             Duration::from_millis(candidate.which_key.delay_ms),
         );
-        Ok((candidate, candidate_style, candidate_theme, loaded_path))
+        let enabled = if candidate.zen.enabled != active_config.zen.enabled {
+            candidate.zen.enabled
+        } else {
+            state.zen.enabled
+        };
+        state.zen = config::ZenConfig {
+            enabled,
+            ..candidate.zen
+        };
+        state.configure_command_completions(candidate.theme_names());
+        if candidate.check_updates != active_config.check_updates {
+            state.configure_update_checks(candidate.check_updates);
+        }
+        state.configure_logging(candidate.logging)?;
+        *active_config = candidate;
+        *style = candidate_style;
+        *active_theme = candidate_theme;
+        if theme_override
+            .as_ref()
+            .is_some_and(|name| !active_config.has_theme(name))
+        {
+            *theme_override = None;
+        }
+        Ok(loaded_path)
     })();
 
     match result {
-        Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
-            let enabled = if candidate.zen.enabled != active_config.zen.enabled {
-                candidate.zen.enabled
-            } else {
-                state.zen.enabled
-            };
-            state.zen = config::ZenConfig {
-                enabled,
-                ..candidate.zen
-            };
-            state.configure_command_completions(candidate.theme_names());
-            if candidate.check_updates != active_config.check_updates {
-                state.configure_update_checks(candidate.check_updates);
-            }
-            *active_config = candidate;
-            *style = candidate_style;
-            *active_theme = candidate_theme;
-            if theme_override
-                .as_ref()
-                .is_some_and(|name| !active_config.has_theme(name))
-            {
-                *theme_override = None;
-            }
-            match loaded_path {
-                Some(path) => {
-                    state.set_status(format!("configuration reloaded: {}", path.display()))
-                }
-                None => state.set_status(
-                    "configuration reloaded with built-in defaults (no config file found)",
-                ),
-            }
-        }
+        Ok(loaded_path) => match loaded_path {
+            Some(path) => state.set_status(format!("configuration reloaded: {}", path.display())),
+            None => state
+                .set_status("configuration reloaded with built-in defaults (no config file found)"),
+        },
         Err(error) => state.set_status(format!("configuration reload failed: {error:#}")),
     }
 }
@@ -3250,6 +3264,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     let mut state = EditorState::new(session);
+    let logging_result = state.configure_logging(config.logging);
     state.zen = config.zen;
     state.configure(
         input,
@@ -3264,6 +3279,9 @@ pub fn run() -> anyhow::Result<()> {
     }
     if launch_empty {
         state.open_dashboard();
+    }
+    if let Err(error) = logging_result {
+        state.set_status(format!("could not enable logging: {error}"));
     }
 
     let mut window = TerminalWindow::new()?;
@@ -3326,9 +3344,11 @@ pub fn run() -> anyhow::Result<()> {
         let (width, height) = window.get_size();
         if (width, height) != previous_terminal_size {
             previous_terminal_size = (width, height);
+            state.log_event("resize", serde_json::json!([width, height]));
             state.request_redraw();
         }
         perf_sample.load = state.update_background(Instant::now());
+        state.report_logging_error();
 
         if state.should_quit {
             break;
@@ -3356,6 +3376,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
     drop(window);
+    state.log_event("session_end", serde_json::Value::Null);
     state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
     Ok(())
 }
@@ -3366,6 +3387,117 @@ mod tests {
     use minui::{ColorPair, Window};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn command_prompt_is_visible_and_executable_after_rain_and_modal_input() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        for context in [
+            "insert",
+            "search",
+            "finder",
+            "pins",
+            "dashboard",
+            "rain",
+            "lsp",
+            "about",
+            "perf",
+            "explorer",
+            "prefix",
+        ] {
+            let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+            let mut clipboard = None;
+            for character in "iabc".chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            if context != "insert" {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                match context {
+                    "search" => state.apply_input(InputAction::EnterSearch, 80, 24),
+                    "finder" | "pins" => {
+                        state.apply_input(InputAction::OpenFinder, 80, 24);
+                        if context == "pins" {
+                            state.apply_input(InputAction::FinderBeginPin, 80, 24);
+                        }
+                    }
+                    "prefix" => {
+                        handle_editor_event(&mut state, &mut clipboard, Event::Character(' '));
+                    }
+                    command => {
+                        state.apply_input(InputAction::RunCommand(command.to_string()), 80, 24);
+                    }
+                }
+            }
+            if matches!(
+                context,
+                "insert" | "search" | "finder" | "pins" | "lsp" | "prefix"
+            ) {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                if context == "pins" {
+                    handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                }
+            }
+            if context == "rain" {
+                assert!(state.rain_is_active());
+                handle_editor_event(&mut state, &mut clipboard, Event::Character('i'));
+                assert!(state.rain_is_active());
+                assert_eq!(state.mode, app::EditorMode::Normal);
+            }
+            assert!(handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(':')
+            ));
+            assert_eq!(state.mode, app::EditorMode::Command, "{context}");
+            assert!(!state.rain_is_active(), "{context}");
+            assert!(state.finder_popup().is_none(), "{context}");
+            assert!(state.pin_selector_popup().is_none(), "{context}");
+            assert!(state.lsp_marketplace_popup().is_none(), "{context}");
+
+            if context == "rain" {
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                assert_eq!(state.mode, app::EditorMode::Normal);
+                for character in ":rain".chars() {
+                    handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+                }
+                handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+                assert!(state.rain_is_active());
+                handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+                assert!(!state.rain_is_active());
+                assert_eq!(state.mode, app::EditorMode::Normal);
+                state.apply_input(InputAction::RunCommand("rain".to_string()), 80, 24);
+                let shifted_colon =
+                    Event::KeyWithModifiers(minui::prelude::input::KeyWithModifiers {
+                        key: KeyKind::Char(':'),
+                        mods: minui::prelude::input::KeyModifiers::shift(),
+                    });
+                handle_editor_event(&mut state, &mut clipboard, shifted_colon);
+                assert_eq!(state.mode, app::EditorMode::Command);
+                assert!(!state.rain_is_active());
+            }
+            for character in "q!".chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            let mut window = TestWindow::new(80, 24);
+            draw_buffer_view(
+                &mut state,
+                UiStyle::default(),
+                &mut window,
+                &mut FramePerfSample::default(),
+            )
+            .unwrap();
+            assert!(
+                (0..24).any(|row| window.row_text(row).contains("q!")),
+                "command line hidden in {context}"
+            );
+            assert!(window.cursor.is_some(), "{context}");
+            assert!(!handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Enter
+            ));
+            assert!(state.should_quit, "{context}");
+        }
+    }
 
     #[test]
     fn dashboard_navigation_and_shortcuts_reach_the_existing_editor_flows() {
@@ -4589,9 +4721,14 @@ background = "#010203"
             InputAction::OpenFinder
         );
 
-        fs::write(&config_path, "background_dimming = 2.0\n")
-            .expect("failed to write invalid config");
+        fs::write(
+            &config_path,
+            "[logging]\nenabled = true\nmax_events = 1\n\
+             [keybindings.normal]\nundo = \"<invalid-key>\"\n",
+        )
+        .expect("failed to write invalid config");
         let previous_style = style;
+        let previous_config = format!("{active_config:?}");
         state.request_config_reload();
         reload_runtime_config(
             &mut state,
@@ -4604,11 +4741,19 @@ background = "#010203"
         );
 
         assert_eq!(style.theme, previous_style.theme);
+        assert_eq!(format!("{active_config:?}"), previous_config);
         assert!(
             state
                 .status_msg
                 .as_deref()
                 .is_some_and(|message| message.starts_with("configuration reload failed:"))
+        );
+        state.apply_input(InputAction::RunCommand("log reload check".into()), 80, 24);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|message| message.starts_with("logging is disabled;"))
         );
 
         let _ = fs::remove_dir_all(dir);

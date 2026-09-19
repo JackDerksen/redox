@@ -22,6 +22,7 @@ pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
     pub check_updates: bool,
+    pub logging: LoggingConfig,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
     pub scrolloff: usize,
@@ -41,6 +42,7 @@ impl Default for Config {
             theme: "default".to_string(),
             icons_enabled: false,
             check_updates: true,
+            logging: LoggingConfig::default(),
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
             scrolloff: DEFAULT_SCROLLOFF_ROWS,
@@ -52,6 +54,22 @@ impl Default for Config {
             keybindings: BTreeMap::new(),
             bind: Vec::new(),
             themes: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoggingConfig {
+    pub enabled: bool,
+    pub max_events: usize,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_events: 5_000,
         }
     }
 }
@@ -169,6 +187,9 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if self.logging.max_events == 0 {
+            bail!("logging.max_events must be at least 1");
+        }
         validate_percent(Some(self.zen.width_percent), "zen.width_percent")?;
         if self.zen.min_width == 0 {
             bail!("zen.min_width must be at least 1");
@@ -365,6 +386,10 @@ mod tests {
 
     #[test]
     fn omitted_configuration_preserves_current_defaults() {
+        assert!(!Config::default().logging.enabled);
+        assert_eq!(Config::default().logging.max_events, 5_000);
+        let invalid: Config = toml::from_str("[logging]\nmax_events = 0").unwrap();
+        assert!(invalid.validate().is_err());
         let config: Config = toml::from_str("").expect("empty configuration should parse");
         assert_eq!(config.scrolloff, DEFAULT_SCROLLOFF_ROWS);
         assert_eq!(config.color_column, 79);

@@ -19,6 +19,11 @@ struct CommandDefinition {
 // Dispatch and completion share these names, including aliases and subcommands.
 const COMMANDS: &[CommandDefinition] = &[
     CommandDefinition {
+        names: &["log"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_log(argument),
+    },
+    CommandDefinition {
         names: &["about"],
         editor_context: |_, _| false,
         run: |state, _| state.command_open_about(),
@@ -307,6 +312,7 @@ impl EditorState {
         if self.execute_substitute_command() {
             return;
         }
+        self.log_event("command", serde_json::Value::Null);
 
         let cmd_raw = self.command_line.trim().to_string();
         let calculation = match calculator::expression(&cmd_raw).map(calculator::evaluate) {
@@ -586,9 +592,11 @@ impl EditorState {
             self.session.save_active_as(path_arg)
         };
         if let Err(error) = saved {
+            self.log_event("write_failed", serde_json::Value::Null);
             self.set_status(format!("write failed: {error}"));
             return false;
         }
+        self.log_event("file_written", serde_json::Value::Null);
         if self.session.active_meta().path != previous_path {
             self.reset_active_render_caches();
             self.ensure_active_lsp_client();

@@ -11,6 +11,12 @@ scrolloff = 5 # Keeps this many rows visible above and below the cursor while sc
 color_column = 79 # Renders on top of cl=80
 leader = " "
 
+# Optional local logging history. Nothing is uploaded. Use :log "What happened" to
+# preserve a report under ~/.local/state/redox/logs/reports/.
+[logging]
+enabled = false
+max_events = 5000 # Events per session; older closed sessions are pruned to this total budget
+
 # Zen mode toggles with <leader>z or :zen. Popup percentages use the zen width.
 [zen]
 enabled = false

@@ -27,6 +27,8 @@ dimming, popup sizes, the colour column, undo-history limits, the leader, and bo
 modified-key bindings. It also updates which-key behaviour and Nerd Font icon rendering
 immediately. Zen settings also update immediately; reloading preserves the current mode unless
 `zen.enabled` changed in the configuration.
+Logging settings also take effect on reload, including enabling, disabling, and changing the
+event-history limit.
 
 Reloading is transactional: if the file cannot be read or contains an invalid option, colour,
 theme, mode, action, or key combination, Redox displays the error and keeps the active
@@ -51,6 +53,9 @@ manages itself under `$XDG_STATE_HOME/redox/`, or `~/.local/state/redox/` when
 ~/.local/state/redox/
 ├── installed-tools.json
 ├── pinned-files.json
+├── logs/                # Created only when logging is enabled
+│   ├── recent/          # One bounded JSON Lines file per editor session
+│   └── reports/         # Preserved notes and history, never rotated
 ├── undo-history/
 └── legacy/
     └── lsp.json
@@ -83,6 +88,71 @@ leader = " "
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
+
+## Optional logging
+
+Logging is entirely optional and disabled by default. Its only purpose is to help reproduce
+issues. Logs stay on your machine, Redox never uploads them or sends them to anyone, and
+you choose whether to share a saved report when reporting a bug.
+
+```toml
+[logging]
+enabled = true
+max_events = 5000
+```
+
+`enabled` defaults to `false`. `max_events` is an optional positive integer and defaults to
+`5000`. Each editor session has its own file, containing at most its latest `max_events` events.
+When full, the file drops its oldest 10% of events to make room for new entries, with a minimum
+of one event removed. This keeps ordinary appends from rewriting the full history. At the default
+limit, a full session therefore retains between 4,501 and 5,000 events as logging continues.
+Redox deletes older, closed session files oldest first when the total recent history exceeds this
+budget. Pruning runs at startup, at compaction, when saving a report or reloading configuration,
+and every 30 seconds while logging is enabled. The combined history may exceed the budget between
+these maintenance runs. Sessions that are still running are protected, so concurrent editors can each retain up
+to their own limit. Changing the limit with `:config reload` immediately trims the current session
+and prunes older closed sessions as needed. Disabling logging stops recording and closes that
+session's log, making it eligible for later pruning.
+
+Redox records navigation and action keys, pending key sequences, executed commands and searches, accepted
+completions, split and buffer changes, file writes and external changes, terminal resizing, and
+language-server event metadata. Events include timestamps, the current mode,
+numeric buffer and pane identifiers, and cursor position. Commands and searches record the event
+and associated key without their text, including commands executed through configured bindings.
+File events identify buffers by number and omit file names and paths. Accepted buffer completions
+include their label and inserted text. Command-line completion records only the acceptance action.
+
+Ordinary buffer typing, pasted buffer text, command drafts, and unfinished search or finder
+queries are omitted. This is an action history for investigating a bug, not a complete recording of
+file contents or an automatic replay script. Notes and accepted buffer completions can contain
+sensitive information, so review a report before sharing it.
+
+When you notice a bug occurs, run:
+
+```vim
+:log "This bug just happened: the split stopped responding"
+```
+
+The message may also be unquoted. Quoted messages support JSON escapes such as `\"` and `\n`.
+The command saves the note at the top of a new report, followed by the current session's recent history,
+and displays its full path. Reports are independent files in `~/.local/state/redox/logs/reports/`.
+Redox never overwrites, rotates, or automatically deletes them, even after a restart or a change
+to `max_events`. Delete reports yourself when you no longer need them.
+
+The rolling history lives in `~/.local/state/redox/logs/recent/`. With `XDG_STATE_HOME` set to an
+absolute path, both locations move under `$XDG_STATE_HOME/redox/logs/`. Files use compact UTF-8
+JSON Lines, one event per line, with no compression tool required to read them. Session filenames
+include their start timestamp and process ID, with a unique suffix to prevent collisions. Redox
+appends events to the same file and atomically replaces it when trimming its oldest events.
+Small `.lock` files protect active sessions from pruning. A process crash may leave an incomplete
+last event; an operating-system crash or power loss can also lose recent writes. Saved reports
+include the session filename and are flushed to disk before the command reports success.
+On Unix, new log directories and files are private to your user.
+
+Press Escape to leave a text-entry mode or dismiss a popup, then `:` to open the command line.
+From rain mode, `:` stops the animation and opens the command line directly. Logging errors appear
+as editor messages and do not stop editing; a failed `:log` command reports the failure instead of
+claiming that a report was saved.
 
 ## Which-key
 

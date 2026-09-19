@@ -119,6 +119,7 @@ impl EditorState {
                 Some('e') => self.command_open_explorer(),
                 Some('n') => {
                     self.dashboard = None;
+                    self.sync_active_pane_view();
                     self.clear_status();
                 }
                 Some('c') => self.request_config_open(),
