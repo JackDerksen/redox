@@ -3,7 +3,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use minui::Event;
 use serde_json::{Value, json};
@@ -12,10 +12,15 @@ use super::{EditorMode, EditorState};
 use crate::config::LoggingConfig;
 use crate::input::{InputAction, macro_key_label};
 
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Debug)]
 pub(super) struct EventLog {
     root: PathBuf,
     max_events: usize,
+    event_count: usize,
+    written_bytes: u64,
+    pub(super) next_maintenance: Instant,
     // A separate lock survives atomic replacement of the session's log file.
     session_lock: tempfile::NamedTempFile,
     error: Option<String>,
@@ -36,14 +41,16 @@ impl EventLog {
             .suffix(".lock")
             .tempfile_in(root.join("recent"))?;
         session_lock.as_file().lock()?;
-        let log = Self {
+        let mut log = Self {
             root,
             max_events,
+            event_count: 0,
+            written_bytes: 0,
+            next_maintenance: Instant::now() + MAINTENANCE_INTERVAL,
             session_lock,
             error: None,
             failed: false,
         };
-        let _lock = log.lock()?;
         log.trim(max_events)?;
         Ok(log)
     }
@@ -66,7 +73,34 @@ impl EventLog {
         Ok(lock)
     }
 
-    fn trim(&self, limit: usize) -> io::Result<()> {
+    fn trim(&mut self, limit: usize) -> io::Result<()> {
+        // Schedule before I/O so a failed maintenance run cannot cause a busy loop.
+        self.next_maintenance = Instant::now() + MAINTENANCE_INTERVAL;
+        let _lock = self.lock()?;
+        self.compact(limit)?;
+        self.prune(limit)
+    }
+
+    // Call only while holding the shared history lock.
+    fn compact(&mut self, limit: usize) -> io::Result<()> {
+        let path = self.session_path();
+        let contents = match fs::read(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let retained = recent_events(&contents, limit);
+        if retained.len() != contents.len() {
+            write_history(&path, retained)?;
+        }
+        self.event_count = retained.split_inclusive(|byte| *byte == b'\n').count();
+        self.written_bytes = retained.len() as u64;
+        Ok(())
+    }
+
+    // Call only while holding the shared history lock. Other sessions cannot prune this one.
+    fn prune(&mut self, limit: usize) -> io::Result<()> {
+        self.next_maintenance = Instant::now() + MAINTENANCE_INTERVAL;
         let current = self.session_path();
         let mut sessions = Vec::new();
         for entry in fs::read_dir(self.root.join("recent"))? {
@@ -77,16 +111,13 @@ impl EventLog {
             {
                 continue;
             }
-            let contents = fs::read(&path)?;
-            let complete = recent_events(&contents, usize::MAX);
-            let mut count = complete.split_inclusive(|byte| *byte == b'\n').count();
-            if path == current {
-                let retained = recent_events(&contents, limit);
-                if retained.len() != contents.len() {
-                    write_history(&path, retained)?;
-                    count = retained.split_inclusive(|byte| *byte == b'\n').count();
-                }
-            }
+            let count = if path == current {
+                self.event_count
+            } else {
+                let contents = fs::read(&path)?;
+                let complete = recent_events(&contents, usize::MAX);
+                complete.split_inclusive(|byte| *byte == b'\n').count()
+            };
             sessions.push((path, count));
         }
         sessions.sort_by(|(left, _), (right, _)| left.cmp(right));
@@ -121,37 +152,57 @@ impl EventLog {
         Ok(())
     }
 
-    fn append(&self, event: &Value) -> io::Result<()> {
+    fn append(&mut self, event: &Value) -> io::Result<()> {
+        let entry = serde_json::to_string(event)? + "\n";
         let _lock = self.lock()?;
         let path = self.session_path();
-        let contents = match fs::read(&path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error),
-        };
-        let complete = recent_events(&contents, usize::MAX);
-        let entry = serde_json::to_string(event)? + "\n";
-        let count = complete.split_inclusive(|byte| *byte == b'\n').count();
-        if count >= self.max_events || complete.len() != contents.len() {
-            let mut updated = complete.to_vec();
-            updated.extend_from_slice(entry.as_bytes());
-            write_history(&path, recent_events(&updated, self.max_events))?;
-        } else {
-            let mut options = OpenOptions::new();
-            options.append(true).create(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(path)?.write_all(entry.as_bytes())?;
+        let mut options = OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-        self.trim(self.max_events)
+        let mut file = options.open(&path)?;
+        // Recover an interrupted append or an externally truncated file without rescanning
+        // healthy logs. Only this editor writes the session while its lease is held.
+        if file.metadata()?.len() != self.written_bytes {
+            drop(file);
+            self.compact(self.max_events)?;
+            file = options.open(&path)?;
+        }
+        let at_capacity = self.event_count >= self.max_events;
+        if at_capacity {
+            drop(file);
+            // Leave 10% headroom so a full log is not rewritten for every new event.
+            let batch = (self.max_events / 10).max(1);
+            self.compact(self.max_events - batch)?;
+            file = options.open(&path)?;
+        }
+        file.write_all(entry.as_bytes())?;
+        self.event_count += 1;
+        self.written_bytes += entry.len() as u64;
+        if at_capacity {
+            self.prune(self.max_events)?;
+        }
+        Ok(())
     }
 
-    fn preserve(&self, note: &str, context: Value) -> io::Result<PathBuf> {
-        let _lock = self.lock()?;
+    fn record_result(&mut self, result: io::Result<()>) {
+        match result {
+            Ok(()) => self.failed = false,
+            Err(error) => {
+                if !self.failed {
+                    self.error = Some(format!("logging failed: {error}"));
+                }
+                self.failed = true;
+            }
+        }
+    }
+
+    fn preserve(&mut self, note: &str, context: Value) -> io::Result<PathBuf> {
         self.trim(self.max_events)?;
+        let _lock = self.lock()?;
         let reports = self.root.join("reports");
         private_directory(&reports)?;
         // NamedTempFile creates a new private file exclusively, even for simultaneous reports.
@@ -229,7 +280,6 @@ impl EditorState {
         if !config.enabled {
             self.event_log = None;
         } else if let Some(log) = &mut self.event_log {
-            let _lock = log.lock()?;
             log.trim(config.max_events)?;
             log.max_events = config.max_events;
         } else {
@@ -276,14 +326,16 @@ impl EditorState {
         if let Some(key) = &self.log_key {
             event["key"] = json!(key);
         }
-        match log.append(&event) {
-            Ok(()) => log.failed = false,
-            Err(error) => {
-                if !log.failed {
-                    log.error = Some(format!("logging failed: {error}"));
-                }
-                log.failed = true;
-            }
+        let result = log.append(&event);
+        log.record_result(result);
+    }
+
+    pub(crate) fn maintain_logging(&mut self, now: Instant) {
+        if let Some(log) = &mut self.event_log
+            && now >= log.next_maintenance
+        {
+            let result = log.trim(log.max_events);
+            log.record_result(result);
         }
     }
 
@@ -362,10 +414,10 @@ impl EditorState {
     }
 
     pub(super) fn command_log(&mut self, argument: &str) {
-        let Some(log) = &self.event_log else {
+        if self.event_log.is_none() {
             self.set_status("logging is disabled; set [logging] enabled = true in your config");
             return;
-        };
+        }
         let note = if argument.starts_with('"') {
             match serde_json::from_str::<String>(argument) {
                 Ok(note) => note,
@@ -381,7 +433,8 @@ impl EditorState {
             self.set_status("usage: log \"Describe what happened\"");
             return;
         }
-        match log.preserve(&note, self.log_context()) {
+        let context = self.log_context();
+        match self.event_log.as_mut().unwrap().preserve(&note, context) {
             Ok(path) => self.set_status(format!("log saved: {}", path.display())),
             Err(error) => self.set_status(format!("could not preserve log: {error}")),
         }
@@ -406,7 +459,7 @@ mod tests {
     fn session_files_are_bounded_and_active_sessions_and_reports_survive_pruning() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("logs");
-        let first = EventLog::open(root.clone(), 129).unwrap();
+        let mut first = EventLog::open(root.clone(), 129).unwrap();
         let first_path = first.session_path();
         for index in 0..260 {
             first
@@ -414,14 +467,14 @@ mod tests {
                 .unwrap();
         }
         let history = recent(&first);
-        assert_eq!(history.len(), 129);
-        assert_eq!(history.first().unwrap()["index"], 131);
+        assert_eq!(history.len(), 128);
+        assert_eq!(history.first().unwrap()["index"], 132);
         assert_eq!(history.last().unwrap()["index"], 259);
-        let second = EventLog::open(root.clone(), 129).unwrap();
+        let mut second = EventLog::open(root.clone(), 129).unwrap();
         assert_ne!(first_path, second.session_path());
         assert!(first_path.exists());
         std::thread::scope(|scope| {
-            for (log, source) in [(&first, "first"), (&second, "second")] {
+            for (log, source) in [(&mut first, "first"), (&mut second, "second")] {
                 scope.spawn(move || {
                     for index in 260..400 {
                         log.append(&json!({"index": index, "source": source}))
@@ -432,7 +485,8 @@ mod tests {
         });
         for (log, source) in [(&first, "first"), (&second, "second")] {
             let history = recent(log);
-            assert_eq!(history.len(), 129);
+            assert_eq!(history.len(), if source == "first" { 124 } else { 128 });
+            assert_eq!(history.len(), log.event_count);
             assert!(history.iter().all(|event| event["source"] == source));
         }
         let note = "Unexpected split\nwith \"quotes\" and café";
@@ -441,7 +495,7 @@ mod tests {
         let report_lines = String::from_utf8(preserved.clone()).unwrap();
         let header: Value = serde_json::from_str(report_lines.lines().next().unwrap()).unwrap();
         assert_eq!(header["note"], note);
-        assert_eq!(report_lines.lines().count(), 130);
+        assert_eq!(report_lines.lines().count(), second.event_count + 1);
         for event in report_lines.lines().skip(1) {
             assert_eq!(
                 serde_json::from_str::<Value>(event).unwrap()["source"],
@@ -453,13 +507,18 @@ mod tests {
         drop(first);
         second.append(&json!({"last": true})).unwrap();
         assert!(
+            first_path.exists(),
+            "ordinary appends defer pruning to maintenance"
+        );
+        second.trim(second.max_events).unwrap();
+        assert!(
             !first_path.exists(),
             "closed sessions are pruned as whole files"
         );
         assert_eq!(fs::read(&report).unwrap(), preserved);
         let second_path = second.session_path();
         drop(second);
-        let smaller = EventLog::open(root.clone(), 1).unwrap();
+        let mut smaller = EventLog::open(root.clone(), 1).unwrap();
         assert!(!second_path.exists());
         smaller.append(&json!({"last": true})).unwrap();
         smaller.append(&json!({"last": false})).unwrap();
@@ -562,6 +621,19 @@ mod tests {
                 .any(|event| event["event"] == "split_created")
         );
         let root = directory.path().join("logs");
+        let closed = root.join("recent/session-0000-closed.jsonl");
+        fs::write(&closed, "{}\n".repeat(5_000)).unwrap();
+        let due = Instant::now();
+        state.event_log.as_mut().unwrap().next_maintenance = due;
+        state.maintain_logging(due - Duration::from_millis(1));
+        assert!(closed.exists());
+        state.update_background(due);
+        assert!(
+            !closed.exists(),
+            "background maintenance prunes without input"
+        );
+        assert!(state.event_log.as_ref().unwrap().next_maintenance > due);
+
         fs::rename(root.join("recent"), root.join("unavailable-history")).unwrap();
         fs::write(root.join("recent"), "not a directory").unwrap();
         assert!(crate::handle_editor_event(
@@ -584,6 +656,9 @@ mod tests {
                 .unwrap()
                 .starts_with("could not preserve log:")
         );
+        state.event_log.as_mut().unwrap().next_maintenance = due;
+        state.maintain_logging(due);
+        assert!(state.event_log.as_ref().unwrap().next_maintenance > due);
         state.configure_logging(LoggingConfig::default()).unwrap();
         assert!(state.event_log.is_none());
     }

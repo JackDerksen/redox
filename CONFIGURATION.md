@@ -103,8 +103,13 @@ max_events = 5000
 
 `enabled` defaults to `false`. `max_events` is an optional positive integer and defaults to
 `5000`. Each editor session has its own file, containing at most its latest `max_events` events.
+When full, the file drops its oldest 10% of events to make room for new entries, with a minimum
+of one event removed. This keeps ordinary appends from rewriting the full history. At the default
+limit, a full session therefore retains between 4,501 and 5,000 events as logging continues.
 Redox deletes older, closed session files oldest first when the total recent history exceeds this
-budget. Sessions that are still running are protected, so concurrent editors can each retain up
+budget. Pruning runs at startup, at compaction, when saving a report or reloading configuration,
+and every 30 seconds while logging is enabled. The combined history may exceed the budget between
+these maintenance runs. Sessions that are still running are protected, so concurrent editors can each retain up
 to their own limit. Changing the limit with `:config reload` immediately trims the current session
 and prunes older closed sessions as needed. Disabling logging stops recording and closes that
 session's log, making it eligible for later pruning.
