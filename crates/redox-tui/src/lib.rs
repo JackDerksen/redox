@@ -3161,7 +3161,7 @@ fn reload_runtime_config(
         return;
     }
 
-    let result = (|| -> anyhow::Result<(config::Config, UiStyle, String, Option<PathBuf>)> {
+    let result = (|| -> anyhow::Result<Option<PathBuf>> {
         let (candidate, loaded_path) = config::Config::load(explicit_path)?;
         let candidate_theme = theme_override
             .as_ref()
@@ -3170,7 +3170,6 @@ fn reload_runtime_config(
             .unwrap_or_else(|| candidate.theme.clone());
         let candidate_style = candidate.style_for_theme(&candidate_theme)?;
         let candidate_input = configured_input(&candidate)?;
-        state.configure_logging(candidate.logging)?;
         install_keyboard_bindings(keyboard, &candidate_input)?;
         state.configure(
             candidate_input,
@@ -3179,42 +3178,38 @@ fn reload_runtime_config(
             candidate.which_key.enabled,
             Duration::from_millis(candidate.which_key.delay_ms),
         );
-        Ok((candidate, candidate_style, candidate_theme, loaded_path))
+        let enabled = if candidate.zen.enabled != active_config.zen.enabled {
+            candidate.zen.enabled
+        } else {
+            state.zen.enabled
+        };
+        state.zen = config::ZenConfig {
+            enabled,
+            ..candidate.zen
+        };
+        state.configure_command_completions(candidate.theme_names());
+        if candidate.check_updates != active_config.check_updates {
+            state.configure_update_checks(candidate.check_updates);
+        }
+        state.configure_logging(candidate.logging)?;
+        *active_config = candidate;
+        *style = candidate_style;
+        *active_theme = candidate_theme;
+        if theme_override
+            .as_ref()
+            .is_some_and(|name| !active_config.has_theme(name))
+        {
+            *theme_override = None;
+        }
+        Ok(loaded_path)
     })();
 
     match result {
-        Ok((candidate, candidate_style, candidate_theme, loaded_path)) => {
-            let enabled = if candidate.zen.enabled != active_config.zen.enabled {
-                candidate.zen.enabled
-            } else {
-                state.zen.enabled
-            };
-            state.zen = config::ZenConfig {
-                enabled,
-                ..candidate.zen
-            };
-            state.configure_command_completions(candidate.theme_names());
-            if candidate.check_updates != active_config.check_updates {
-                state.configure_update_checks(candidate.check_updates);
-            }
-            *active_config = candidate;
-            *style = candidate_style;
-            *active_theme = candidate_theme;
-            if theme_override
-                .as_ref()
-                .is_some_and(|name| !active_config.has_theme(name))
-            {
-                *theme_override = None;
-            }
-            match loaded_path {
-                Some(path) => {
-                    state.set_status(format!("configuration reloaded: {}", path.display()))
-                }
-                None => state.set_status(
-                    "configuration reloaded with built-in defaults (no config file found)",
-                ),
-            }
-        }
+        Ok(loaded_path) => match loaded_path {
+            Some(path) => state.set_status(format!("configuration reloaded: {}", path.display())),
+            None => state
+                .set_status("configuration reloaded with built-in defaults (no config file found)"),
+        },
         Err(error) => state.set_status(format!("configuration reload failed: {error:#}")),
     }
 }
@@ -4726,9 +4721,14 @@ background = "#010203"
             InputAction::OpenFinder
         );
 
-        fs::write(&config_path, "background_dimming = 2.0\n")
-            .expect("failed to write invalid config");
+        fs::write(
+            &config_path,
+            "[logging]\nenabled = true\nmax_events = 1\n\
+             [keybindings.normal]\nundo = \"<invalid-key>\"\n",
+        )
+        .expect("failed to write invalid config");
         let previous_style = style;
+        let previous_config = format!("{active_config:?}");
         state.request_config_reload();
         reload_runtime_config(
             &mut state,
@@ -4741,11 +4741,19 @@ background = "#010203"
         );
 
         assert_eq!(style.theme, previous_style.theme);
+        assert_eq!(format!("{active_config:?}"), previous_config);
         assert!(
             state
                 .status_msg
                 .as_deref()
                 .is_some_and(|message| message.starts_with("configuration reload failed:"))
+        );
+        state.apply_input(InputAction::RunCommand("log reload check".into()), 80, 24);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|message| message.starts_with("logging is disabled;"))
         );
 
         let _ = fs::remove_dir_all(dir);
