@@ -23,8 +23,8 @@ For a compact starting point, try copying [`config.example.toml`](config.example
 Run `:config` to open the active configuration file directly. Redox creates its parent directory
 when needed, so this also works before the file exists. Run `:config reload` to apply saved changes
 without restarting Redox. A successful reload updates the active theme, all UI and syntax colours,
-dimming, popup sizes, the colour column, undo-history limits, the leader, and both character and
-modified-key bindings. It also updates which-key behaviour and Nerd Font icon rendering
+dimming, popup sizes, line numbering, the colour column, undo-history limits, the leader, and both
+character and modified-key bindings. It also updates which-key behaviour and Nerd Font icon rendering
 immediately. Zen settings also update immediately; reloading preserves the current mode unless
 `zen.enabled` changed in the configuration.
 Logging settings also take effect on reload, including enabling, disabling, and changing the
@@ -75,6 +75,7 @@ scrolloff = 5
 background_dimming = 0.5
 undo_tree_history_size = 1000
 color_column = 79 # Renders on top of cl=80
+line_numbers = "relative" # Or "absolute"
 leader = " "
 ```
 
@@ -87,6 +88,7 @@ leader = " "
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
+| `line_numbers` | string | `"relative"` | `"relative"` shows the distance from the cursor, with the current line's actual number. `"absolute"` shows actual line numbers on every row. Applies to editor panes and the explorer. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
 
 ## Optional logging

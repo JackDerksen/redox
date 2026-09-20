@@ -298,11 +298,20 @@ impl Default for StatusLinePalette {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineNumbers {
+    #[default]
+    Relative,
+    Absolute,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Layout {
     pub status_left_min_width: u16,
     pub status_right_min_width: u16,
     pub color_column: Option<usize>,
+    pub line_numbers: LineNumbers,
 }
 
 impl Default for Layout {
@@ -311,6 +320,7 @@ impl Default for Layout {
             status_left_min_width: 12,
             status_right_min_width: 18,
             color_column: Some(79),
+            line_numbers: LineNumbers::default(),
         }
     }
 }

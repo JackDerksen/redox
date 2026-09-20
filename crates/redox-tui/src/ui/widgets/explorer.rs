@@ -1,4 +1,5 @@
 use crate::ui::render::LineViewport;
+use crate::{draw_line_numbers, line_number_gutter_width};
 use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
@@ -68,7 +69,10 @@ pub fn draw_explorer_popup_view(
                 style.icons_enabled,
             );
             let total_lines = buffer.len_lines().max(1);
-            let gutter_w = line_number_gutter_width(total_lines, show_git_status_column);
+            let gutter_w = line_number_gutter_width(
+                total_lines,
+                u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
+            );
             let content_x = gutter_w
                 .saturating_add(GUTTER_CONTENT_PADDING)
                 .saturating_add(if style.icons_enabled { PREFIX_WIDTH } else { 0 });
@@ -94,14 +98,17 @@ pub fn draw_explorer_popup_view(
         });
     let render_rows = state.explorer_render_rows(snapshot.first_line(), snapshot.line_count());
 
-    let gutter_w = line_number_gutter_width(total_lines, show_git_status_column);
+    let gutter_w = line_number_gutter_width(
+        total_lines,
+        u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
+    );
     let icon_col = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
     let content_x = icon_col.saturating_add(if style.icons_enabled { PREFIX_WIDTH } else { 0 });
-    draw_relative_line_numbers(
+    draw_line_numbers(
         &mut view,
         style,
         (gutter_w, inner_h),
-        show_git_status_column,
+        u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
         snapshot.first_line(),
         cursor_line,
         total_lines,
@@ -175,7 +182,10 @@ fn reconcile_explorer_cursor_for_popup(
     show_git_status_column: bool,
     icons_enabled: bool,
 ) {
-    let gutter_w = line_number_gutter_width(buffer.len_lines().max(1), show_git_status_column);
+    let gutter_w = line_number_gutter_width(
+        buffer.len_lines().max(1),
+        u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
+    );
     let content_x = gutter_w
         .saturating_add(GUTTER_CONTENT_PADDING)
         .saturating_add(if icons_enabled { PREFIX_WIDTH } else { 0 });
@@ -239,73 +249,6 @@ fn draw_explorer_status_dot(
 
     let color = style.git.file_status(status);
     view.write_str_colored(row, col, EXPLORER_STATUS_DOT, color)?;
-    Ok(())
-}
-
-fn line_number_gutter_width(total_lines: usize, show_git_status_column: bool) -> u16 {
-    let digits = total_lines.max(1).ilog10() as u16 + 1;
-    digits
-        .saturating_add(u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH)
-        .saturating_add(1)
-}
-
-fn draw_relative_line_numbers(
-    view: &mut WindowView<'_>,
-    style: UiStyle,
-    (gutter_w, text_h): (u16, u16),
-    show_git_status_column: bool,
-    first_line: usize,
-    cursor_line: usize,
-    total_lines: usize,
-) -> minui::Result<()> {
-    if gutter_w == 0 || text_h == 0 {
-        return Ok(());
-    }
-
-    let sep_x = gutter_w.saturating_sub(1);
-    let marker_offset = u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH;
-    let number_w = gutter_w.saturating_sub(marker_offset).saturating_sub(1) as usize;
-    let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
-    let current_color = ColorPair::new(style.theme.white, style.theme.bg);
-
-    for row in 0..text_h {
-        let line_idx = first_line.saturating_add(row as usize);
-        if line_idx >= total_lines {
-            continue;
-        }
-
-        let num = if line_idx == cursor_line {
-            (line_idx + 1).to_string()
-        } else {
-            line_idx.abs_diff(cursor_line).to_string()
-        };
-        let clipped_num = if num.chars().count() > number_w {
-            num.chars()
-                .rev()
-                .take(number_w)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
-        } else {
-            num
-        };
-
-        let text = format!("{clipped_num:>number_w$}");
-
-        let color = if line_idx == cursor_line {
-            current_color
-        } else {
-            relative_color
-        };
-
-        if number_w > 0 {
-            view.write_str_colored(row, marker_offset, &text, color)?;
-        }
-
-        view.write_str_colored(row, sep_x, "▕", color)?;
-    }
-
     Ok(())
 }
 

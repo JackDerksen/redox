@@ -496,11 +496,11 @@ fn draw_editor_view(
     state.ensure_rain_animation(text_w, text_h, editor_text, background_style);
 
     if let Some(animation) = state.active_rain_animation() {
-        draw_relative_line_numbers(
+        draw_line_numbers(
             window,
             background_style,
             (gutter.gutter_w, text_h),
-            gutter.show_git_marker_column,
+            u16::from(gutter.show_git_marker_column),
             animation.first_line(),
             active_cursor_line,
             gutter.total_lines,
@@ -588,11 +588,11 @@ fn draw_editor_view(
         state.active_snippet_placeholder_ranges(snapshot.first_line(), snapshot.line_count());
     perf.overlays += overlay_start.elapsed();
 
-    draw_relative_line_numbers(
+    draw_line_numbers(
         window,
         background_style,
         (gutter.gutter_w, text_h),
-        gutter.show_git_marker_column,
+        u16::from(gutter.show_git_marker_column),
         snapshot.first_line(),
         active_cursor_line,
         gutter.total_lines,
@@ -937,17 +937,16 @@ fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
     git_diff.is_some_and(|diff| !diff.stats.is_empty())
 }
 
-fn line_number_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
+fn line_number_gutter_width(total_lines: usize, marker_width: u16) -> u16 {
     let digits = total_lines.max(1).ilog10() as u16 + 1;
-    let git_marker_width = u16::from(show_git_marker_column);
-    digits.saturating_add(git_marker_width).saturating_add(1)
+    digits.saturating_add(marker_width).saturating_add(1)
 }
 
-fn draw_relative_line_numbers(
+fn draw_line_numbers(
     window: &mut dyn Window,
     style: UiStyle,
     (gutter_w, text_h): (u16, u16),
-    show_git_marker_column: bool,
+    marker_width: u16,
     first_line: usize,
     cursor_line: usize,
     total_lines: usize,
@@ -957,9 +956,8 @@ fn draw_relative_line_numbers(
     }
 
     let sep_x = gutter_w.saturating_sub(1);
-    let marker_offset = u16::from(show_git_marker_column);
-    let number_w = gutter_w.saturating_sub(marker_offset).saturating_sub(1) as usize;
-    let relative_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let number_w = gutter_w.saturating_sub(marker_width).saturating_sub(1) as usize;
+    let other_line_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
     let current_color = ColorPair::new(style.theme.white, style.theme.bg);
 
     for row in 0..text_h {
@@ -968,7 +966,9 @@ fn draw_relative_line_numbers(
             continue;
         }
 
-        let num = if line_idx == cursor_line {
+        let num = if style.layout.line_numbers == ui::style::LineNumbers::Absolute
+            || line_idx == cursor_line
+        {
             (line_idx + 1).to_string()
         } else {
             line_idx.abs_diff(cursor_line).to_string()
@@ -991,11 +991,11 @@ fn draw_relative_line_numbers(
         let color = if line_idx == cursor_line {
             current_color
         } else {
-            relative_color
+            other_line_color
         };
 
         if number_w > 0 {
-            window.write_str_colored(row, marker_offset, &text, color)?;
+            window.write_str_colored(row, marker_width, &text, color)?;
         }
 
         window.write_str_colored(row, sep_x, "▕", color)?;
@@ -1535,7 +1535,7 @@ fn pane_gutter_layout(state: &EditorState, pane_id: PaneId) -> PaneGutterLayout 
     }
     let total_lines = state.session.active_buffer().len_lines().max(1);
     let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-    let gutter_w = line_number_gutter_width(total_lines, show_git_marker_column);
+    let gutter_w = line_number_gutter_width(total_lines, u16::from(show_git_marker_column));
     PaneGutterLayout {
         content_x: gutter_w.saturating_add(GUTTER_CONTENT_PADDING),
         gutter_w,
@@ -1628,11 +1628,11 @@ fn draw_active_split_rain_pane(
         return Ok(());
     };
 
-    draw_relative_line_numbers(
+    draw_line_numbers(
         window,
         style,
         (gutter_w, height),
-        show_git_marker_column,
+        u16::from(show_git_marker_column),
         animation.first_line(),
         active_cursor_line,
         total_lines,
@@ -1749,7 +1749,7 @@ fn draw_buffer_snapshot_for_id(
 
         let total_lines = buffer.len_lines().max(1);
         let gutter_w = if has_line_numbers {
-            line_number_gutter_width(total_lines, show_git_marker_column)
+            line_number_gutter_width(total_lines, u16::from(show_git_marker_column))
         } else {
             0
         };
@@ -1843,11 +1843,11 @@ fn draw_buffer_snapshot_for_id(
         };
 
         if has_line_numbers {
-            draw_relative_line_numbers(
+            draw_line_numbers(
                 window,
                 style,
                 (gutter_w, height),
-                show_git_marker_column,
+                u16::from(show_git_marker_column),
                 snapshot.first_line(),
                 cursor.line,
                 total_lines,
@@ -4152,6 +4152,53 @@ mod tests {
     }
 
     #[test]
+    fn configured_line_numbers_render_scrolled_gutters() {
+        for (setting, expected) in [
+            ("relative", [" 2▕", " 1▕", "10▕", " 1▕", "   "]),
+            ("absolute", [" 8▕", " 9▕", "10▕", "11▕", "   "]),
+        ] {
+            let config: config::Config = toml::from_str(&format!(
+                "line_numbers = {setting:?}\n[themes.custom.palette]\nbackground = \"#010203\""
+            ))
+            .unwrap();
+            for theme in ["default", "custom"] {
+                let style = config.style_for_theme(theme).unwrap();
+                // Editor Git markers use one column; explorer status dots use two.
+                for marker_width in 0..=2 {
+                    let gutter_width = line_number_gutter_width(11, marker_width);
+                    let mut window = TestWindow::new(gutter_width, 5);
+                    draw_line_numbers(
+                        &mut window,
+                        style,
+                        (gutter_width, 5),
+                        marker_width,
+                        7,
+                        9,
+                        11,
+                    )
+                    .unwrap();
+                    for (row, expected) in expected.iter().enumerate() {
+                        assert_eq!(
+                            window.row_text(row as u16),
+                            format!("{}{expected}", " ".repeat(marker_width as usize)),
+                            "{setting}, {theme}, marker width {marker_width}, row {row}"
+                        );
+                    }
+                    assert_eq!(
+                        window.foregrounds[2][marker_width as usize],
+                        Some(style.theme.white)
+                    );
+                    assert_eq!(
+                        window.foregrounds[1][marker_width as usize],
+                        Some(style.theme.dark_gray)
+                    );
+                }
+            }
+        }
+        assert!(toml::from_str::<config::Config>("line_numbers = \"invalid\"").is_err());
+    }
+
+    #[test]
     fn draw_snapshot_lines_renders_scrolled_plain_text_without_double_scroll() {
         let buffer = redox_core::TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz\n");
         let mut render_line_cache = ui::RenderLineCache::new(1);
@@ -4655,6 +4702,7 @@ mod tests {
 theme = "live"
 leader = ","
 icons_enabled = true
+line_numbers = "absolute"
 
 [zen]
 width_percent = 70
@@ -4697,6 +4745,7 @@ background = "#010203"
         assert_eq!(state.zen.width_percent, 70);
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
+        assert_eq!(style.layout.line_numbers, ui::style::LineNumbers::Absolute);
         assert!(
             keyboard.keybinds().values().any(|action| {
                 action == &KeybindAction::Custom("redox-key:<ctrl-g>".to_string())
@@ -4741,6 +4790,10 @@ background = "#010203"
         );
 
         assert_eq!(style.theme, previous_style.theme);
+        assert_eq!(
+            style.layout.line_numbers,
+            previous_style.layout.line_numbers
+        );
         assert_eq!(format!("{active_config:?}"), previous_config);
         assert!(
             state

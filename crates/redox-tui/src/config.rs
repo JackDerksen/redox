@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::input::cursor::DEFAULT_SCROLLOFF_ROWS;
 use crate::ui::UiStyle;
+use crate::ui::style::LineNumbers;
 
 pub const DEFAULT_DIM_AMOUNT: f32 = 0.301;
 pub const DEFAULT_UNDO_HISTORY_SIZE: usize = usize::MAX;
@@ -27,6 +28,7 @@ pub struct Config {
     pub undo_tree_history_size: usize,
     pub scrolloff: usize,
     pub color_column: usize,
+    pub line_numbers: LineNumbers,
     pub leader: String,
     pub which_key: WhichKeyConfig,
     pub zen: ZenConfig,
@@ -47,6 +49,7 @@ impl Default for Config {
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
             scrolloff: DEFAULT_SCROLLOFF_ROWS,
             color_column: 79,
+            line_numbers: LineNumbers::default(),
             leader: " ".to_string(),
             which_key: WhichKeyConfig::default(),
             zen: ZenConfig::default(),
@@ -268,6 +271,7 @@ impl Config {
             ..UiStyle::default()
         };
         style.layout.color_column = Some(self.color_column);
+        style.layout.line_numbers = self.line_numbers;
         let Some(theme) = self.themes.get(name) else {
             self.apply_popup_sizes(&mut style);
             style.dim_amount = self.background_dimming;
@@ -279,6 +283,7 @@ impl Config {
         style = UiStyle::from_theme(style.theme);
         style.icons_enabled = self.icons_enabled;
         style.layout.color_column = Some(self.color_column);
+        style.layout.line_numbers = self.line_numbers;
         for (name, value) in &theme.syntax {
             let pair = color_pair(value, style.theme.bg)
                 .with_context(|| format!("invalid syntax colour {name:?}"))?;
@@ -393,6 +398,7 @@ mod tests {
         let config: Config = toml::from_str("").expect("empty configuration should parse");
         assert_eq!(config.scrolloff, DEFAULT_SCROLLOFF_ROWS);
         assert_eq!(config.color_column, 79);
+        assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
         assert!(config.check_updates);
         assert!(

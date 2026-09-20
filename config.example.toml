@@ -9,6 +9,7 @@ background_dimming = 0.5 # 0.0 disables popup background dimming; 1.0 is fully d
 undo_tree_history_size = 1000
 scrolloff = 5 # Keeps this many rows visible above and below the cursor while scrolling
 color_column = 79 # Renders on top of cl=80
+line_numbers = "relative" # "absolute" shows the actual line number on every row
 leader = " "
 
 # Optional local logging history. Nothing is uploaded. Use :log "What happened" to
