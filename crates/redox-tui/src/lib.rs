@@ -3291,6 +3291,7 @@ pub fn run() -> anyhow::Result<()> {
     state.configure_update_checks(config.check_updates);
 
     const MAX_EVENTS_PER_FRAME: usize = 256;
+    const MAX_INPUT_TIME_PER_FRAME: Duration = Duration::from_millis(8);
 
     let mut pending_wake_event: Option<Event> = None;
     let mut previous_terminal_size = window.get_size();
@@ -3309,6 +3310,10 @@ pub fn run() -> anyhow::Result<()> {
         }
 
         for _ in 0..MAX_EVENTS_PER_FRAME {
+            // Leave time to draw even when input arrives faster than it can be handled.
+            if input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
+                break;
+            }
             match window.poll_input()? {
                 Some(event) => {
                     event_count += 1;
@@ -3849,6 +3854,83 @@ mod tests {
             handle_editor_event(&mut state, &mut clipboard, Event::Character('u'));
             assert_eq!(state.session.active_buffer().to_string(), text);
         }
+    }
+
+    #[test]
+    fn pending_substitution_keeps_text_and_delimiter_overlays_stable() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let source = format!(
+            "fn main() {{\n    foo();\n}}\n{}",
+            "// padding\n".repeat(8192)
+        );
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&source);
+        state.session.active_meta_mut().path = Some(PathBuf::from("preview.rs"));
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor = redox_core::Pos::new(0, 10);
+            view.syntax_highlighter
+                .replace_cache(ui::syntax::SyntaxHighlighter::compute_cache(
+                    buffer,
+                    ui::syntax::SyntaxLanguage::Rust,
+                ));
+            view.delimiter_pair_cache
+                .install(ui::overlays::compute_delimiter_analysis(buffer));
+        });
+        let style = UiStyle::default();
+        let mut perf = FramePerfSample::default();
+        let mut original = TestWindow::new(100, 30);
+        draw_buffer_view(&mut state, style, &mut original, &mut perf).unwrap();
+        let brace_column = original.cells[0]
+            .iter()
+            .position(|cell| *cell == '{')
+            .unwrap();
+        assert_eq!(
+            original.backgrounds[0][brace_column],
+            Some(style.theme.scope)
+        );
+
+        state.apply_input(InputAction::EnterCommand, 100, 30);
+        for character in r"s/foo/bar\rline".chars() {
+            state.apply_input(InputAction::CommandChar(character), 100, 30);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.substitute_preview().unwrap().pending {
+            assert!(Instant::now() < deadline, "substitution preview timed out");
+            state.update_background(Instant::now());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut completed = TestWindow::new(100, 30);
+        draw_buffer_view(&mut state, style, &mut completed, &mut perf).unwrap();
+        assert!(completed.row_text(1).contains("bar"));
+        assert!(completed.row_text(2).contains("line();"));
+        assert_eq!(completed.backgrounds[0][brace_column], Some(style.theme.bg));
+        let title_row = (0..completed.height)
+            .find(|row| completed.row_text(*row).contains("Substitute:"))
+            .unwrap();
+
+        // Do not poll between keystrokes: the first result is obsolete before delivery.
+        for character in ['!', '?'] {
+            state.apply_input(InputAction::CommandChar(character), 100, 30);
+            let preview = state.substitute_preview().unwrap();
+            assert!(preview.pending);
+            assert_eq!(
+                preview.display_position(state.session.active_buffer(), redox_core::Pos::new(2, 0)),
+                redox_core::Pos::new(3, 0)
+            );
+            let mut pending = TestWindow::new(100, 30);
+            draw_buffer_view(&mut state, style, &mut pending, &mut perf).unwrap();
+            assert_eq!(pending.cells[..4], completed.cells[..4]);
+            assert_eq!(pending.backgrounds[..4], completed.backgrounds[..4]);
+            assert_eq!(pending.foregrounds[..4], completed.foregrounds[..4]);
+            assert_eq!(pending.row_text(title_row), completed.row_text(title_row));
+            assert_eq!(state.session.active_buffer().to_string(), source);
+        }
+        state.apply_input(InputAction::CommandEnter, 100, 30);
+        assert_eq!(state.mode, app::EditorMode::Normal);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            source.replacen("foo", "bar\nline!?", 1)
+        );
     }
 
     #[test]

@@ -69,13 +69,7 @@ fn draw_command_line_popup_after(
                 PopupKind::Command,
                 &substitution.map_or_else(
                     || COMMAND_TITLE.to_owned(),
-                    |preview| {
-                        if preview.pending {
-                            "Substitute: previewing...".to_owned()
-                        } else {
-                            format!("Substitute: {} matches", preview.match_count())
-                        }
-                    },
+                    |preview| format!("Substitute: {} matches", preview.match_count()),
                 ),
                 style.icons_enabled,
             ),

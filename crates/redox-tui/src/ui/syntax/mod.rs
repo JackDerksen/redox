@@ -250,6 +250,12 @@ pub(crate) struct SyntaxParser {
     previous: Option<(TextBuffer, Tree)>,
 }
 
+impl std::fmt::Debug for SyntaxParser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyntaxParser").finish_non_exhaustive()
+    }
+}
+
 impl SyntaxParser {
     pub(crate) fn compute_cache(
         &mut self,

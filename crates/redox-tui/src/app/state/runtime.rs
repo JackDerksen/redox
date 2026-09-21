@@ -107,7 +107,6 @@ impl EditorState {
         let background_pending = loading
             || self.update_check_can_notify()
             || self.analysis_worker.is_pending()
-            || self.substitute_preview_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();
         let animation = self.rain_is_active() || self.one_shot_highlight().is_some();
@@ -126,6 +125,8 @@ impl EditorState {
                 .as_ref()
                 .and_then(|explorer| self.git.repo_discovery_deadline(&explorer.dir_path)),
             background_pending.then_some(now + BACKGROUND_POLL_INTERVAL),
+            self.substitute_preview_pending()
+                .then_some(now + ANIMATION_FRAME_INTERVAL),
             self.lsp_poll_deadline(now),
             self.status_msg_expires_at,
             self.search_preview_due,
