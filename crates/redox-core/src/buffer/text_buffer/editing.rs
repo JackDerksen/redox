@@ -258,16 +258,25 @@ impl TextBuffer {
     /// Paste text after the given cursor.
     ///
     /// When `linewise` is true, insertion happens at the beginning of the next
-    /// logical line (clamped at the buffer boundary), and the returned cursor
+    /// logical line (created at EOF if needed), and the returned cursor
     /// moves to the end of inserted text.
     /// When `linewise` is false, insertion happens after the cursor char on the
     /// current line (or at line end when already at EOL), and the returned cursor
     /// is at the end of inserted text.
     pub fn paste_after(&mut self, cursor: Pos, text: &str, linewise: bool) -> Pos {
+        if text.is_empty() {
+            return self.clamp_pos(cursor);
+        }
         let insert_pos = if linewise {
-            let line = self.clamp_line(cursor.line);
-            let target_line = (line + 1).min(self.len_lines());
-            self.clamp_pos(Pos::new(target_line, 0))
+            let next_line = self.clamp_line(cursor.line) + 1;
+            if next_line < self.len_lines() {
+                Pos::new(next_line, 0)
+            } else if self.is_empty() {
+                Pos::zero()
+            } else {
+                let end = self.char_to_pos(self.len_chars());
+                self.insert(end, "\n")
+            }
         } else {
             let line = self.clamp_line(cursor.line);
             let line_len = self.line_len_chars(line);
