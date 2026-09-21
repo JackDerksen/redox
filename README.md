@@ -247,6 +247,8 @@ Enter command mode with `:`. This also stops rain mode and opens the command lin
 
 Command and subcommand completions appear as ghost text at the end of the input, regardless of cursor position. Press `Tab` from anywhere in the input to accept and move the cursor to the end, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
 
+Command, search, and Finder inputs accept `ctrl+v` to paste from the system clipboard, as well as terminal paste. Text is inserted at the input cursor; line breaks become spaces and pasting does not submit the input.
+
 The command line calculator supports arithmetic, base and unit conversions, and RGB/hex colours, with live result previews. `Enter` pastes the result at the buffer cursor as one undoable edit.
 
 <details>

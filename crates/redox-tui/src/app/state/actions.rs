@@ -15,6 +15,14 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
+        if matches!(
+            self.mode,
+            EditorMode::Command | EditorMode::Search | EditorMode::Finder
+        ) && let InputAction::Paste(text) | InputAction::PasteSystemClipboardText(text) = &action
+        {
+            self.paste_popup_text(text);
+            return;
+        }
         self.cancel_obsolete_lsp_requests();
         self.apply_configured_scrolloff(self.session.active_id());
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
@@ -274,7 +282,11 @@ impl EditorState {
             InputAction::CommandChar(c) => {
                 if self.mode == EditorMode::Command {
                     self.detach_command_history_navigation();
-                    insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
+                    insert_at_cursor(
+                        &mut self.command_line,
+                        &mut self.command_line_cursor,
+                        c.encode_utf8(&mut [0; 4]),
+                    );
                 }
             }
 
@@ -431,7 +443,11 @@ impl EditorState {
 
             InputAction::SearchChar(c) => {
                 if self.mode == EditorMode::Search {
-                    insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, c);
+                    insert_at_cursor(
+                        &mut self.command_line,
+                        &mut self.command_line_cursor,
+                        c.encode_utf8(&mut [0; 4]),
+                    );
                     self.schedule_search_preview(std::time::Instant::now());
                 }
             }
@@ -467,7 +483,7 @@ impl EditorState {
 
             InputAction::FinderChar(c) => {
                 if self.mode == EditorMode::Finder {
-                    self.finder_type_char(c);
+                    self.finder_insert_text(c.encode_utf8(&mut [0; 4]));
                 }
             }
 
@@ -1094,6 +1110,34 @@ impl EditorState {
         self.clamp_active_cursor_for_normal_mode();
     }
 
+    fn paste_popup_text(&mut self, text: &str) {
+        let text: String = text
+            .replace("\r\n", "\n")
+            .chars()
+            .filter_map(|character| match character {
+                '\r' | '\n' => Some(' '),
+                '\t' => Some(character),
+                character if character.is_control() => None,
+                character => Some(character),
+            })
+            .collect();
+        if text.is_empty() {
+            return;
+        }
+        if self.mode == EditorMode::Finder {
+            self.finder_insert_text(&text);
+        } else {
+            if self.mode == EditorMode::Command {
+                self.detach_command_history_navigation();
+            }
+            insert_at_cursor(&mut self.command_line, &mut self.command_line_cursor, &text);
+            if self.mode == EditorMode::Search {
+                self.schedule_search_preview(std::time::Instant::now());
+            }
+        }
+        self.refresh_substitute_preview();
+    }
+
     fn insert_text_at_cursor(
         &mut self,
         text: &str,
@@ -1463,10 +1507,10 @@ fn visual_column(line: &str, char_col: usize) -> usize {
     width
 }
 
-pub(super) fn insert_at_cursor(text: &mut String, cursor: &mut usize, ch: char) {
+pub(super) fn insert_at_cursor(text: &mut String, cursor: &mut usize, inserted: &str) {
     clamp_str_cursor(text, cursor);
-    text.insert(*cursor, ch);
-    *cursor += ch.len_utf8();
+    text.insert_str(*cursor, inserted);
+    *cursor += inserted.len();
 }
 
 pub(super) fn backspace_at_cursor(text: &mut String, cursor: &mut usize) {

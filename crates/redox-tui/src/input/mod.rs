@@ -2715,6 +2715,15 @@ fn map_key_with_state(
         return finish_custom_action(state, action);
     }
 
+    if matches!(
+        mode,
+        InputMode::Command | InputMode::Search | InputMode::Finder
+    ) && ctrl_key(mods, key, 'v')
+    {
+        state.reset_prefixes();
+        return InputAction::PasteSystemClipboard;
+    }
+
     match mode {
         InputMode::Insert => {
             if ctrl_key(mods, key, 'c') {
@@ -3928,6 +3937,12 @@ mod tests {
 
     #[test]
     fn editable_modes_map_text_navigation_and_cancellation() {
+        for mode in [InputMode::Command, InputMode::Search, InputMode::Finder] {
+            assert_eq!(
+                map_event(mode, &key_event(KeyKind::Char('v'), KeyModifiers::ctrl())),
+                InputAction::PasteSystemClipboard
+            );
+        }
         let cases = [
             (InputMode::Insert, Event::Character('\0'), InputAction::None),
             (

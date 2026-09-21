@@ -206,10 +206,6 @@ impl FinderState {
         self.anchor_selection_to_bottom = false;
     }
 
-    fn set_query_char(&mut self, ch: char) {
-        insert_at_cursor(&mut self.query, &mut self.query_cursor, ch);
-    }
-
     fn pop_query_char(&mut self) {
         backspace_at_cursor(&mut self.query, &mut self.query_cursor);
     }
@@ -712,10 +708,10 @@ impl EditorState {
         }
     }
 
-    pub(super) fn finder_type_char(&mut self, ch: char) {
+    pub(super) fn finder_insert_text(&mut self, text: &str) {
         let pinned = self.pinned_files.occupied_entries();
         if let Some(finder) = self.finder.as_mut() {
-            finder.set_query_char(ch);
+            insert_at_cursor(&mut finder.query, &mut finder.query_cursor, text);
             finder.refresh_results_to_bottom(&pinned);
         }
     }
