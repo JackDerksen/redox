@@ -14,6 +14,7 @@ use redox_core::{
 
 use super::actions::{backspace_at_cursor, insert_at_cursor, move_cursor_left, move_cursor_right};
 use super::{EditorMode, EditorState};
+use crate::ui::syntax::{LineSyntaxSpan, language_for_path, line_spans_for_source};
 
 const MAX_PINNED_FILES: usize = 5;
 const PREVIEW_MAX_BYTES: usize = 32 * 1024;
@@ -44,6 +45,7 @@ pub struct FinderPopupEntry {
 pub struct FinderPreview {
     pub title: String,
     pub lines: Vec<String>,
+    pub syntax_spans: Vec<Vec<LineSyntaxSpan>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1060,8 +1062,11 @@ fn load_preview(path: &Path, launch_dir: &Path) -> FinderPreview {
         .map(|_| String::from_utf8(buffer))
         .ok();
 
+    let mut syntax_spans = Vec::new();
     let lines = match preview {
         Some(Ok(contents)) => {
+            syntax_spans =
+                line_spans_for_source(&contents, language_for_path(Some(path))).unwrap_or_default();
             let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
             if contents.ends_with('\n') {
                 lines.push(String::new());
@@ -1075,5 +1080,9 @@ fn load_preview(path: &Path, launch_dir: &Path) -> FinderPreview {
         None => vec!["<preview unavailable>".to_string()],
     };
 
-    FinderPreview { title, lines }
+    FinderPreview {
+        title,
+        lines,
+        syntax_spans,
+    }
 }

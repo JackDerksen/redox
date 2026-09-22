@@ -1248,7 +1248,8 @@ fn finder_shows_pins_and_filters_files() {
         let lib_path = root.join("src").join("lib.rs");
         let notes_path = root.join("notes.md");
         fs::create_dir_all(main_path.parent().expect("src dir")).expect("failed to create src");
-        fs::write(&main_path, "fn main() {}\n").expect("failed to write main");
+        fs::write(&main_path, "/* comment\ncontinued */\nfn main() {}\n")
+            .expect("failed to write main");
         fs::write(&lib_path, "pub fn lib() {}\n").expect("failed to write lib");
         fs::write(&notes_path, "# Notes\n").expect("failed to write notes");
 
@@ -1274,6 +1275,18 @@ fn finder_shows_pins_and_filters_files() {
             state.apply_input(InputAction::FinderChar(ch), 80, 24);
         }
         let popup = wait_for_finder_popup(&mut state, |popup| popup.result_count == 1);
+        let preview = popup.preview.as_ref().expect("file preview");
+        assert!(
+            preview.syntax_spans[1]
+                .iter()
+                .any(|span| span.role == crate::ui::style::SyntaxRole::Comment)
+        );
+        assert!(
+            preview.syntax_spans[2]
+                .iter()
+                .any(|span| span.start_byte == 0
+                    && span.role == crate::ui::style::SyntaxRole::Keyword)
+        );
         assert_eq!(popup.result_count, 1);
         assert_eq!(popup.selected, popup.entries.len().saturating_sub(1));
         assert!(

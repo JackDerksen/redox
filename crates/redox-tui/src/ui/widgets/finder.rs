@@ -8,7 +8,9 @@ use crate::app::{FinderPopup, FinderPreview, PinSelectorPopup};
 use crate::ui::UiStyle;
 use crate::ui::helpers::clip_path_with_filename;
 use crate::ui::icons::{PREFIX_WIDTH, PopupKind, file_icon, popup_title};
+use crate::ui::render::LineViewport;
 use crate::ui::style::FinderStyle;
+use crate::ui::syntax::draw_line_with_syntax;
 use crate::ui::widgets::popup::{
     PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view,
@@ -123,7 +125,7 @@ pub fn draw_finder_popup(
         )?;
         let mut preview_view = popup_window_view(window, preview_layout);
         if let Some(preview) = &popup.preview {
-            draw_preview(&mut preview_view, preview, style.finder)?;
+            draw_preview(&mut preview_view, preview, style)?;
         }
     }
 
@@ -494,13 +496,13 @@ fn visible_entry_rows(
 fn draw_preview(
     view: &mut WindowView<'_>,
     preview: &FinderPreview,
-    style: FinderStyle,
+    style: UiStyle,
 ) -> minui::Result<()> {
     view.write_str_colored(
         0,
         0,
         &clip_text_to_cells(&preview.title, view.width as usize),
-        style.preview_path,
+        style.finder.preview_path,
     )?;
     for (idx, line) in preview
         .lines
@@ -508,11 +510,20 @@ fn draw_preview(
         .take(view.height.saturating_sub(1) as usize)
         .enumerate()
     {
-        view.write_str_colored(
-            idx as u16 + 1,
-            0,
-            &clip_text_to_cells(line, view.width as usize),
-            style.text,
+        let width = view.width as usize;
+        draw_line_with_syntax(
+            view,
+            LineViewport {
+                row: idx as u16 + 1,
+                column: 0,
+                scroll_x: 0,
+                width,
+            },
+            line,
+            style.finder.text,
+            None,
+            style,
+            preview.syntax_spans.get(idx).map_or(&[], Vec::as_slice),
         )?;
     }
     Ok(())
