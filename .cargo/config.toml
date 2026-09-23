@@ -1,0 +1,2 @@
+[patch.crates-io]
+minui = { path = "/Users/jack/dev/minui" }
