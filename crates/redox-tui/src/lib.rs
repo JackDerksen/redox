@@ -5044,7 +5044,7 @@ desc = "Open notes again"
                 b: 34
             }
         );
-        for (prefix, expected) in [("colorscheme ", "default"), ("e ", "notes.md")] {
+        for (prefix, expected) in [("colorscheme ", "default"), ("e notes", ".md")] {
             state.apply_input(InputAction::EnterCommand, 80, 24);
             for character in prefix.chars() {
                 state.apply_input(InputAction::CommandChar(character), 80, 24);
@@ -5074,7 +5074,7 @@ desc = "Open notes again"
         );
         for (prefix, expected) in [
             ("colorscheme v", None),
-            ("e ", None),
+            ("e notes", None),
             ("colorscheme é", Some("toile")),
         ] {
             state.apply_input(InputAction::EnterCommand, 80, 24);

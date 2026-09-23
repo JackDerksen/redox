@@ -221,7 +221,56 @@ enum SaveFormatter {
     ClangFormat,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct CommandPathCompletions {
+    prefix: String,
+    candidates: Vec<String>,
+}
+
 impl EditorState {
+    pub(super) fn refresh_command_path_completions(&mut self) {
+        let input = self.command_line.trim_start();
+        let path_argument = input
+            .split_once(char::is_whitespace)
+            .filter(|(command, _)| {
+                self.mode == EditorMode::Command && matches!(*command, "e" | "w" | "wq")
+            });
+        let Some((_, argument)) = path_argument else {
+            self.command_path_completions = CommandPathCompletions::default();
+            return;
+        };
+        let argument = argument.trim_start();
+        let directory_end = argument
+            .rfind(std::path::MAIN_SEPARATOR)
+            .map_or(0, |index| index + 1);
+        let directory = &argument[..directory_end];
+        let prefix = &input[..input.len() - argument.len() + directory_end];
+        if self.command_path_completions.prefix == prefix {
+            return;
+        }
+        let mut candidates = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(if directory.is_empty() { "." } else { directory }) {
+            for entry in entries.flatten() {
+                let Ok(name) = entry.file_name().into_string() else {
+                    continue;
+                };
+                if name.contains(char::is_control) {
+                    continue;
+                }
+                let mut candidate = format!("{prefix}{name}");
+                if entry.path().is_dir() {
+                    candidate.push(std::path::MAIN_SEPARATOR);
+                }
+                candidates.push(candidate);
+            }
+        }
+        candidates.sort();
+        self.command_path_completions = CommandPathCompletions {
+            prefix: prefix.to_owned(),
+            candidates,
+        };
+    }
+
     pub(crate) fn configure_command_completions<'name>(
         &mut self,
         names: impl IntoIterator<Item = &'name str>,
@@ -242,7 +291,6 @@ impl EditorState {
 
     fn command_completions(&self) -> impl Iterator<Item = &str> + '_ {
         let prefix = self.command_line.trim_start();
-        let has_prefix = !prefix.is_empty();
         builtin_commands()
             .map(|(name, _)| name)
             .chain([calculator::CONVERT_COMMAND])
@@ -251,8 +299,22 @@ impl EditorState {
                     .iter()
                     .map(String::as_str),
             )
+            .chain(
+                self.command_path_completions
+                    .candidates
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|candidate| {
+                        !self
+                            .configured_command_completions
+                            .iter()
+                            .any(|configured| configured == candidate)
+                    }),
+            )
             .filter(move |candidate| {
-                has_prefix && self.mode == EditorMode::Command && candidate.starts_with(prefix)
+                self.mode == EditorMode::Command
+                    && candidate.starts_with(prefix)
+                    && *candidate != prefix
             })
     }
 
@@ -260,7 +322,6 @@ impl EditorState {
         self.command_completions()
             .nth(self.command_completion_index)
             .map(|candidate| &candidate[self.command_line.trim_start().len()..])
-            .filter(|suffix| !suffix.is_empty())
     }
 
     pub(crate) fn command_calculation_preview(&self) -> Option<String> {
