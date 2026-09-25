@@ -175,11 +175,26 @@ impl EditorState {
                     if preview.replacing
                         && self.session.active_buffer().len_bytes() >= SUBSTITUTE_WORKER_MIN_BYTES
                     {
-                        let mut pending = SubstitutePreview::new(
-                            buffer_id,
-                            preview.version,
-                            preview.command.clone(),
-                        );
+                        // Keep the displayed text, position mapping, and highlights
+                        // together while the next preview is computed.
+                        let mut pending = self
+                            .substitution
+                            .preview
+                            .take()
+                            .filter(|previous| {
+                                previous.buffer_id == buffer_id
+                                    && previous.version == preview.version
+                                    && previous.buffer.is_some()
+                            })
+                            .unwrap_or_else(|| {
+                                SubstitutePreview::new(
+                                    buffer_id,
+                                    preview.version,
+                                    preview.command.clone(),
+                                )
+                            });
+                        pending.command.clone_from(&preview.command);
+                        pending.error = None;
                         pending.replacing = true;
                         pending.pending = true;
                         // A running job finishes first; the next refresh dispatches only
