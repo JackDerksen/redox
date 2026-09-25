@@ -23,6 +23,9 @@ pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
     pub check_updates: bool,
+    pub mouse: bool,
+    pub mouse_invert_vertical: bool,
+    pub mouse_invert_horizontal: bool,
     pub logging: LoggingConfig,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
@@ -44,6 +47,9 @@ impl Default for Config {
             theme: "default".to_string(),
             icons_enabled: false,
             check_updates: true,
+            mouse: false,
+            mouse_invert_vertical: false,
+            mouse_invert_horizontal: false,
             logging: LoggingConfig::default(),
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
@@ -401,6 +407,14 @@ mod tests {
         assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
         assert!(config.check_updates);
+        assert!(!config.mouse);
+        assert!(!config.mouse_invert_vertical);
+        assert!(!config.mouse_invert_horizontal);
+        let mouse_config: Config =
+            toml::from_str("mouse_invert_vertical = true\nmouse_invert_horizontal = true").unwrap();
+        assert!(mouse_config.mouse_invert_vertical);
+        assert!(mouse_config.mouse_invert_horizontal);
+        assert!(toml::from_str::<Config>("mouse = true").unwrap().mouse);
         assert!(
             !toml::from_str::<Config>("check_updates = false")
                 .unwrap()

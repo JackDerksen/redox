@@ -6,7 +6,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{CompletionEntry, CompletionPopup};
 use crate::ui::icons::completion_kind_icon;
 use crate::ui::style::SyntaxRole;
-use crate::ui::widgets::popup::{PopupChrome, clip_text_to_cells, draw_popup_frame_at};
+use crate::ui::widgets::popup::{
+    MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupMouseLayout,
+    clip_text_to_cells, draw_popup_frame_at,
+};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const COMPLETION_VISIBLE_ROWS: usize = 8;
@@ -17,22 +20,22 @@ const COMPLETION_TRAILING_PADDING: usize = 1;
 const COMPLETION_KIND_GAP: usize = 2;
 const COMPLETION_MIN_KEYWORD_WIDTH: usize = 8;
 
-pub fn draw_completion_popup(
+pub(crate) fn draw_completion_popup(
     popup: &CompletionPopup,
     style: UiStyle,
     window: &mut dyn Window,
     anchor_x: u16,
     anchor_y: u16,
     text_bottom_y: u16,
-) -> minui::Result<()> {
+) -> minui::Result<Option<PopupMouseLayout>> {
     if popup.entries.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let (term_w, term_h) = window.get_size();
     let text_bottom_y = text_bottom_y.min(term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS));
     if term_w < COMPLETION_MIN_WIDTH || text_bottom_y < 3 {
-        return Ok(());
+        return Ok(None);
     }
 
     let visible_rows = popup_visible_len(popup);
@@ -54,7 +57,7 @@ pub fn draw_completion_popup(
         above_capacity
     };
     if capacity == 0 {
-        return Ok(());
+        return Ok(None);
     }
 
     let frame_h = capacity.saturating_add(frame_extra_rows) as u16;
@@ -65,7 +68,7 @@ pub fn draw_completion_popup(
     };
     let x = anchor_x.min(term_w.saturating_sub(width));
 
-    draw_popup_frame_at(
+    let frame = draw_popup_frame_at(
         window,
         x,
         y,
@@ -74,8 +77,11 @@ pub fn draw_completion_popup(
         "",
         PopupChrome::finder(style),
     )?;
-    draw_entries(window, popup, style, x, y, layout, capacity)?;
-    Ok(())
+    let mut mouse = PopupMouseLayout::new(MousePopup::Completion);
+    mouse.add_frame(frame);
+    mouse.scrolls.push((frame.into(), MouseScroll::List));
+    mouse.clicks = draw_entries(window, popup, style, x, y, layout, capacity)?;
+    Ok(Some(mouse))
 }
 
 pub fn draw_completion_preview(
@@ -200,7 +206,8 @@ fn draw_entries(
     y: u16,
     layout: CompletionLayout,
     capacity: usize,
-) -> minui::Result<()> {
+) -> minui::Result<Vec<(MouseRect, MouseTarget)>> {
+    let mut clicks = Vec::new();
     let selected_style = style.finder.selected;
     let entries: &[CompletionEntry] = &popup.entries;
     let width = layout.width;
@@ -210,6 +217,18 @@ fn draw_entries(
     for (visible_idx, entry) in entries[start..end].iter().enumerate() {
         let idx = start + visible_idx;
         let row = y + 1 + visible_idx as u16;
+        clicks.push((
+            MouseRect {
+                x: x.saturating_add(1),
+                y: row,
+                width: width.saturating_sub(2),
+                height: 1,
+            },
+            MouseTarget::Entry {
+                index: idx,
+                identity: entry.keyword.clone(),
+            },
+        ));
         let is_selected = idx == popup.selected;
         let kind_style = completion_kind_color(style, entry, is_selected);
         let dim_style = selection_aware_color(style.finder.dim, selected_style, is_selected);
@@ -253,7 +272,7 @@ fn draw_entries(
         }
     }
 
-    Ok(())
+    Ok(clicks)
 }
 
 fn draw_completion_keyword(

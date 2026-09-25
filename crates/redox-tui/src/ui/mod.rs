@@ -9,12 +9,12 @@ pub mod style;
 pub mod syntax;
 pub mod widgets;
 
-pub use rain_animation::RainAnimation;
-pub use render::{RenderLineCache, TextViewport};
-pub use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
-pub use syntax::{SyntaxHighlighter, language_for_path};
+pub(crate) use rain_animation::RainAnimation;
+pub(crate) use render::{RenderLineCache, TextViewport};
+pub(crate) use style::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UiStyle};
+pub(crate) use syntax::{SyntaxHighlighter, language_for_path};
 
-pub use widgets::{
+pub(crate) use widgets::{
     UNDO_TREE_HEADER_ROWS, about_popup_inner_size, build_editor_status_bar,
     build_symbol_info_source_lines, draw_about_popup_view, draw_code_actions_popup,
     draw_command_line_popup, draw_command_line_popup_below, draw_completion_popup,

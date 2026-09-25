@@ -68,6 +68,50 @@ impl CursorController {
         self.follow.bottom_margin_rows = rows;
     }
 
+    /// Place the cursor without moving a manually scrolled viewport.
+    pub fn place_cursor(&mut self, position: Pos) {
+        self.cursor = position;
+        self.preferred_col = None;
+        self.invalidate_visual_cache();
+    }
+
+    /// Move the viewport first, moving the cursor only when it crosses scrolloff.
+    pub fn scroll_vertical(&mut self, buffer: &TextBuffer, rows: isize, height: usize) {
+        if rows == 0 || height == 0 {
+            return;
+        }
+        let last_line = buffer.len_lines().saturating_sub(1);
+        let top = self
+            .scroll_y_lines
+            .saturating_add_signed(rows)
+            .min(last_line);
+        if top == self.scroll_y_lines {
+            return;
+        }
+        self.scroll_y_lines = top;
+        let bottom = top.saturating_add(height - 1).min(last_line);
+        let max_margin = (height - 1) / 2;
+        let first_cursor_line = if top == 0 {
+            0
+        } else {
+            top.saturating_add(self.follow.top_margin_rows.min(max_margin))
+                .min(last_line)
+        };
+        let last_cursor_line = if bottom == last_line {
+            last_line
+        } else {
+            bottom.saturating_sub(self.follow.bottom_margin_rows.min(max_margin))
+        }
+        .max(first_cursor_line);
+        let line = self.cursor.line.clamp(first_cursor_line, last_cursor_line);
+        if line != self.cursor.line {
+            let column = self.preferred_col.unwrap_or(self.cursor.col);
+            self.cursor = buffer.clamp_pos(Pos::new(line, column));
+            self.preferred_col = Some(column);
+            self.invalidate_visual_cache();
+        }
+    }
+
     /// Clamp an edited cursor position and keep it visible.
     pub fn reconcile_after_edit(
         &mut self,
@@ -174,7 +218,10 @@ impl CursorController {
         let vx = info.cursor_x_cells.saturating_sub(self.scroll_x_cells);
         let vy = info.cursor_y_lines.saturating_sub(self.scroll_y_lines);
 
-        let visible = vx < viewport_width_cells && vy < viewport_height_rows;
+        let visible = info.cursor_x_cells >= self.scroll_x_cells
+            && info.cursor_y_lines >= self.scroll_y_lines
+            && vx < viewport_width_cells
+            && vy < viewport_height_rows;
 
         CursorSpec {
             x: vx as u16,
@@ -321,7 +368,7 @@ impl CursorController {
         }
     }
 
-    fn line_cell_width(&self, buffer: &TextBuffer, line_idx: usize) -> usize {
+    pub(crate) fn line_cell_width(&self, buffer: &TextBuffer, line_idx: usize) -> usize {
         let text = buffer.line_string(line_idx);
         if text.is_empty() {
             return 0;
@@ -438,6 +485,44 @@ fn cell_width_for_char(ch: char, tab_policy: TabPolicy) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_scrolling_moves_the_page_before_the_cursor_and_respects_bounds() {
+        let buffer = TextBuffer::from_text(
+            &(0..50)
+                .map(|line| if line == 6 { "x" } else { "abcdef" })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let mut cursor = CursorController::new();
+        cursor.set_scrolloff_rows(2);
+        cursor.place_cursor(Pos::new(5, 4));
+        for (rows, expected_top, expected_line) in [
+            (1, 1, 5),
+            (2, 3, 5),
+            (1, 4, 6),
+            (-1, 3, 6),
+            (-3, 0, 6),
+            (-1, 0, 6),
+            (100, 49, 49),
+            (-3, 46, 49),
+            (-10, 36, 44),
+        ] {
+            cursor.scroll_vertical(&buffer, rows, 11);
+            assert_eq!(cursor.scroll_y_lines, expected_top);
+            assert_eq!(
+                cursor.cursor,
+                Pos::new(expected_line, if expected_line == 6 { 1 } else { 4 })
+            );
+        }
+        cursor.set_scrolloff_rows(usize::MAX);
+        for height in [0, 1, 2, 3] {
+            cursor.scroll_vertical(&buffer, -1, height);
+            if height > 0 {
+                assert!(cursor.cursor_spec(&buffer, 80, height).visible);
+            }
+        }
+    }
 
     #[test]
     fn vertical_motion_keeps_preferred_column() {

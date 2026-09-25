@@ -138,6 +138,72 @@ impl EditorState {
         self.refresh_undo_tree_surface(false);
     }
 
+    pub(super) fn scroll_undo_tree_pane(
+        &mut self,
+        buffer_id: BufferId,
+        rows: isize,
+        columns: isize,
+        width: usize,
+        height: usize,
+    ) {
+        if height == 0 || width == 0 {
+            return;
+        }
+        let Some(tree) = self.undo_tree.as_ref() else {
+            return;
+        };
+        if buffer_id == tree.diff_buffer_id {
+            let pane_id = tree.diff_pane_id;
+            self.with_buffer_view_mut(buffer_id, |buffer, view| {
+                view.cursor.scroll_y_lines = view
+                    .cursor
+                    .scroll_y_lines
+                    .saturating_add_signed(rows)
+                    .min(buffer.len_lines().saturating_sub(height));
+                if columns != 0 {
+                    let max_width = (0..buffer.len_lines())
+                        .map(|line| view.cursor.line_cell_width(buffer, line))
+                        .max()
+                        .unwrap_or(0);
+                    view.cursor.scroll_x_cells = view
+                        .cursor
+                        .scroll_x_cells
+                        .saturating_add_signed(columns)
+                        .min(max_width.saturating_sub(width));
+                }
+            });
+            self.sync_rendered_pane_view(pane_id, buffer_id);
+        } else if buffer_id == tree.buffer_id && rows != 0 {
+            let height = height.saturating_sub(UNDO_TREE_HEADER_ROWS as usize);
+            if height == 0 {
+                return;
+            }
+            let view = self.views.entry(buffer_id).or_default();
+            let top = view
+                .cursor
+                .scroll_y_lines
+                .saturating_add_signed(rows)
+                .min(tree.display_rows.len().saturating_sub(height));
+            let bottom = top.saturating_add(height).min(tree.display_rows.len());
+            let target = view
+                .cursor
+                .cursor
+                .line
+                .clamp(top, bottom.saturating_sub(1).max(top));
+            let selected = tree.display_rows[top..bottom]
+                .iter()
+                .enumerate()
+                .filter_map(|(offset, node)| node.map(|node| (top + offset, node)))
+                .min_by_key(|(line, _)| line.abs_diff(target));
+            view.cursor.scroll_y_lines = top;
+            if let Some((_, node)) = selected {
+                self.select_undo_tree_node(node);
+            } else {
+                self.sync_rendered_pane_view(tree.pane_id, buffer_id);
+            }
+        }
+    }
+
     pub(super) fn apply_undo_tree_motion(&mut self, motion: Motion, count: usize) -> bool {
         let Some(tree) = self.undo_tree.as_ref() else {
             return false;
@@ -342,8 +408,14 @@ impl EditorState {
             *buffer = TextBuffer::from_text(&rendered.text);
         }
         if let Some(buffer) = self.session.buffer_mut(tree.diff_buffer_id) {
+            if buffer.to_string() != diff_text {
+                let cursor = &mut self.views.entry(tree.diff_buffer_id).or_default().cursor;
+                cursor.scroll_x_cells = 0;
+                cursor.scroll_y_lines = 0;
+            }
             *buffer = TextBuffer::from_text(&diff_text);
         }
+        self.sync_rendered_pane_view(tree.diff_pane_id, tree.diff_buffer_id);
         if let Some(tree) = self.undo_tree.as_mut() {
             tree.display_rows = rendered.display_rows;
             tree.diff_separator_row = diff_separator_row;

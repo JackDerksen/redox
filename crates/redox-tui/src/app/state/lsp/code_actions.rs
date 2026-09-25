@@ -60,7 +60,14 @@ impl EditorState {
         }
         let max_selected = state.actions.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
-        let scroll = selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        let scroll = self
+            .mouse
+            .list_scroll
+            .get(&(MousePopup::CodeActions, MouseScroll::List))
+            .copied()
+            .unwrap_or_else(|| {
+                selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1))
+            });
         Some(CodeActionPopup {
             title: state.title.clone(),
             entries: state

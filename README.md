@@ -457,6 +457,10 @@ Other language tool commands:
 
 ### Editing and motion
 
+Optional mouse support is enabled with `mouse = true` in your configuration. It supports
+vertical and horizontal scrolling, click-to-position, and drag selection into visual mode.
+Popups support scrolling, entry selection, double-click opening, and outside-click dismissal.
+
 | Keys | Behaviour |
 | ---- | --------- |
 | `h` / `j` / `k` / `l` | Move left / down / up / right. |
