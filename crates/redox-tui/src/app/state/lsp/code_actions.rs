@@ -60,7 +60,14 @@ impl EditorState {
         }
         let max_selected = state.actions.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
-        let scroll = selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        let scroll = self
+            .mouse
+            .list_scroll
+            .get(&(MousePopup::CodeActions, MouseScroll::List))
+            .copied()
+            .unwrap_or_else(|| {
+                selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1))
+            });
         Some(CodeActionPopup {
             title: state.title.clone(),
             entries: state
@@ -184,7 +191,7 @@ impl EditorState {
             .is_some_and(|client| client.session.is_initialized());
         if !client_initialized {
             if trigger == CodeActionRequestTrigger::Manual {
-                self.set_status("LSP still loading");
+                self.clear_status();
             }
             return;
         }
@@ -230,7 +237,7 @@ impl EditorState {
                     },
                 );
                 if trigger == CodeActionRequestTrigger::Manual {
-                    self.set_status("loading quick fixes...");
+                    self.clear_status();
                 }
             }
             Err(error) => {
@@ -309,10 +316,7 @@ impl EditorState {
                     );
                     if edit_applied {
                         self.consume_applied_code_action(return_mode);
-                        self.set_status(format!(
-                            "applied quick fix edit; running command: {}",
-                            action.title
-                        ));
+                        self.clear_status();
                     }
                 }
                 Err(error) => {
@@ -457,7 +461,7 @@ impl EditorState {
             });
         }
         state.focus = DiagnosticsPopupFocus::CodeActions;
-        self.set_status("loading quick fixes...");
+        self.clear_status();
         true
     }
 

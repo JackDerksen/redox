@@ -45,7 +45,9 @@ use ui::syntax::{
 };
 use ui::widgets::dashboard::draw_dashboard;
 use ui::widgets::pane::draw_pane_filename;
-use ui::widgets::popup::{PopupLayout, anchored_popup_origin, popup_occludes_cursor};
+use ui::widgets::popup::{
+    MousePopup, PopupLayout, PopupMouseLayout, anchored_popup_origin, popup_occludes_cursor,
+};
 use ui::{
     STATUS_BAR_HEIGHT_CELLS, TextViewport, UNDO_TREE_HEADER_ROWS, UiStyle, about_popup_inner_size,
     build_editor_status_bar, draw_about_popup_view, draw_code_actions_popup,
@@ -127,6 +129,10 @@ fn draw_buffer_view(
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
+    // MinUI preserves the previous frame's cursor unless we request a new state.
+    // Visible editor and popup cursors override this fallback during drawing.
+    hide_cursor(window);
+    state.mouse.popups.clear();
     if state.zen.enabled && state.zen.hide_color_column {
         style.layout.color_column = None;
     }
@@ -136,26 +142,31 @@ fn draw_buffer_view(
     } else {
         width
     };
+    state.set_mouse_viewport((width - viewport_width) / 2, viewport_width, height);
     if viewport_width == width {
-        return draw_editor_view(state, style, window, perf);
+        draw_editor_view(state, style, window, perf)?;
+    } else {
+        fill_background(
+            window,
+            width,
+            height,
+            ColorPair::new(style.zen_margin, style.zen_margin),
+        )?;
+        let mut viewport = WindowView {
+            window,
+            x_offset: (width - viewport_width) / 2,
+            y_offset: 0,
+            scroll_x: 0,
+            scroll_y: 0,
+            width: viewport_width,
+            height,
+        };
+        draw_editor_view(state, style, &mut viewport, perf)?;
     }
-
-    fill_background(
-        window,
-        width,
-        height,
-        ColorPair::new(style.zen_margin, style.zen_margin),
-    )?;
-    let mut viewport = WindowView {
-        window,
-        x_offset: (width - viewport_width) / 2,
-        y_offset: 0,
-        scroll_x: 0,
-        scroll_y: 0,
-        width: viewport_width,
-        height,
-    };
-    draw_editor_view(state, style, &mut viewport, perf)
+    for popup in &mut state.mouse.popups {
+        popup.cache_interactions();
+    }
+    Ok(())
 }
 
 fn draw_editor_view(
@@ -195,9 +206,11 @@ fn draw_editor_view(
             state.mode == app::EditorMode::Normal,
         )?;
         if let Some(popup) = state.finder_popup() {
-            draw_finder_popup(&popup, style, window)?;
+            let mouse = draw_finder_popup(&popup, style, window)?;
+            state.mouse.popups.push(mouse);
         } else if let Some(popup) = state.pin_selector_popup() {
-            draw_pin_selector_popup(&popup, style, window)?;
+            let mouse = draw_pin_selector_popup(&popup, style, window)?;
+            state.mouse.popups.push(mouse);
         }
         let _ = draw_notification_toast(state, style, window)?;
         return Ok(());
@@ -223,14 +236,16 @@ fn draw_editor_view(
             popup_layout.inner_w as usize,
             popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        let cursor_spec =
+        let (cursor_spec, mouse) =
             draw_explorer_popup_view(state, style, window, popup, popup_layout, inner_h)?;
+        state.mouse.popups.push(mouse);
         if matches!(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         ) && !draw_command_line_below_popup(state, style, window, stack_layout)?
         {
-            draw_command_line_popup(state, style, window)?;
+            let mouse = draw_command_line_popup(state, style, window)?;
+            state.mouse.popups.extend(mouse);
         }
         let toast_layout = draw_notification_toast(state, style, window)?;
         if !matches!(
@@ -266,13 +281,15 @@ fn draw_editor_view(
             popup_layout.inner_w as usize,
             popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
         );
-        draw_about_popup_view(state, style, window, popup, popup_layout)?;
+        let mouse = draw_about_popup_view(state, style, window, popup, popup_layout)?;
+        state.mouse.popups.push(mouse);
         if !draw_command_line_below_popup(state, style, window, stack_layout)? {
             if matches!(
                 state.mode,
                 app::EditorMode::Command | app::EditorMode::Search
             ) {
-                draw_command_line_popup(state, style, window)?;
+                let mouse = draw_command_line_popup(state, style, window)?;
+                state.mouse.popups.extend(mouse);
             } else {
                 hide_cursor(window);
             }
@@ -292,7 +309,8 @@ fn draw_editor_view(
             Some(state.session.active_id()),
             inner_size,
         )?;
-        draw_lsp_marketplace_popup(&popup, style, window)?;
+        let mouse = draw_lsp_marketplace_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         return Ok(());
@@ -309,7 +327,8 @@ fn draw_editor_view(
             Some(state.session.active_id()),
             inner_size,
         )?;
-        draw_diagnostics_popup(&popup, style, window)?;
+        let mouse = draw_diagnostics_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         return Ok(());
@@ -326,7 +345,8 @@ fn draw_editor_view(
             Some(state.session.active_id()),
             inner_size,
         )?;
-        draw_code_actions_popup(&popup, style, window)?;
+        let mouse = draw_code_actions_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
         let _ = draw_notification_toast(state, style, window)?;
         hide_cursor(window);
         return Ok(());
@@ -381,6 +401,9 @@ fn draw_editor_view(
             ) {
             let layout = perf_popup_layout(vw, vh, style);
             draw_perf_popup_view(style, window, popup)?;
+            let mut mouse = PopupMouseLayout::new(MousePopup::Perf);
+            mouse.add_frame(layout);
+            state.mouse.popups.push(mouse);
             Some(layout)
         } else {
             None
@@ -393,11 +416,14 @@ fn draw_editor_view(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         ) {
-            draw_command_line_popup(state, style, window)?;
+            let mouse = draw_command_line_popup(state, style, window)?;
+            state.mouse.popups.extend(mouse);
         } else if let Some(popup) = state.finder_popup() {
-            draw_finder_popup(&popup, style, window)?;
+            let mouse = draw_finder_popup(&popup, style, window)?;
+            state.mouse.popups.push(mouse);
         } else if let Some(popup) = state.pin_selector_popup() {
-            draw_pin_selector_popup(&popup, style, window)?;
+            let mouse = draw_pin_selector_popup(&popup, style, window)?;
+            state.mouse.popups.push(mouse);
         } else if let Some(popup) = state.completion_popup() {
             if let Some(context) = active_split_cursor_context(state, vw, text_h) {
                 let cursor_x = context.x;
@@ -452,7 +478,15 @@ fn draw_editor_view(
                         )?;
                     }
                 }
-                draw_completion_popup(&popup, style, window, cursor_x, context.y, context.height)?;
+                let mouse = draw_completion_popup(
+                    &popup,
+                    style,
+                    window,
+                    cursor_x,
+                    context.y,
+                    context.height,
+                )?;
+                state.mouse.popups.extend(mouse);
                 cursor_spec = Some(minui::window::CursorSpec {
                     x: cursor_x,
                     y: context.y,
@@ -466,10 +500,18 @@ fn draw_editor_view(
         {
             force_hide_cursor = true;
         } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
+            state.clamp_symbol_info_scroll(vw);
+            if let Some(popup) = state.symbol_info_popup(vw) {
+                let mouse = draw_symbol_info_popup(&popup, style, window, cursor.x, cursor.y)?;
+                state.mouse.popups.extend(mouse);
+            }
             cursor_spec = Some(cursor);
         }
         let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
-            draw_which_key_popup(popup, style, window)?
+            draw_which_key_popup(popup, style, window)?.map(|(layout, mouse)| {
+                state.mouse.popups.push(mouse);
+                layout
+            })
         } else {
             None
         };
@@ -522,7 +564,8 @@ fn draw_editor_view(
             state.mode,
             app::EditorMode::Command | app::EditorMode::Search
         ) {
-            draw_command_line_popup(state, style, window)?;
+            let mouse = draw_command_line_popup(state, style, window)?;
+            state.mouse.popups.extend(mouse);
             return Ok(());
         }
         hide_cursor(window);
@@ -553,7 +596,8 @@ fn draw_editor_view(
             },
         )?;
         build_editor_status_bar(state, style).draw(window)?;
-        draw_command_line_popup(state, style, window)?;
+        let mouse = draw_command_line_popup(state, style, window)?;
+        state.mouse.popups.extend(mouse);
         let _ = draw_notification_toast(state, style, window)?;
         return Ok(());
     }
@@ -731,6 +775,9 @@ fn draw_editor_view(
         ) {
         let layout = perf_popup_layout(vw, vh, style);
         draw_perf_popup_view(style, window, popup)?;
+        let mut mouse = PopupMouseLayout::new(MousePopup::Perf);
+        mouse.add_frame(layout);
+        state.mouse.popups.push(mouse);
         Some(layout)
     } else {
         None
@@ -741,11 +788,14 @@ fn draw_editor_view(
         state.mode,
         app::EditorMode::Command | app::EditorMode::Search
     ) {
-        draw_command_line_popup(state, style, window)?;
+        let mouse = draw_command_line_popup(state, style, window)?;
+        state.mouse.popups.extend(mouse);
     } else if let Some(popup) = state.finder_popup() {
-        draw_finder_popup(&popup, style, window)?;
+        let mouse = draw_finder_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
     } else if let Some(popup) = state.pin_selector_popup() {
-        draw_pin_selector_popup(&popup, style, window)?;
+        let mouse = draw_pin_selector_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
     } else if let Some(popup) = state.completion_popup() {
         if spec.visible {
             let cursor_x = spec.x.saturating_add(content_x);
@@ -797,7 +847,8 @@ fn draw_editor_view(
                     )?;
                 }
             }
-            draw_completion_popup(&popup, style, window, cursor_x, spec.y, text_h)?;
+            let mouse = draw_completion_popup(&popup, style, window, cursor_x, spec.y, text_h)?;
+            state.mouse.popups.extend(mouse);
             cursor_spec = Some(minui::window::CursorSpec {
                 x: cursor_x,
                 y: spec.y,
@@ -811,7 +862,8 @@ fn draw_editor_view(
             let popup = state
                 .symbol_info_popup(vw)
                 .expect("symbol info popup should still exist after clamping");
-            draw_symbol_info_popup(&popup, style, window, cursor_x, spec.y)?;
+            let mouse = draw_symbol_info_popup(&popup, style, window, cursor_x, spec.y)?;
+            state.mouse.popups.extend(mouse);
             cursor_spec = Some(minui::window::CursorSpec {
                 x: cursor_x,
                 y: spec.y,
@@ -827,7 +879,10 @@ fn draw_editor_view(
     }
 
     let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
-        draw_which_key_popup(popup, style, window)?
+        draw_which_key_popup(popup, style, window)?.map(|(layout, mouse)| {
+            state.mouse.popups.push(mouse);
+            layout
+        })
     } else {
         None
     };
@@ -850,12 +905,12 @@ fn draw_editor_view(
     Ok(())
 }
 
-fn draw_lsp_loading_toast(
+fn draw_loading_toast(
     state: &EditorState,
     style: UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<ui::widgets::popup::PopupLayout>> {
-    let Some(message) = state.active_lsp_loading_toast(Instant::now()) else {
+    let Some(message) = state.active_loading_toast(Instant::now()) else {
         return Ok(None);
     };
     let (term_w, term_h) = window.get_size();
@@ -892,7 +947,7 @@ fn draw_notification_toast(
     if layout.is_some() {
         Ok(layout)
     } else {
-        draw_lsp_loading_toast(state, style, window)
+        draw_loading_toast(state, style, window)
     }
 }
 
@@ -1298,7 +1353,7 @@ fn popup_stack_layout(
 }
 
 fn draw_command_line_below_popup(
-    state: &EditorState,
+    state: &mut EditorState,
     style: UiStyle,
     window: &mut dyn Window,
     stack_layout: PopupStackLayout,
@@ -1306,7 +1361,11 @@ fn draw_command_line_below_popup(
     let Some(command_padding) = stack_layout.command_padding else {
         return Ok(false);
     };
-    draw_command_line_popup_below(state, style, window, stack_layout.popup, command_padding)
+    let mouse =
+        draw_command_line_popup_below(state, style, window, stack_layout.popup, command_padding)?;
+    let drawn = mouse.is_some();
+    state.mouse.popups.extend(mouse);
+    Ok(drawn)
 }
 
 fn draw_modal_popup_background(
@@ -1737,11 +1796,10 @@ fn draw_buffer_snapshot_for_id(
                     draw_undo_tree_preview_lines(
                         window,
                         width,
+                        scroll_x,
                         style.undo_tree,
                         &lines,
-                        undo_tree_preview_separator_row
-                            .and_then(|row| row.checked_sub(first_line))
-                            .filter(|row| *row < lines.len()),
+                        (first_line, undo_tree_preview_separator_row),
                     )
                 }
             };
@@ -2992,6 +3050,9 @@ fn handle_editor_event(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
+    if matches!(event, Event::Unknown) {
+        return !state.should_quit;
+    }
     state.begin_log_input(&event);
     let keep_running = handle_editor_event_inner(state, clipboard, event);
     state.finish_log_input();
@@ -3003,6 +3064,12 @@ fn handle_editor_event_inner(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
+    if state.handle_mouse_input(&event) {
+        if let Some(key) = state.mouse.pending_key.take() {
+            return handle_editor_event_inner(state, clipboard, key);
+        }
+        return !state.should_quit;
+    }
     if state.handle_dashboard_event(&event) {
         state.log_event("dashboard_input", serde_json::Value::Null);
         return !state.should_quit;
@@ -3285,6 +3352,18 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let mut window = TerminalWindow::new()?;
+    window.mouse_mut().set_movement_tracking(false);
+    window.mouse_mut().set_scroll_axis_filtering(false);
+    // MinUI reports left as positive; Redox uses positive deltas for down/right.
+    window.mouse_mut().set_invert_scroll_horizontal(true);
+    window.set_mouse_capture(config.mouse)?;
+    state.configure_mouse(
+        config.mouse,
+        config.mouse_invert_vertical,
+        config.mouse_invert_horizontal,
+        config.mouse_scroll_step_vertical,
+        config.mouse_scroll_step_horizontal,
+    );
     install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
     window.set_auto_flush(false);
     let mut clipboard = Clipboard::new().ok();
@@ -3301,25 +3380,37 @@ pub fn run() -> anyhow::Result<()> {
         let mut perf_sample = FramePerfSample::default();
         let input_start = Instant::now();
         let mut event_count = 0usize;
+        let mut mouse_frame_pending = false;
 
         if let Some(event) = pending_wake_event.take() {
             event_count += 1;
+            let previous_context = (state.mode, state.session.active_id());
+            mouse_frame_pending = input::is_mouse_event(&event) || !state.mouse.popups.is_empty();
             if !handle_editor_event(&mut state, &mut clipboard, event) {
                 break 'editor;
             }
+            mouse_frame_pending |= previous_context != (state.mode, state.session.active_id())
+                || state.has_visible_completion_popup();
         }
 
         for _ in 0..MAX_EVENTS_PER_FRAME {
             // Leave time to draw even when input arrives faster than it can be handled.
-            if input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
+            if mouse_frame_pending || input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
                 break;
             }
             match window.poll_input()? {
+                Some(Event::Unknown) => continue,
                 Some(event) => {
                     event_count += 1;
+                    let previous_context = (state.mode, state.session.active_id());
+                    mouse_frame_pending =
+                        input::is_mouse_event(&event) || !state.mouse.popups.is_empty();
                     if !handle_editor_event(&mut state, &mut clipboard, event) {
                         break 'editor;
                     }
+                    mouse_frame_pending |= previous_context
+                        != (state.mode, state.session.active_id())
+                        || state.has_visible_completion_popup();
                 }
                 None => break,
             }
@@ -3335,6 +3426,16 @@ pub fn run() -> anyhow::Result<()> {
             &mut active_theme,
             &mut theme_override,
             explicit_config_path.as_deref(),
+        );
+        if config.mouse != state.mouse.enabled {
+            window.set_mouse_capture(config.mouse)?;
+        }
+        state.configure_mouse(
+            config.mouse,
+            config.mouse_invert_vertical,
+            config.mouse_invert_horizontal,
+            config.mouse_scroll_step_vertical,
+            config.mouse_scroll_step_horizontal,
         );
         apply_runtime_colorscheme(
             &mut state,
@@ -3360,7 +3461,6 @@ pub fn run() -> anyhow::Result<()> {
         }
 
         if state.take_redraw_request() {
-            window.clear_cursor_request();
             window.clear_screen()?;
             draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
             let flush_start = Instant::now();
@@ -3370,15 +3470,13 @@ pub fn run() -> anyhow::Result<()> {
             state.record_perf_sample(perf_sample);
         }
 
-        let event = match state.next_wake_deadline(Instant::now()) {
+        pending_wake_event = match state.next_wake_deadline(Instant::now()) {
             Some(deadline) => {
-                window.get_input_timeout(deadline.saturating_duration_since(Instant::now()))?
+                window.poll_input_timeout(deadline.saturating_duration_since(Instant::now()))?
             }
-            None => window.wait_for_input()?,
-        };
-        if !matches!(event, Event::Unknown) {
-            pending_wake_event = Some(event);
+            None => Some(window.wait_for_input()?),
         }
+        .filter(|event| !matches!(event, Event::Unknown));
     }
     drop(window);
     state.log_event("session_end", serde_json::Value::Null);
@@ -3388,10 +3486,259 @@ pub fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    mod mouse;
     use super::*;
     use minui::{ColorPair, Window};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn mouse_scroll_and_selection_follow_the_rendered_viewport() {
+        use minui::MouseButton;
+        use redox_core::Pos;
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() =
+            TextBuffer::from_text(&"\t界e\u{301}👩🏽‍💻 tail\n".repeat(40));
+        let mut window = TestWindow::new(60, 12);
+        let mut perf = FramePerfSample::default();
+        let style = UiStyle::default();
+        let mut clipboard = None;
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        let content = pane_content_x(&state, state.active_pane_id());
+        let click = |x, y, button| Event::MouseClick { x, y, button };
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            click(content + 5, 1, MouseButton::Left),
+        );
+        assert_eq!(
+            state.active_cursor_pos(),
+            Pos::zero(),
+            "disabled by default"
+        );
+        state.configure_mouse(true, false, false, 3, 3);
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseScroll {
+                x: 8,
+                y: 0,
+                delta: 1,
+            },
+        );
+        for _ in 0..3 {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::MouseScrollHorizontal {
+                    x: 8,
+                    y: 0,
+                    delta: 1,
+                },
+            );
+        }
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        state.with_active_buffer_view_mut(|buffer, view| {
+            assert_eq!(view.cursor.viewport_scroll(), (3, 3));
+            assert_eq!(view.cursor.cursor, Pos::zero());
+            assert!(!view.cursor.cursor_spec(buffer, 55, 11).visible);
+        });
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            click(content + 2, 1, MouseButton::Left),
+        );
+        assert_eq!(
+            state.active_cursor_pos(),
+            Pos::new(4, 1),
+            "wide character after a clipped tab"
+        );
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseDrag {
+                x: content + 4,
+                y: 1,
+                button: MouseButton::Left,
+            },
+        );
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseRelease {
+                x: content + 4,
+                y: 1,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(state.mode, app::EditorMode::Visual);
+        let (selection, _) = state.active_visual_selection().unwrap();
+        assert_eq!(
+            state
+                .session
+                .active_buffer()
+                .visual_charwise_text(selection),
+            "界e\u{301}👩🏽‍💻"
+        );
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            click(59, 10, MouseButton::Right),
+        );
+        assert_eq!(state.active_visual_selection().unwrap().0, selection);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert_eq!(state.active_visual_selection().unwrap().0, selection);
+        state.configure_mouse(false, false, false, 3, 3);
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseScroll {
+                x: 8,
+                y: 0,
+                delta: 1,
+            },
+        );
+        state.with_active_buffer_view_mut(|_, view| {
+            assert_eq!(view.cursor.viewport_scroll(), (3, 3))
+        });
+        state.configure_mouse(true, true, true, 1, 2);
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseScroll {
+                x: 8,
+                y: 0,
+                delta: 1,
+            },
+        );
+        for _ in 0..3 {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::MouseScrollHorizontal {
+                    x: 8,
+                    y: 0,
+                    delta: 1,
+                },
+            );
+        }
+        state.with_active_buffer_view_mut(|_, view| {
+            assert_eq!(view.cursor.viewport_scroll(), (1, 2))
+        });
+    }
+
+    #[test]
+    fn offscreen_cursor_does_not_linger_while_the_page_scrolls() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        for split in [false, true] {
+            let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+            *state.session.active_buffer_mut() = TextBuffer::from_text(&"abcdef\n".repeat(40));
+            state.zen.enabled = split;
+            state.zen.hide_gutter = false;
+            state.zen.width_percent = 80;
+            state.zen.min_width = 1;
+            if split {
+                state.split_active_pane(app::state::SplitAxis::Vertical);
+            }
+            state.with_active_buffer_view_mut(|_, view| {
+                view.cursor.place_cursor(redox_core::Pos::new(10, 0));
+            });
+            let mut window = TestWindow::new(80, 24);
+            let mut perf = FramePerfSample::default();
+            let style = UiStyle::default();
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert!(window.cursor.unwrap().visible);
+
+            // Keep the same terminal cursor state across frames, as MinUI does.
+            for scroll_y in [0, 3, 6, 2] {
+                state.with_active_buffer_view_mut(|_, view| {
+                    view.cursor.scroll_x_cells = 3;
+                    view.cursor.scroll_y_lines = scroll_y;
+                });
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                assert!(
+                    !window.cursor.unwrap().visible,
+                    "split={split}, top={scroll_y}"
+                );
+            }
+            state.with_active_buffer_view_mut(|_, view| view.cursor.scroll_x_cells = 0);
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            let cursor = window.cursor.unwrap();
+            assert!(cursor.visible);
+            assert_eq!(cursor.y, 8);
+            let gutter_end = usize::from(cursor.x);
+            assert_eq!(
+                window.cells[usize::from(cursor.y)][gutter_end - 4..gutter_end]
+                    .iter()
+                    .filter(|character| character.is_ascii_digit())
+                    .collect::<String>(),
+                "11",
+                "cursor and current line number must agree, split={split}"
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_clicks_account_for_zen_margins_and_inactive_pane_headers() {
+        use minui::MouseButton;
+        use redox_core::Pos;
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&"abcdef\n".repeat(40));
+        state.configure_mouse(true, false, false, 3, 3);
+        state.zen.enabled = true;
+        state.zen.width_percent = 80;
+        state.zen.min_width = 1;
+        let mut window = TestWindow::new(100, 12);
+        let mut perf = FramePerfSample::default();
+        let style = UiStyle::default();
+        let mut clipboard = None;
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        state.split_active_pane(app::state::SplitAxis::Vertical);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        let inactive = state
+            .pane_rects(80, 11)
+            .into_iter()
+            .find(|rect| rect.pane_id != state.active_pane_id())
+            .unwrap();
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 10 + inactive.x + 3,
+                y: inactive.y + 2,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(state.active_pane_id(), inactive.pane_id);
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        for (x, y) in [(0, 2), (99, 2), (15, 11)] {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::MouseClick {
+                    x,
+                    y,
+                    button: MouseButton::Left,
+                },
+            );
+            assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Character(':'));
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 15,
+                y: 4,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(state.mode, app::EditorMode::Command);
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+    }
 
     #[test]
     fn command_prompt_is_visible_and_executable_after_rain_and_modal_input() {

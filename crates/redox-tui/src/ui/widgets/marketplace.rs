@@ -6,8 +6,9 @@ use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
 use crate::ui::UiStyle;
 use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_view_divider,
-    popup_inner_size, popup_window_view,
+    MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupMouseLayout,
+    clip_text_to_cells, draw_anchored_popup_frame, draw_popup_view_divider, popup_inner_size,
+    popup_window_view,
 };
 
 const LSP_TITLE: &str = "Language Tools"; // Maybe someday this will become a paid DLC
@@ -18,7 +19,7 @@ pub fn draw_lsp_marketplace_popup(
     popup: &LspMarketplacePopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
     let (inner_w, inner_h) = lsp_marketplace_popup_inner_size(term_w, term_h, style);
     let title = popup_title(PopupKind::LanguageTools, LSP_TITLE, style.icons_enabled);
@@ -31,6 +32,8 @@ pub fn draw_lsp_marketplace_popup(
         &title,
         PopupChrome::finder(style),
     )?;
+    let mut mouse = PopupMouseLayout::new(MousePopup::LanguageTools);
+    mouse.add_frame(layout);
     let mut view = popup_window_view(window, layout);
 
     let installed_count = popup.entries.iter().filter(|entry| entry.installed).count();
@@ -43,8 +46,25 @@ pub fn draw_lsp_marketplace_popup(
     let shared_prefix_w = marketplace_shared_prefix_width(popup);
     let language_w = marketplace_language_width(popup);
     row = draw_marketplace_column_header(&mut view, style, row, shared_prefix_w, language_w)?;
-    let _ = draw_marketplace_entries(&mut view, popup, style, row, shared_prefix_w, language_w)?;
-    Ok(())
+    mouse.scrolls.push((
+        MouseRect {
+            x: view.x_offset,
+            y: view.y_offset.saturating_add(row),
+            width: view.width,
+            height: view.height.saturating_sub(row),
+        },
+        MouseScroll::List,
+    ));
+    draw_marketplace_entries(
+        &mut view,
+        popup,
+        style,
+        row,
+        shared_prefix_w,
+        language_w,
+        &mut mouse,
+    )?;
+    Ok(mouse)
 }
 
 pub fn lsp_marketplace_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
@@ -78,6 +98,7 @@ fn draw_marketplace_entries(
     mut row: u16,
     shared_prefix_w: u16,
     language_w: u16,
+    mouse: &mut PopupMouseLayout,
 ) -> minui::Result<u16> {
     let visible_rows = window.height.saturating_sub(row) as usize;
     let installed_count = popup.entries.iter().filter(|entry| entry.installed).count();
@@ -134,6 +155,18 @@ fn draw_marketplace_entries(
         if shared_prefix_w >= window.width.saturating_sub(1) {
             break;
         }
+        mouse.clicks.push((
+            MouseRect {
+                x: window.x_offset,
+                y: window.y_offset.saturating_add(row),
+                width: window.width,
+                height: 1,
+            },
+            MouseTarget::Entry {
+                index: idx,
+                identity: format!("{}:{}", entry.language_label, entry.tool_label),
+            },
+        ));
         let (language_w, tool_w, status_w) =
             marketplace_column_widths(window.width, shared_prefix_w, language_w);
         let language_x = 1u16.saturating_add(shared_prefix_w);

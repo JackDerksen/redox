@@ -66,12 +66,21 @@ fn undo_tree_title(icons_enabled: bool) -> String {
 pub fn draw_undo_tree_preview_lines(
     window: &mut dyn Window,
     width: u16,
+    scroll_x: usize,
     style: UndoTreeStyle,
     lines: &[String],
-    separator_row: Option<usize>,
+    (first_line, separator_row): (usize, Option<usize>),
 ) -> Result<()> {
     for (row, line) in lines.iter().enumerate() {
-        draw_preview_line(window, width, row, line, style, separator_row)?;
+        draw_preview_line(
+            window,
+            width,
+            scroll_x,
+            (row, first_line + row),
+            line,
+            style,
+            separator_row,
+        )?;
     }
     Ok(())
 }
@@ -116,7 +125,8 @@ fn draw_undo_tree_line(
 fn draw_preview_line(
     window: &mut dyn Window,
     width: u16,
-    row: usize,
+    scroll_x: usize,
+    (row, source_row): (usize, usize),
     line: &str,
     style: UndoTreeStyle,
     separator_row: Option<usize>,
@@ -128,39 +138,55 @@ fn draw_preview_line(
             window,
             width,
             row_u16,
+            scroll_x,
             &[("Node: ", style.preview_label), (rest, style.preview_title)],
         );
     }
 
     let colors = if line == "Original state" {
         style.preview_title
-    } else if separator_row == Some(row) {
+    } else if separator_row == Some(source_row) {
         style.preview_separator
-    } else if separator_row.is_some_and(|separator| row >= PREVIEW_HEADER_ROWS && row < separator) {
+    } else if separator_row
+        .is_some_and(|separator| source_row >= PREVIEW_HEADER_ROWS && source_row < separator)
+    {
         style.preview_deleted
-    } else if separator_row.is_some_and(|separator| row > separator) {
+    } else if separator_row.is_some_and(|separator| source_row > separator) {
         style.preview_inserted
     } else if line == "No edit is recorded for this point." {
         style.preview_dim
     } else {
         style.preview_text
     };
-    let clipped = clip_text_to_cells(line, width as usize);
-    write_segments(window, width, row_u16, &[(&clipped, colors)])
+    write_segments(window, width, row_u16, scroll_x, &[(line, colors)])
 }
 
 fn write_segments(
     window: &mut dyn Window,
     width: u16,
     row: u16,
+    scroll_x: usize,
     segments: &[(&str, ColorPair)],
 ) -> Result<()> {
-    let mut col = 0u16;
+    let mut cell = 0usize;
+    let visible_end = scroll_x.saturating_add(width as usize);
     for (text, colors) in segments {
         for grapheme in text.graphemes(true) {
-            col = write_grapheme(window, width, row, col, grapheme, *colors)?;
-            if col >= width {
+            let start = cell;
+            cell =
+                cell.saturating_add((cell_width(grapheme, UNDO_TREE_TAB_POLICY) as usize).max(1));
+            if cell <= scroll_x {
+                continue;
+            }
+            if start >= visible_end {
                 return Ok(());
+            }
+            let column = start.saturating_sub(scroll_x) as u16;
+            if grapheme == "\t" || start < scroll_x || cell > visible_end {
+                let padding = cell.min(visible_end) - start.max(scroll_x);
+                window.write_str_colored(row, column, &" ".repeat(padding), *colors)?;
+            } else {
+                window.write_str_colored(row, column, grapheme, *colors)?;
             }
         }
     }
@@ -288,7 +314,7 @@ mod tests {
     #[test]
     fn narrow_preview_keeps_semantic_colours() {
         let style = UndoTreeStyle::default();
-        let lines = vec![
+        let lines = [
             "Node: 12".to_string(),
             "Original state".to_string(),
             String::new(),
@@ -296,7 +322,7 @@ mod tests {
         ];
         let mut window = ColorWindow::new(4, lines.len() as u16);
 
-        draw_undo_tree_preview_lines(&mut window, 4, style, &lines, None)
+        draw_undo_tree_preview_lines(&mut window, 4, 0, style, &lines, (0, None))
             .expect("preview should render");
 
         assert_eq!(window.color_at(0, 0), Some(style.preview_label));
@@ -310,7 +336,7 @@ mod tests {
             preview_separator: ColorPair::new(Color::Yellow, Color::Blue),
             ..UndoTreeStyle::default()
         };
-        let lines = vec![
+        let lines = [
             "Node: 12".to_string(),
             String::new(),
             "context".to_string(),
@@ -320,13 +346,30 @@ mod tests {
         ];
         let mut window = ColorWindow::new(5, lines.len() as u16);
 
-        draw_undo_tree_preview_lines(&mut window, 5, style, &lines, Some(4))
-            .expect("preview should render");
-
-        assert_eq!(window.color_at(2, 0), Some(style.preview_deleted));
-        assert_eq!(window.color_at(3, 0), Some(style.preview_deleted));
         assert_ne!(style.preview_deleted, style.preview_text);
-        assert_eq!(window.color_at(4, 0), Some(style.preview_separator));
-        assert_eq!(window.color_at(5, 0), Some(style.preview_inserted));
+        for (first_line, scroll_x) in [(0, 0), (2, 0), (4, 0), (5, 0), (2, 1)] {
+            draw_undo_tree_preview_lines(
+                &mut window,
+                5,
+                scroll_x,
+                style,
+                &lines[first_line..],
+                (first_line, Some(4)),
+            )
+            .expect("preview should render");
+            for (source_row, color) in [
+                (2, style.preview_deleted),
+                (3, style.preview_deleted),
+                (4, style.preview_separator),
+                (5, style.preview_inserted),
+            ] {
+                if source_row >= first_line {
+                    assert_eq!(
+                        window.color_at((source_row - first_line) as u16, 0),
+                        Some(color)
+                    );
+                }
+            }
+        }
     }
 }

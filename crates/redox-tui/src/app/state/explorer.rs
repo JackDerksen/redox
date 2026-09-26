@@ -413,6 +413,21 @@ impl EditorState {
             .is_some_and(|explorer| explorer.buffer_id == self.session.active_id())
     }
 
+    pub(super) fn explorer_has_unsaved_changes(&self) -> bool {
+        self.explorer_is_active()
+            && self.explorer.as_ref().is_some_and(|explorer| {
+                let current_text = self.session.active_buffer().to_string();
+                explorer.directory_drafts.iter().any(|(directory, draft)| {
+                    let text = if *directory == explorer.dir_path {
+                        &current_text
+                    } else {
+                        &draft.text
+                    };
+                    *text != explorer_entries_to_text(&draft.original_entries)
+                })
+            })
+    }
+
     pub(super) fn surface_open_selected(&mut self) {
         if !self.explorer_is_active() {
             return;

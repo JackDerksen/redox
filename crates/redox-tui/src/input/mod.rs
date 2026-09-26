@@ -12,6 +12,18 @@ use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
 
 pub mod cursor;
 
+pub(crate) fn is_mouse_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::MouseClick { .. }
+            | Event::MouseDrag { .. }
+            | Event::MouseRelease { .. }
+            | Event::MouseMove { .. }
+            | Event::MouseScroll { .. }
+            | Event::MouseScrollHorizontal { .. }
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InputMode {
     Normal,

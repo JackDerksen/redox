@@ -29,11 +29,29 @@ impl EditorState {
         if self
             .undo_tree_surface_role(self.session.active_id())
             .is_some()
-            && undo_tree_blocks_buffer_action(&action)
+            && is_buffer_editing_action(&action)
         {
             self.mode = EditorMode::Normal;
             self.input.reset_prefixes();
             return;
+        }
+
+        if is_buffer_editing_action(&action)
+            && !matches!(action, InputAction::SetMode(_))
+            && matches!(
+                self.mode,
+                EditorMode::Normal
+                    | EditorMode::Insert
+                    | EditorMode::Visual
+                    | EditorMode::VisualLine
+                    | EditorMode::VisualBlock
+            )
+            && self.session.active_meta().kind == redox_core::BufferKind::File
+        {
+            self.with_active_buffer_view_mut(|buffer, view| {
+                view.cursor
+                    .center_if_outside(buffer, viewport_width_cells, text_vh);
+            });
         }
 
         let keep_insert_coalesce = self.mode == EditorMode::Insert
@@ -1564,7 +1582,7 @@ fn is_char_search_motion(motion: Motion) -> bool {
     )
 }
 
-fn undo_tree_blocks_buffer_action(action: &InputAction) -> bool {
+fn is_buffer_editing_action(action: &InputAction) -> bool {
     match action {
         InputAction::SetMode(mode) => matches!(
             mode,

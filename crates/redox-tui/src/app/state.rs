@@ -32,6 +32,7 @@ mod finder;
 mod git;
 mod logging;
 mod lsp;
+pub(crate) mod mouse;
 mod rain_mode;
 mod runtime;
 pub use explorer::ExplorerPopup;
@@ -397,6 +398,7 @@ pub struct EditorState {
     event_log: Option<logging::EventLog>,
     log_key: Option<String>,
     runtime: runtime::RuntimeState,
+    pub(crate) mouse: mouse::MouseState,
     update_check: Option<updates::UpdateCheck>,
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
@@ -481,6 +483,7 @@ impl EditorState {
             event_log: None,
             log_key: None,
             runtime: runtime::RuntimeState::default(),
+            mouse: mouse::MouseState::default(),
             update_check: None,
             session,
             views,

@@ -26,11 +26,13 @@ use redox_lsp::{
 };
 use serde_json::{Value, json};
 
+use super::runtime::LOADING_TOAST_DELAY;
 use super::{EditorMode, EditorState, StatusMessageStyle};
 use crate::ui::language_for_path;
 use crate::ui::style::SyntaxRole;
 use crate::ui::symbol_info_content_width_limit;
 use crate::ui::syntax::{SyntaxLanguage, lexical_fallback_line_spans};
+use crate::ui::widgets::popup::{MousePopup, MouseScroll};
 use crate::ui::{build_symbol_info_source_lines, wrap_symbol_info_lines};
 
 mod completion;
@@ -194,6 +196,7 @@ struct LspMarketplaceState {
 struct DiagnosticsPopupState {
     code_action_origin: Option<CodeActionOrigin>,
     selected: usize,
+    detail_scroll: usize,
     code_actions: Option<CodeActionsPaneState>,
     focus: DiagnosticsPopupFocus,
     cached_code_actions: Option<CachedCodeActions>,
@@ -399,7 +402,14 @@ impl EditorState {
         let prefix = completion_prefix(buffer, self.active_cursor_pos());
         let max_selected = state.items.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
-        let scroll = selected.saturating_sub(COMPLETION_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        let scroll = self
+            .mouse
+            .list_scroll
+            .get(&(MousePopup::Completion, MouseScroll::List))
+            .copied()
+            .unwrap_or_else(|| {
+                selected.saturating_sub(COMPLETION_POPUP_VISIBLE_ROWS.saturating_sub(1))
+            });
         Some(CompletionPopup {
             entries: state
                 .items
@@ -415,7 +425,7 @@ impl EditorState {
         })
     }
 
-    pub(super) fn has_visible_completion_popup(&self) -> bool {
+    pub(crate) fn has_visible_completion_popup(&self) -> bool {
         self.visible_completion_state().is_some()
     }
 
@@ -500,11 +510,19 @@ impl EditorState {
         }
         let max_selected = entries.len().saturating_sub(1);
         let selected = state.selected.min(max_selected);
-        let scroll = selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        let scroll = self
+            .mouse
+            .list_scroll
+            .get(&(MousePopup::Diagnostics, MouseScroll::List))
+            .copied()
+            .unwrap_or_else(|| {
+                selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1))
+            });
         Some(DiagnosticsPopup {
             entries,
             selected,
             scroll,
+            detail_scroll: state.detail_scroll,
             focus: state.focus,
             code_actions: self.diagnostics_code_actions_pane(state),
         })
@@ -520,7 +538,14 @@ impl EditorState {
         }
         let max_selected = pane.actions.len().saturating_sub(1);
         let selected = pane.selected.min(max_selected);
-        let scroll = selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1));
+        let scroll = self
+            .mouse
+            .list_scroll
+            .get(&(MousePopup::Diagnostics, MouseScroll::Actions))
+            .copied()
+            .unwrap_or_else(|| {
+                selected.saturating_sub(DIAGNOSTICS_POPUP_VISIBLE_ROWS.saturating_sub(1))
+            });
         Some(DiagnosticsCodeActionsPane {
             title: pane.title.clone(),
             entries: pane
@@ -730,6 +755,42 @@ impl EditorState {
         if let Some(message) = self.active_provider_operation_toast(now) {
             return Some(message);
         }
+        let context = self.lsp_request_context();
+        for request in self.lsp.pending_requests.values() {
+            if request.context.buffer_id != context.buffer_id
+                || now.saturating_duration_since(request.started_at) < LOADING_TOAST_DELAY
+                || (!matches!(request.kind, PendingRequest::ExecuteCommand { .. })
+                    && request.context != context)
+            {
+                continue;
+            }
+            let message = match &request.kind {
+                PendingRequest::GotoDefinition => "looking up definition…",
+                PendingRequest::SymbolInfo { .. } => "loading symbol info...",
+                PendingRequest::Completion { manual: true, .. } => "loading completions...",
+                PendingRequest::CodeActions {
+                    origin, trigger, ..
+                } if *trigger == CodeActionRequestTrigger::Manual
+                    || self.lsp.diagnostics_popup.as_ref().is_some_and(|popup| {
+                        popup.code_action_origin.as_ref() == Some(origin)
+                            && popup
+                                .pending_code_actions
+                                .as_ref()
+                                .is_some_and(|pending| pending.open_on_arrival)
+                    }) =>
+                {
+                    "loading quick fixes..."
+                }
+                PendingRequest::ExecuteCommand {
+                    title,
+                    edit_applied: true,
+                } => {
+                    return Some(format!("applied quick fix edit; running command: {title}"));
+                }
+                _ => continue,
+            };
+            return Some(message.to_string());
+        }
         let active_id = self.session.active_id();
         let document = self.lsp.documents.get(&active_id)?;
         let client = self.lsp.clients.get(&document.workspace)?;
@@ -737,6 +798,9 @@ impl EditorState {
             return None;
         }
         let elapsed = now.saturating_duration_since(client.loading_since);
+        if elapsed < LOADING_TOAST_DELAY {
+            return None;
+        }
         let idx = ((elapsed.as_millis() / 100) as usize) % LSP_SPINNER_FRAMES.len();
         Some(format!(
             "{} loading {} diagnostics",
@@ -948,6 +1012,7 @@ impl EditorState {
         self.lsp.diagnostics_popup = Some(DiagnosticsPopupState {
             code_action_origin: None,
             selected: 0,
+            detail_scroll: 0,
             code_actions: None,
             focus: DiagnosticsPopupFocus::Diagnostics,
             cached_code_actions: None,
@@ -985,8 +1050,201 @@ impl EditorState {
             return;
         };
         let max_index = entries.len().saturating_sub(1) as isize;
+        let previous = state.selected;
         state.selected = (state.selected as isize + delta).clamp(0, max_index) as usize;
+        if state.selected != previous {
+            state.detail_scroll = 0;
+        }
         self.prefetch_selected_diagnostic_code_actions();
+    }
+
+    pub(super) fn select_mouse_lsp_entry(
+        &mut self,
+        kind: MousePopup,
+        index: usize,
+        identity: &str,
+    ) -> bool {
+        match kind {
+            MousePopup::Completion => {
+                let Some(completion) = self.lsp.completion.as_mut() else {
+                    return false;
+                };
+                if completion
+                    .items
+                    .get(index)
+                    .is_none_or(|entry| entry.label != identity)
+                {
+                    return false;
+                }
+                completion.selected = index;
+            }
+            MousePopup::CodeActions => {
+                let Some(actions) = self.lsp.code_actions_popup.as_mut() else {
+                    return false;
+                };
+                if actions
+                    .actions
+                    .get(index)
+                    .is_none_or(|entry| entry.title != identity)
+                {
+                    return false;
+                }
+                actions.selected = index;
+            }
+            MousePopup::Diagnostics => {
+                if self
+                    .current_diagnostic_popup_entries()
+                    .get(index)
+                    .is_none_or(|entry| {
+                        format!("{}:{}:{}", entry.line, entry.col, entry.message) != identity
+                    })
+                {
+                    return false;
+                }
+                let Some(popup) = self.lsp.diagnostics_popup.as_mut() else {
+                    return false;
+                };
+                popup.focus = DiagnosticsPopupFocus::Diagnostics;
+                if popup.selected != index {
+                    popup.selected = index;
+                    popup.detail_scroll = 0;
+                    self.prefetch_selected_diagnostic_code_actions();
+                }
+            }
+            MousePopup::LanguageTools => {
+                let Some(popup) = self.lsp_marketplace_popup() else {
+                    return false;
+                };
+                if popup.entries.get(index).is_none_or(|entry| {
+                    format!("{}:{}", entry.language_label, entry.tool_label) != identity
+                }) {
+                    return false;
+                }
+                let height = self.viewport_size().1;
+                let Some(state) = self.lsp.marketplace.as_mut() else {
+                    return false;
+                };
+                state.selected = index;
+                reconcile_marketplace_scroll(&popup.entries, state, height);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub(super) fn select_mouse_diagnostic_action(&mut self, index: usize, identity: &str) -> bool {
+        let Some(popup) = self.lsp.diagnostics_popup.as_mut() else {
+            return false;
+        };
+        let Some(actions) = popup.code_actions.as_mut() else {
+            return false;
+        };
+        if actions
+            .actions
+            .get(index)
+            .is_none_or(|entry| entry.title != identity)
+        {
+            return false;
+        }
+        popup.focus = DiagnosticsPopupFocus::CodeActions;
+        actions.selected = index;
+        true
+    }
+
+    pub(super) fn scroll_mouse_lsp_list(
+        &mut self,
+        kind: MousePopup,
+        section: MouseScroll,
+        rows: isize,
+        start: usize,
+        visible_count: usize,
+    ) {
+        if rows == 0 || visible_count == 0 {
+            return;
+        }
+        let (selected, entry_count) = match (kind, section) {
+            (MousePopup::Completion, MouseScroll::List) => {
+                let Some(popup) = self.lsp.completion.as_mut() else {
+                    return;
+                };
+                (&mut popup.selected, popup.items.len())
+            }
+            (MousePopup::CodeActions, MouseScroll::List) => {
+                let Some(popup) = self.lsp.code_actions_popup.as_mut() else {
+                    return;
+                };
+                (&mut popup.selected, popup.actions.len())
+            }
+            (MousePopup::Diagnostics, MouseScroll::Actions) => {
+                let Some(popup) = self.lsp.diagnostics_popup.as_mut() else {
+                    return;
+                };
+                popup.focus = DiagnosticsPopupFocus::CodeActions;
+                let Some(actions) = popup.code_actions.as_mut() else {
+                    return;
+                };
+                (&mut actions.selected, actions.actions.len())
+            }
+            (MousePopup::Diagnostics, MouseScroll::List) => {
+                let count = self.current_diagnostic_popup_entries().len();
+                let Some(popup) = self.lsp.diagnostics_popup.as_mut() else {
+                    return;
+                };
+                popup.focus = DiagnosticsPopupFocus::Diagnostics;
+                (&mut popup.selected, count)
+            }
+            _ => return,
+        };
+        if entry_count == 0 {
+            return;
+        }
+        let max_start = entry_count.saturating_sub(visible_count);
+        let start = start
+            .min(max_start)
+            .saturating_add_signed(rows)
+            .min(max_start);
+        let previous = *selected;
+        *selected = (*selected).clamp(start, (start + visible_count).min(entry_count) - 1);
+        let selection_changed = *selected != previous;
+        self.mouse.list_scroll.insert((kind, section), start);
+        if kind == MousePopup::Diagnostics && section == MouseScroll::List && selection_changed {
+            if let Some(popup) = self.lsp.diagnostics_popup.as_mut() {
+                popup.detail_scroll = 0;
+            }
+            self.prefetch_selected_diagnostic_code_actions();
+        }
+    }
+
+    pub(super) fn scroll_mouse_diagnostic_details(
+        &mut self,
+        rows: isize,
+        width: usize,
+        height: usize,
+    ) {
+        let entries = self.current_diagnostic_popup_entries();
+        let Some(popup) = self.lsp.diagnostics_popup.as_mut() else {
+            return;
+        };
+        let Some(entry) = entries.get(popup.selected) else {
+            return;
+        };
+        let line_count = crate::ui::widgets::popup::wrap_text_to_cells(&entry.message, width).len();
+        let max_scroll = line_count.saturating_sub(height);
+        popup.detail_scroll = popup
+            .detail_scroll
+            .min(max_scroll)
+            .saturating_add_signed(rows)
+            .min(max_scroll);
+    }
+
+    pub(super) fn scroll_mouse_symbol_info(&mut self, rows: isize, height: usize) {
+        let Some(popup) = self.lsp.symbol_info.as_mut() else {
+            return;
+        };
+        popup.scroll = popup
+            .scroll
+            .saturating_add_signed(rows)
+            .min(popup.display_lines.len().saturating_sub(height));
     }
 
     pub(super) fn jump_to_selected_diagnostic(&mut self) {
@@ -1049,7 +1307,7 @@ impl EditorState {
                 self.set_status(format!("no supported installer found for {}", item.label()));
                 return;
             }
-            self.set_status(format!("installing {}", item.label()));
+            self.clear_status();
             return;
         }
         let std::collections::hash_map::Entry::Vacant(entry) = self.lsp.installed.entry(item.id())
@@ -1774,7 +2032,7 @@ impl EditorState {
             return;
         };
         if !client.session.is_initialized() {
-            self.set_status("LSP still loading");
+            self.clear_status();
             return;
         }
         match client
@@ -1793,7 +2051,7 @@ impl EditorState {
                         started_at: Instant::now(),
                     },
                 );
-                self.set_status("looking up definition…");
+                self.clear_status();
             }
             Err(error) => {
                 self.set_status(format!("definition request failed: {error}"));
@@ -1846,7 +2104,7 @@ impl EditorState {
             return;
         };
         if !client.session.is_initialized() {
-            self.set_status("LSP still loading");
+            self.clear_status();
             return;
         }
         match client.session.send_hover(&document.path, line, character) {
@@ -1865,7 +2123,7 @@ impl EditorState {
                         started_at: Instant::now(),
                     },
                 );
-                self.set_status("loading symbol info...");
+                self.clear_status();
             }
             Err(error) => {
                 self.set_status(format!("symbol info request failed: {error}"));
@@ -2340,7 +2598,7 @@ impl EditorState {
         };
         if !client.session.is_initialized() {
             if manual {
-                self.set_status("LSP still loading");
+                self.clear_status();
             }
             return;
         }
@@ -2364,7 +2622,7 @@ impl EditorState {
                     },
                 );
                 if manual {
-                    self.set_status("loading completions...");
+                    self.clear_status();
                 }
             }
             Err(error) => {
@@ -3178,7 +3436,14 @@ impl EditorState {
     }
 
     fn active_provider_operation_toast(&self, now: Instant) -> Option<String> {
-        let (&item_id, operation) = self.lsp.provider_operations.iter().next()?;
+        let (&item_id, operation) = self
+            .lsp
+            .provider_operations
+            .iter()
+            .filter(|(_, operation)| {
+                now.saturating_duration_since(operation.started_at) >= LOADING_TOAST_DELAY
+            })
+            .min_by_key(|(_, operation)| operation.started_at)?;
         let item = marketplace_spec(item_id)?;
         let elapsed = now.saturating_duration_since(operation.started_at);
         let idx = ((elapsed.as_millis() / 100) as usize) % LSP_SPINNER_FRAMES.len();
@@ -4107,6 +4372,108 @@ mod tests {
             Some(8)
         );
     }
+
+    #[test]
+    fn mouse_popup_selection_preserves_completion_and_diagnostics_behaviour() {
+        use crate::ui::widgets::popup::MousePopup;
+
+        let session = EditorSession::open_initial_unnamed().unwrap();
+        let mut state = EditorState::new(session);
+        state.mode = EditorMode::Insert;
+        state.lsp.completion = Some(CompletionState {
+            context: state.lsp_request_context(),
+            selected: 0,
+            requested_at: Pos::zero(),
+            items: (0..20)
+                .map(|index| {
+                    let label = format!("item{index:02}");
+                    completion_candidate(&label, &label, "text", InsertTextFormat::PlainText)
+                })
+                .collect(),
+        });
+        assert!(state.select_mouse_lsp_entry(MousePopup::Completion, 19, "item19"));
+        assert_eq!(state.completion_popup().unwrap().scroll, 12);
+        state
+            .mouse
+            .list_scroll
+            .insert((MousePopup::Completion, MouseScroll::List), 12);
+        assert!(state.select_mouse_lsp_entry(MousePopup::Completion, 12, "item12"));
+        assert_eq!(state.completion_popup().unwrap().scroll, 12);
+        assert!(!state.select_mouse_lsp_entry(MousePopup::Completion, 20, "item20"));
+        assert!(!state.select_mouse_lsp_entry(MousePopup::Completion, 12, "stale"));
+        state.scroll_mouse_lsp_list(MousePopup::Completion, MouseScroll::List, -3, 12, 8);
+        let popup = state.completion_popup().unwrap();
+        assert_eq!((popup.scroll, popup.selected), (9, 12));
+        state.scroll_mouse_lsp_list(MousePopup::Completion, MouseScroll::List, -8, 9, 8);
+        let popup = state.completion_popup().unwrap();
+        assert_eq!((popup.scroll, popup.selected), (1, 8));
+        assert!(state.accept_completion(80, 20));
+        assert_eq!(state.session.active_buffer().to_string(), "item08");
+        assert_eq!(state.mode, EditorMode::Insert);
+
+        state.mode = EditorMode::Normal;
+        let path = PathBuf::from("/tmp/redox-mouse-diagnostics.rs");
+        state.session.active_meta_mut().path = Some(path.clone());
+        *state.session.active_buffer_mut() = redox_core::TextBuffer::from_text("first\nsecond");
+        state.lsp.diagnostics.insert(
+            file_uri(&path).unwrap(),
+            vec![StoredDiagnostics {
+                source: DiagnosticSource::Lint(LintSource {
+                    kind: LintRunnerKind::Clippy,
+                    root: PathBuf::from("/tmp"),
+                }),
+                items: (0..2)
+                    .map(|line| StoredDiagnostic {
+                        severity: DiagnosticSeverity::Warning,
+                        message: "first\nsecond\nthird\nfourth".to_string(),
+                        start_line: line,
+                        end_line: line,
+                        start_utf16: 0,
+                        end_utf16: 1,
+                        related_information: Vec::new(),
+                    })
+                    .collect(),
+            }],
+        );
+        state.toggle_diagnostics_popup();
+        state.scroll_mouse_diagnostic_details(99, 20, 1);
+        state.scroll_mouse_diagnostic_details(-1, 20, 2);
+        assert_eq!(state.diagnostics_popup().unwrap().detail_scroll, 1);
+        state.scroll_mouse_diagnostic_details(99, 20, 2);
+        assert_eq!(state.diagnostics_popup().unwrap().detail_scroll, 2);
+        assert!(state.select_mouse_lsp_entry(
+            MousePopup::Diagnostics,
+            1,
+            "1:0:first\nsecond\nthird\nfourth"
+        ));
+        assert_eq!(state.diagnostics_popup().unwrap().detail_scroll, 0);
+
+        state.lsp.diagnostics_popup.as_mut().unwrap().code_actions = Some(CodeActionsPaneState {
+            title: "Actions".to_string(),
+            selected: 0,
+            actions: ["first", "second"]
+                .into_iter()
+                .map(|title| AvailableCodeAction {
+                    title: title.to_string(),
+                    kind: None,
+                    preferred: false,
+                    edit: None,
+                    command: None,
+                })
+                .collect(),
+            loading: false,
+        });
+        assert!(state.select_mouse_diagnostic_action(1, "second"));
+        state.scroll_mouse_lsp_list(MousePopup::Diagnostics, MouseScroll::Actions, -1, 1, 1);
+        let popup = state.diagnostics_popup().unwrap();
+        assert_eq!(popup.focus, DiagnosticsPopupFocus::CodeActions);
+        assert_eq!(popup.code_actions.unwrap().selected, 0);
+        state.scroll_mouse_lsp_list(MousePopup::Diagnostics, MouseScroll::List, -1, 1, 1);
+        let popup = state.diagnostics_popup().unwrap();
+        assert_eq!(popup.focus, DiagnosticsPopupFocus::Diagnostics);
+        assert_eq!(popup.selected, 0);
+    }
+
     #[test]
     fn lsp_errors_suppress_lint_diagnostics_for_active_file() {
         let lsp_source = DiagnosticSource::Lsp(WorkspaceKey {
@@ -4713,7 +5080,7 @@ mod regressions {
     #[test]
     fn initialization_timeout_backs_off_and_document_cleanup_removes_closed_buffers() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("example.rs");
+        let path = directory.path().canonicalize().unwrap().join("example.rs");
         fs::write(&path, "fn main() {}\n").unwrap();
         let mut session = EditorSession::open_initial_unnamed().unwrap();
         let buffer_id = session.open_file(&path).unwrap();
@@ -4750,8 +5117,20 @@ mod regressions {
         );
         state.ensure_active_lsp_client();
         assert!(state.lsp.documents.contains_key(&buffer_id));
+        let started_at = state.lsp.clients[&workspace].loading_since;
+        assert!(
+            state
+                .active_loading_toast(started_at + LOADING_TOAST_DELAY - Duration::from_millis(1))
+                .is_none()
+        );
+        assert!(
+            state
+                .active_loading_toast(started_at + LOADING_TOAST_DELAY)
+                .is_some()
+        );
         state.poll_lsp();
         assert!(!state.lsp.clients.contains_key(&workspace));
+        assert!(state.active_loading_toast(Instant::now()).is_none());
         assert!(state.lsp.retry_after[&workspace] > Instant::now());
         state.poll_lsp();
         assert!(!state.lsp.clients.contains_key(&workspace));

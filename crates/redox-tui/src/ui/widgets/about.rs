@@ -4,18 +4,18 @@ use minui::widgets::Widget;
 use crate::app::AboutPopup;
 use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
-    popup_window_view, wrap_text_to_cells,
+    MousePopup, PopupChrome, PopupLayout, PopupMouseLayout, clip_text_to_cells,
+    draw_popup_frame_at, popup_inner_size, popup_window_view, wrap_text_to_cells,
 };
 use crate::ui::{UiStyle, build_editor_status_bar};
 
-pub fn draw_about_popup_view(
+pub(crate) fn draw_about_popup_view(
     state: &mut crate::app::EditorState,
     style: UiStyle,
     window: &mut dyn Window,
     popup: AboutPopup,
     layout: PopupLayout,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
     let title = popup_title(PopupKind::About, &popup.title, style.icons_enabled);
     let layout = draw_popup_frame_at(
         window,
@@ -99,7 +99,9 @@ pub fn draw_about_popup_view(
     let status = build_editor_status_bar(state, style);
     status.draw(window)?;
 
-    Ok(())
+    let mut mouse = PopupMouseLayout::new(MousePopup::About);
+    mouse.add_frame(layout);
+    Ok(mouse)
 }
 
 fn about_content_height(width: u16, message: &str, repo_line: &str, crates_line: &str) -> u16 {

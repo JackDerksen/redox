@@ -23,6 +23,11 @@ pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
     pub check_updates: bool,
+    pub mouse: bool,
+    pub mouse_invert_vertical: bool,
+    pub mouse_invert_horizontal: bool,
+    pub mouse_scroll_step_vertical: u16,
+    pub mouse_scroll_step_horizontal: u16,
     pub logging: LoggingConfig,
     pub background_dimming: f32,
     pub undo_tree_history_size: usize,
@@ -44,6 +49,11 @@ impl Default for Config {
             theme: "default".to_string(),
             icons_enabled: false,
             check_updates: true,
+            mouse: false,
+            mouse_invert_vertical: false,
+            mouse_invert_horizontal: false,
+            mouse_scroll_step_vertical: 3,
+            mouse_scroll_step_horizontal: 3,
             logging: LoggingConfig::default(),
             background_dimming: DEFAULT_DIM_AMOUNT,
             undo_tree_history_size: DEFAULT_UNDO_HISTORY_SIZE,
@@ -190,6 +200,20 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        for (name, step) in [
+            (
+                "mouse_scroll_step_vertical",
+                self.mouse_scroll_step_vertical,
+            ),
+            (
+                "mouse_scroll_step_horizontal",
+                self.mouse_scroll_step_horizontal,
+            ),
+        ] {
+            if step == 0 {
+                bail!("{name} must be at least 1");
+            }
+        }
         if self.logging.max_events == 0 {
             bail!("logging.max_events must be at least 1");
         }
@@ -401,6 +425,16 @@ mod tests {
         assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
         assert!(config.check_updates);
+        assert!(!config.mouse);
+        assert!(!config.mouse_invert_vertical);
+        assert!(!config.mouse_invert_horizontal);
+        assert_eq!(config.mouse_scroll_step_vertical, 3);
+        assert_eq!(config.mouse_scroll_step_horizontal, 3);
+        let mouse_config: Config =
+            toml::from_str("mouse_invert_vertical = true\nmouse_invert_horizontal = true").unwrap();
+        assert!(mouse_config.mouse_invert_vertical);
+        assert!(mouse_config.mouse_invert_horizontal);
+        assert!(toml::from_str::<Config>("mouse = true").unwrap().mouse);
         assert!(
             !toml::from_str::<Config>("check_updates = false")
                 .unwrap()

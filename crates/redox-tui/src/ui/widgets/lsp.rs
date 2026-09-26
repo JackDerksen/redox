@@ -14,8 +14,9 @@ use crate::ui::syntax::{
     line_spans_for_source, syntax_color_for_range,
 };
 use crate::ui::widgets::popup::{
-    PopupChrome, clip_text_to_cells, draw_anchored_popup_frame, draw_popup_frame_at,
-    draw_popup_view_divider, popup_inner_size, popup_window_view, wrap_text_to_cells,
+    MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupMouseLayout,
+    clip_text_to_cells, draw_anchored_popup_frame, draw_popup_frame_at, draw_popup_view_divider,
+    popup_inner_size, popup_window_view, wrap_text_to_cells,
 };
 
 const DIAGNOSTICS_TITLE: &str = "Diagnostics";
@@ -35,13 +36,13 @@ pub fn draw_symbol_info_popup(
     window: &mut dyn Window,
     cursor_x: u16,
     cursor_y: u16,
-) -> minui::Result<()> {
+) -> minui::Result<Option<PopupMouseLayout>> {
     if popup.display_lines.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let (term_w, term_h) = window.get_size();
     if term_w < 8 || term_h < 4 {
-        return Ok(());
+        return Ok(None);
     }
     let display_lines = &popup.display_lines;
     let available_right = term_w.saturating_sub(cursor_x.saturating_add(2));
@@ -76,7 +77,18 @@ pub fn draw_symbol_info_popup(
         &title,
         PopupChrome::finder(style),
     )?;
+    let mut mouse = PopupMouseLayout::new(MousePopup::SymbolInfo);
+    mouse.add_frame(layout);
     let mut view = popup_window_view(window, layout);
+    mouse.scrolls.push((
+        MouseRect {
+            x: view.x_offset,
+            y: view.y_offset,
+            width: view.width,
+            height: view.height,
+        },
+        MouseScroll::Text,
+    ));
     for (idx, line) in display_lines
         .iter()
         .skip(scroll)
@@ -85,7 +97,7 @@ pub fn draw_symbol_info_popup(
     {
         draw_symbol_info_line(&mut view, idx as u16, line, content_width as usize, style)?;
     }
-    Ok(())
+    Ok(Some(mouse))
 }
 
 pub fn build_symbol_info_source_lines(blocks: &[SymbolInfoBlock]) -> Vec<SymbolInfoDisplayLine> {
@@ -527,7 +539,7 @@ pub fn draw_diagnostics_popup(
     popup: &DiagnosticsPopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
     let (inner_w, inner_h) = popup_inner_size(
         term_w,
@@ -551,6 +563,8 @@ pub fn draw_diagnostics_popup(
         &title,
         PopupChrome::finder(style),
     )?;
+    let mut mouse = PopupMouseLayout::new(MousePopup::Diagnostics);
+    mouse.add_frame(layout);
     let mut view = popup_window_view(window, layout);
     let summary = format!("{} diagnostics", popup.entries.len());
     let _ = draw_section_header(&mut view, 0, &summary, style.finder.query_title)?;
@@ -586,6 +600,15 @@ pub fn draw_diagnostics_popup(
             .saturating_sub(list_capacity);
     }
     let end = (start + list_capacity).min(popup.entries.len());
+    mouse.scrolls.push((
+        MouseRect {
+            x: view.x_offset,
+            y: view.y_offset + 1,
+            width: view.width,
+            height: (list_capacity as u16).min(view.height.saturating_sub(1)),
+        },
+        MouseScroll::List,
+    ));
     let location_width = popup.entries[start..end]
         .iter()
         .map(|entry| format!("{}:{}", entry.line + 1, entry.col + 1).len())
@@ -597,6 +620,14 @@ pub fn draw_diagnostics_popup(
             break;
         }
         let idx = start + visible_idx;
+        mouse.add_row(
+            layout,
+            row,
+            MouseTarget::Entry {
+                index: idx,
+                identity: format!("{}:{}:{}", entry.line, entry.col, entry.message),
+            },
+        );
         let selected = idx == popup.selected;
         if selected {
             let fill = " ".repeat(view.width.saturating_sub(2) as usize);
@@ -662,13 +693,15 @@ pub fn draw_diagnostics_popup(
     let separator_row = 1u16.saturating_add((end.saturating_sub(start)) as u16);
     if let Some(code_actions) = popup.code_actions.as_ref() {
         if separator_row < view.height {
-            draw_diagnostics_code_actions_split(
+            let actions = draw_diagnostics_code_actions_split(
                 &mut view,
                 separator_row,
                 code_actions,
                 popup.focus == DiagnosticsPopupFocus::CodeActions,
                 style,
             )?;
+            mouse.clicks.extend(actions.clicks);
+            mouse.scrolls.extend(actions.scrolls);
         }
     } else if detail_rows > 0 {
         if separator_row < view.height {
@@ -694,7 +727,25 @@ pub fn draw_diagnostics_popup(
 
             let detail_width = view.width.saturating_sub(2) as usize;
             let wrapped = wrap_text_to_cells(&selected.message, detail_width);
-            for (idx, line) in wrapped.into_iter().take(detail_rows).enumerate() {
+            let visible_rows = (detail_rows as u16).min(view.height.saturating_sub(title_row + 1));
+            mouse.scrolls.push((
+                MouseRect {
+                    x: view.x_offset + 1,
+                    y: view.y_offset + title_row + 1,
+                    width: view.width.saturating_sub(2),
+                    height: visible_rows,
+                },
+                MouseScroll::Details,
+            ));
+            let detail_scroll = popup
+                .detail_scroll
+                .min(wrapped.len().saturating_sub(usize::from(visible_rows)));
+            for (idx, line) in wrapped
+                .into_iter()
+                .skip(detail_scroll)
+                .take(detail_rows)
+                .enumerate()
+            {
                 let row = title_row.saturating_add(1 + idx as u16);
                 if row >= view.height {
                     break;
@@ -709,14 +760,14 @@ pub fn draw_diagnostics_popup(
         }
     }
 
-    Ok(())
+    Ok(mouse)
 }
 
 pub fn draw_code_actions_popup(
     popup: &CodeActionPopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
     let (inner_w, inner_h) = popup_inner_size(
         term_w,
@@ -754,7 +805,7 @@ pub fn draw_code_actions_popup(
     }
 
     let list_start_row = if view.height > 2 { 2 } else { 1 };
-    draw_code_action_entries(
+    let mut mouse = draw_code_action_entries(
         &mut view,
         list_start_row,
         popup.entries.as_slice(),
@@ -764,7 +815,8 @@ pub fn draw_code_actions_popup(
         style,
     )?;
 
-    Ok(())
+    mouse.add_frame(layout);
+    Ok(mouse)
 }
 
 fn draw_diagnostics_code_actions_split(
@@ -773,14 +825,14 @@ fn draw_diagnostics_code_actions_split(
     pane: &DiagnosticsCodeActionsPane,
     active: bool,
     style: UiStyle,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
     if separator_row >= view.height {
-        return Ok(());
+        return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
     }
     draw_popup_view_divider(view, separator_row, style.finder.dim)?;
     let title_row = separator_row.saturating_add(1);
     if title_row >= view.height {
-        return Ok(());
+        return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
     }
     let title_colors = if active {
         style.finder.query_title
@@ -806,10 +858,10 @@ fn draw_diagnostics_code_actions_split(
                 style.finder.dim,
             )?;
         }
-        return Ok(());
+        return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
     }
     let list_start_row = title_row.saturating_add(1);
-    draw_code_action_entries(
+    let mut mouse = draw_code_action_entries(
         view,
         list_start_row,
         pane.entries.as_slice(),
@@ -817,7 +869,20 @@ fn draw_diagnostics_code_actions_split(
         pane.scroll,
         active,
         style,
-    )
+    )?;
+    mouse.kind = MousePopup::Diagnostics;
+    for (_, target) in &mut mouse.clicks {
+        if let MouseTarget::Entry { index, identity } = target {
+            *target = MouseTarget::DiagnosticAction {
+                index: *index,
+                identity: std::mem::take(identity),
+            };
+        }
+    }
+    for (_, scroll) in &mut mouse.scrolls {
+        *scroll = MouseScroll::Actions;
+    }
+    Ok(mouse)
 }
 
 fn draw_code_action_entries(
@@ -828,7 +893,17 @@ fn draw_code_action_entries(
     scroll: usize,
     active: bool,
     style: UiStyle,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
+    let mut mouse = PopupMouseLayout::new(MousePopup::CodeActions);
+    mouse.scrolls.push((
+        MouseRect {
+            x: view.x_offset,
+            y: view.y_offset.saturating_add(list_start_row),
+            width: view.width,
+            height: view.height.saturating_sub(list_start_row),
+        },
+        MouseScroll::List,
+    ));
     let list_capacity = view.height.saturating_sub(list_start_row).clamp(1, 12) as usize;
     let mut start = scroll.min(entries.len());
     if selected_index < start {
@@ -852,6 +927,18 @@ fn draw_code_action_entries(
             break;
         }
         let idx = start + visible_idx;
+        mouse.clicks.push((
+            MouseRect {
+                x: view.x_offset,
+                y: view.y_offset.saturating_add(row),
+                width: view.width,
+                height: 1,
+            },
+            MouseTarget::Entry {
+                index: idx,
+                identity: entry.title.clone(),
+            },
+        ));
         let selected = idx == selected_index;
         if selected {
             let fill = " ".repeat(view.width.saturating_sub(2) as usize);
@@ -876,7 +963,7 @@ fn draw_code_action_entries(
         }
     }
 
-    Ok(())
+    Ok(mouse)
 }
 
 fn draw_section_header(
