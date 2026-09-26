@@ -895,6 +895,106 @@ fn pinboard_double_click_opens_occupied_slots_without_assigning_empty_ones() {
 }
 
 #[test]
+fn mouse_scrolling_preserves_offscreen_cursor_and_centres_before_editing() {
+    use crate::input::InputMode;
+
+    let files = MouseFiles::new();
+    let line = format!("\t界{}", "abcdef".repeat(40));
+    let document = files.file("scroll.txt", &format!("{line}\n").repeat(200));
+    for split in [false, true] {
+        for (mode, events) in [
+            (
+                InputMode::Normal,
+                vec![Event::Character('i'), Event::Character('@')],
+            ),
+            (InputMode::Insert, vec![Event::Character('@')]),
+            (InputMode::Normal, vec![Event::Paste("@".to_string())]),
+        ] {
+            let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
+            state.configure_mouse(true, false, false);
+            if split {
+                state.split_active_pane(app::state::SplitAxis::Vertical);
+            }
+            let mut window = TestWindow::new(100, 30);
+            render(&mut state, &mut window);
+            state.apply_input(InputAction::SetMode(mode), 100, 30);
+            let position = Pos::new(60, 70);
+            state.with_active_buffer_view_mut(|_, view| {
+                view.cursor.place_cursor(position);
+                view.cursor.scroll_y_lines = 50;
+                view.cursor.scroll_x_cells = 50;
+            });
+            state.sync_active_pane_view();
+            render(&mut state, &mut window);
+            let pane = state
+                .pane_rects(100, 29)
+                .into_iter()
+                .find(|pane| pane.pane_id == state.active_pane_id())
+                .unwrap();
+            let (width, height) = state.viewport_size();
+            let expected_scroll = (74usize.saturating_sub(width / 2), 60 - (height - 1) / 2);
+            let delta = if split { -10 } else { 20 };
+            for direction in [delta, -delta, delta] {
+                handle_editor_event(
+                    &mut state,
+                    &mut None,
+                    Event::MouseScroll {
+                        x: pane.x + 8,
+                        y: 3,
+                        delta: direction,
+                    },
+                );
+                render(&mut state, &mut window);
+                assert_eq!(state.active_cursor_pos(), position);
+                assert_eq!(window.cursor.unwrap().visible, direction == -delta);
+            }
+            for _ in 0..3 {
+                handle_editor_event(
+                    &mut state,
+                    &mut None,
+                    Event::MouseScrollHorizontal {
+                        x: pane.x + 8,
+                        y: 3,
+                        delta: 20,
+                    },
+                );
+            }
+            render(&mut state, &mut window);
+            assert_eq!(state.active_cursor_pos(), position);
+            assert!(!window.cursor.unwrap().visible);
+            let scrolled =
+                state.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll());
+            if mode == InputMode::Normal {
+                handle_editor_event(&mut state, &mut None, Event::Character(':'));
+                handle_editor_event(&mut state, &mut None, Event::Character('a'));
+                render(&mut state, &mut window);
+                handle_editor_event(&mut state, &mut None, Event::Escape);
+                render(&mut state, &mut window);
+                assert_eq!(
+                    state.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll()),
+                    scrolled
+                );
+            }
+            for event in events {
+                handle_editor_event(&mut state, &mut None, event);
+                render(&mut state, &mut window);
+            }
+            assert_eq!(
+                state.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll()),
+                expected_scroll
+            );
+            let mut expected: Vec<char> = line.chars().collect();
+            expected.insert(70, '@');
+            assert_eq!(
+                state.session.active_buffer().line_string(60),
+                expected.into_iter().collect::<String>()
+            );
+            assert!(window.cursor.unwrap().visible);
+        }
+    }
+}
+
+#[test]
 fn nested_split_mouse_switches_independent_views_of_the_same_buffer() {
     let _lock = app::state::global_test_state_lock()
         .lock()

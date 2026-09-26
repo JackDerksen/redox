@@ -570,7 +570,13 @@ fn scroll_mouse_view(
     columns: isize,
     height: usize,
 ) {
-    cursor.scroll_vertical(buffer, rows, height);
+    if height == 0 {
+        return;
+    }
+    cursor.scroll_y_lines = cursor
+        .scroll_y_lines
+        .saturating_add_signed(rows)
+        .min(buffer.len_lines().saturating_sub(1));
     if columns != 0 {
         let first = cursor.scroll_y_lines;
         let last = first.saturating_add(height).min(buffer.len_lines());

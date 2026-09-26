@@ -3537,7 +3537,7 @@ mod tests {
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         state.with_active_buffer_view_mut(|buffer, view| {
             assert_eq!(view.cursor.viewport_scroll(), (3, 3));
-            assert_eq!(view.cursor.cursor, Pos::new(8, 0));
+            assert_eq!(view.cursor.cursor, Pos::zero());
             assert!(!view.cursor.cursor_spec(buffer, 55, 11).visible);
         });
         handle_editor_event(

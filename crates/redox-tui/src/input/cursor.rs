@@ -112,6 +112,16 @@ impl CursorController {
         }
     }
 
+    /// Bring an off-screen cursor back to the centre without changing its position.
+    pub fn center_if_outside(&mut self, buffer: &TextBuffer, width: usize, height: usize) {
+        if width == 0 || height == 0 || self.cursor_spec(buffer, width, height).visible {
+            return;
+        }
+        let position = self.cursor_visual_info(buffer, width);
+        self.scroll_y_lines = position.cursor_y_lines.saturating_sub(height / 2);
+        self.scroll_x_cells = position.cursor_x_cells.saturating_sub(width / 2);
+    }
+
     /// Clamp an edited cursor position and keep it visible.
     pub fn reconcile_after_edit(
         &mut self,

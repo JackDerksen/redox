@@ -105,11 +105,11 @@ the cursor or focus a split pane. Drag with the left button to enter characterwi
 mode; the selection remains active after release and accepts the usual visual-mode keys.
 Dragging beyond the pane's edge scrolls as drag events arrive.
 
-Vertical scrolling moves the page immediately. The cursor stays on its document line
-until it reaches the viewport edge or the configured `scrolloff` margin, then moves only
-far enough to remain within that margin. Horizontal scrolling moves the page without
-changing the cursor position. The cursor is hidden while its column is outside the
-visible area and reappears when scrolled back into view.
+Mouse scrolling moves the page without changing the cursor's document position, even
+beyond the viewport edge or `scrolloff` margin. The cursor is hidden outside the visible
+area and reappears when scrolled back into view. Resuming editing while the cursor is
+off-screen centres the viewport on that position before applying the edit. Near the
+start of the document or line, centring stops at the content boundary.
 
 Scrolling filters small movements on the other axis. Horizontal scrolling starts after
 three wheel events in the same direction; switching back to vertical takes two.
