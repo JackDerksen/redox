@@ -1106,6 +1106,7 @@ impl EditorState {
             InputAction::None => {}
         }
 
+        self.refresh_command_path_completions();
         self.refresh_substitute_preview();
         self.clamp_active_cursor_for_normal_mode();
     }
@@ -1135,6 +1136,7 @@ impl EditorState {
                 self.schedule_search_preview(std::time::Instant::now());
             }
         }
+        self.refresh_command_path_completions();
         self.refresh_substitute_preview();
     }
 

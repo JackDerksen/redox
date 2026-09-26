@@ -7,6 +7,7 @@ use crate::ANIMATION_FRAME_INTERVAL;
 
 // MinUI waits on terminal input. Poll only while a background producer may reply.
 pub(super) const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(super) const LOADING_TOAST_DELAY: Duration = Duration::from_millis(300);
 const PERF_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
@@ -31,6 +32,11 @@ impl Default for RuntimeState {
 }
 
 impl EditorState {
+    pub(crate) fn active_loading_toast(&self, now: Instant) -> Option<String> {
+        self.active_lsp_loading_toast(now)
+            .or_else(|| self.active_update_check_toast(now))
+    }
+
     pub(crate) fn request_redraw(&mut self) {
         self.runtime.redraw_requested = true;
     }
@@ -75,7 +81,7 @@ impl EditorState {
             self.request_redraw();
         }
         let which_key_visible = self.which_key_popup(now).is_some();
-        let loading_toast = self.active_lsp_loading_toast(now);
+        let loading_toast = self.active_loading_toast(now);
         if which_key_visible != self.runtime.which_key_visible
             || loading_toast != self.runtime.loading_toast
         {

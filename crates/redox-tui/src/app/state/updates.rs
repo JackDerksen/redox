@@ -4,12 +4,13 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use semver::Version;
 use serde::Deserialize;
 
+use super::runtime::LOADING_TOAST_DELAY;
 use super::{EditorMode, EditorState};
 use crate::storage;
 
@@ -21,6 +22,7 @@ const CACHE_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) struct UpdateCheck {
     receiver: Receiver<Result<Version, String>>,
     manual: bool,
+    started_at: Instant,
 }
 
 impl EditorState {
@@ -38,7 +40,7 @@ impl EditorState {
 
     pub(crate) fn start_update_check(&mut self, manual: bool) {
         if manual {
-            self.set_status("checking for Redox updates...");
+            self.clear_status();
         }
         if self
             .update_check
@@ -56,10 +58,26 @@ impl EditorState {
                 let result = latest_release(&cache_path, manual).map_err(|error| error.to_string());
                 let _ = sender.send(result);
             }) {
-            Ok(_) => self.update_check = Some(UpdateCheck { receiver, manual }),
+            Ok(_) => {
+                self.update_check = Some(UpdateCheck {
+                    receiver,
+                    manual,
+                    started_at: Instant::now(),
+                })
+            }
             Err(error) if manual => self.set_status(format!("update check failed: {error}")),
             Err(_) => {}
         }
+    }
+
+    pub(super) fn active_update_check_toast(&self, now: Instant) -> Option<String> {
+        self.update_check
+            .as_ref()
+            .filter(|check| {
+                check.manual
+                    && now.saturating_duration_since(check.started_at) >= LOADING_TOAST_DELAY
+            })
+            .map(|_| "checking for Redox updates...".to_string())
     }
 
     pub(super) fn update_check_can_notify(&self) -> bool {
@@ -241,6 +259,7 @@ mod tests {
         state.update_check = Some(UpdateCheck {
             receiver,
             manual: false,
+            started_at: Instant::now(),
         });
         state.set_status("file changed on disk");
         state.poll_update_check();
@@ -261,7 +280,11 @@ mod tests {
             state.clear_status();
             let (sender, receiver) = mpsc::channel();
             sender.send(Err("offline".into())).unwrap();
-            state.update_check = Some(UpdateCheck { receiver, manual });
+            state.update_check = Some(UpdateCheck {
+                receiver,
+                manual,
+                started_at: Instant::now(),
+            });
             state.poll_update_check();
             assert_eq!(state.status_msg.is_some(), manual);
             assert!(state.update_check.is_none());
