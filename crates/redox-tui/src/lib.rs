@@ -3361,6 +3361,8 @@ pub fn run() -> anyhow::Result<()> {
         config.mouse,
         config.mouse_invert_vertical,
         config.mouse_invert_horizontal,
+        config.mouse_scroll_step_vertical,
+        config.mouse_scroll_step_horizontal,
     );
     install_keyboard_bindings(window.keyboard_mut(), &state.input)?;
     window.set_auto_flush(false);
@@ -3432,6 +3434,8 @@ pub fn run() -> anyhow::Result<()> {
             config.mouse,
             config.mouse_invert_vertical,
             config.mouse_invert_horizontal,
+            config.mouse_scroll_step_vertical,
+            config.mouse_scroll_step_horizontal,
         );
         apply_runtime_colorscheme(
             &mut state,
@@ -3513,7 +3517,7 @@ mod tests {
             Pos::zero(),
             "disabled by default"
         );
-        state.configure_mouse(true, false, false);
+        state.configure_mouse(true, false, false, 3, 3);
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -3585,7 +3589,7 @@ mod tests {
         assert_eq!(state.active_visual_selection().unwrap().0, selection);
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         assert_eq!(state.active_visual_selection().unwrap().0, selection);
-        state.configure_mouse(false, false, false);
+        state.configure_mouse(false, false, false, 3, 3);
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -3598,7 +3602,7 @@ mod tests {
         state.with_active_buffer_view_mut(|_, view| {
             assert_eq!(view.cursor.viewport_scroll(), (3, 3))
         });
-        state.configure_mouse(true, true, true);
+        state.configure_mouse(true, true, true, 1, 2);
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -3620,7 +3624,7 @@ mod tests {
             );
         }
         state.with_active_buffer_view_mut(|_, view| {
-            assert_eq!(view.cursor.viewport_scroll(), (0, 0))
+            assert_eq!(view.cursor.viewport_scroll(), (1, 2))
         });
     }
 
@@ -3682,7 +3686,7 @@ mod tests {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         *state.session.active_buffer_mut() = TextBuffer::from_text(&"abcdef\n".repeat(40));
-        state.configure_mouse(true, false, false);
+        state.configure_mouse(true, false, false, 3, 3);
         state.zen.enabled = true;
         state.zen.width_percent = 80;
         state.zen.min_width = 1;

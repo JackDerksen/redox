@@ -158,7 +158,7 @@ fn finder_mouse_uses_drawn_rows_and_pointer_region_then_opens_on_double_click() 
         files.file(&format!("{name}.txt"), "text\n");
     }
     let mut state = EditorState::new(EditorSession::open_initial_file(&alpha).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     state.apply_input(InputAction::QuickPinCurrentFile, 160, 40);
     state.apply_input(InputAction::AssignPinSlot { slot: 0 }, 160, 40);
     state.apply_input(InputAction::OpenFinder, 160, 40);
@@ -199,17 +199,17 @@ fn finder_mouse_uses_drawn_rows_and_pointer_region_then_opens_on_double_click() 
         0,
         "a list that already fits must not move its selection when scrolled"
     );
-    state.configure_mouse(true, true, false);
+    state.configure_mouse(true, true, false, 3, 3);
     scroll_at(&mut state, &mut window, MouseScroll::List, 1);
     assert_eq!(state.finder_popup().unwrap().selected, 0);
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 1, 2);
     scroll_at(&mut state, &mut window, MouseScroll::Preview, 1);
     let popup = state.finder_popup().unwrap();
     assert_eq!(
         popup.selected, 0,
         "preview scrolling must not change the list selection"
     );
-    assert_eq!(popup.preview.unwrap().scroll_y, 3);
+    assert_eq!(popup.preview.unwrap().scroll_y, 1);
 
     let entry = target_rect(
         &state,
@@ -250,7 +250,7 @@ fn finder_scrolls_the_page_and_keeps_physical_double_click_targets_still() {
         .map(|index| files.file(&format!("entry-{index:02}.txt"), "text\n"))
         .collect();
     let mut state = EditorState::new(EditorSession::open_initial_file(&paths[0]).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     state.apply_input(InputAction::OpenFinder, 100, 24);
     wait_for_finder(&mut state, paths.len());
     let mut window = TestWindow::new(100, 24);
@@ -303,11 +303,11 @@ fn finder_scrolls_the_page_and_keeps_physical_double_click_targets_still() {
     assert_eq!(entry_index(&visible(&state)[0].1), first_before - 3);
     assert_eq!(state.finder_popup().unwrap().selected, selected);
 
-    state.configure_mouse(true, true, false);
+    state.configure_mouse(true, true, false, 3, 3);
     scroll_at(&mut state, &mut window, MouseScroll::List, -1);
     assert_eq!(entry_index(&visible(&state)[0].1), first_before);
     assert_eq!(state.finder_popup().unwrap().selected, selected);
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     for _ in 0..2 {
         scroll_at(&mut state, &mut window, MouseScroll::List, -1);
     }
@@ -368,7 +368,7 @@ fn input_popups_route_cursor_clicks_and_outside_dismissal() {
     let files = MouseFiles::new();
     let document = files.file("search.txt", &"hit\n".repeat(6));
     let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     let mut window = TestWindow::new(100, 30);
     state.apply_input(InputAction::RunCommand("ls".to_string()), 100, 30);
     state.apply_input(InputAction::EnterCommand, 100, 30);
@@ -423,7 +423,7 @@ fn perf_overlay_allows_buffer_scrolling_inside_and_outside_its_bounds() {
     );
     for split in [false, true] {
         let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
-        state.configure_mouse(true, false, false);
+        state.configure_mouse(true, false, false, 3, 3);
         if split {
             state.split_active_pane(app::state::SplitAxis::Vertical);
         }
@@ -516,7 +516,7 @@ fn popup_wheels_and_dismissal_momentum_leave_the_buffer_still() {
     ] {
         for dismiss_with_click in [false, true] {
             let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
-            state.configure_mouse(true, false, false);
+            state.configure_mouse(true, false, false, 3, 3);
             let mut window = TestWindow::new(100, 30);
             render(&mut state, &mut window);
             let source = state.session.active_id();
@@ -581,7 +581,7 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
     let files = MouseFiles::new();
     let document = files.file("history.txt", &"original line\n".repeat(80));
     let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     let mut window = TestWindow::new(120, 36);
     render(&mut state, &mut window);
     for number in 0..40 {
@@ -678,12 +678,12 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
     assert_eq!(state.active_pane_id(), tree_pane.id);
     assert_eq!(state.active_cursor_pos(), Pos::zero());
 
-    state.configure_mouse(true, false, true);
+    state.configure_mouse(true, false, true, 3, 3);
     horizontal(&mut state, &mut window, 1);
     state.with_buffer_view_mut(preview_pane.buffer_id, |_, view| {
         assert_eq!(view.cursor.viewport_scroll(), (0, 3));
     });
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     horizontal(&mut state, &mut window, 127);
     let max_scroll = minui::cell_width(&preview_line, minui::TabPolicy::Fixed(4)) as usize
         - preview.width as usize;
@@ -772,7 +772,7 @@ fn explorer_mouse_opens_entries_and_dismisses_only_the_top_layer() {
     let background = files.file("background.txt", "editor text\n");
     let nested = files.file("folder/nested.txt", "nested text\n");
     let mut state = EditorState::new(EditorSession::open_initial_file(&background).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     state
         .open_explorer_at_path(background.parent().unwrap().to_path_buf())
         .unwrap();
@@ -847,7 +847,7 @@ fn pinboard_double_click_opens_occupied_slots_without_assigning_empty_ones() {
     let alpha = files.file("alpha.txt", "alpha\n");
     let beta = files.file("beta.txt", "beta\n");
     let mut state = EditorState::new(EditorSession::open_initial_file(&alpha).unwrap());
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     state.apply_input(InputAction::QuickPinCurrentFile, 100, 30);
     state.apply_input(InputAction::AssignPinSlot { slot: 2 }, 100, 30);
     state.session.open_file(&beta).unwrap();
@@ -911,7 +911,7 @@ fn mouse_scrolling_preserves_offscreen_cursor_and_centres_before_editing() {
             (InputMode::Normal, vec![Event::Paste("@".to_string())]),
         ] {
             let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
-            state.configure_mouse(true, false, false);
+            state.configure_mouse(true, false, false, 3, 3);
             if split {
                 state.split_active_pane(app::state::SplitAxis::Vertical);
             }
@@ -1002,7 +1002,7 @@ fn nested_split_mouse_switches_independent_views_of_the_same_buffer() {
     let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
     *state.session.active_buffer_mut() =
         TextBuffer::from_text(&format!("{}\n", "abcdef".repeat(40)).repeat(120));
-    state.configure_mouse(true, false, false);
+    state.configure_mouse(true, false, false, 3, 3);
     state.zen.enabled = true;
     state.zen.hide_gutter = false;
     state.zen.width_percent = 80;

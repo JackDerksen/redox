@@ -460,6 +460,11 @@ Other language tool commands:
 Optional mouse support is enabled with `mouse = true` in your configuration. It supports
 vertical and horizontal scrolling, click-to-position, and drag selection into visual mode.
 Popups support scrolling, entry selection, double-click opening, and outside-click dismissal.
+Set `mouse_scroll_step_vertical` and `mouse_scroll_step_horizontal` to choose the number
+of rows and columns per wheel event in buffers and scrollable popups. Both default to `3`
+and accept integers from `1` to `65535` (although I wouldn't recommend that); use `1` for
+finer scrolling. Apply changes with `:config reload`. The `mouse_invert_vertical` and 
+`mouse_invert_horizontal` settings reverse each axis independently.
 
 | Keys | Behaviour |
 | ---- | --------- |

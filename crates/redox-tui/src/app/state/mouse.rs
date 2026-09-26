@@ -25,6 +25,8 @@ pub(crate) struct MouseState {
     pub list_scroll: BTreeMap<(MousePopup, MouseScroll), usize>,
     invert_vertical: bool,
     invert_horizontal: bool,
+    scroll_step_vertical: u16,
+    scroll_step_horizontal: u16,
     scroll_filter: ScrollFilter,
     wheel_gesture: Option<WheelGesture>,
     drag: Option<(PaneId, Pos)>,
@@ -49,6 +51,15 @@ struct WheelGesture {
 }
 
 impl MouseState {
+    fn scroll_distance(&self, horizontal: bool, delta: i8) -> isize {
+        let (step, invert) = if horizontal {
+            (self.scroll_step_horizontal, self.invert_horizontal)
+        } else {
+            (self.scroll_step_vertical, self.invert_vertical)
+        };
+        isize::from(delta) * step as isize * if invert { -1 } else { 1 }
+    }
+
     fn accepts_wheel_context(&mut self, popup: Option<MousePopup>, now: Instant) -> bool {
         let gesture = self.wheel_gesture.get_or_insert(WheelGesture {
             popup,
@@ -109,6 +120,8 @@ impl EditorState {
         enabled: bool,
         invert_vertical: bool,
         invert_horizontal: bool,
+        scroll_step_vertical: u16,
+        scroll_step_horizontal: u16,
     ) {
         if self.mouse.enabled != enabled {
             self.mouse.drag = None;
@@ -120,6 +133,8 @@ impl EditorState {
         self.mouse.enabled = enabled;
         self.mouse.invert_vertical = invert_vertical;
         self.mouse.invert_horizontal = invert_horizontal;
+        self.mouse.scroll_step_vertical = scroll_step_vertical;
+        self.mouse.scroll_step_horizontal = scroll_step_horizontal;
     }
 
     pub(crate) fn set_mouse_viewport(&mut self, origin: u16, width: u16, height: u16) {
@@ -251,8 +266,7 @@ impl EditorState {
                     .scroll_filter
                     .accepts(false, delta, Instant::now())
                 {
-                    let direction = if self.mouse.invert_vertical { -1 } else { 1 };
-                    self.scroll_mouse_at(x, y, isize::from(delta) * 3 * direction, 0);
+                    self.scroll_mouse_at(x, y, self.mouse.scroll_distance(false, delta), 0);
                 }
             }
             Event::MouseScrollHorizontal { x, y, delta } => {
@@ -261,8 +275,7 @@ impl EditorState {
                     .scroll_filter
                     .accepts(true, delta, Instant::now())
                 {
-                    let direction = if self.mouse.invert_horizontal { -1 } else { 1 };
-                    self.scroll_mouse_at(x, y, 0, isize::from(delta) * 3 * direction);
+                    self.scroll_mouse_at(x, y, 0, self.mouse.scroll_distance(true, delta));
                 }
             }
             Event::MouseMove { .. } | Event::MouseRelease { .. } | Event::MouseDrag { .. } => {}
@@ -330,12 +343,7 @@ impl EditorState {
                         .scroll_filter
                         .accepts(horizontal, delta, Instant::now())
                 {
-                    let invert = if horizontal {
-                        self.mouse.invert_horizontal
-                    } else {
-                        self.mouse.invert_vertical
-                    };
-                    let distance = isize::from(delta) * 3 * if invert { -1 } else { 1 };
+                    let distance = self.mouse.scroll_distance(horizontal, delta);
                     let (rows, columns) = if horizontal {
                         (0, distance)
                     } else {
