@@ -516,7 +516,12 @@ impl EditorState {
             return;
         };
         let pane = &self.panes[pane_index];
-        let buffer_id = pane.buffer_id;
+        let active = rect.pane_id == self.active_pane_id();
+        let buffer_id = if active {
+            self.session.active_id()
+        } else {
+            pane.buffer_id
+        };
         if self.undo_tree_surface_role(buffer_id).is_some() {
             self.scroll_undo_tree_pane(
                 buffer_id,
@@ -531,7 +536,7 @@ impl EditorState {
                 .meta(buffer_id)
                 .is_some_and(|meta| meta.kind == BufferKind::File)
         {
-            if rect.pane_id == self.active_pane_id() {
+            if active {
                 self.scroll_mouse(rows, columns);
             } else if let Some(buffer) = self.session.buffer(buffer_id) {
                 let cursor = &mut self.panes[pane_index].view.cursor;
