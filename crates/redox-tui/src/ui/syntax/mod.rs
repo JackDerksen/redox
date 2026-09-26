@@ -1341,8 +1341,13 @@ pub fn draw_line_with_syntax(
             start_byte,
             end_byte,
         );
-        let colors = apply_color_column(colors, color_column, start_cell, end_cell);
         let visible_x = clipped_start.saturating_sub(scroll_x);
+        let colors = apply_color_column(
+            colors,
+            color_column,
+            visible_x,
+            clipped_end.saturating_sub(scroll_x),
+        );
 
         if g == "\t" {
             flush_pending_syntax_span(

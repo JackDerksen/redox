@@ -1168,7 +1168,7 @@ fn draw_line_with_highlights(
         let color = if let Some(color) = highlight_color {
             color
         } else {
-            apply_color_column(base_color, color_column, start_cell, end_cell)
+            apply_color_column(base_color, color_column, visible_start, visible_end)
         };
 
         if g == "\t" {
@@ -2872,7 +2872,12 @@ fn draw_plain_line(
             break;
         }
 
-        let colors = apply_color_column(default_colors, color_column, start_cell, end_cell);
+        let colors = apply_color_column(
+            default_colors,
+            color_column,
+            start_cell.saturating_sub(scroll_x),
+            end_cell.saturating_sub(scroll_x),
+        );
         if g == "\t" {
             let spaces = " ".repeat(g_width.max(1));
             window.write_str_colored(

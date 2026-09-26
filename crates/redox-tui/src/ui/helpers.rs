@@ -54,6 +54,7 @@ pub fn clip_path_with_filename(text: &str, max_chars: usize) -> String {
     format!("{root}{separator}…{separator}{suffix}")
 }
 
+/// Apply the column background using cell positions relative to the text viewport.
 pub fn apply_color_column(
     colors: ColorPair,
     color_column: Option<(usize, Color)>,
