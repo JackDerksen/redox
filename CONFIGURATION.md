@@ -70,6 +70,9 @@ legacy data is preserved rather than deleted.
 ```toml
 theme = "default"
 icons_enabled = false
+mouse = false
+mouse_invert_vertical = false
+mouse_invert_horizontal = false
 check_updates = true
 scrolloff = 5 
 background_dimming = 0.5
@@ -83,6 +86,9 @@ leader = " "
 | --- | --- | --- | --- |
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
 | `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
+| `mouse` | boolean | `false` | Enables mouse scrolling, cursor placement, and drag selection in editor panes. Takes effect on configuration reload. When disabled, terminal mouse capture is released. |
+| `mouse_invert_vertical` | boolean | `false` | Reverses the vertical wheel direction reported by the terminal. |
+| `mouse_invert_horizontal` | boolean | `false` | Reverses the horizontal wheel direction reported by the terminal. |
 | `check_updates` | boolean | `true` | Check GitHub for a newer release on startup. Successful checks are cached for 24 hours and require `curl`. `:check-update` performs a manual check at any time. |
 | `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
@@ -90,6 +96,62 @@ leader = " "
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `line_numbers` | string | `"relative"` | `"relative"` shows the distance from the cursor, with the current line's actual number. `"absolute"` shows actual line numbers on every row. Applies to editor panes and the explorer. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
+
+## Mouse support
+
+Set `mouse = true` at the top level of the configuration file, then run `:config reload`.
+Scroll vertically or horizontally to move the pane under the pointer without changing keyboard focus. Left-click to place
+the cursor or focus a split pane. Drag with the left button to enter characterwise visual
+mode; the selection remains active after release and accepts the usual visual-mode keys.
+Dragging beyond the pane's edge scrolls as drag events arrive.
+
+Mouse scrolling moves the page without changing the cursor's document position, even
+beyond the viewport edge or `scrolloff` margin. The cursor is hidden outside the visible
+area and reappears when scrolled back into view. Resuming editing while the cursor is
+off-screen centres the viewport on that position before applying the edit. Near the
+start of the document or line, centring stops at the content boundary.
+
+Scrolling filters small movements on the other axis. Horizontal scrolling starts after
+three wheel events in the same direction; switching back to vertical takes two.
+An event on the active axis clears the pending switch, and opposite-direction events
+cancel each other. After a quarter-second pause, vertical scrolling responds immediately
+again. Filtered events are discarded rather than replayed as a jump.
+
+The terminal's reported down/right wheel events move the viewport down/right by default.
+Reverse either axis independently with `mouse_invert_vertical = true` or
+`mouse_invert_horizontal = true`. These settings apply on `:config reload` and reverse
+the events received from the terminal, which may already reflect OS scrolling preferences.
+
+Popups use the same mouse setting and scroll directions. Scroll the region under the
+pointer, click an entry to select it, and double-click to open or accept it. Finder pins
+stay fixed above the scrolling file list; its preview scrolls independently. Clicking an
+entry keeps it at the same screen position for a second click.
+
+| Popup | Mouse behaviour |
+| --- | --- |
+| Finder | Scroll results or the preview; click a result to select it, double-click to open it, or click the query to position its cursor. |
+| Explorer | Scroll the directory, click to position the text cursor, and double-click a file or directory to open it. |
+| Pinboard | Click a slot to select it; double-click an occupied slot to open its file. Pin assignment keeps its existing keyboard controls. |
+| Completion, diagnostics, code actions | Scroll and select entries; double-click to accept a completion, jump to a diagnostic, or apply an action. Diagnostic details and the actions list scroll separately. |
+| Language tools | Scroll and select tools. Installation and removal keep their existing keyboard controls. |
+| Symbol information | Scroll the documentation. |
+| Command and search | Click to position the input cursor. Wheel events are ignored. |
+| Which-key | Click a concrete key to use it; placeholders still require keyboard input. |
+| Undo tree | Scroll the history vertically or its preview in either direction; click a history row to select it, or click the file pane to return to editing. Scrolling does not change keyboard focus or restore a revision. Selecting another revision resets the preview's scroll position. |
+
+Left-click outside a popup to dismiss it. For stacked popups, this closes only the top
+one, and the click does not also activate the editor underneath. An Explorer with unsaved
+directory edits stays open; use `:w` to save or `Esc` to discard them. About and performance
+popups also support outside-click dismissal.
+The performance overlay lets vertical and horizontal scrolling reach the buffer while it stays open.
+When a popup closes during a scroll gesture, Redox ignores the remaining wheel events until
+there has been a quarter-second pause. This prevents trackpad momentum from scrolling the
+buffer or another popup after dismissal.
+
+Redox ignores right-clicks and does not display a context menu.
+
+Mouse support defaults to `false`. Disabling it releases mouse capture so the terminal
+can handle selection and its own context menu.
 
 ## Optional logging
 

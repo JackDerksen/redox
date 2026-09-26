@@ -4,14 +4,15 @@ use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
 use minui::{ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
-use redox_core::TextBuffer;
+use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{ExplorerRenderRow, ExplorerRenderRowKind};
 use crate::app::{EditorState, ExplorerPopup, GitFileStatusKind};
 use crate::ui::icons::{PREFIX_WIDTH, PopupKind, file_icon, folder_icon, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, PopupLayout, draw_popup_frame_at, popup_inner_size, popup_window_view,
+    MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupLayout, PopupMouseLayout,
+    draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
 use crate::ui::{TextViewport, UiStyle, build_editor_status_bar};
 
@@ -25,18 +26,19 @@ struct ExplorerRowStyle {
     git_status: Option<GitFileStatusKind>,
 }
 
-/// Draws the Explorer popup and returns its requested cursor position.
+/// Draws the Explorer popup and returns its cursor and mouse targets.
 ///
 /// `reconcile_inner_h` retains the popup's original unshrunk inner height separately from
 /// `layout.inner_h`, preventing abrupt scrolling when the command line stacks below the popup.
-pub fn draw_explorer_popup_view(
+pub(crate) fn draw_explorer_popup_view(
     state: &mut EditorState,
     style: UiStyle,
     window: &mut dyn Window,
     popup: ExplorerPopup,
     layout: PopupLayout,
     reconcile_inner_h: u16,
-) -> minui::Result<Option<CursorSpec>> {
+) -> minui::Result<(Option<CursorSpec>, PopupMouseLayout)> {
+    let mut mouse = PopupMouseLayout::new(MousePopup::Explorer);
     let PopupLayout {
         inner_w,
         inner_h,
@@ -53,6 +55,7 @@ pub fn draw_explorer_popup_view(
         &title,
         PopupChrome::explorer(style),
     )?;
+    mouse.add_frame(layout);
     let mut view = popup_window_view(window, layout);
 
     let show_git_status_column = state.refresh_explorer_render_model();
@@ -104,6 +107,15 @@ pub fn draw_explorer_popup_view(
     );
     let icon_col = gutter_w.saturating_add(GUTTER_CONTENT_PADDING);
     let content_x = icon_col.saturating_add(if style.icons_enabled { PREFIX_WIDTH } else { 0 });
+    mouse.scrolls.push((
+        MouseRect {
+            x: x.saturating_add(1).saturating_add(content_x),
+            y: y.saturating_add(1),
+            width: inner_w.saturating_sub(content_x),
+            height: inner_h,
+        },
+        MouseScroll::Text,
+    ));
     draw_line_numbers(
         &mut view,
         style,
@@ -125,6 +137,28 @@ pub fn draw_explorer_popup_view(
             });
         let line_idx = snapshot.first_line() + row;
         let source_line = line.source();
+        if line_idx < total_lines {
+            mouse.clicks.push((
+                MouseRect {
+                    x: x.saturating_add(1),
+                    y: y.saturating_add(1).saturating_add(row as u16),
+                    width: content_x.min(inner_w),
+                    height: 1,
+                },
+                MouseTarget::BufferPosition(Pos::new(line_idx, 0)),
+            ));
+            mouse.add_buffer_line(
+                MouseRect {
+                    x: x.saturating_add(1).saturating_add(content_x),
+                    y: y.saturating_add(1).saturating_add(row as u16),
+                    width: inner_w.saturating_sub(content_x),
+                    height: 1,
+                },
+                line_idx,
+                source_line,
+                scroll_x,
+            );
+        }
         if style.icons_enabled
             && let Some(icon) = explorer_entry_icon(&popup.dir_path, source_line)
         {
@@ -171,7 +205,7 @@ pub fn draw_explorer_popup_view(
         build_editor_status_bar(state, style).draw(window)?;
     }
 
-    Ok(cursor)
+    Ok((cursor, mouse))
 }
 
 fn reconcile_explorer_cursor_for_popup(
@@ -193,7 +227,9 @@ fn reconcile_explorer_cursor_for_popup(
 
     cursor.follow.top_margin_rows = 0;
     cursor.follow.bottom_margin_rows = 0;
+    let scroll_x = cursor.scroll_x_cells;
     cursor.reconcile_after_edit(buffer, text_w, inner_h as usize);
+    cursor.scroll_x_cells = scroll_x;
 }
 
 fn explorer_entry_icon(dir_path: &Path, source_line: &str) -> Option<&'static str> {

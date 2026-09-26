@@ -12,7 +12,8 @@ use crate::ui::render::LineViewport;
 use crate::ui::style::FinderStyle;
 use crate::ui::syntax::draw_line_with_syntax;
 use crate::ui::widgets::popup::{
-    PopupChrome, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
+    MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupLayout, PopupMouseLayout,
+    anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
     popup_window_view,
 };
 use crate::ui::widgets::status_bar::{
@@ -77,11 +78,12 @@ impl FinderRightFooter {
     }
 }
 
-pub fn draw_finder_popup(
+pub(crate) fn draw_finder_popup(
     popup: &FinderPopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
+    let mut mouse = PopupMouseLayout::new(MousePopup::Finder);
     let (term_w, term_h) = window.get_size();
     let (combined_inner_w, combined_inner_h) = popup_inner_size(
         term_w,
@@ -110,8 +112,17 @@ pub fn draw_finder_popup(
         "",
         PopupChrome::finder(style),
     )?;
+    mouse.add_frame(list_layout);
+    mouse.scrolls.push((list_layout.into(), MouseScroll::List));
     let mut list_view = popup_window_view(window, list_layout);
-    draw_entries(&mut list_view, popup, style.finder, style.icons_enabled)?;
+    draw_entries(
+        &mut list_view,
+        popup,
+        style.finder,
+        style.icons_enabled,
+        &mut mouse,
+        list_layout,
+    )?;
 
     if let Some(preview_frame) = layout.preview {
         let preview_layout = draw_popup_frame_at(
@@ -123,6 +134,16 @@ pub fn draw_finder_popup(
             &popup_title(PopupKind::FilePreview, PREVIEW_TITLE, style.icons_enabled),
             PopupChrome::finder_preview(style),
         )?;
+        mouse.add_frame(preview_layout);
+        mouse.scrolls.push((
+            MouseRect {
+                x: preview_layout.x.saturating_add(1),
+                y: preview_layout.y.saturating_add(2),
+                width: preview_layout.inner_w,
+                height: preview_layout.inner_h.saturating_sub(1),
+            },
+            MouseScroll::Preview,
+        ));
         let mut preview_view = popup_window_view(window, preview_layout);
         if let Some(preview) = &popup.preview {
             draw_preview(&mut preview_view, preview, style)?;
@@ -138,6 +159,7 @@ pub fn draw_finder_popup(
         &popup_title(PopupKind::Finder, QUERY_TITLE, style.icons_enabled),
         PopupChrome::finder_query(style),
     )?;
+    mouse.add_frame(query_layout);
     let mut query_view = popup_window_view(window, query_layout);
     let right_footer = finder_right_footer(popup, style);
     let input_col = draw_query_row(&mut query_view, popup, style, &right_footer)?;
@@ -149,6 +171,20 @@ pub fn draw_finder_popup(
         .saturating_sub(input_col.saturating_add(1))
         .max(1) as usize;
     let cursor_offset = finder_input_cursor_offset(&popup.query, popup.query_cursor, input_w);
+    let visible_query = finder_input_view(&popup.query, popup.query_cursor, input_w);
+    let cursor = clamp_cursor(&popup.query, popup.query_cursor);
+    let start_byte = cursor
+        .saturating_sub(clip_text_right_to_cells(&popup.query[..cursor], cursor_offset).len());
+    mouse.add_input(
+        MouseRect {
+            x: query_layout.x.saturating_add(1).saturating_add(input_col),
+            y: query_layout.y.saturating_add(1),
+            width: input_w.min(u16::MAX as usize) as u16,
+            height: 1,
+        },
+        &visible_query,
+        start_byte,
+    );
     window.request_cursor(CursorSpec {
         x: query_layout
             .x
@@ -159,7 +195,7 @@ pub fn draw_finder_popup(
         visible: true,
     });
 
-    Ok(())
+    Ok(mouse)
 }
 
 fn compute_finder_popup_layout(
@@ -234,11 +270,12 @@ fn compute_finder_popup_layout(
     }
 }
 
-pub fn draw_pin_selector_popup(
+pub(crate) fn draw_pin_selector_popup(
     popup: &PinSelectorPopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
+) -> minui::Result<PopupMouseLayout> {
+    let mut mouse = PopupMouseLayout::new(MousePopup::Pinboard);
     let (term_w, term_h) = window.get_size();
     let (inner_w, _) = popup_inner_size(
         term_w,
@@ -264,6 +301,8 @@ pub fn draw_pin_selector_popup(
             ColorPair::new(style.finder.text.fg, Color::Transparent),
         ),
     )?;
+    mouse.add_frame(layout);
+    mouse.scrolls.push((layout.into(), MouseScroll::List));
     let mut view = popup_window_view(window, layout);
     let path_w = inner_w.saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING.saturating_mul(2));
     let path_label = clip_path_with_filename(&popup.path_label, path_w as usize);
@@ -276,6 +315,14 @@ pub fn draw_pin_selector_popup(
 
     for (idx, slot) in popup.slots.iter().enumerate() {
         let row = idx as u16 + 1;
+        mouse.add_row(
+            layout,
+            row,
+            MouseTarget::Entry {
+                index: idx,
+                identity: slot.path_label.clone().unwrap_or_default(),
+            },
+        );
         let selected = idx == popup.selected;
         let unselected_colors = if slot.path_label.is_some() {
             style.finder.text
@@ -341,7 +388,7 @@ pub fn draw_pin_selector_popup(
         y: 0,
         visible: false,
     });
-    Ok(())
+    Ok(mouse)
 }
 
 fn draw_entries(
@@ -349,6 +396,8 @@ fn draw_entries(
     popup: &FinderPopup,
     style: FinderStyle,
     icons_enabled: bool,
+    mouse: &mut PopupMouseLayout,
+    layout: PopupLayout,
 ) -> minui::Result<()> {
     if popup.entries.is_empty() {
         view.write_str_colored(0, 0, "<no matches>", style.dim)?;
@@ -365,11 +414,13 @@ fn draw_entries(
         pinned_count,
         popup.selected,
         view.height as usize,
+        popup.file_window_start,
     );
     for (actual_index, screen_row) in rows {
         let entry = &popup.entries[actual_index];
         let selected = actual_index == popup.selected;
         let row = screen_row as u16;
+        mouse.add_row(layout, row, MouseTarget::FinderEntry(entry.path.clone()));
         let unselected_base = if entry.is_pinned {
             style.pinned_bg
         } else {
@@ -447,6 +498,7 @@ fn visible_entry_rows(
     pinned_count: usize,
     selected: usize,
     visible_rows: usize,
+    file_window_start: Option<usize>,
 ) -> Vec<(usize, usize)> {
     if entry_count == 0 || visible_rows == 0 {
         return Vec::new();
@@ -467,8 +519,9 @@ fn visible_entry_rows(
     }
 
     let selected_file_idx = selected.checked_sub(pinned_count);
-    let file_window_start = match selected_file_idx {
-        Some(selected_file_idx) if file_count > remaining_rows => {
+    let file_window_start = match (file_window_start, selected_file_idx) {
+        (Some(start), _) => start.min(file_count.saturating_sub(remaining_rows)),
+        (None, Some(selected_file_idx)) if file_count > remaining_rows => {
             let max_start = file_count.saturating_sub(remaining_rows);
             selected_file_idx
                 .saturating_sub(remaining_rows.saturating_sub(1).min(remaining_rows / 2))
@@ -498,6 +551,19 @@ fn draw_preview(
     preview: &FinderPreview,
     style: UiStyle,
 ) -> minui::Result<()> {
+    let visible_rows = view.height.saturating_sub(1) as usize;
+    let scroll_y = preview
+        .scroll_y
+        .min(preview.lines.len().saturating_sub(visible_rows));
+    let max_width = preview
+        .lines
+        .iter()
+        .map(|line| text_width(line))
+        .max()
+        .unwrap_or(0);
+    let scroll_x = preview
+        .scroll_x
+        .min(max_width.saturating_sub(view.width as usize));
     view.write_str_colored(
         0,
         0,
@@ -507,7 +573,8 @@ fn draw_preview(
     for (idx, line) in preview
         .lines
         .iter()
-        .take(view.height.saturating_sub(1) as usize)
+        .skip(scroll_y)
+        .take(visible_rows)
         .enumerate()
     {
         let width = view.width as usize;
@@ -516,14 +583,17 @@ fn draw_preview(
             LineViewport {
                 row: idx as u16 + 1,
                 column: 0,
-                scroll_x: 0,
+                scroll_x,
                 width,
             },
             line,
             style.finder.text,
             None,
             style,
-            preview.syntax_spans.get(idx).map_or(&[], Vec::as_slice),
+            preview
+                .syntax_spans
+                .get(scroll_y + idx)
+                .map_or(&[], Vec::as_slice),
         )?;
     }
     Ok(())
@@ -751,16 +821,39 @@ mod tests {
 
     #[test]
     fn visible_entry_rows_bottom_justifies_files_below_pins() {
-        let rows = visible_entry_rows(4, 2, 3, 8);
+        let rows = visible_entry_rows(4, 2, 3, 8, None);
 
         assert_eq!(rows, vec![(0, 0), (1, 1), (2, 6), (3, 7)]);
     }
 
     #[test]
     fn visible_entry_rows_scrolls_file_region_under_pins() {
-        let rows = visible_entry_rows(8, 2, 2, 5);
+        let rows = visible_entry_rows(8, 2, 2, 5, None);
 
         assert_eq!(rows, vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]);
+    }
+
+    #[test]
+    fn mouse_file_window_stays_put_when_selection_changes_and_clamps_after_resize() {
+        let rows = visible_entry_rows(30, 2, 4, 8, Some(10));
+        assert_eq!(rows, visible_entry_rows(30, 2, 17, 8, Some(10)));
+        assert_eq!(
+            rows,
+            vec![
+                (0, 0),
+                (1, 1),
+                (12, 2),
+                (13, 3),
+                (14, 4),
+                (15, 5),
+                (16, 6),
+                (17, 7)
+            ]
+        );
+        let resized = visible_entry_rows(30, 2, 29, 12, Some(22));
+        assert_eq!(&resized[..2], &[(0, 0), (1, 1)]);
+        assert_eq!(resized[2], (20, 2));
+        assert_eq!(resized.last(), Some(&(29, 11)));
     }
 
     #[test]
@@ -811,6 +904,7 @@ mod tests {
             query: "main".to_string(),
             query_cursor: 4,
             selected: 0,
+            file_window_start: None,
             result_count: 84,
             total_count: 84,
             preview: None,
@@ -828,6 +922,7 @@ mod tests {
             query: "abcdef".to_string(),
             query_cursor: 6,
             selected: 0,
+            file_window_start: None,
             result_count: 84,
             total_count: 84,
             preview: None,

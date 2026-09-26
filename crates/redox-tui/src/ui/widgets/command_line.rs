@@ -4,8 +4,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{EditorMode, EditorState};
 use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, PopupLayout, anchored_popup_origin, clip_text_to_cells, draw_popup_frame_at,
-    popup_inner_size, popup_window_view,
+    MousePopup, MouseRect, PopupChrome, PopupLayout, PopupMouseLayout, anchored_popup_origin,
+    clip_text_to_cells, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -37,22 +37,21 @@ pub(crate) fn search_toast_layout(
     })
 }
 
-pub fn draw_command_line_popup(
+pub(crate) fn draw_command_line_popup(
     state: &EditorState,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<()> {
-    let _ = draw_command_line_popup_after(state, style, window, None)?;
-    Ok(())
+) -> minui::Result<Option<PopupMouseLayout>> {
+    draw_command_line_popup_after(state, style, window, None)
 }
 
-pub fn draw_command_line_popup_below(
+pub(crate) fn draw_command_line_popup_below(
     state: &EditorState,
     style: UiStyle,
     window: &mut dyn Window,
     popup: PopupLayout,
     stacked_padding: u16,
-) -> minui::Result<bool> {
+) -> minui::Result<Option<PopupMouseLayout>> {
     draw_command_line_popup_after(state, style, window, Some((popup, stacked_padding)))
 }
 
@@ -61,7 +60,7 @@ fn draw_command_line_popup_after(
     style: UiStyle,
     window: &mut dyn Window,
     popup: Option<(PopupLayout, u16)>,
-) -> minui::Result<bool> {
+) -> minui::Result<Option<PopupMouseLayout>> {
     let substitution = state.substitute_preview();
     let (title, prompt) = match state.mode {
         EditorMode::Command => (
@@ -90,18 +89,18 @@ fn draw_command_line_popup_after(
             ),
             SEARCH_PROMPT,
         ),
-        _ => return Ok(false),
+        _ => return Ok(None),
     };
 
     let (term_w, term_h) = window.get_size();
     let searching = state.mode == EditorMode::Search;
     if term_w < 4 || term_h < 3 {
-        return Ok(false);
+        return Ok(None);
     }
     let substitution_error = substitution.and_then(|preview| preview.error.as_deref());
     let (inner_w, inner_h, x, y) = if searching {
         let Some(layout) = search_toast_layout(state, term_w, term_h) else {
-            return Ok(false);
+            return Ok(None);
         };
         (layout.inner_w, layout.inner_h, layout.x, layout.y)
     } else {
@@ -127,7 +126,7 @@ fn draw_command_line_popup_after(
                 .saturating_add(stacked_padding);
             let available_h = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
             if y.saturating_add(inner_h.saturating_add(2)) > available_h {
-                return Ok(false);
+                return Ok(None);
             }
             y
         } else {
@@ -141,6 +140,12 @@ fn draw_command_line_popup_after(
         chrome.title = minui::ColorPair::new(style.theme.light_gray, style.theme.bg);
     }
     let layout = draw_popup_frame_at(window, x, y, inner_w, inner_h, &title, chrome)?;
+    let mut mouse = PopupMouseLayout::new(if searching {
+        MousePopup::Search
+    } else {
+        MousePopup::Command
+    });
+    mouse.add_frame(layout);
     let mut view = popup_window_view(window, layout);
     let row = if searching || substitution_error.is_some() {
         0
@@ -168,6 +173,20 @@ fn draw_command_line_popup_after(
         &state.command_line,
         state.command_line_cursor,
         input_width as usize,
+    );
+    let cursor = clamp_cursor(&state.command_line, state.command_line_cursor);
+    let start_byte = cursor.saturating_sub(
+        clip_text_right_to_cells(&state.command_line[..cursor], cursor_offset).len(),
+    );
+    mouse.add_input(
+        MouseRect {
+            x: layout.x.saturating_add(1).saturating_add(input_col),
+            y: layout.y.saturating_add(1).saturating_add(row),
+            width: input_width,
+            height: 1,
+        },
+        &clipped,
+        start_byte,
     );
     view.write_str_colored(row, input_col, &clipped, style.command_line.text)?;
     if searching
@@ -210,7 +229,7 @@ fn draw_command_line_popup_after(
         visible: true,
     });
 
-    Ok(true)
+    Ok(Some(mouse))
 }
 
 fn command_text_width(text: &str) -> usize {

@@ -1,7 +1,9 @@
 use minui::{ColorPair, Window, cell_width};
 
 use crate::input::{WhichKeyEntry, WhichKeyPopup};
-use crate::ui::widgets::popup::clip_text_to_cells;
+use crate::ui::widgets::popup::{
+    MousePopup, MouseRect, MouseTarget, PopupMouseLayout, clip_text_to_cells,
+};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 // Credit to https://github.com/folke/which-key.nvim for the inspiration here.
@@ -30,11 +32,11 @@ impl WhichKeyLayout {
     }
 }
 
-pub fn draw_which_key_popup(
+pub(crate) fn draw_which_key_popup(
     popup: &WhichKeyPopup,
     style: UiStyle,
     window: &mut dyn Window,
-) -> minui::Result<Option<WhichKeyLayout>> {
+) -> minui::Result<Option<(WhichKeyLayout, PopupMouseLayout)>> {
     let (term_w, term_h) = window.get_size();
     let text_bottom = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
     let width = term_w.saturating_sub(HORIZONTAL_MARGIN.saturating_mul(2));
@@ -60,6 +62,13 @@ pub fn draw_which_key_popup(
         width,
         height,
     };
+    let mut mouse = PopupMouseLayout::new(MousePopup::WhichKey);
+    mouse.frames.push(MouseRect {
+        x,
+        y,
+        width,
+        height,
+    });
 
     let popup_bg = style.which_key.background;
     let fill = ColorPair::new(style.which_key.text, popup_bg);
@@ -93,6 +102,19 @@ pub fn draw_which_key_popup(
             .saturating_add(2)
             .saturating_add((column.saturating_mul(column_width)) as u16);
         let entry_y = y.saturating_add(HEADER_ROWS as u16 + row as u16);
+        if entry.key != "…" {
+            mouse.clicks.push((
+                MouseRect {
+                    x: entry_x,
+                    y: entry_y,
+                    width: column_width
+                        .min(width.saturating_sub(entry_x.saturating_sub(x)) as usize)
+                        as u16,
+                    height: 1,
+                },
+                MouseTarget::Key(entry.key.clone()),
+            ));
+        }
         draw_entry(
             window,
             entry,
@@ -104,7 +126,7 @@ pub fn draw_which_key_popup(
         )?;
     }
 
-    Ok(Some(layout))
+    Ok(Some((layout, mouse)))
 }
 
 fn column_key_widths(

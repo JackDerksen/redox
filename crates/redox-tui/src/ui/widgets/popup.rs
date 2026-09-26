@@ -1,5 +1,8 @@
+pub(crate) use minui::widgets::WidgetArea as MouseRect;
 use minui::widgets::WindowView;
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{ColorPair, Event, RouteTarget, TabPolicy, UiScene, Window, cell_width};
+use redox_core::Pos;
+use std::path::PathBuf;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui::UiStyle;
@@ -7,6 +10,217 @@ use crate::ui::helpers::proportional_size;
 
 const POPUP_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 const POPUP_ANCHOR_WIDTH_PERCENT: u16 = 65;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MousePopup {
+    Finder,
+    Pinboard,
+    Explorer,
+    About,
+    LanguageTools,
+    Diagnostics,
+    CodeActions,
+    Completion,
+    SymbolInfo,
+    Command,
+    Search,
+    Perf,
+    WhichKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MouseTarget {
+    Entry { index: usize, identity: String },
+    FinderEntry(PathBuf),
+    BufferPosition(Pos),
+    InputCursor(usize),
+    DiagnosticAction { index: usize, identity: String },
+    Key(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MouseScroll {
+    List,
+    Preview,
+    Details,
+    Actions,
+    Text,
+}
+
+impl From<PopupLayout> for MouseRect {
+    fn from(layout: PopupLayout) -> Self {
+        Self {
+            x: layout.x,
+            y: layout.y,
+            width: layout.outer_w(),
+            height: layout.outer_h(),
+        }
+    }
+}
+
+pub(crate) struct PopupMouseLayout {
+    pub kind: MousePopup,
+    pub frames: Vec<MouseRect>,
+    pub clicks: Vec<(MouseRect, MouseTarget)>,
+    pub scrolls: Vec<(MouseRect, MouseScroll)>,
+    scene: UiScene,
+}
+
+impl std::fmt::Debug for PopupMouseLayout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PopupMouseLayout")
+            .field("kind", &self.kind)
+            .field("frames", &self.frames)
+            .field("clicks", &self.clicks)
+            .field("scrolls", &self.scrolls)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PopupMouseLayout {
+    pub(crate) fn new(kind: MousePopup) -> Self {
+        Self {
+            kind,
+            frames: Vec::new(),
+            clicks: Vec::new(),
+            scrolls: Vec::new(),
+            scene: UiScene::new(),
+        }
+    }
+
+    pub(crate) fn cache_interactions(&mut self) {
+        self.scene.begin_frame();
+        for frame in &self.frames {
+            self.scene.register(0, *frame);
+        }
+        let scroll_start = self.clicks.len() + 1;
+        for (index, (area, _)) in self.scrolls.iter().enumerate() {
+            self.scene.register_scrollable(scroll_start + index, *area);
+        }
+        for (index, (area, _)) in self.clicks.iter().enumerate() {
+            let id = index + 1;
+            self.scene.register(id, *area);
+            if let Some(owner) = self
+                .scrolls
+                .iter()
+                .rposition(|(scroll, _)| scroll.contains_point(area.x, area.y))
+            {
+                self.scene.set_owner(id, scroll_start + owner);
+            }
+        }
+    }
+
+    pub(crate) fn hit_click(&mut self, x: u16, y: u16) -> Option<Option<MouseTarget>> {
+        let index = self.scene.hit_test(x, y)?.id;
+        Some(
+            index
+                .checked_sub(1)
+                .and_then(|index| self.clicks.get(index))
+                .map(|(_, target)| target.clone()),
+        )
+    }
+
+    pub(crate) fn hit_scroll(&mut self, event: &Event) -> Option<(MouseRect, MouseScroll)> {
+        let RouteTarget::Id(id) = self.scene.route_wheel_event(event)? else {
+            return None;
+        };
+        let index = id.checked_sub(self.clicks.len() + 1)?;
+        self.scrolls.get(index).copied()
+    }
+
+    pub(crate) fn add_frame(&mut self, layout: PopupLayout) {
+        self.frames.push(layout.into());
+    }
+
+    pub(crate) fn add_row(&mut self, layout: PopupLayout, row: u16, target: MouseTarget) {
+        if row < layout.inner_h && layout.inner_w > 0 {
+            self.clicks.push((
+                MouseRect {
+                    x: layout.x.saturating_add(1),
+                    y: layout.y.saturating_add(1).saturating_add(row),
+                    width: layout.inner_w,
+                    height: 1,
+                },
+                target,
+            ));
+        }
+    }
+
+    pub(crate) fn add_input(&mut self, rect: MouseRect, text: &str, start_byte: usize) {
+        let mut column = 0u16;
+        let mut end_byte = start_byte;
+        for (byte, grapheme) in text.grapheme_indices(true) {
+            let width = cell_width(grapheme, POPUP_TAB_POLICY).max(1);
+            if column.saturating_add(width) > rect.width {
+                break;
+            }
+            self.clicks.push((
+                MouseRect {
+                    x: rect.x.saturating_add(column),
+                    width,
+                    ..rect
+                },
+                MouseTarget::InputCursor(start_byte + byte),
+            ));
+            column = column.saturating_add(width);
+            end_byte = start_byte + byte + grapheme.len();
+        }
+        if column < rect.width {
+            self.clicks.push((
+                MouseRect {
+                    x: rect.x.saturating_add(column),
+                    width: rect.width - column,
+                    ..rect
+                },
+                MouseTarget::InputCursor(end_byte),
+            ));
+        }
+    }
+
+    pub(crate) fn add_buffer_line(
+        &mut self,
+        rect: MouseRect,
+        line: usize,
+        text: &str,
+        scroll_x: usize,
+    ) {
+        let mut cell = 0usize;
+        let mut column = 0usize;
+        let mut painted = 0u16;
+        for grapheme in text.trim_end_matches(['\r', '\n']).graphemes(true) {
+            if cell >= scroll_x.saturating_add(rect.width as usize) {
+                break;
+            }
+            let end = cell.saturating_add(cell_width(grapheme, POPUP_TAB_POLICY).max(1) as usize);
+            if end > scroll_x && cell < scroll_x.saturating_add(rect.width as usize) {
+                let start = cell.saturating_sub(scroll_x).min(rect.width as usize) as u16;
+                let width = end.saturating_sub(scroll_x).min(rect.width as usize) as u16 - start;
+                self.clicks.push((
+                    MouseRect {
+                        x: rect.x.saturating_add(start),
+                        width,
+                        ..rect
+                    },
+                    MouseTarget::BufferPosition(Pos::new(line, column)),
+                ));
+                painted = start.saturating_add(width);
+            }
+            cell = end;
+            column += grapheme.chars().count();
+        }
+        if painted < rect.width {
+            self.clicks.push((
+                MouseRect {
+                    x: rect.x.saturating_add(painted),
+                    width: rect.width - painted,
+                    ..rect
+                },
+                MouseTarget::BufferPosition(Pos::new(line, column)),
+            ));
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PopupChrome {
@@ -296,4 +510,68 @@ fn clip_with_ellipsis(text: &str, max_chars: usize) -> String {
     let mut clipped: String = text.chars().take(max_chars - 3).collect();
     clipped.push_str("...");
     clipped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_text_targets_preserve_graphemes_and_blank_space_after_scrolling() {
+        let rect = MouseRect {
+            x: 10,
+            y: 4,
+            width: 6,
+            height: 1,
+        };
+        let target_at = |layout: &mut PopupMouseLayout, x| layout.hit_click(x, 4).flatten();
+        let mut input = PopupMouseLayout::new(MousePopup::Command);
+        input.frames.push(MouseRect {
+            x: 9,
+            y: 3,
+            width: 8,
+            height: 3,
+        });
+        input.scrolls.push((rect, MouseScroll::Text));
+        input.add_input(rect, "界e\u{301}", 3);
+        input.cache_interactions();
+        assert_eq!(input.hit_click(0, 0), None);
+        assert_eq!(input.hit_click(9, 3), Some(None));
+        assert_eq!(
+            input.hit_scroll(&Event::MouseScroll {
+                x: 10,
+                y: 4,
+                delta: 1
+            }),
+            Some((rect, MouseScroll::Text))
+        );
+        assert_eq!(
+            input.hit_scroll(&Event::MouseScroll {
+                x: 9,
+                y: 3,
+                delta: 1
+            }),
+            None
+        );
+        assert_eq!(target_at(&mut input, 10), Some(MouseTarget::InputCursor(3)));
+        assert_eq!(target_at(&mut input, 11), Some(MouseTarget::InputCursor(3)));
+        assert_eq!(target_at(&mut input, 12), Some(MouseTarget::InputCursor(6)));
+        assert_eq!(target_at(&mut input, 15), Some(MouseTarget::InputCursor(9)));
+
+        let mut buffer = PopupMouseLayout::new(MousePopup::Explorer);
+        buffer.add_buffer_line(rect, 7, "a界e\u{301}\n", 2);
+        buffer.cache_interactions();
+        assert_eq!(
+            target_at(&mut buffer, 10),
+            Some(MouseTarget::BufferPosition(Pos::new(7, 1)))
+        );
+        assert_eq!(
+            target_at(&mut buffer, 11),
+            Some(MouseTarget::BufferPosition(Pos::new(7, 2)))
+        );
+        assert_eq!(
+            target_at(&mut buffer, 15),
+            Some(MouseTarget::BufferPosition(Pos::new(7, 4)))
+        );
+    }
 }

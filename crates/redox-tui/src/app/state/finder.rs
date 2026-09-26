@@ -27,6 +27,7 @@ pub struct FinderPopup {
     pub query: String,
     pub query_cursor: usize,
     pub selected: usize,
+    pub file_window_start: Option<usize>,
     pub result_count: usize,
     pub total_count: usize,
     pub preview: Option<FinderPreview>,
@@ -46,6 +47,8 @@ pub struct FinderPreview {
     pub title: String,
     pub lines: Vec<String>,
     pub syntax_spans: Vec<Vec<LineSyntaxSpan>>,
+    pub scroll_x: usize,
+    pub scroll_y: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,7 @@ pub(super) struct FinderState {
     file_results: Vec<FinderFileResult>,
     combined_entries: Vec<FinderCombinedEntry>,
     selected: usize,
+    file_window_start: Option<usize>,
     anchor_selection_to_bottom: bool,
     preview: Option<FinderPreviewCache>,
 }
@@ -152,6 +156,7 @@ impl FinderState {
             file_results: Vec::new(),
             combined_entries: Vec::new(),
             selected: initial_selected,
+            file_window_start: None,
             anchor_selection_to_bottom: true,
             preview: None,
         };
@@ -178,6 +183,7 @@ impl FinderState {
             query: self.query.clone(),
             query_cursor: self.query_cursor,
             selected: self.selected,
+            file_window_start: self.file_window_start,
             result_count: self.file_results.len(),
             total_count: self.all_files.len(),
             preview: self.preview.as_ref().map(|preview| preview.preview.clone()),
@@ -197,6 +203,7 @@ impl FinderState {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        self.file_window_start = None;
         if self.combined_entries.is_empty() {
             self.selected = 0;
             return;
@@ -325,6 +332,7 @@ impl FinderState {
     }
 
     fn refresh_results_to_bottom(&mut self, pinned_files: &[PinnedFileEntry]) {
+        self.file_window_start = None;
         self.refresh_results(pinned_files, None);
         self.selected = self.last_file_entry_index();
         self.anchor_selection_to_bottom = true;
@@ -745,6 +753,127 @@ impl EditorState {
         }
     }
 
+    pub(super) fn finder_select_path(&mut self, path: &Path) -> bool {
+        let file_window_start = self.finder_rendered_file_window().map(|(start, _)| start);
+        let Some(finder) = self.finder.as_mut() else {
+            return false;
+        };
+        let Some(index) = finder
+            .combined_entries
+            .iter()
+            .position(|entry| entry.path == path)
+        else {
+            return false;
+        };
+        finder.selected = index;
+        finder.file_window_start = file_window_start;
+        finder.anchor_selection_to_bottom = false;
+        finder.refresh_preview();
+        true
+    }
+
+    fn finder_rendered_file_window(&self) -> Option<(usize, usize)> {
+        use crate::ui::widgets::popup::{MousePopup, MouseTarget};
+
+        let finder = self.finder.as_ref()?;
+        let pinned_count = finder
+            .combined_entries
+            .iter()
+            .take_while(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+            .count();
+        let layout = self
+            .mouse
+            .popups
+            .iter()
+            .rev()
+            .find(|layout| layout.kind == MousePopup::Finder)?;
+        let mut first_index = usize::MAX;
+        let mut count = 0;
+        for (_, target) in &layout.clicks {
+            if let MouseTarget::FinderEntry(path) = target
+                && let Some(index) = finder.combined_entries.iter().position(|entry| {
+                    matches!(entry.kind, FinderCombinedKind::File) && entry.path == *path
+                })
+            {
+                first_index = first_index.min(index);
+                count += 1;
+            }
+        }
+        (count > 0).then(|| (first_index.saturating_sub(pinned_count), count))
+    }
+
+    pub(super) fn finder_scroll_list(&mut self, rows: isize) {
+        if rows == 0 {
+            return;
+        }
+        let Some((start, visible_count)) = self.finder_rendered_file_window() else {
+            return;
+        };
+        let Some(finder) = self.finder.as_mut() else {
+            return;
+        };
+        let pinned_count = finder
+            .combined_entries
+            .iter()
+            .take_while(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+            .count();
+        let file_count = finder.combined_entries.len().saturating_sub(pinned_count);
+        let start = start
+            .saturating_add_signed(rows)
+            .min(file_count.saturating_sub(visible_count));
+        finder.file_window_start = Some(start);
+        finder.anchor_selection_to_bottom = false;
+        if finder.selected >= pinned_count {
+            finder.selected = finder.selected.clamp(
+                pinned_count + start,
+                pinned_count + start + visible_count - 1,
+            );
+            finder.refresh_preview();
+        }
+    }
+
+    pub(super) fn finder_position_query_cursor(&mut self, cursor: usize) {
+        if let Some(finder) = self.finder.as_mut() {
+            finder.query_cursor = cursor;
+            super::actions::clamp_str_cursor(&finder.query, &mut finder.query_cursor);
+        }
+    }
+
+    pub(super) fn finder_scroll_preview(
+        &mut self,
+        rows: isize,
+        columns: isize,
+        width: usize,
+        height: usize,
+    ) {
+        let Some(preview) = self
+            .finder
+            .as_mut()
+            .and_then(|finder| finder.preview.as_mut())
+        else {
+            return;
+        };
+        let preview = &mut preview.preview;
+        let max_scroll_y = preview.lines.len().saturating_sub(height);
+        preview.scroll_y = preview
+            .scroll_y
+            .min(max_scroll_y)
+            .saturating_add_signed(rows)
+            .min(max_scroll_y);
+        let max_width = preview
+            .lines
+            .iter()
+            .map(|line| usize::from(minui::cell_width(line, minui::TabPolicy::Fixed(4))))
+            .max()
+            .unwrap_or(0);
+        let max_scroll_x = max_width.saturating_sub(width);
+        preview.scroll_x = preview
+            .scroll_x
+            .min(max_scroll_x)
+            .saturating_add_signed(columns)
+            .min(max_scroll_x);
+    }
+
     pub(super) fn begin_pin_selection_for_current_buffer(&mut self) {
         if self.finder_or_pinboard_is_blocked() {
             return;
@@ -807,6 +936,17 @@ impl EditorState {
         let max_index = MAX_PINNED_FILES.saturating_sub(1) as isize;
         selector.selected_slot =
             (selector.selected_slot as isize + delta).clamp(0, max_index) as usize;
+    }
+
+    pub(super) fn pin_selector_select(&mut self, slot: usize) -> bool {
+        let Some(selector) = self.pin_selector.as_mut() else {
+            return false;
+        };
+        if slot >= MAX_PINNED_FILES {
+            return false;
+        }
+        selector.selected_slot = slot;
+        true
     }
 
     pub(super) fn assign_selected_pin_slot(&mut self) {
@@ -1084,5 +1224,7 @@ fn load_preview(path: &Path, launch_dir: &Path) -> FinderPreview {
         title,
         lines,
         syntax_spans,
+        scroll_x: 0,
+        scroll_y: 0,
     }
 }

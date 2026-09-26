@@ -34,6 +34,7 @@ pub struct DiagnosticsPopup {
     pub entries: Vec<DiagnosticsPopupEntry>,
     pub selected: usize,
     pub scroll: usize,
+    pub detail_scroll: usize,
     pub focus: DiagnosticsPopupFocus,
     pub code_actions: Option<DiagnosticsCodeActionsPane>,
 }
