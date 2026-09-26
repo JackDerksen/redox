@@ -2,6 +2,7 @@ use crate::ui::render::LineViewport;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -2974,7 +2975,26 @@ fn visible_color_column(
     (visible_col < text_w).then_some((visible_col, bg))
 }
 
+fn print_cli_logo(wordmark: &str, color_enabled: bool) {
+    let style = ui::style::AboutStyle::default();
+    for (line, color) in [
+        ("┏━┓", style.logo_red.fg),
+        (wordmark, style.logo_white.fg),
+        ("  ┗━┛", style.logo_blue.fg),
+    ] {
+        if color_enabled && let Color::Rgb { r, g, b } = color {
+            println!("\x1b[38;2;{r};{g};{b}m{line}\x1b[0m");
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
 fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    let color_enabled = stdout_is_terminal
+        && env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+        && env::var("TERM").as_deref() != Ok("dumb");
     let mut args = env::args().skip(1);
     let mut config_path = None;
     let mut target_path = None;
@@ -2983,15 +3003,29 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
         if parse_options && raw == "--" {
             parse_options = false;
         } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
-            println!("redox {}", env!("CARGO_PKG_VERSION"));
+            if stdout_is_terminal {
+                print_cli_logo(
+                    concat!("Redox - v", env!("CARGO_PKG_VERSION")),
+                    color_enabled,
+                );
+            } else {
+                println!("redox {}", env!("CARGO_PKG_VERSION"));
+            }
             return Ok(None);
         } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
+            print_cli_logo("Redox - A tasteful text editor", color_enabled);
+            let (heading, bold, reset) = if color_enabled {
+                ("\x1b[1;4m", "\x1b[1m", "\x1b[0m")
+            } else {
+                ("", "", "")
+            };
             println!(
-                "Redox - A tasteful text editor\n\n\
-                 Usage: redox [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
-                 Options:\n  --config <PATH>  Use a configuration file\n  \
-                 -h, --help       Print help\n  -V, --version    Print version\n  \
-                 --               Treat remaining arguments as paths"
+                "\n{heading}Usage:{reset} {bold}redox{reset} [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
+                 {heading}Options:{reset}\n  \
+                 {bold}--config{reset} <PATH>  Use a configuration file\n  \
+                 {bold}-h, --help{reset}       Print help\n  \
+                 {bold}-V, --version{reset}    Print version\n  \
+                 {bold}--{reset}               Treat remaining arguments as paths"
             );
             return Ok(None);
         } else if parse_options && raw == "--config" {
