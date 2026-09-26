@@ -211,7 +211,13 @@ impl EditorState {
                 }
                 self.close_completion();
                 self.close_active_snippet();
-                self.with_active_buffer_view_mut(|_, view| view.cursor.place_cursor(position));
+                let clamp_normal = !was_insert && !self.undo_tree_is_active();
+                self.with_active_buffer_view_mut(|buffer, view| {
+                    view.cursor.place_cursor(position);
+                    if clamp_normal {
+                        view.cursor.clamp_for_normal_mode(buffer);
+                    }
+                });
                 if self.undo_tree_is_active() {
                     self.clamp_undo_tree_cursor();
                 } else {
