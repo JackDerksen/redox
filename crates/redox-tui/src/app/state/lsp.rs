@@ -2757,15 +2757,20 @@ impl EditorState {
             return true;
         }
         let snippet_expansion = completion_snippet_expansion(&item, &edit.insert);
-        let preserve_active_snippet_edit = snippet_expansion
+        let inserted_start = transform_snippet_char_left(start_char, &additional_edits);
+        let next_snippet = snippet_expansion.as_ref().and_then(|expansion| {
+            active_snippet_from_expansion(active_id, inserted_start, expansion)
+        });
+        // Snippet format alone does not introduce new tabstops. Name completions
+        // and snippets containing only $0 still belong to the current argument.
+        let preserved_tabstop = next_snippet
             .is_none()
-            .then(|| self.active_snippet_completion_edit(buffer, active_id, &edit))
+            .then(|| self.active_snippet_completion_tabstop(buffer, active_id, &edit))
             .flatten();
         let insert = snippet_expansion
             .as_ref()
             .map(|expansion| expansion.text.clone())
             .unwrap_or(edit.insert);
-        let inserted_start = transform_snippet_char_left(start_char, &additional_edits);
         let inserted_end = inserted_start.saturating_add(insert.chars().count());
         let replay_text = insert.clone();
         let mut edits = additional_edits;
@@ -2777,22 +2782,12 @@ impl EditorState {
         self.remember_completion_accept(&item);
         let before = self.capture_active_insert_coalesced_checkpoint();
         apply_character_edits(self.session.active_buffer_mut(), &edits);
-        let cursor_char = if let Some(expansion) = snippet_expansion {
-            self.lsp.active_snippet =
-                active_snippet_from_expansion(active_id, inserted_start, &expansion);
-            self.lsp
-                .active_snippet
-                .as_ref()
-                .and_then(|snippet| snippet.placeholders.first())
-                .map(|placeholder| placeholder.start_char)
-                .or_else(|| {
-                    expansion
-                        .cursor_offset
-                        .map(|offset| inserted_start.saturating_add(offset))
-                })
-                .unwrap_or(inserted_end)
+        let cursor_char = if let Some(snippet) = next_snippet {
+            let cursor_char = snippet.placeholders[0].start_char;
+            self.lsp.active_snippet = Some(snippet);
+            cursor_char
         } else {
-            if let Some((tabstop, _, _)) = preserve_active_snippet_edit {
+            if let Some(tabstop) = preserved_tabstop {
                 self.update_active_snippet_after_edits(&edits);
                 self.mark_active_snippet_tabstop_filled(tabstop);
                 if let Some(snippet) = self.lsp.active_snippet.as_mut() {
@@ -2801,7 +2796,10 @@ impl EditorState {
             } else {
                 self.lsp.active_snippet = None;
             }
-            inserted_end
+            snippet_expansion
+                .and_then(|expansion| expansion.cursor_offset)
+                .map(|offset| inserted_start.saturating_add(offset))
+                .unwrap_or(inserted_end)
         };
         self.record_resolved_completion(
             replay_cursor,
@@ -2821,12 +2819,12 @@ impl EditorState {
         true
     }
 
-    fn active_snippet_completion_edit(
+    fn active_snippet_completion_tabstop(
         &self,
         buffer: &redox_core::TextBuffer,
         active_id: BufferId,
         edit: &CompletionEdit,
-    ) -> Option<(usize, usize, usize)> {
+    ) -> Option<usize> {
         let snippet = self.lsp.active_snippet.as_ref()?;
         if snippet.buffer_id != active_id {
             return None;
@@ -2834,11 +2832,8 @@ impl EditorState {
         let placeholder = snippet.placeholders.get(snippet.current)?;
         let start_char = buffer.pos_to_char(edit.start);
         let end_char = buffer.pos_to_char(edit.end);
-        (start_char >= placeholder.start_char && end_char <= placeholder.end_char).then_some((
-            placeholder.tabstop,
-            start_char,
-            end_char,
-        ))
+        (start_char >= placeholder.start_char && end_char <= placeholder.end_char)
+            .then_some(placeholder.tabstop)
     }
 
     fn remember_completion_accept(&mut self, item: &CompletionCandidate) {
