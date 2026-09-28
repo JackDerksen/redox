@@ -2757,24 +2757,28 @@ impl EditorState {
             return true;
         }
         let snippet_expansion = completion_snippet_expansion(&item, &edit.insert);
-        let inserted_start = transform_snippet_char_left(start_char, &additional_edits);
         let next_snippet = snippet_expansion.as_ref().and_then(|expansion| {
-            active_snippet_from_expansion(active_id, inserted_start, expansion)
+            active_snippet_from_expansion(
+                active_id,
+                transform_snippet_char_left(start_char, &additional_edits),
+                expansion,
+            )
         });
+        let insert = snippet_expansion
+            .as_ref()
+            .map(|expansion| expansion.text.as_str())
+            .unwrap_or(&edit.insert);
+        let mut edits = additional_edits;
         // Snippet format alone does not introduce new tabstops. Name completions
         // and snippets containing only $0 still belong to the current argument.
         let preserved_tabstop = next_snippet
             .is_none()
-            .then(|| self.active_snippet_completion_tabstop(buffer, active_id, &edit))
+            .then(|| self.mirror_snippet_completion(buffer, &edit, insert, &mut edits))
             .flatten();
-        let insert = snippet_expansion
-            .as_ref()
-            .map(|expansion| expansion.text.clone())
-            .unwrap_or(edit.insert);
+        let inserted_start = transform_snippet_char_left(start_char, &edits);
         let inserted_end = inserted_start.saturating_add(insert.chars().count());
-        let replay_text = insert.clone();
-        let mut edits = additional_edits;
-        edits.push((start_char, end_char, insert));
+        let replay_text = insert.to_string();
+        edits.push((start_char, end_char, insert.to_string()));
         self.log_event("completion_accepted", serde_json::json!({
             "label": item.label, "insert": replay_text,
             "range": [start_char, end_char], "additional_edits": item.additional_text_edits.len(),
@@ -2819,21 +2823,53 @@ impl EditorState {
         true
     }
 
-    fn active_snippet_completion_tabstop(
+    fn mirror_snippet_completion(
         &self,
         buffer: &redox_core::TextBuffer,
-        active_id: BufferId,
         edit: &CompletionEdit,
+        insert: &str,
+        edits: &mut Vec<(usize, usize, String)>,
     ) -> Option<usize> {
         let snippet = self.lsp.active_snippet.as_ref()?;
-        if snippet.buffer_id != active_id {
+        if snippet.buffer_id != self.session.active_id() {
             return None;
         }
         let placeholder = snippet.placeholders.get(snippet.current)?;
         let start_char = buffer.pos_to_char(edit.start);
         let end_char = buffer.pos_to_char(edit.end);
-        (start_char >= placeholder.start_char && end_char <= placeholder.end_char)
-            .then_some(placeholder.tabstop)
+        if start_char < placeholder.start_char || end_char > placeholder.end_char {
+            return None;
+        }
+        let mut occurrences = snippet
+            .placeholders
+            .iter()
+            .filter(|other| other.tabstop == placeholder.tabstop)
+            .collect::<Vec<_>>();
+        occurrences.sort_unstable_by_key(|other| other.start_char);
+        if occurrences.iter().any(|other| {
+            other.start_char > other.end_char
+                || other.end_char > buffer.len_chars()
+                || edits
+                    .iter()
+                    .any(|(start, end, _)| *start <= other.end_char && *end >= other.start_char)
+        }) || occurrences.windows(2).any(|pair| {
+            pair[0].start_char == pair[1].start_char || pair[0].end_char > pair[1].start_char
+        }) {
+            return None;
+        }
+        let replacement = format!(
+            "{}{}{}",
+            buffer.slice_chars(placeholder.start_char, start_char),
+            insert,
+            buffer.slice_chars(end_char, placeholder.end_char),
+        );
+        edits.extend(
+            occurrences
+                .into_iter()
+                .filter(|other| other.start_char != placeholder.start_char)
+                .map(|other| (other.start_char, other.end_char, replacement.clone())),
+        );
+        Some(placeholder.tabstop)
     }
 
     fn remember_completion_accept(&mut self, item: &CompletionCandidate) {
