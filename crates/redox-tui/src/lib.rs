@@ -3132,8 +3132,10 @@ fn handle_editor_event(
         && key.mods == minui::KeyModifiers::ctrl()
     {
         let direction = match key.key {
-            KeyKind::Left => Some(app::state::SplitDirection::Left),
-            KeyKind::Right => Some(app::state::SplitDirection::Right),
+            KeyKind::Left if !state.terminal.is_focused() => Some(app::state::SplitDirection::Left),
+            KeyKind::Right if !state.terminal.is_focused() => {
+                Some(app::state::SplitDirection::Right)
+            }
             KeyKind::Up => Some(app::state::SplitDirection::Up),
             KeyKind::Down => Some(app::state::SplitDirection::Down),
             _ => None,
