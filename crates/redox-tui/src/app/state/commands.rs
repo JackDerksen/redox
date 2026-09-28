@@ -19,6 +19,15 @@ struct CommandDefinition {
 // Dispatch and completion share these names, including aliases and subcommands.
 const COMMANDS: &[CommandDefinition] = &[
     CommandDefinition {
+        names: &["terminal", "term"],
+        editor_context: |_, _| false,
+        run: |state, _| {
+            if let Err(error) = state.terminal.toggle(state.session.launch_dir()) {
+                state.set_status(format!("could not open terminal: {error:#}"));
+            }
+        },
+    },
+    CommandDefinition {
         names: &["log"],
         editor_context: |_, _| false,
         run: |state, argument| state.command_log(argument),

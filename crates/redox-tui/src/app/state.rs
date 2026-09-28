@@ -34,6 +34,7 @@ mod logging;
 mod lsp;
 pub(crate) mod mouse;
 mod rain_mode;
+mod resize;
 mod runtime;
 pub use explorer::ExplorerPopup;
 use explorer::ExplorerState;
@@ -399,6 +400,7 @@ pub struct EditorState {
     log_key: Option<String>,
     runtime: runtime::RuntimeState,
     pub(crate) mouse: mouse::MouseState,
+    pub(crate) terminal: crate::terminal::TerminalPanel,
     update_check: Option<updates::UpdateCheck>,
     pub session: EditorSession,
     pub views: HashMap<BufferId, BufferViewState>,
@@ -484,6 +486,7 @@ impl EditorState {
             log_key: None,
             runtime: runtime::RuntimeState::default(),
             mouse: mouse::MouseState::default(),
+            terminal: crate::terminal::TerminalPanel::default(),
             update_check: None,
             session,
             views,
@@ -723,15 +726,7 @@ impl EditorState {
     }
 
     pub fn set_viewport_size(&mut self, width_cells: usize, height_rows: usize) {
-        if self.viewport_size() != (width_cells, height_rows) && !self.active_buffer_is_surface() {
-            self.with_active_buffer_view_mut(|buffer, view| {
-                view.cursor.reconcile_scroll(
-                    buffer,
-                    width_cells,
-                    height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS),
-                );
-            });
-        }
+        // Layout changes preserve the document position and scroll offsets.
         self.viewport_width_cells = width_cells;
         self.viewport_height_rows = height_rows;
     }
@@ -834,7 +829,6 @@ impl EditorState {
         size: SplitSize,
     ) -> Option<PaneId> {
         self.sync_active_pane_view();
-        self.nudge_active_pane_cursor_before_split(axis);
         let active = self
             .panes
             .iter()
@@ -865,49 +859,6 @@ impl EditorState {
         }
     }
 
-    fn nudge_active_pane_cursor_before_split(&mut self, axis: SplitAxis) {
-        let Some(pane_index) = self
-            .panes
-            .iter()
-            .position(|pane| pane.id == self.active_pane)
-        else {
-            return;
-        };
-        let buffer_id = self.panes[pane_index].buffer_id;
-        let Some(buffer) = self.session.buffer(buffer_id).cloned() else {
-            return;
-        };
-        let Some(rect) = self
-            .pane_rects(
-                self.editor_area_width_cells as u16,
-                self.editor_area_height_rows as u16,
-            )
-            .into_iter()
-            .find(|rect| rect.pane_id == self.active_pane)
-        else {
-            return;
-        };
-        let total_lines = buffer.len_lines().max(1);
-        let show_git_marker_column = self
-            .git
-            .diff_for(buffer_id)
-            .is_some_and(|diff| !diff.stats.is_empty());
-        let has_line_numbers = self.panes[pane_index].options.has_line_numbers
-            && !(self.zen.enabled && self.zen.hide_gutter);
-        let content_x = if has_line_numbers {
-            split_gutter_width(total_lines, show_git_marker_column).saturating_add(1)
-        } else {
-            0
-        };
-        let view = &mut self.panes[pane_index].view;
-        nudge_cursor_out_of_new_split_area(&buffer, view, axis, rect, content_x);
-        let adjusted = view.clone();
-        self.views
-            .entry(buffer_id)
-            .or_default()
-            .copy_pane_state_from(&adjusted);
-    }
-
     pub fn close_active_split(&mut self) {
         if self.panes.len() <= 1 {
             self.set_status("cannot close the last split");
@@ -930,6 +881,12 @@ impl EditorState {
     }
 
     pub fn focus_split(&mut self, direction: SplitDirection) {
+        if self.terminal.is_focused() {
+            if direction == SplitDirection::Up {
+                self.terminal.set_focused(false);
+            }
+            return;
+        }
         let rects = self.pane_rects(
             self.editor_area_width_cells as u16,
             self.editor_area_height_rows as u16,
@@ -1016,6 +973,9 @@ impl EditorState {
         if let Some(pane_id) = candidate {
             let _ = self.activate_pane(pane_id);
             self.refresh_active_split_viewport_size();
+        } else if direction == SplitDirection::Down && self.terminal.is_visible() {
+            self.close_completion();
+            self.terminal.set_focused(true);
         }
     }
 
@@ -1829,39 +1789,18 @@ fn collect_pane_rects(
             width,
             height,
         }),
-        SplitNode::Split {
-            axis: SplitAxis::Vertical,
-            size,
-            first,
-            second,
-        } => {
-            let (first_w, second_w) = split_lengths(width, *size);
-            collect_pane_rects(first, x, y, first_w, height, rects);
-            collect_pane_rects(
-                second,
-                x.saturating_add(first_w).saturating_add(1),
-                y,
-                second_w,
-                height,
-                rects,
-            );
-        }
-        SplitNode::Split {
-            axis: SplitAxis::Horizontal,
-            size,
-            first,
-            second,
-        } => {
-            let (first_h, second_h) = split_lengths(height, *size);
-            collect_pane_rects(first, x, y, width, first_h, rects);
-            collect_pane_rects(
-                second,
+        SplitNode::Split { first, second, .. } => {
+            let area = minui::widgets::WidgetArea {
                 x,
-                y.saturating_add(first_h).saturating_add(1),
+                y,
                 width,
-                second_h,
-                rects,
-            );
+                height,
+            };
+            let (first_area, second_area) =
+                node.child_rects(area).expect("split has child rectangles");
+            for (child, area) in [(first, first_area), (second, second_area)] {
+                collect_pane_rects(child, area.x, area.y, area.width, area.height, rects);
+            }
         }
     }
 }
@@ -1896,62 +1835,6 @@ fn split_percent_len(available: u16, percent: u16, min: Option<u16>, max: Option
     let min = min.unwrap_or(0).min(available);
     let max = max.unwrap_or(available).min(available).max(min);
     (rounded as u16).clamp(min, max)
-}
-
-fn nudge_cursor_out_of_new_split_area(
-    buffer: &TextBuffer,
-    view: &mut BufferViewState,
-    axis: SplitAxis,
-    rect: PaneRect,
-    content_x: u16,
-) {
-    match axis {
-        SplitAxis::Horizontal => {
-            let retained_height = rect.height / 2;
-            if retained_height == 0 {
-                return;
-            }
-            let spec = view.cursor.cursor_spec(
-                buffer,
-                rect.width.saturating_sub(content_x) as usize,
-                rect.height as usize,
-            );
-            if !spec.visible || spec.y < retained_height {
-                return;
-            }
-
-            let (_, scroll_y) = view.cursor.viewport_scroll();
-            let target_line = scroll_y.saturating_add(retained_height.saturating_sub(1) as usize);
-            view.cursor.cursor = buffer.clamp_pos(Pos::new(target_line, view.cursor.cursor.col));
-        }
-        SplitAxis::Vertical => {
-            let retained_width = rect.width / 2;
-            if retained_width == 0 {
-                return;
-            }
-            let text_width = rect.width.saturating_sub(content_x);
-            let spec = view
-                .cursor
-                .cursor_spec(buffer, text_width as usize, rect.height as usize);
-            let cursor_screen_x = content_x.saturating_add(spec.x);
-            if !spec.visible || cursor_screen_x < retained_width {
-                return;
-            }
-
-            let (scroll_x, _) = view.cursor.viewport_scroll();
-            let target_cell =
-                retained_width.saturating_sub(1).saturating_sub(content_x) as usize + scroll_x;
-            let line = buffer.clamp_line(view.cursor.cursor.line);
-            let col = char_col_at_or_before_cell(&buffer.line_string(line), target_cell);
-            view.cursor.cursor = buffer.clamp_pos(Pos::new(line, col));
-        }
-    }
-}
-
-fn split_gutter_width(total_lines: usize, show_git_marker_column: bool) -> u16 {
-    let digits = total_lines.max(1).ilog10() as u16 + 1;
-    let git_marker_width = u16::from(show_git_marker_column);
-    digits.saturating_add(git_marker_width).saturating_add(1)
 }
 
 fn char_col_at_or_before_cell(line: &str, target_cell: usize) -> usize {

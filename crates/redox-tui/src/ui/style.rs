@@ -267,7 +267,7 @@ pub struct StatusLinePalette {
 
 impl StatusLinePalette {
     pub fn from_theme(theme: BaseTheme) -> Self {
-        let module_shell = ColorPair::new(theme.black, theme.dark_gray);
+        let module_wrapper = ColorPair::new(theme.black, theme.dark_gray);
         let module_text = ColorPair::new(theme.black, theme.dark_gray);
         Self {
             bar: ColorPair::new(theme.light_gray, theme.black),
@@ -278,14 +278,14 @@ impl StatusLinePalette {
             mode_command: ColorPair::new(theme.black, theme.red),
             mode_visual: ColorPair::new(theme.black, theme.orange),
             metadata: StatusModuleColors {
-                wrapper: module_shell,
+                wrapper: module_wrapper,
                 content: module_text,
             },
             coords: StatusModuleColors {
-                wrapper: module_shell,
+                wrapper: module_wrapper,
                 content: module_text,
             },
-            minimap_module: StatusModuleColors::solid(module_shell),
+            minimap_module: StatusModuleColors::solid(module_wrapper),
             minimap: ColorPair::new(theme.light_gray, Color::Transparent),
             minimap_alt: ColorPair::new(Color::Transparent, theme.light_gray),
         }
@@ -916,7 +916,7 @@ impl UiStyle {
     }
 }
 
-fn dim_foreground_color(color: Color, bg: Color, amount: f32) -> Color {
+pub(crate) fn dim_foreground_color(color: Color, bg: Color, amount: f32) -> Color {
     let background_weight = (amount.clamp(0.0, 1.0) * 1_000.0).round() as u16;
     let foreground_weight = 1_000u16.saturating_sub(background_weight);
     match color {

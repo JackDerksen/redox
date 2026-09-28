@@ -437,8 +437,11 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
             .with_bg(style.status_line.bar);
     };
 
-    let (mode_label, mode_colors) =
-        status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style);
+    let (mode_label, mode_colors) = if state.terminal.is_focused() {
+        ("TERMINAL", style.status_line.mode_command)
+    } else {
+        status_bar_mode_presentation(state.statusline_mode(), state.rain_is_active(), style)
+    };
 
     let minimal = state.zen.enabled && state.zen.minimal_statusline;
     let zen_icon = (style.icons_enabled && state.zen.enabled).then_some(ZEN);
@@ -469,7 +472,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         .saturating_add(metadata_module_width)
         .saturating_add(lsp_icon_width);
 
-    let center_text = if let Some(label) = state.statusline_popup_label() {
+    let center_text = if let Some(message) = state.terminal.status_message() {
+        format!(" {message} ")
+    } else if let Some(label) = state.statusline_popup_label() {
         format!(" {label} ")
     } else {
         let mut name = if minimal {

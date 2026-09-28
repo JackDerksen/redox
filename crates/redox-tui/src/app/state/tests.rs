@@ -465,7 +465,7 @@ fn split_motion_uses_active_pane_height_for_scrolloff() {
 }
 
 #[test]
-fn horizontal_split_nudges_source_cursor_above_new_pane_area() {
+fn horizontal_split_preserves_source_cursor_and_scroll() {
     let _guard = global_test_state_lock().lock().unwrap();
     let path = temp_file_path("split_nudge_horizontal");
     let mut state = state_with_text(path.clone(), &large_text(80));
@@ -481,7 +481,8 @@ fn horizontal_split_nudges_source_cursor_above_new_pane_area() {
         .iter()
         .find(|pane| pane.id == PaneId(0))
         .expect("original pane");
-    assert_eq!(original_pane.view.cursor.cursor.line, 18);
+    assert_eq!(original_pane.view.cursor.cursor, Pos::new(30, 4));
+    assert_eq!(original_pane.view.cursor.viewport_scroll(), (0, 0));
     assert_eq!(
         state
             .views
@@ -496,7 +497,7 @@ fn horizontal_split_nudges_source_cursor_above_new_pane_area() {
 }
 
 #[test]
-fn vertical_split_nudges_source_cursor_left_of_new_pane_area() {
+fn vertical_split_preserves_source_cursor_and_scroll() {
     let _guard = global_test_state_lock().lock().unwrap();
     let path = temp_file_path("split_nudge_vertical");
     let text = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n";
@@ -513,8 +514,8 @@ fn vertical_split_nudges_source_cursor_left_of_new_pane_area() {
         .iter()
         .find(|pane| pane.id == PaneId(0))
         .expect("original pane");
-    assert!(original_pane.view.cursor.cursor.col < 60);
-    assert!(original_pane.view.cursor.cursor.col <= 36);
+    assert_eq!(original_pane.view.cursor.cursor, Pos::new(0, 60));
+    assert_eq!(original_pane.view.cursor.viewport_scroll(), (0, 0));
     assert_eq!(
         state
             .views
@@ -2845,6 +2846,99 @@ fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
     assert_eq!(diff_rect.height, 8);
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn pane_resizing_preserves_nested_neighbours_and_fixed_panes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = state_with_text(directory.path().join("resize.txt"), "alpha");
+    state.set_editor_area_size(121, 31);
+    let original = state.active_pane_id();
+    state.split_active_pane(SplitAxis::Vertical);
+    state.split_active_pane(SplitAxis::Horizontal);
+    let lower = state.active_pane_id();
+    state.resize_active_pane(SplitDirection::Right);
+    state.resize_active_pane(SplitDirection::Up);
+    let rects = state.pane_rects(121, 31);
+    let active = rects.iter().find(|rect| rect.pane_id == lower).unwrap();
+    assert_eq!(
+        (active.x, active.width, active.y, active.height),
+        (60, 61, 15, 16)
+    );
+    assert_eq!(
+        rects
+            .iter()
+            .find(|rect| rect.pane_id == original)
+            .unwrap()
+            .width,
+        59
+    );
+    state.focus_split(SplitDirection::Up);
+    state.resize_active_pane(SplitDirection::Up);
+    assert_eq!(
+        state
+            .pane_rects(121, 31)
+            .iter()
+            .find(|rect| rect.pane_id == lower)
+            .unwrap()
+            .height,
+        15
+    );
+
+    state.activate_pane(original);
+    state.split_active_pane(SplitAxis::Vertical);
+    let outer = state.resize_target_at(59, 0).unwrap();
+    state.drag_pane_resize(&outer, 0, 0);
+    let rects = state.pane_rects(121, 31);
+    assert_eq!(
+        rects
+            .iter()
+            .find(|rect| rect.pane_id == original)
+            .unwrap()
+            .width,
+        12
+    );
+    assert!(
+        rects
+            .iter()
+            .all(|rect| rect.width >= 12 && rect.height >= 3)
+    );
+    state.drag_pane_resize(&outer, 120, 0);
+    let rects = state.pane_rects(121, 31);
+    assert_eq!(
+        rects
+            .iter()
+            .find(|rect| rect.pane_id == lower)
+            .unwrap()
+            .width,
+        12
+    );
+
+    state
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == original)
+        .unwrap()
+        .options
+        .resizable = false;
+    assert!(state.resize_target_at(108, 0).is_none());
+    state.activate_pane(lower);
+    state.resize_active_pane(SplitDirection::Right);
+    assert_eq!(
+        state
+            .pane_rects(121, 31)
+            .iter()
+            .find(|rect| rect.pane_id == lower)
+            .unwrap()
+            .width,
+        12
+    );
+    for (width, height) in [(50, 12), (3, 2), (0, 0)] {
+        assert!(state.pane_rects(width, height).iter().all(|rect| {
+            (rect.width == 0 || rect.x + rect.width <= width)
+                && (rect.height == 0 || rect.y + rect.height <= height)
+        }));
+    }
 }
 
 #[test]

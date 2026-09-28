@@ -5,6 +5,7 @@ use minui::{Event, MouseButton};
 use redox_core::{BufferKind, Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::resize::ResizeTarget;
 use super::{
     EditorMode, EditorState, PaneId, PaneRect, UndoTreeSurfaceRole, char_col_at_or_before_cell,
 };
@@ -30,6 +31,7 @@ pub(crate) struct MouseState {
     scroll_filter: ScrollFilter,
     wheel_gesture: Option<WheelGesture>,
     drag: Option<(PaneId, Pos)>,
+    resize_drag: Option<ResizeTarget>,
     origin: u16,
     width: u16,
     height: u16,
@@ -51,7 +53,7 @@ struct WheelGesture {
 }
 
 impl MouseState {
-    fn scroll_distance(&self, horizontal: bool, delta: i8) -> isize {
+    pub(crate) fn scroll_distance(&self, horizontal: bool, delta: i8) -> isize {
         let (step, invert) = if horizontal {
             (self.scroll_step_horizontal, self.invert_horizontal)
         } else {
@@ -125,6 +127,7 @@ impl EditorState {
     ) {
         if self.mouse.enabled != enabled {
             self.mouse.drag = None;
+            self.mouse.resize_drag = None;
             self.mouse.scroll_filter = ScrollFilter::default();
             self.mouse.wheel_gesture = None;
             self.mouse.last_click = None;
@@ -146,6 +149,82 @@ impl EditorState {
         self.mouse.origin = origin;
         self.mouse.width = width;
         self.mouse.height = height;
+    }
+
+    pub(crate) fn handle_pane_resize_mouse(&mut self, event: &Event) -> bool {
+        if !self.mouse.enabled || !crate::input::is_mouse_event(event) {
+            self.mouse.resize_drag = None;
+            return false;
+        }
+        match *event {
+            Event::MouseClick { x, y, button } => {
+                self.mouse.resize_drag = None;
+                if button != MouseButton::Left {
+                    return false;
+                }
+                let target = if self.terminal.separator_contains(x, y) {
+                    Some(ResizeTarget::Terminal)
+                } else if self.mouse_editor_is_visible()
+                    && !self
+                        .mouse
+                        .popups
+                        .iter()
+                        .any(|popup| self.mouse_popup_is_active(popup.kind))
+                    && x >= self.mouse.origin
+                    && x < self.mouse.origin.saturating_add(self.mouse.width)
+                {
+                    self.resize_target_at(x - self.mouse.origin, y)
+                } else {
+                    None
+                };
+                if target.is_none() {
+                    return false;
+                }
+                self.mouse.resize_drag = target;
+                self.mouse.drag = None;
+                self.mouse.last_click = None;
+                self.mouse.scroll_filter = ScrollFilter::default();
+                self.mouse.wheel_gesture = None;
+                true
+            }
+            Event::MouseDrag {
+                x,
+                y,
+                button: MouseButton::Left,
+            }
+            | Event::MouseRelease {
+                x,
+                y,
+                button: MouseButton::Left,
+            } => {
+                let Some(target) = self.mouse.resize_drag.take() else {
+                    return false;
+                };
+                self.drag_pane_resize(&target, x.saturating_sub(self.mouse.origin), y);
+                if matches!(event, Event::MouseDrag { .. }) {
+                    self.mouse.resize_drag = Some(target);
+                }
+                true
+            }
+            Event::MouseRelease { .. } => {
+                self.mouse.resize_drag = None;
+                false
+            }
+            _ => self.mouse.resize_drag.is_some(),
+        }
+    }
+
+    fn mouse_editor_is_visible(&self) -> bool {
+        matches!(
+            self.mode,
+            EditorMode::Normal
+                | EditorMode::Insert
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
+        ) && (!self.active_buffer_is_surface() || self.undo_tree_is_active())
+            && self.dashboard_selection().is_none()
+            && !self.rain_is_active()
     }
 
     pub(crate) fn handle_mouse_input(&mut self, event: &Event) -> bool {
@@ -176,17 +255,7 @@ impl EditorState {
                 return true;
             }
         }
-        let editor_visible = matches!(
-            self.mode,
-            EditorMode::Normal
-                | EditorMode::Insert
-                | EditorMode::Visual
-                | EditorMode::VisualLine
-                | EditorMode::VisualBlock
-        ) && (!self.active_buffer_is_surface() || self.undo_tree_is_active())
-            && self.dashboard_selection().is_none()
-            && !self.rain_is_active();
-        if !self.mouse.enabled || !editor_visible {
+        if !self.mouse.enabled || !self.mouse_editor_is_visible() {
             self.mouse.drag = None;
             self.mouse.scroll_filter = ScrollFilter::default();
             return is_mouse;

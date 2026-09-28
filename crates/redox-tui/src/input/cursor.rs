@@ -168,7 +168,7 @@ impl CursorController {
         self.reconcile_scroll(buffer, viewport_width_cells, viewport_height_rows);
     }
 
-    /// Keep the cursor visible after a motion or a viewport size change.
+    /// Keep the cursor visible after a motion or edit.
     pub fn reconcile_scroll(
         &mut self,
         buffer: &TextBuffer,

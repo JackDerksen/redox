@@ -24,6 +24,7 @@ mod config;
 mod indentation;
 mod input;
 mod storage;
+mod terminal;
 mod ui;
 
 use app::state::PaneId;
@@ -126,6 +127,68 @@ struct SnapshotOverlays<'a> {
 
 fn draw_buffer_view(
     state: &mut EditorState,
+    style: UiStyle,
+    window: &mut dyn Window,
+    perf: &mut FramePerfSample,
+) -> minui::Result<()> {
+    let (width, height) = window.get_size();
+    let viewport_width = if state.zen.enabled {
+        proportional_size(width, state.zen.width_percent, state.zen.min_width)
+    } else {
+        width
+    };
+    let origin = (width - viewport_width) / 2;
+    if viewport_width != width {
+        fill_background(
+            window,
+            width,
+            height,
+            ColorPair::new(style.zen_margin, style.zen_margin),
+        )?;
+    }
+    let mut viewport = WindowView {
+        window,
+        x_offset: origin,
+        y_offset: 0,
+        scroll_x: 0,
+        scroll_y: 0,
+        width: viewport_width,
+        height,
+    };
+    if let Err(error) = state.terminal.layout(
+        origin,
+        viewport_width,
+        height,
+        state.minimum_editor_height(),
+    ) {
+        state.set_status(format!("could not resize terminal: {error:#}"));
+    }
+    let editor_height = height.saturating_sub(state.terminal.height(height));
+    state.set_mouse_viewport(origin, viewport_width, editor_height);
+    {
+        let mut editor = WindowView {
+            window: &mut viewport,
+            x_offset: 0,
+            y_offset: 0,
+            scroll_x: 0,
+            scroll_y: 0,
+            width: viewport_width,
+            height: editor_height,
+        };
+        draw_editor_area(state, style, &mut editor, perf)?;
+        if state.terminal.is_visible() {
+            // Keep the separator visible for dashboards and popups too.
+            build_editor_status_bar(state, style).draw(&mut editor)?;
+        }
+    }
+    if state.terminal.is_focused() {
+        hide_cursor(&mut viewport);
+    }
+    state.terminal.draw(&mut viewport, style)
+}
+
+fn draw_editor_area(
+    state: &mut EditorState,
     mut style: UiStyle,
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
@@ -137,33 +200,7 @@ fn draw_buffer_view(
     if state.zen.enabled && state.zen.hide_color_column {
         style.layout.color_column = None;
     }
-    let (width, height) = window.get_size();
-    let viewport_width = if state.zen.enabled {
-        proportional_size(width, state.zen.width_percent, state.zen.min_width)
-    } else {
-        width
-    };
-    state.set_mouse_viewport((width - viewport_width) / 2, viewport_width, height);
-    if viewport_width == width {
-        draw_editor_view(state, style, window, perf)?;
-    } else {
-        fill_background(
-            window,
-            width,
-            height,
-            ColorPair::new(style.zen_margin, style.zen_margin),
-        )?;
-        let mut viewport = WindowView {
-            window,
-            x_offset: (width - viewport_width) / 2,
-            y_offset: 0,
-            scroll_x: 0,
-            scroll_y: 0,
-            width: viewport_width,
-            height,
-        };
-        draw_editor_view(state, style, &mut viewport, perf)?;
-    }
+    draw_editor_view(state, style, window, perf)?;
     for popup in &mut state.mouse.popups {
         popup.cache_interactions();
     }
@@ -183,7 +220,8 @@ fn draw_editor_view(
         || state.explorer_popup().is_some()
         || state.about_popup().is_some()
         || which_key_popup.is_some();
-    let background_style = if popup_overlay_active {
+    let editor_unfocused = popup_overlay_active || state.terminal.is_focused();
+    let background_style = if editor_unfocused {
         style.dimmed()
     } else {
         style
@@ -373,19 +411,14 @@ fn draw_editor_view(
             state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
         }
         state.sync_active_pane_view();
-        let split_background_style = if popup_overlay_active {
-            background_style
-        } else {
-            style
-        };
         draw_split_editor_panes(
             state,
-            split_background_style,
+            background_style,
             window,
             vw,
             text_h,
             editor_text,
-            !popup_overlay_active,
+            !editor_unfocused,
         )?;
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
@@ -3092,6 +3125,60 @@ fn handle_editor_event(
     if matches!(event, Event::Unknown) {
         return !state.should_quit;
     }
+    if state.handle_pane_resize_mouse(&event) {
+        return !state.should_quit;
+    }
+    if let Event::KeyWithModifiers(key) = &event
+        && key.mods == minui::KeyModifiers::ctrl()
+    {
+        let direction = match key.key {
+            KeyKind::Left => Some(app::state::SplitDirection::Left),
+            KeyKind::Right => Some(app::state::SplitDirection::Right),
+            KeyKind::Up => Some(app::state::SplitDirection::Up),
+            KeyKind::Down => Some(app::state::SplitDirection::Down),
+            _ => None,
+        };
+        if let Some(direction) = direction {
+            state.resize_active_pane(direction);
+            state.input.reset_prefixes();
+            return !state.should_quit;
+        }
+    }
+    if state.terminal.is_visible()
+        && let Event::KeyWithModifiers(key) = &event
+        && key.mods == minui::KeyModifiers::ctrl()
+        && let KeyKind::Char(character @ ('j' | 'k' | 'J' | 'K')) = key.key
+    {
+        state.focus_split(if character.eq_ignore_ascii_case(&'j') {
+            app::state::SplitDirection::Down
+        } else {
+            app::state::SplitDirection::Up
+        });
+        state.input.reset_prefixes();
+        state.request_redraw();
+        return !state.should_quit;
+    }
+    // Terminal input belongs to the terminal, including passwords and control keys.
+    // Keep it outside editor logging, mappings, macros and popup dispatch.
+    let scroll_lines = match event {
+        Event::MouseScroll { delta, .. } => state.mouse.scroll_distance(false, delta),
+        _ => 0,
+    };
+    match state
+        .terminal
+        .handle_event(&event, state.session.launch_dir(), scroll_lines)
+    {
+        Ok(true) => {
+            state.input.reset_prefixes();
+            state.request_redraw();
+            return !state.should_quit;
+        }
+        Err(error) => {
+            state.set_status(format!("terminal: {error:#}"));
+            return !state.should_quit;
+        }
+        Ok(false) => {}
+    }
     state.begin_log_input(&event);
     let keep_running = handle_editor_event_inner(state, clipboard, event);
     state.finish_log_input();
@@ -3345,6 +3432,21 @@ fn apply_runtime_colorscheme(
     }
 }
 
+fn read_editor_input(
+    state: &EditorState,
+    window: &mut TerminalWindow,
+    timeout: Option<Duration>,
+) -> minui::Result<Option<Event>> {
+    if state.terminal.is_focused() {
+        state.terminal.read_input(window, timeout)
+    } else {
+        match timeout {
+            Some(timeout) => window.poll_input_timeout(timeout),
+            None => window.wait_for_input().map(Some),
+        }
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     let Some(options) = parse_launch_options()? else {
         return Ok(());
@@ -3437,7 +3539,7 @@ pub fn run() -> anyhow::Result<()> {
             if mouse_frame_pending || input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
                 break;
             }
-            match window.poll_input()? {
+            match read_editor_input(&state, &mut window, Some(Duration::ZERO))? {
                 Some(Event::Unknown) => continue,
                 Some(event) => {
                     event_count += 1;
@@ -3510,10 +3612,12 @@ pub fn run() -> anyhow::Result<()> {
         }
 
         pending_wake_event = match state.next_wake_deadline(Instant::now()) {
-            Some(deadline) => {
-                window.poll_input_timeout(deadline.saturating_duration_since(Instant::now()))?
-            }
-            None => Some(window.wait_for_input()?),
+            Some(deadline) => read_editor_input(
+                &state,
+                &mut window,
+                Some(deadline.saturating_duration_since(Instant::now())),
+            )?,
+            None => read_editor_input(&state, &mut window, None)?,
         }
         .filter(|event| !matches!(event, Event::Unknown));
     }
@@ -3765,6 +3869,67 @@ mod tests {
             );
             assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
         }
+        state.mode = app::EditorMode::Insert;
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key: KeyKind::Right,
+                mods: minui::KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(state.pane_rects(80, 11)[0].width, inactive.width + 1);
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 10 + inactive.width + 1,
+                y: 2,
+                button: MouseButton::Left,
+            },
+        );
+        for x in [60, 65] {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::MouseDrag {
+                    x,
+                    y: 2,
+                    button: MouseButton::Left,
+                },
+            );
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert_eq!(state.pane_rects(80, 11)[0].width, x - 10);
+        }
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseRelease {
+                x: 65,
+                y: 2,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(state.mode, app::EditorMode::Insert);
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        state.configure_mouse(false, false, false, 3, 3);
+        for event in [
+            Event::MouseClick {
+                x: 65,
+                y: 2,
+                button: MouseButton::Left,
+            },
+            Event::MouseDrag {
+                x: 75,
+                y: 2,
+                button: MouseButton::Left,
+            },
+        ] {
+            handle_editor_event(&mut state, &mut clipboard, event);
+        }
+        assert_eq!(state.pane_rects(80, 11)[0].width, 55);
+        state.configure_mouse(true, false, false, 3, 3);
+        state.mode = app::EditorMode::Normal;
         handle_editor_event(&mut state, &mut clipboard, Event::Character(':'));
         handle_editor_event(
             &mut state,
@@ -4501,6 +4666,305 @@ mod tests {
         std::env::temp_dir().join(format!("redox_lib_test_{tag}_{nanos}"))
     }
 
+    #[test]
+    fn layout_changes_preserve_cursor_and_buffer_position() {
+        use app::state::{SplitAxis, SplitDirection};
+        use redox_core::Pos;
+        let _guard = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() =
+            TextBuffer::from_text(&format!("{}\n", "x".repeat(160)).repeat(100));
+        let directory = tempfile::tempdir().unwrap();
+        state.terminal = terminal::tests::configured_panel(directory.path());
+        state.with_active_buffer_view_mut(|_, view| {
+            view.cursor.cursor = Pos::new(35, 90);
+            view.cursor.scroll_x_cells = 10;
+            view.cursor.scroll_y_lines = 10;
+        });
+        let mut clipboard = None;
+        let mut window = TestWindow::new(100, 36);
+        let mut perf = FramePerfSample::default();
+        let check =
+            |state: &mut EditorState, window: &mut TestWindow, perf: &mut FramePerfSample| {
+                draw_buffer_view(state, UiStyle::default(), window, perf).unwrap();
+                state.with_active_buffer_view_mut(|_, view| {
+                    assert_eq!(view.cursor.cursor, Pos::new(35, 90));
+                    assert_eq!(view.cursor.viewport_scroll(), (10, 10));
+                });
+            };
+        check(&mut state, &mut window, &mut perf);
+        let control = |key| {
+            Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key,
+                mods: minui::KeyModifiers::ctrl(),
+            })
+        };
+        for key in [
+            KeyKind::Char('`'),
+            KeyKind::Up,
+            KeyKind::Down,
+            KeyKind::Char('k'),
+            KeyKind::Char('`'),
+        ] {
+            handle_editor_event(&mut state, &mut clipboard, control(key));
+            check(&mut state, &mut window, &mut perf);
+        }
+        for (axis, direction) in [
+            (SplitAxis::Vertical, SplitDirection::Left),
+            (SplitAxis::Horizontal, SplitDirection::Up),
+        ] {
+            state.split_active_pane(axis);
+            state.focus_split(direction);
+            check(&mut state, &mut window, &mut perf);
+            state.resize_active_pane(direction);
+            check(&mut state, &mut window, &mut perf);
+        }
+        let mut narrow = TestWindow::new(60, 20);
+        check(&mut state, &mut narrow, &mut perf);
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('h'));
+        draw_buffer_view(&mut state, UiStyle::default(), &mut narrow, &mut perf).unwrap();
+        assert_eq!(state.active_cursor_pos(), Pos::new(35, 89));
+        assert!(narrow.cursor.unwrap().visible);
+    }
+
+    #[test]
+    fn terminal_panel_routes_input_and_reserves_bottom_rows() {
+        let _guard = app::state::global_test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        state.terminal = terminal::tests::configured_panel(directory.path());
+        let mut clipboard = None;
+        let mut window = TestWindow::new(100, 30);
+        let mut perf = FramePerfSample::default();
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        let toggle = Event::KeyWithModifiers(minui::KeyWithModifiers {
+            key: KeyKind::Char('`'),
+            mods: minui::KeyModifiers::ctrl(),
+        });
+        handle_editor_event(&mut state, &mut clipboard, toggle.clone());
+        assert!(state.terminal.is_focused());
+        assert!(state.next_wake_deadline(Instant::now()).is_some());
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::Paste("printf '\\033[31m__%s__\\033[38;2;80;160;240mRGB\\033[0m' ROUTED".into()),
+        );
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            state.update_background(Instant::now());
+            window.clear_screen().unwrap();
+            draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+            if (20..30).any(|row| window.row_text(row).contains("__ROUTED__")) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(window.row_text(19).contains("TERMINAL"));
+        assert!(!window.row_text(20).contains("Ctrl+` hide"));
+        assert!(window.cursor.unwrap().y >= 20);
+        let output_row = (20..30)
+            .find(|row| window.row_text(*row).contains("__ROUTED__"))
+            .unwrap();
+        let output_column = window.row_text(output_row).find("__ROUTED__").unwrap();
+        let colors = [Color::AnsiValue(1), Color::rgb(80, 160, 240)];
+        for (offset, color) in [0, 10].into_iter().zip(colors) {
+            assert_eq!(
+                window.foregrounds[output_row as usize][output_column + offset],
+                Some(color)
+            );
+        }
+        assert_eq!(state.mode, app::EditorMode::Normal);
+        assert_eq!(state.session.active_buffer().to_string(), "");
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 2,
+                y: 2,
+                button: minui::MouseButton::Left,
+            },
+        );
+        assert!(!state.terminal.is_focused());
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        let style = UiStyle::default();
+        for (offset, color) in [0, 10]
+            .into_iter()
+            .zip([Color::rgb(205, 49, 49), colors[1]])
+        {
+            assert_eq!(
+                window.foregrounds[output_row as usize][output_column + offset],
+                Some(ui::style::dim_foreground_color(
+                    color,
+                    style.theme.bg,
+                    style.dim_amount
+                ))
+            );
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('i'));
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('x'));
+        assert_eq!(state.session.active_buffer().to_string(), "x");
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 2,
+                y: 22,
+                button: minui::MouseButton::Left,
+            },
+        );
+        assert!(state.terminal.is_focused());
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key: KeyKind::Char('c'),
+                mods: minui::KeyModifiers::ctrl(),
+            }),
+        );
+        assert_eq!(state.mode, app::EditorMode::Insert);
+        let navigation = |character| {
+            Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key: KeyKind::Char(character),
+                mods: minui::KeyModifiers::ctrl(),
+            })
+        };
+        handle_editor_event(&mut state, &mut clipboard, navigation('k'));
+        assert!(!state.terminal.is_focused());
+        assert_eq!(state.mode, app::EditorMode::Insert);
+        state.split_active_pane(app::state::SplitAxis::Horizontal);
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        let lower_pane = state.active_pane_id();
+        handle_editor_event(&mut state, &mut clipboard, navigation('k'));
+        let upper_pane = state.active_pane_id();
+        assert_ne!(upper_pane, lower_pane);
+        handle_editor_event(&mut state, &mut clipboard, navigation('j'));
+        assert_eq!(state.active_pane_id(), lower_pane);
+        assert!(!state.terminal.is_focused());
+        handle_editor_event(&mut state, &mut clipboard, navigation('j'));
+        assert!(state.terminal.is_focused());
+        handle_editor_event(&mut state, &mut clipboard, navigation('j'));
+        assert!(state.terminal.is_focused());
+        handle_editor_event(&mut state, &mut clipboard, navigation('k'));
+        assert!(!state.terminal.is_focused());
+        assert_eq!(state.active_pane_id(), lower_pane);
+        handle_editor_event(&mut state, &mut clipboard, navigation('j'));
+        assert!(state.terminal.is_focused());
+        let style = UiStyle::default();
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        for rect in state.pane_rects(100, 19) {
+            let (row, column) = (rect.y..rect.y + rect.height)
+                .find_map(|row| {
+                    (rect.x..rect.x + rect.width)
+                        .find(|column| window.cells[row as usize][*column as usize] == 'x')
+                        .map(|column| (row, column))
+                })
+                .unwrap();
+            assert_eq!(
+                window.foregrounds[row as usize][column as usize],
+                Some(style.dimmed().theme.white)
+            );
+        }
+        for (key, height) in [(KeyKind::Up, 11), (KeyKind::Down, 10)] {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::KeyWithModifiers(minui::KeyWithModifiers {
+                    key,
+                    mods: minui::KeyModifiers::ctrl(),
+                }),
+            );
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert_eq!(state.terminal.height(30), height);
+        }
+        state.configure_mouse(true, false, false, 3, 3);
+        state.zen.enabled = true;
+        state.zen.width_percent = 80;
+        state.zen.min_width = 1;
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        for row in 0..30 {
+            for column in (0..10).chain(90..100) {
+                assert_eq!(window.backgrounds[row][column], Some(style.zen_margin));
+            }
+        }
+        assert!((10..90).contains(&window.cursor.unwrap().x));
+        for event in [
+            Event::MouseClick {
+                x: 0,
+                y: 19,
+                button: minui::MouseButton::Left,
+            },
+            Event::MouseDrag {
+                x: 0,
+                y: 15,
+                button: minui::MouseButton::Left,
+            },
+            Event::MouseRelease {
+                x: 0,
+                y: 15,
+                button: minui::MouseButton::Left,
+            },
+        ] {
+            handle_editor_event(&mut state, &mut clipboard, event);
+        }
+        assert_eq!(state.terminal.height(30), 10);
+        assert!(state.terminal.is_focused());
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseClick {
+                x: 10,
+                y: 19,
+                button: minui::MouseButton::Left,
+            },
+        );
+        for (row, height) in [(15, 14), (0, 22), (13, 16)] {
+            handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::MouseDrag {
+                    x: 0,
+                    y: row,
+                    button: minui::MouseButton::Left,
+                },
+            );
+            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            assert_eq!(state.terminal.height(30), height);
+            assert!(state.terminal.is_focused());
+        }
+        handle_editor_event(
+            &mut state,
+            &mut clipboard,
+            Event::MouseRelease {
+                x: 0,
+                y: 13,
+                button: minui::MouseButton::Left,
+            },
+        );
+        assert_eq!(state.mode, app::EditorMode::Insert);
+        handle_editor_event(&mut state, &mut clipboard, toggle.clone());
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        handle_editor_event(&mut state, &mut clipboard, toggle.clone());
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert_eq!(state.terminal.height(30), 16);
+        for (width, height) in [(100, 20), (2, 3), (1, 1), (0, 0)] {
+            let mut small = TestWindow::new(width, height);
+            draw_buffer_view(&mut state, UiStyle::default(), &mut small, &mut perf).unwrap();
+            if let Some(cursor) = small.cursor
+                && cursor.visible
+            {
+                assert!(cursor.x < width && cursor.y < height);
+            }
+        }
+        handle_editor_event(&mut state, &mut clipboard, toggle);
+        assert!(!state.terminal.is_focused());
+        assert_eq!(state.terminal.height(30), 0);
+        assert_eq!(state.mode, app::EditorMode::Insert);
+    }
+
     struct TestWindow {
         width: u16,
         height: u16,
@@ -4947,8 +5411,19 @@ mod tests {
         let mut narrow = TestWindow::new(120, 24);
         draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
         let cursor = narrow.cursor.unwrap();
-        assert!(cursor.visible);
-        assert!((12..108).contains(&cursor.x));
+        assert!(!cursor.visible);
+        assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(0, 115));
+        state.apply_input(
+            InputAction::Motion {
+                motion: redox_core::motion::Motion::Left,
+                count: 1,
+            },
+            96,
+            24,
+        );
+        draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+        let cursor = narrow.cursor.unwrap();
+        assert!(cursor.visible && (12..108).contains(&cursor.x));
 
         state.apply_input(InputAction::SplitVertical, 96, 24);
         assert_eq!(state.panes().len(), 2);
