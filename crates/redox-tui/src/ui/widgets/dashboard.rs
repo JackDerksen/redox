@@ -1,4 +1,4 @@
-use minui::{ColorPair, Window, window::CursorSpec};
+use minui::{Style, Window, window::CursorSpec};
 
 use crate::app::state::dashboard::DASHBOARD_ITEMS;
 use crate::ui::UiStyle;
@@ -70,9 +70,9 @@ pub(crate) fn draw_dashboard(
     }
 
     let logo_sections = [
-        (LOGO_TOP_CONNECTOR, style.about.logo_red),
-        (LOGO_WORDMARK, style.about.logo_white),
-        (LOGO_BOTTOM_CONNECTOR, style.about.logo_blue),
+        (LOGO_TOP_CONNECTOR, style.dashboard.logo_red),
+        (LOGO_WORDMARK, style.dashboard.logo_white),
+        (LOGO_BOTTOM_CONNECTOR, style.dashboard.logo_blue),
     ];
     let compact_logo = [
         // So cute
@@ -137,7 +137,7 @@ pub(crate) fn draw_dashboard(
             .iter()
             .flat_map(|(lines, color)| lines.iter().map(move |text| (text, *color)));
         for (row, (text, color)) in lines.enumerate() {
-            window.write_str_colored(top + row as u16, left, text, color)?;
+            window.write_str_styled(top + row as u16, left, text, color.into())?;
         }
     } else if logo_height > 0 {
         let compact_logo_width = compact_logo
@@ -147,10 +147,9 @@ pub(crate) fn draw_dashboard(
             .unwrap_or(0) as u16;
         let left = width.saturating_sub(compact_logo_width) / 2;
         for (row, (text, color)) in compact_logo.iter().enumerate() {
-            write_clipped(window, top + row as u16, left, text, *color)?;
+            write_clipped(window, top + row as u16, left, text, Style::from(*color))?;
         }
     }
-    let dim = ColorPair::new(style.theme.light_gray, style.theme.bg);
     if logo_height > 0 {
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         write_clipped(
@@ -158,7 +157,7 @@ pub(crate) fn draw_dashboard(
             top + logo_height + LOGO_VERSION_GAP_ROWS,
             width.saturating_sub(version.len() as u16) / 2,
             &version,
-            dim,
+            style.dashboard.version,
         )?;
     }
 
@@ -171,9 +170,9 @@ pub(crate) fn draw_dashboard(
     {
         let y = top + header_height + (row - first) as u16 * row_step;
         let text_color = if row == selected {
-            style.about.logo_white
+            style.dashboard.selected
         } else {
-            dim
+            style.dashboard.text
         };
         if style.icons_enabled && menu_width > icon_prefix_width {
             write_clipped(
@@ -181,7 +180,7 @@ pub(crate) fn draw_dashboard(
                 y,
                 menu_left,
                 dashboard_icon(*hotkey),
-                style.about.logo_red,
+                style.dashboard.icon,
             )?;
         }
         write_clipped(
@@ -196,7 +195,7 @@ pub(crate) fn draw_dashboard(
             y,
             hotkey_column,
             &hotkey.to_string(),
-            style.about.logo_blue,
+            style.dashboard.hotkey,
         )?;
         if show_cursor && row == selected {
             window.request_cursor(CursorSpec {
@@ -214,15 +213,15 @@ fn write_clipped(
     row: u16,
     column: u16,
     text: &str,
-    color: ColorPair,
+    style: impl Into<Style>,
 ) -> minui::Result<()> {
     let (width, height) = window.get_size();
     if row < height && column < width {
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             column,
             &clip_text_to_cells(text, (width - column) as usize),
-            color,
+            style.into(),
         )?;
     }
     Ok(())

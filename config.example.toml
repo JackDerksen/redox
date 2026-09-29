@@ -4,6 +4,7 @@
 
 theme = "default"
 icons_enabled = false # Requires a Nerd Font in the terminal
+text_formatting = true # false disables all font attributes, including terminal output
 mouse = false # Enable scrolling, cursor placement, and drag selection
 mouse_invert_vertical = false # Reverse the terminal's vertical wheel direction
 mouse_invert_horizontal = false # Reverse the terminal's horizontal wheel direction
@@ -96,8 +97,17 @@ yank_system = "<leader>y"
 # rejected at startup instead of being silently ignored.
 
 # Define any number of named themes, then select one with `theme` above. A
-# foreground-only colour inherits the editor background. Use { fg, bg } when
-# both sides should be explicit. Colours are #RRGGBB or "transparent".
+# foreground-only colour keeps transparency or uses the editor background.
+# Use { fg, bg } to set both. Colours are #RRGGBB or "transparent".
+# Every syntax/UI text role also accepts bold, italic, dim, reverse, strikethrough,
+# underline = "none"/"single"/"curl", and underline_color. Omitted properties keep
+# their defaults; false/"none" removes a role's default attribute. For example:
+# [themes.default.syntax]
+# comment = { italic = false }
+# keyword = { bold = true }
+# [themes.default.ui]
+# "finder.directory" = { bold = false, italic = true }
+# See CONFIGURATION.md for composition, shared roles, and colour-only exceptions.
 [themes.vague.palette]
 background = "#141415"
 color_column = "#252530"
@@ -124,13 +134,13 @@ light_gray = "#c3c3d5"
 
 [themes.vague.syntax]
 markdown_code = "#aeaed1"
-markdown_emphasis = "#bb9dbd"
+markdown_emphasis = { fg = "#bb9dbd", italic = true }
 markdown_frontmatter = "#606079"
-markdown_heading = "#6e94b2"
+markdown_heading = { fg = "#6e94b2", bold = true, underline = "single" }
 markdown_highlight = { fg = "#cdcdcd", bg = "#405065" }
 markdown_link = "#c48282"
 markdown_list_marker = "#c48282"
-markdown_strong = "#c48282"
+markdown_strong = { fg = "#c48282", bold = true }
 variable_builtin = "#b4d4cf"
 variable_parameter = "#bb9dbd"
 keyword = "#6e94b2"
@@ -148,7 +158,7 @@ character = "#e8b589"
 number = "#e0a363"
 boolean = "#e0a363"
 float = "#e0a363"
-comment = "#606079"
+comment = { fg = "#606079", italic = true }
 constant = "#aeaed1"
 constant_builtin = "#e0a363"
 constant_macro = "#b4d4cf"
@@ -192,6 +202,9 @@ punctuation_special = "#b4d4cf"
 "command_line.title" = "#c48282"
 "command_line.text" = "#cdcdcd"
 "command_line.prompt" = "#e8b589"
+"command_line.ghost" = "#606079"
+"command_line.error" = "#d8647e"
+"command_line.inactive_title" = { fg = "#878787", bold = true }
 "which_key.background" = "#252530"
 "which_key.edge" = "#f3be7c"
 "which_key.prefix" = "#bb9dbd"
@@ -247,3 +260,28 @@ punctuation_special = "#b4d4cf"
 "undo_tree.preview_separator" = "#878787"
 "undo_tree.preview_deleted" = "#d8647e"
 "undo_tree.preview_inserted" = "#7fa563"
+
+# Transparent overlay colours inherit the existing text and selection colours.
+"finder.directory" = { bold = true }
+"finder.pinned" = { italic = true }
+"diagnostic.error_range" = { underline = "curl", underline_color = "#d8647e" }
+"popup.section_title" = { bold = true }
+"search.match" = { bg = "#333738", underline = "single" }
+"search.current" = { bg = "#878787", underline = "single" }
+"editor.text" = "#cdcdcd"
+"editor.snippet" = "#606079"
+"pane.title" = { fg = "#cdcdcd", bg = "#1c1c24", bold = true }
+"gutter.line_number" = "#606079"
+"gutter.current_line_number" = "#cdcdcd"
+"completion.ghost" = "#606079"
+"completion.keyword" = "#878787"
+"completion.match_highlight" = "#cdcdcd"
+"dashboard.text" = "#878787"
+"dashboard.selected" = "#cdcdcd"
+"dashboard.hotkey" = { fg = "#7e98e8", bold = true }
+"dashboard.version" = { fg = "#878787", italic = true }
+"dashboard.icon" = "#d8647e"
+# Large dashboard artwork; about.logo_* controls the compact and CLI logos.
+"dashboard.logo_red" = "#d8647e"
+"dashboard.logo_white" = "#cdcdcd"
+"dashboard.logo_blue" = "#7e98e8"

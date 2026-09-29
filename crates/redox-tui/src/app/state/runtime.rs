@@ -7,6 +7,7 @@ use crate::ANIMATION_FRAME_INTERVAL;
 
 // MinUI waits on terminal input. Poll only while a background producer may reply.
 pub(super) const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(8);
 pub(super) const LOADING_TOAST_DELAY: Duration = Duration::from_millis(300);
 const PERF_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -46,6 +47,9 @@ impl EditorState {
     }
 
     pub(crate) fn update_background(&mut self, now: Instant) -> Duration {
+        if self.terminal.poll() {
+            self.request_redraw();
+        }
         self.maintain_logging(now);
         self.poll_analysis_results();
         self.poll_lsp();
@@ -131,6 +135,13 @@ impl EditorState {
                 .as_ref()
                 .and_then(|explorer| self.git.repo_discovery_deadline(&explorer.dir_path)),
             background_pending.then_some(now + BACKGROUND_POLL_INTERVAL),
+            self.terminal.needs_polling().then_some(
+                now + if self.terminal.is_visible() {
+                    TERMINAL_POLL_INTERVAL
+                } else {
+                    BACKGROUND_POLL_INTERVAL
+                },
+            ),
             self.substitute_preview_pending()
                 .then_some(now + ANIMATION_FRAME_INTERVAL),
             self.lsp_poll_deadline(now),

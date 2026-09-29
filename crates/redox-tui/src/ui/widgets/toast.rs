@@ -1,4 +1,5 @@
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use crate::ui::text_style::TextStyle;
+use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, StatusMessageStyle};
@@ -274,11 +275,11 @@ fn write_toast_line(
     style: UiStyle,
 ) -> minui::Result<()> {
     if message_style == StatusMessageStyle::Dim {
-        return window.write_str_colored(
+        return window.write_str_styled(
             row,
             col,
             line,
-            ColorPair::new(style.theme.dark_gray, style.command_line.text.bg),
+            (TextStyle::new(style.theme.dark_gray, style.command_line.text.bg)).into(),
         );
     }
 
@@ -291,7 +292,7 @@ fn write_toast_line(
             .expect("cursor should be on a character boundary");
         if is_toast_token_delimiter(ch) {
             let segment = ch.to_string();
-            window.write_str_colored(row, cell_col, &segment, style.command_line.text)?;
+            window.write_str_styled(row, cell_col, &segment, style.command_line.text.into())?;
             cell_col = cell_col.saturating_add(text_cell_width(&segment) as u16);
             cursor += ch.len_utf8();
             continue;
@@ -323,7 +324,7 @@ fn write_toast_token(
         } else {
             style.command_line.text
         };
-        window.write_str_colored(row, cell_col, segment, color)?;
+        window.write_str_styled(row, cell_col, segment, color.into())?;
         cell_col = cell_col.saturating_add(text_cell_width(segment) as u16);
     }
 

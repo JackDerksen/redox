@@ -1,15 +1,46 @@
 use crate::ui::render::LineViewport;
+use crate::ui::text_style::TextStyle;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-use minui::{Color, ColorPair, TabPolicy, Window, cell_width};
+use minui::{Color, Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::ui::{
     UiStyle,
-    syntax::{LineSyntaxSpan, SyntaxScope, SyntaxScopePair, syntax_color_for_range},
+    syntax::{LineSyntaxSpan, SyntaxScope, SyntaxScopePair, syntax_style_for_range},
 };
+
+#[derive(Clone, Copy)]
+pub(crate) struct LineDecorations<'a> {
+    pub search_cells: &'a [bool],
+    pub error_cells: &'a [bool],
+    pub current_cells: &'a [bool],
+    pub search_style: TextStyle,
+    pub current_style: TextStyle,
+    pub error_style: TextStyle,
+}
+
+impl LineDecorations<'_> {
+    pub fn apply(self, mut style: Style, range: std::ops::Range<usize>) -> Style {
+        let overlaps = |cells: &[bool]| {
+            cells
+                .get(range.clone())
+                .is_some_and(|cells| cells.iter().any(|selected| *selected))
+        };
+        if overlaps(self.search_cells) {
+            style = self.search_style.format.apply_to(style);
+        }
+        if overlaps(self.current_cells) {
+            style = self.current_style.format.apply_to(style);
+        }
+        if overlaps(self.error_cells) {
+            style = self.error_style.overlay(style);
+        }
+        style
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelimiterKind {
@@ -338,12 +369,12 @@ pub(crate) fn compute_delimiter_analysis(buffer: &TextBuffer) -> DelimiterAnalys
 
 pub(crate) fn draw_indent_guides(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    (row, col): (u16, u16),
     visible_xs: &[usize],
     occupied_cells: &[bool],
     style: UiStyle,
     selected_cells: Option<(&[bool], Color)>,
+    decorations: LineDecorations<'_>,
 ) -> minui::Result<()> {
     for &visible_x in visible_xs {
         if occupied_cells.get(visible_x).copied().unwrap_or(false) {
@@ -360,8 +391,13 @@ pub(crate) fn draw_indent_guides(
         } else {
             style.theme.bg
         };
-        let color = ColorPair::new(style.theme.scope, bg);
-        window.write_str_colored(row, col.saturating_add(visible_x as u16), "│", color)?;
+        let color = TextStyle::new(style.theme.scope, bg);
+        window.write_str_styled(
+            row,
+            col.saturating_add(visible_x as u16),
+            "│",
+            decorations.apply(color.into(), visible_x..visible_x + 1),
+        )?;
     }
 
     Ok(())
@@ -454,8 +490,8 @@ pub(crate) fn draw_delimiter_highlights(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    delimiter_highlight_chars: &[usize],
-    normal_color: ColorPair,
+    (delimiter_highlight_chars, decorations): (&[usize], LineDecorations<'_>),
+    normal_color: TextStyle,
     style: UiStyle,
     syntax_spans: Option<&[LineSyntaxSpan]>,
 ) -> minui::Result<()> {
@@ -477,17 +513,24 @@ pub(crate) fn draw_delimiter_highlights(
     }
 
     for cell in visible {
-        let base_color = syntax_spans
+        let base_style = syntax_spans
             .map(|spans| {
-                syntax_color_for_range(normal_color, style, spans, cell.start_byte, cell.end_byte)
+                syntax_style_for_range(normal_color, style, spans, cell.start_byte, cell.end_byte)
             })
-            .unwrap_or(normal_color);
-        let color = ColorPair::new(base_color.fg, style.theme.scope);
-        window.write_str_colored(
+            .unwrap_or_else(|| normal_color.into());
+        let colors = TextStyle::new(
+            base_style.colors.unwrap_or(normal_color.colors()).fg,
+            style.theme.scope,
+        );
+        let text_style = decorations.apply(
+            base_style.with_colors(colors.colors()),
+            cell.visible_x..cell.visible_x + cell_width(&cell.text, TabPolicy::Fixed(4)) as usize,
+        );
+        window.write_str_styled(
             row,
             col.saturating_add(cell.visible_x as u16),
             &cell.text,
-            color,
+            text_style,
         )?;
     }
 

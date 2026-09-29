@@ -1,17 +1,20 @@
 //! User configuration loading and validation.
 
+use crate::ui::text_style::TextStyle;
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use minui::{Color, ColorPair};
-use serde::Deserialize;
+use minui::Color;
+use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
+use serde::{Deserialize, Deserializer};
 
 use crate::input::cursor::DEFAULT_SCROLLOFF_ROWS;
 use crate::ui::UiStyle;
-use crate::ui::style::LineNumbers;
+use crate::ui::style::{LineNumbers, Underline};
 
 pub const DEFAULT_DIM_AMOUNT: f32 = 0.301;
 pub const DEFAULT_UNDO_HISTORY_SIZE: usize = usize::MAX;
@@ -22,6 +25,7 @@ pub const DEFAULT_WHICH_KEY_DELAY_MS: u64 = 3_000;
 pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
+    pub text_formatting: bool,
     pub check_updates: bool,
     pub mouse: bool,
     pub mouse_invert_vertical: bool,
@@ -48,6 +52,7 @@ impl Default for Config {
         Self {
             theme: "default".to_string(),
             icons_enabled: false,
+            text_formatting: true,
             check_updates: true,
             mouse: false,
             mouse_invert_vertical: false,
@@ -157,22 +162,53 @@ pub struct PopupSize {
 #[serde(default, deny_unknown_fields)]
 struct ThemeConfig {
     palette: BTreeMap<String, String>,
-    syntax: BTreeMap<String, ColorValue>,
-    ui: BTreeMap<String, ColorValue>,
+    syntax: BTreeMap<String, StyleValue>,
+    ui: BTreeMap<String, StyleValue>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum ColorValue {
+#[derive(Debug, Clone)]
+enum StyleValue {
     Foreground(String),
-    Pair(ColorPairConfig),
+    Properties(StyleProperties),
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ColorPairConfig {
-    fg: String,
-    bg: String,
+impl<'de> Deserialize<'de> for StyleValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StyleValueVisitor;
+
+        impl<'de> Visitor<'de> for StyleValueVisitor {
+            type Value = StyleValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a colour string or style table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StyleValue::Foreground(value.to_owned()))
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                StyleProperties::deserialize(MapAccessDeserializer::new(map))
+                    .map(StyleValue::Properties)
+            }
+        }
+
+        deserializer.deserialize_any(StyleValueVisitor)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct StyleProperties {
+    fg: Option<String>,
+    bg: Option<String>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    dim: Option<bool>,
+    reverse: Option<bool>,
+    strikethrough: Option<bool>,
+    underline: Option<Underline>,
+    underline_color: Option<String>,
 }
 
 impl Config {
@@ -290,33 +326,67 @@ impl Config {
         if !self.has_theme(name) {
             bail!("unknown colorscheme {name:?}");
         }
-        let mut style = UiStyle {
-            icons_enabled: self.icons_enabled,
-            ..UiStyle::default()
-        };
-        style.layout.color_column = Some(self.color_column);
-        style.layout.line_numbers = self.line_numbers;
-        let Some(theme) = self.themes.get(name) else {
-            self.apply_popup_sizes(&mut style);
-            style.dim_amount = self.background_dimming;
-            return Ok(style);
-        };
-
-        apply_palette(&mut style, &theme.palette)?;
-        // Re-derive every default role after changing the base palette.
-        style = UiStyle::from_theme(style.theme);
+        let mut style = UiStyle::default();
+        if let Some(theme) = self.themes.get(name) {
+            apply_palette(&mut style, &theme.palette)?;
+            style = UiStyle::from_theme(style.theme);
+            let background = style.theme.bg;
+            for (name, value) in &theme.syntax {
+                value
+                    .apply(style.syntax_style_mut(name)?, background)
+                    .with_context(|| format!("invalid syntax style {name:?}"))?;
+            }
+            if let Some(value) = theme.ui.get("which_key.background") {
+                let background = value.color_only(style.which_key.background)?;
+                style.which_key.background = background;
+                for (name, role) in style.ui_roles_mut() {
+                    if name.starts_with("which_key.") {
+                        role.bg = background;
+                    }
+                }
+            }
+            for (name, value) in &theme.ui {
+                if name == "diagnostic.error_range" {
+                    continue;
+                }
+                let color_target = match name.as_str() {
+                    "zen.margin" => Some(&mut style.zen_margin),
+                    "zen.ghost" => Some(&mut style.zen_ghost),
+                    "which_key.background" => Some(&mut style.which_key.background),
+                    _ => None,
+                };
+                if let Some(target) = color_target {
+                    *target = value
+                        .color_only(*target)
+                        .with_context(|| format!("invalid UI colour {name:?}"))?;
+                } else {
+                    let role_background = if name.starts_with("which_key.") {
+                        style.which_key.background
+                    } else {
+                        background
+                    };
+                    value
+                        .apply(style.ui_style_mut(name)?, role_background)
+                        .with_context(|| format!("invalid UI style {name:?}"))?;
+                }
+            }
+        }
+        style.error_range.format.underline_color = Some(style.diagnostic_inline.error.fg);
+        if let Some(value) = self
+            .themes
+            .get(name)
+            .and_then(|theme| theme.ui.get("diagnostic.error_range"))
+        {
+            let background = style.theme.bg;
+            value
+                .apply(&mut style.error_range, background)
+                .context("invalid UI style 'diagnostic.error_range'")?;
+        }
         style.icons_enabled = self.icons_enabled;
         style.layout.color_column = Some(self.color_column);
         style.layout.line_numbers = self.line_numbers;
-        for (name, value) in &theme.syntax {
-            let pair = color_pair(value, style.theme.bg)
-                .with_context(|| format!("invalid syntax colour {name:?}"))?;
-            style.set_syntax_color(name, pair)?;
-        }
-        for (name, value) in &theme.ui {
-            let pair = color_pair(value, style.theme.bg)
-                .with_context(|| format!("invalid UI colour {name:?}"))?;
-            style.set_ui_color(name, pair)?;
+        if !self.text_formatting {
+            style.disable_text_formatting();
         }
         self.apply_popup_sizes(&mut style);
         style.dim_amount = self.background_dimming;
@@ -384,13 +454,51 @@ fn apply_palette(style: &mut UiStyle, palette: &BTreeMap<String, String>) -> any
     Ok(())
 }
 
-fn color_pair(value: &ColorValue, default_bg: Color) -> anyhow::Result<ColorPair> {
-    match value {
-        ColorValue::Foreground(fg) => Ok(ColorPair::new(parse_color(fg)?, default_bg)),
-        ColorValue::Pair(pair) => Ok(ColorPair::new(
-            parse_color(&pair.fg)?,
-            parse_color(&pair.bg)?,
-        )),
+impl StyleValue {
+    fn apply(&self, target: &mut TextStyle, background: Color) -> anyhow::Result<()> {
+        match self {
+            Self::Foreground(value) => {
+                target.fg = parse_color(value)?;
+                if target.bg != Color::Transparent {
+                    target.bg = background;
+                }
+            }
+            Self::Properties(properties) => {
+                if let Some(value) = &properties.fg {
+                    target.fg = parse_color(value)?;
+                }
+                if let Some(value) = &properties.bg {
+                    target.bg = parse_color(value)?;
+                }
+                macro_rules! apply {
+                    ($($field:ident),+ $(,)?) => { $(
+                        if let Some(value) = properties.$field { target.format.$field = value; }
+                    )+ };
+                }
+                apply!(bold, italic, dim, reverse, strikethrough, underline);
+                if let Some(value) = &properties.underline_color {
+                    target.format.underline_color = Some(parse_color(value)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn color_only(&self, current: Color) -> anyhow::Result<Color> {
+        if let Self::Properties(properties) = self
+            && (properties.bold.is_some()
+                || properties.italic.is_some()
+                || properties.dim.is_some()
+                || properties.reverse.is_some()
+                || properties.strikethrough.is_some()
+                || properties.underline.is_some()
+                || properties.underline_color.is_some())
+        {
+            bail!("this role is a colour only; text formatting is not supported");
+        }
+        let mut style = TextStyle::new(current, Color::Transparent);
+        self.apply(&mut style, Color::Transparent)?;
+        Ok(style.fg)
     }
 }
 
@@ -412,6 +520,127 @@ fn parse_color(value: &str) -> anyhow::Result<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_overrides_inherit_defaults_and_validate_properties() {
+        let config: Config = toml::from_str(r##"
+[themes.default.syntax]
+comment = { italic = false }
+keyword = { fg = "#123456", bold = true, italic = true, dim = true, reverse = true, strikethrough = true, underline = "curl", underline_color = "#abcdef" }
+markdown_heading = { underline = "none" }
+type_name = "#112233"
+[themes.default.ui]
+"about.title" = "#010203"
+"finder.directory" = { bold = false, italic = true }
+"finder.selected" = { fg = "#040506", bg = "#070809", bold = true }
+"command_line.ghost" = { italic = true }
+"which_key.background" = "#112233"
+"which_key.key" = { italic = true }
+"which_key.text" = "#445566"
+"which_key.prefix" = { bg = "#778899", bold = false }
+"diagnostic.error_range" = { underline_color = "transparent" }
+"##).unwrap();
+        config.validate().unwrap();
+        let style = config.style().unwrap();
+        let defaults = UiStyle::default();
+        assert_eq!(
+            style.syntax.comment.colors(),
+            defaults.syntax.comment.colors()
+        );
+        assert!(!style.syntax.comment.format.italic);
+        assert!(style.syntax.markdown_heading.format.bold);
+        assert_eq!(
+            style.syntax.markdown_heading.format.underline,
+            Underline::None
+        );
+        assert_eq!(style.syntax.type_name.fg, Color::rgb(17, 34, 51));
+        assert!(style.about.title.format.bold);
+        assert_eq!(style.about.title.bg, style.theme.bg);
+        let format = style.syntax.keyword.format;
+        assert!(
+            format.bold && format.italic && format.dim && format.reverse && format.strikethrough
+        );
+        assert_eq!(format.underline, Underline::Curl);
+        assert_eq!(format.underline_color, Some(Color::rgb(171, 205, 239)));
+        assert!(!style.finder.directory.format.bold);
+        assert!(style.finder.directory.format.italic);
+        assert!(style.command_line.ghost.format.italic);
+        assert_eq!(style.which_key.key.bg, Color::rgb(17, 34, 51));
+        assert_eq!(style.which_key.text.bg, style.which_key.key.bg);
+        assert_eq!(style.which_key.prefix.bg, Color::rgb(119, 136, 153));
+        assert_eq!(minui::Style::from(style.error_range).underline_color, None);
+        let dimmed = style.dimmed();
+        assert_eq!(
+            dimmed.command_line.ghost.format,
+            style.command_line.ghost.format
+        );
+        assert_ne!(dimmed.command_line.ghost.fg, style.command_line.ghost.fg);
+        assert_ne!(
+            dimmed.syntax.keyword.format.underline_color,
+            format.underline_color
+        );
+
+        for source in [
+            "[themes.default.syntax]\nkeyword = { bold = 'yes' }",
+            "[themes.default.syntax]\nkeyword = { underline = 'wavy' }",
+            "[themes.default.syntax]\nkeyword = { italics = true }",
+            "[themes.default.syntax]\nkeyword = { underline_color = 'red' }",
+            "[themes.default.ui]\n'unknown.role' = { bold = true }",
+            "[themes.default.ui]\n'zen.margin' = { italic = false }",
+        ] {
+            assert!(
+                toml::from_str::<Config>(source)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|config| config.validate())
+                    .is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn example_and_reference_cover_roles_and_plain_mode_preserves_colours() {
+        let example = include_str!("../../../config.example.toml");
+        let reference = include_str!("../../../CONFIGURATION.md");
+        let mut config: Config = toml::from_str(example).unwrap();
+        config.validate().unwrap();
+        let theme = &config.themes["vague"];
+        let mut style = config.style_for_theme("vague").unwrap();
+        for (name, _) in style.syntax_roles_mut() {
+            assert!(
+                theme.syntax.contains_key(name),
+                "missing syntax example: {name}"
+            );
+            assert!(
+                reference.contains(&format!("`{name}`")),
+                "missing syntax reference: {name}"
+            );
+        }
+        for (name, _) in style.ui_roles_mut() {
+            assert!(theme.ui.contains_key(name), "missing UI example: {name}");
+            assert!(
+                reference.contains(&format!("`{name}`")),
+                "missing UI reference: {name}"
+            );
+        }
+        for name in ["default", "vague"] {
+            config.text_formatting = true;
+            let mut formatted = config.style_for_theme(name).unwrap();
+            config.text_formatting = false;
+            let mut plain = config.style_for_theme(name).unwrap();
+            assert!(!plain.text_formatting);
+            for ((_, before), (_, after)) in
+                formatted.syntax_roles_mut().zip(plain.syntax_roles_mut())
+            {
+                assert_eq!(before.colors(), after.colors());
+                assert_eq!(after.format, crate::ui::style::TextFormat::default());
+            }
+            for ((_, before), (_, after)) in formatted.ui_roles_mut().zip(plain.ui_roles_mut()) {
+                assert_eq!(before.colors(), after.colors());
+                assert_eq!(after.format, crate::ui::style::TextFormat::default());
+            }
+        }
+    }
 
     #[test]
     fn omitted_configuration_preserves_current_defaults() {

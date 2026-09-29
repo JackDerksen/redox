@@ -1,5 +1,6 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::WindowView;
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{
@@ -9,9 +10,10 @@ use crate::app::state::{
 };
 use crate::ui::UiStyle;
 use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, PopupKind, popup_title};
+use crate::ui::render::LineViewport;
 use crate::ui::syntax::{
-    LineSyntaxSpan, SyntaxLanguage, language_for_name, lexical_fallback_line_spans,
-    line_spans_for_source, syntax_color_for_range,
+    LineSyntaxSpan, SyntaxLanguage, draw_line_with_syntax, language_for_name,
+    lexical_fallback_line_spans, line_spans_for_source,
 };
 use crate::ui::widgets::popup::{
     MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupMouseLayout,
@@ -138,12 +140,17 @@ fn draw_symbol_info_line(
     }
     let clipped = clip_text_to_cells(&line.text, max_width);
     let base_color = symbol_info_base_color(style, &line.kind);
-    draw_symbol_info_spans(
+    draw_line_with_syntax(
         window,
-        (row, 0),
+        LineViewport {
+            row,
+            column: 0,
+            scroll_x: 0,
+            width: max_width,
+        },
         &clipped,
-        max_width,
         base_color,
+        None,
         style,
         &line.spans,
     )
@@ -411,128 +418,11 @@ fn strip_plain_text_code_indent(line: &str) -> &str {
     line.strip_prefix("    ").unwrap_or(line)
 }
 
-fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> ColorPair {
+fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> TextStyle {
     match kind {
         SymbolInfoDisplayKind::PlainText => style.finder.dim,
         SymbolInfoDisplayKind::Markdown | SymbolInfoDisplayKind::Code { .. } => style.finder.text,
     }
-}
-
-fn draw_symbol_info_spans(
-    window: &mut WindowView<'_>,
-    (row, base_col): (u16, u16),
-    source_line: &str,
-    width_cells: usize,
-    base_color: ColorPair,
-    style: UiStyle,
-    spans: &[LineSyntaxSpan],
-) -> minui::Result<()> {
-    let mut line_cells = 0usize;
-    let mut byte_idx = 0usize;
-    let mut syntax_idx = 0usize;
-    let mut pending_start: Option<usize> = None;
-    let mut pending_end = 0usize;
-    let mut pending_col = 0u16;
-    let mut pending_colors = base_color;
-
-    for grapheme in source_line.graphemes(true) {
-        let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-        let start_byte = byte_idx;
-        let end_byte = byte_idx.saturating_add(grapheme.len());
-        byte_idx = end_byte;
-
-        if line_cells >= width_cells {
-            break;
-        }
-
-        while syntax_idx < spans.len() && spans[syntax_idx].end_byte <= start_byte {
-            syntax_idx += 1;
-        }
-
-        let colors = syntax_color_for_range(
-            base_color,
-            style,
-            &spans[syntax_idx..],
-            start_byte,
-            end_byte,
-        );
-
-        if grapheme == "\t" {
-            flush_symbol_info_span(
-                window,
-                (row, base_col),
-                source_line,
-                pending_start.take(),
-                pending_end,
-                pending_col,
-                pending_colors,
-            )?;
-            let visible_width = grapheme_width.min(width_cells.saturating_sub(line_cells));
-            let spaces = " ".repeat(visible_width);
-            window.write_str_colored(
-                row,
-                base_col.saturating_add(line_cells as u16),
-                &spaces,
-                colors,
-            )?;
-            line_cells = line_cells.saturating_add(visible_width);
-            continue;
-        }
-
-        if pending_start.is_some() && pending_colors == colors && pending_end == start_byte {
-            pending_end = end_byte;
-            line_cells = line_cells.saturating_add(grapheme_width);
-            continue;
-        }
-
-        flush_symbol_info_span(
-            window,
-            (row, base_col),
-            source_line,
-            pending_start.take(),
-            pending_end,
-            pending_col,
-            pending_colors,
-        )?;
-        pending_start = Some(start_byte);
-        pending_end = end_byte;
-        pending_col = line_cells as u16;
-        pending_colors = colors;
-        line_cells = line_cells.saturating_add(grapheme_width);
-    }
-
-    flush_symbol_info_span(
-        window,
-        (row, base_col),
-        source_line,
-        pending_start,
-        pending_end,
-        pending_col,
-        pending_colors,
-    )
-}
-
-fn flush_symbol_info_span(
-    window: &mut WindowView<'_>,
-    (row, base_col): (u16, u16),
-    source_line: &str,
-    start: Option<usize>,
-    end: usize,
-    col: u16,
-    colors: ColorPair,
-) -> minui::Result<()> {
-    let Some(start) = start else {
-        return Ok(());
-    };
-    if start >= end {
-        return Ok(());
-    }
-    window.write_str_colored(
-        row,
-        base_col.saturating_add(col),
-        &source_line[start..end],
-        colors,
-    )
 }
 
 pub fn draw_diagnostics_popup(
@@ -636,7 +526,7 @@ pub fn draw_diagnostics_popup(
             } else {
                 style.finder.dim
             };
-            view.write_str_colored(row, 1, &fill, highlight)?;
+            view.write_str_styled(row, 1, &fill, highlight.into())?;
         }
 
         let highlight = if diagnostics_active {
@@ -659,15 +549,20 @@ pub fn draw_diagnostics_popup(
             .saturating_add(text_width(glyph))
             .saturating_add(1);
 
-        view.write_str_colored(row, 1, marker, dim_colors)?;
-        view.write_str_colored(row, 3, &location, dim_colors)?;
-        view.write_str_colored(row, 3 + location_width as u16, " ", row_colors)?;
-        view.write_str_colored(row, 4 + location_width as u16, glyph, severity_colors)?;
-        view.write_str_colored(
+        view.write_str_styled(row, 1, marker, dim_colors.into())?;
+        view.write_str_styled(row, 3, &location, dim_colors.into())?;
+        view.write_str_styled(row, 3 + location_width as u16, " ", row_colors.into())?;
+        view.write_str_styled(
+            row,
+            4 + location_width as u16,
+            glyph,
+            severity_colors.into(),
+        )?;
+        view.write_str_styled(
             row,
             4 + location_width as u16 + text_width(glyph) as u16,
             " ",
-            row_colors,
+            row_colors.into(),
         )?;
 
         let message_w = view.width.saturating_sub(prefix_w as u16).saturating_sub(3) as usize;
@@ -679,14 +574,14 @@ pub fn draw_diagnostics_popup(
         let action_hint_width = action_hint.map_or(0, |hint| text_width(hint) as u16);
         let message_w = message_w.saturating_sub(action_hint_width as usize + 1);
         let message = clip_text_to_cells(&entry.summary, message_w);
-        view.write_str_colored(row, prefix_w as u16 + 1, &message, row_colors)?;
+        view.write_str_styled(row, prefix_w as u16 + 1, &message, row_colors.into())?;
         if let Some(hint) = action_hint
             && action_hint_width.saturating_add(2) < view.width
         {
             let hint_col = view
                 .width
                 .saturating_sub(action_hint_width.saturating_add(1));
-            view.write_str_colored(row, hint_col, hint, dim_colors)?;
+            view.write_str_styled(row, hint_col, hint, dim_colors.into())?;
         }
     }
 
@@ -717,11 +612,13 @@ pub fn draw_diagnostics_popup(
                     selected.line + 1,
                     selected.col + 1
                 );
-                view.write_str_colored(
+                view.write_str_styled(
                     title_row,
                     1,
                     &clip_text_to_cells(&title, view.width.saturating_sub(2) as usize),
-                    severity_color(style, selected.severity),
+                    style
+                        .section_title
+                        .overlay(severity_color(style, selected.severity).into()),
                 )?;
             }
 
@@ -750,11 +647,11 @@ pub fn draw_diagnostics_popup(
                 if row >= view.height {
                     break;
                 }
-                view.write_str_colored(
+                view.write_str_styled(
                     row,
                     1,
                     &clip_text_to_cells(&line, detail_width),
-                    style.finder.text,
+                    style.finder.text.into(),
                 )?;
             }
         }
@@ -796,11 +693,11 @@ pub fn draw_code_actions_popup(
     let _ = draw_section_header(&mut view, 0, &summary, style.finder.query_title)?;
 
     if view.height > 2 {
-        view.write_str_colored(
+        view.write_str_styled(
             1,
             1,
             &clip_text_to_cells(&popup.title, view.width.saturating_sub(2) as usize),
-            style.finder.dim,
+            style.section_title.overlay(style.finder.dim.into()),
         )?;
     }
 
@@ -839,23 +736,23 @@ fn draw_diagnostics_code_actions_split(
     } else {
         style.finder.dim
     };
-    view.write_str_colored(
+    view.write_str_styled(
         title_row,
         1,
         &clip_text_to_cells(&pane.title, view.width.saturating_sub(2) as usize),
-        title_colors,
+        style.section_title.overlay(title_colors.into()),
     )?;
     if pane.loading {
         let message_row = title_row.saturating_add(1);
         if message_row < view.height {
-            view.write_str_colored(
+            view.write_str_styled(
                 message_row,
                 1,
                 &clip_text_to_cells(
                     "Loading quick fixes...",
                     view.width.saturating_sub(2) as usize,
                 ),
-                style.finder.dim,
+                style.finder.dim.into(),
             )?;
         }
         return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
@@ -942,7 +839,7 @@ fn draw_code_action_entries(
         let selected = idx == selected_index;
         if selected {
             let fill = " ".repeat(view.width.saturating_sub(2) as usize);
-            view.write_str_colored(row, 1, &fill, highlight)?;
+            view.write_str_styled(row, 1, &fill, highlight.into())?;
         }
 
         let row_colors = selection_aware_color(style.finder.text, highlight, selected);
@@ -955,11 +852,16 @@ fn draw_code_action_entries(
         let kind_width = text_width(&kind_text) as u16;
         let kind_col = view.width.saturating_sub(kind_width.saturating_add(1));
 
-        view.write_str_colored(row, 1, marker, dim_colors)?;
+        view.write_str_styled(row, 1, marker, dim_colors.into())?;
         let title_width = kind_col.saturating_sub(4) as usize;
-        view.write_str_colored(row, 3, &clip_text_to_cells(&title, title_width), row_colors)?;
+        view.write_str_styled(
+            row,
+            3,
+            &clip_text_to_cells(&title, title_width),
+            row_colors.into(),
+        )?;
         if kind_col > 3 {
-            view.write_str_colored(row, kind_col, &kind_text, dim_colors)?;
+            view.write_str_styled(row, kind_col, &kind_text, dim_colors.into())?;
         }
     }
 
@@ -970,12 +872,12 @@ fn draw_section_header(
     window: &mut WindowView<'_>,
     row: u16,
     text: &str,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<u16> {
     if row >= window.height {
         return Ok(row);
     }
-    window.write_str_colored(row, 1, text, colors)?;
+    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
     Ok(row.saturating_add(1))
 }
 
@@ -988,21 +890,31 @@ fn severity_glyph(severity: DiagnosticSeverity, icons_enabled: bool) -> &'static
     glyphs[severity.sort_rank() as usize]
 }
 
-fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> ColorPair {
+fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> TextStyle {
     let popup_bg = style.finder.text.bg;
     match severity {
-        DiagnosticSeverity::Error => ColorPair::new(style.diagnostic_inline.error.fg, popup_bg),
-        DiagnosticSeverity::Warning => ColorPair::new(style.diagnostic_inline.warning.fg, popup_bg),
-        DiagnosticSeverity::Information => {
-            ColorPair::new(style.diagnostic_inline.information.fg, popup_bg)
-        }
-        DiagnosticSeverity::Hint => ColorPair::new(style.diagnostic_inline.hint.fg, popup_bg),
+        DiagnosticSeverity::Error => style
+            .diagnostic_inline
+            .error
+            .with_colors(style.diagnostic_inline.error.fg, popup_bg),
+        DiagnosticSeverity::Warning => style
+            .diagnostic_inline
+            .warning
+            .with_colors(style.diagnostic_inline.warning.fg, popup_bg),
+        DiagnosticSeverity::Information => style
+            .diagnostic_inline
+            .information
+            .with_colors(style.diagnostic_inline.information.fg, popup_bg),
+        DiagnosticSeverity::Hint => style
+            .diagnostic_inline
+            .hint
+            .with_colors(style.diagnostic_inline.hint.fg, popup_bg),
     }
 }
 
-fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool) -> ColorPair {
+fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
     if is_selected {
-        ColorPair::new(base.fg, selected.bg)
+        base.selected(selected)
     } else {
         base
     }

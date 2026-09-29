@@ -1,6 +1,8 @@
 //! Visual style and small layout config for `redox-tui`.
 
-use minui::{Color, ColorPair};
+pub use crate::ui::text_style::{TextFormat, TextStyle, Underline};
+
+use minui::Color;
 
 use crate::app::{DiagnosticSeverity, GitFileStatusKind, GitGutterKind};
 
@@ -194,12 +196,12 @@ impl Default for BaseTheme {
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusModuleColors {
-    pub wrapper: ColorPair,
-    pub content: ColorPair,
+    pub wrapper: TextStyle,
+    pub content: TextStyle,
 }
 
 impl StatusModuleColors {
-    pub fn solid(colors: ColorPair) -> Self {
+    pub fn solid(colors: TextStyle) -> Self {
         Self {
             wrapper: colors,
             content: colors,
@@ -209,23 +211,23 @@ impl StatusModuleColors {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GitStyle {
-    pub added: ColorPair,
-    pub modified: ColorPair,
-    pub conflict: ColorPair,
-    pub removed: ColorPair,
+    pub added: TextStyle,
+    pub modified: TextStyle,
+    pub conflict: TextStyle,
+    pub removed: TextStyle,
 }
 
 impl GitStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            added: ColorPair::new(theme.green, theme.bg),
-            modified: ColorPair::new(theme.yellow, theme.bg),
-            conflict: ColorPair::new(theme.orange, theme.bg),
-            removed: ColorPair::new(theme.red, theme.bg),
+            added: TextStyle::new(theme.green, theme.bg),
+            modified: TextStyle::new(theme.yellow, theme.bg),
+            conflict: TextStyle::new(theme.orange, theme.bg),
+            removed: TextStyle::new(theme.red, theme.bg),
         }
     }
 
-    pub fn file_status(self, status: GitFileStatusKind) -> ColorPair {
+    pub fn file_status(self, status: GitFileStatusKind) -> TextStyle {
         match status {
             GitFileStatusKind::Added => self.added,
             GitFileStatusKind::Modified => self.modified,
@@ -234,7 +236,7 @@ impl GitStyle {
         }
     }
 
-    pub fn gutter_marker(self, kind: GitGutterKind) -> (&'static str, ColorPair) {
+    pub fn gutter_marker(self, kind: GitGutterKind) -> (&'static str, TextStyle) {
         match kind {
             GitGutterKind::Added => ("▍", self.added),
             GitGutterKind::Modified => ("▍", self.modified),
@@ -251,43 +253,43 @@ impl Default for GitStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusLinePalette {
-    pub bar: ColorPair,
-    pub path: ColorPair,
-    pub dirty: ColorPair,
-    pub mode_normal: ColorPair,
-    pub mode_insert: ColorPair,
-    pub mode_command: ColorPair,
-    pub mode_visual: ColorPair,
+    pub bar: TextStyle,
+    pub path: TextStyle,
+    pub dirty: TextStyle,
+    pub mode_normal: TextStyle,
+    pub mode_insert: TextStyle,
+    pub mode_command: TextStyle,
+    pub mode_visual: TextStyle,
     pub metadata: StatusModuleColors,
     pub coords: StatusModuleColors,
     pub minimap_module: StatusModuleColors,
-    pub minimap: ColorPair,
-    pub minimap_alt: ColorPair,
+    pub minimap: TextStyle,
+    pub minimap_alt: TextStyle,
 }
 
 impl StatusLinePalette {
     pub fn from_theme(theme: BaseTheme) -> Self {
-        let module_shell = ColorPair::new(theme.black, theme.dark_gray);
-        let module_text = ColorPair::new(theme.black, theme.dark_gray);
+        let module_wrapper = TextStyle::new(theme.black, theme.dark_gray);
+        let module_text = TextStyle::new(theme.black, theme.dark_gray);
         Self {
-            bar: ColorPair::new(theme.light_gray, theme.black),
-            path: ColorPair::new(theme.dark_gray, theme.black),
-            dirty: ColorPair::new(theme.light_gray, theme.black),
-            mode_normal: ColorPair::new(theme.black, theme.purple),
-            mode_insert: ColorPair::new(theme.black, theme.blue),
-            mode_command: ColorPair::new(theme.black, theme.red),
-            mode_visual: ColorPair::new(theme.black, theme.orange),
+            bar: TextStyle::new(theme.light_gray, theme.black),
+            path: TextStyle::new(theme.dark_gray, theme.black),
+            dirty: TextStyle::new(theme.light_gray, theme.black),
+            mode_normal: TextStyle::new(theme.black, theme.purple),
+            mode_insert: TextStyle::new(theme.black, theme.blue),
+            mode_command: TextStyle::new(theme.black, theme.red),
+            mode_visual: TextStyle::new(theme.black, theme.orange),
             metadata: StatusModuleColors {
-                wrapper: module_shell,
+                wrapper: module_wrapper,
                 content: module_text,
             },
             coords: StatusModuleColors {
-                wrapper: module_shell,
+                wrapper: module_wrapper,
                 content: module_text,
             },
-            minimap_module: StatusModuleColors::solid(module_shell),
-            minimap: ColorPair::new(theme.light_gray, Color::Transparent),
-            minimap_alt: ColorPair::new(Color::Transparent, theme.light_gray),
+            minimap_module: StatusModuleColors::solid(module_wrapper),
+            minimap: TextStyle::new(theme.light_gray, Color::Transparent),
+            minimap_alt: TextStyle::new(Color::Transparent, theme.light_gray),
         }
     }
 }
@@ -331,12 +333,12 @@ pub struct ExplorerStyle {
     pub height_percent: u16,
     pub min_width: u16,
     pub min_height: u16,
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub file: ColorPair,
-    pub directory: ColorPair,
-    pub executable: ColorPair,
-    pub hidden: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub file: TextStyle,
+    pub directory: TextStyle,
+    pub executable: TextStyle,
+    pub hidden: TextStyle,
 }
 
 impl ExplorerStyle {
@@ -346,12 +348,12 @@ impl ExplorerStyle {
             height_percent: 60,
             min_width: 20,
             min_height: 6,
-            border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.light_gray, theme.bg),
-            file: ColorPair::new(theme.white, theme.bg),
-            directory: ColorPair::new(theme.blue, theme.bg),
-            executable: ColorPair::new(theme.red, theme.bg),
-            hidden: ColorPair::new(theme.dark_gray, theme.bg),
+            border: TextStyle::new(theme.light_gray, theme.bg),
+            title: TextStyle::new(theme.light_gray, theme.bg).bold(),
+            file: TextStyle::new(theme.white, theme.bg),
+            directory: TextStyle::new(theme.blue, theme.bg).bold(),
+            executable: TextStyle::new(theme.red, theme.bg),
+            hidden: TextStyle::new(theme.dark_gray, theme.bg),
         }
     }
 }
@@ -368,12 +370,12 @@ pub struct AboutStyle {
     pub height_percent: u16,
     pub min_width: u16,
     pub min_height: u16,
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub text: ColorPair,
-    pub logo_red: ColorPair,
-    pub logo_white: ColorPair,
-    pub logo_blue: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub text: TextStyle,
+    pub logo_red: TextStyle,
+    pub logo_white: TextStyle,
+    pub logo_blue: TextStyle,
 }
 
 impl AboutStyle {
@@ -383,12 +385,12 @@ impl AboutStyle {
             height_percent: 52,
             min_width: 52,
             min_height: 12,
-            border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.light_gray, theme.bg),
-            text: ColorPair::new(theme.white, theme.bg),
-            logo_red: ColorPair::new(theme.red, theme.bg),
-            logo_white: ColorPair::new(theme.white, theme.bg),
-            logo_blue: ColorPair::new(theme.blue, theme.bg),
+            border: TextStyle::new(theme.light_gray, theme.bg),
+            title: TextStyle::new(theme.light_gray, theme.bg).bold(),
+            text: TextStyle::new(theme.white, theme.bg),
+            logo_red: TextStyle::new(theme.red, theme.bg).bold(),
+            logo_white: TextStyle::new(theme.white, theme.bg).bold(),
+            logo_blue: TextStyle::new(theme.blue, theme.bg).bold(),
         }
     }
 }
@@ -401,29 +403,33 @@ impl Default for AboutStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct CommandLineStyle {
+    pub error: TextStyle,
+    pub inactive_title: TextStyle,
     pub width_percent: u16,
     pub min_width: u16,
     pub inner_height_rows: u16,
     pub stacked_padding: u16,
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub text: ColorPair,
-    pub ghost: ColorPair,
-    pub prompt: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub text: TextStyle,
+    pub ghost: TextStyle,
+    pub prompt: TextStyle,
 }
 
 impl CommandLineStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
+            error: TextStyle::new(theme.red, theme.bg),
+            inactive_title: TextStyle::new(theme.light_gray, theme.bg).bold(),
             width_percent: 65,
             min_width: 24,
             inner_height_rows: 1,
             stacked_padding: 0,
-            border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.red, theme.bg),
-            text: ColorPair::new(theme.white, theme.bg),
-            ghost: ColorPair::new(theme.dark_gray, theme.bg),
-            prompt: ColorPair::new(theme.light_gray, theme.bg),
+            border: TextStyle::new(theme.light_gray, theme.bg),
+            title: TextStyle::new(theme.red, theme.bg).bold(),
+            text: TextStyle::new(theme.white, theme.bg),
+            ghost: TextStyle::new(theme.dark_gray, theme.bg),
+            prompt: TextStyle::new(theme.light_gray, theme.bg),
         }
     }
 }
@@ -437,22 +443,22 @@ impl Default for CommandLineStyle {
 #[derive(Debug, Clone, Copy)]
 pub struct WhichKeyStyle {
     pub background: Color,
-    pub edge: Color,
-    pub prefix: Color,
-    pub key: Color,
-    pub arrow: Color,
-    pub text: Color,
+    pub edge: TextStyle,
+    pub prefix: TextStyle,
+    pub key: TextStyle,
+    pub arrow: TextStyle,
+    pub text: TextStyle,
 }
 
 impl WhichKeyStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
             background: theme.color_column,
-            edge: theme.light_purple,
-            prefix: theme.light_purple,
-            key: theme.light_blue,
-            arrow: theme.light_gray,
-            text: theme.white,
+            edge: TextStyle::new(theme.light_purple, theme.color_column),
+            prefix: TextStyle::new(theme.light_purple, theme.color_column).bold(),
+            key: TextStyle::new(theme.light_blue, theme.color_column),
+            arrow: TextStyle::new(theme.light_gray, theme.color_column),
+            text: TextStyle::new(theme.white, theme.color_column),
         }
     }
 }
@@ -465,16 +471,16 @@ impl Default for WhichKeyStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiagnosticInlineStyle {
-    pub error: ColorPair,
-    pub warning: ColorPair,
-    pub information: ColorPair,
-    pub hint: ColorPair,
+    pub error: TextStyle,
+    pub warning: TextStyle,
+    pub information: TextStyle,
+    pub hint: TextStyle,
 }
 
 impl DiagnosticInlineStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
-            error: ColorPair::new(
+            error: TextStyle::new(
                 theme.light_red,
                 Color::Rgb {
                     r: 49,
@@ -482,7 +488,7 @@ impl DiagnosticInlineStyle {
                     b: 43,
                 },
             ),
-            warning: ColorPair::new(
+            warning: TextStyle::new(
                 theme.light_orange,
                 Color::Rgb {
                     r: 49,
@@ -490,7 +496,7 @@ impl DiagnosticInlineStyle {
                     b: 42,
                 },
             ),
-            information: ColorPair::new(
+            information: TextStyle::new(
                 theme.light_gray,
                 Color::Rgb {
                     r: 35,
@@ -498,7 +504,7 @@ impl DiagnosticInlineStyle {
                     b: 38,
                 },
             ),
-            hint: ColorPair::new(
+            hint: TextStyle::new(
                 theme.light_blue,
                 Color::Rgb {
                     r: 39,
@@ -509,7 +515,7 @@ impl DiagnosticInlineStyle {
         }
     }
 
-    pub fn colors(self, severity: DiagnosticSeverity) -> ColorPair {
+    pub fn colors(self, severity: DiagnosticSeverity) -> TextStyle {
         match severity {
             DiagnosticSeverity::Error => self.error,
             DiagnosticSeverity::Warning => self.warning,
@@ -525,45 +531,49 @@ impl DiagnosticInlineStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct FinderStyle {
+    pub directory: TextStyle,
+    pub pinned: TextStyle,
     pub width_percent: u16,
     pub height_percent: u16,
     pub min_width: u16,
     pub min_height: u16,
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub text: ColorPair,
-    pub prompt: ColorPair,
-    pub query_title: ColorPair,
-    pub dim: ColorPair,
-    pub match_highlight: ColorPair,
-    pub selected: ColorPair,
-    pub pinned_bg: ColorPair,
-    pub pinned_marker: ColorPair,
-    pub hotkey: ColorPair,
-    pub preview_title: ColorPair,
-    pub preview_path: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub text: TextStyle,
+    pub prompt: TextStyle,
+    pub query_title: TextStyle,
+    pub dim: TextStyle,
+    pub match_highlight: TextStyle,
+    pub selected: TextStyle,
+    pub pinned_bg: TextStyle,
+    pub pinned_marker: TextStyle,
+    pub hotkey: TextStyle,
+    pub preview_title: TextStyle,
+    pub preview_path: TextStyle,
 }
 
 impl FinderStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
+            directory: TextStyle::new(Color::Transparent, Color::Transparent).bold(),
+            pinned: TextStyle::new(Color::Transparent, Color::Transparent).italic(),
             width_percent: 65,
             height_percent: 60,
             min_width: 52,
             min_height: 14,
-            border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.light_blue, theme.bg),
-            text: ColorPair::new(theme.white, theme.bg),
-            prompt: ColorPair::new(theme.light_gray, theme.bg),
-            query_title: ColorPair::new(theme.light_blue, theme.bg),
-            dim: ColorPair::new(theme.light_gray, theme.bg),
-            match_highlight: ColorPair::new(theme.orange, theme.bg),
-            selected: ColorPair::new(theme.white, theme.black),
-            pinned_bg: ColorPair::new(theme.white, theme.dark_gray),
-            pinned_marker: ColorPair::new(theme.light_blue, theme.dark_gray),
-            hotkey: ColorPair::new(theme.light_gray, theme.dark_gray),
-            preview_title: ColorPair::new(theme.light_blue, theme.bg),
-            preview_path: ColorPair::new(theme.light_gray, theme.bg),
+            border: TextStyle::new(theme.light_gray, theme.bg),
+            title: TextStyle::new(theme.light_blue, theme.bg).bold(),
+            text: TextStyle::new(theme.white, theme.bg),
+            prompt: TextStyle::new(theme.light_gray, theme.bg),
+            query_title: TextStyle::new(theme.light_blue, theme.bg).bold(),
+            dim: TextStyle::new(theme.light_gray, theme.bg),
+            match_highlight: TextStyle::new(theme.orange, theme.bg).underlined(),
+            selected: TextStyle::new(theme.white, theme.black),
+            pinned_bg: TextStyle::new(theme.white, theme.dark_gray),
+            pinned_marker: TextStyle::new(theme.light_blue, theme.dark_gray),
+            hotkey: TextStyle::new(theme.light_gray, theme.dark_gray),
+            preview_title: TextStyle::new(theme.light_blue, theme.bg).bold(),
+            preview_path: TextStyle::new(theme.light_gray, theme.bg).bold(),
         }
     }
 }
@@ -607,22 +617,22 @@ pub struct UndoTreeStyle {
     pub preview_height_percent: u16,
     pub preview_min_height: u16,
     pub preview_max_height: u16,
-    pub title: ColorPair,
-    pub text: ColorPair,
-    pub selected: ColorPair,
-    pub selected_indicator: ColorPair,
-    pub node: ColorPair,
-    pub node_label: ColorPair,
-    pub redo_marker: ColorPair,
-    pub edge: ColorPair,
-    pub timestamp: ColorPair,
-    pub preview_title: ColorPair,
-    pub preview_label: ColorPair,
-    pub preview_text: ColorPair,
-    pub preview_dim: ColorPair,
-    pub preview_separator: ColorPair,
-    pub preview_deleted: ColorPair,
-    pub preview_inserted: ColorPair,
+    pub title: TextStyle,
+    pub text: TextStyle,
+    pub selected: TextStyle,
+    pub selected_indicator: TextStyle,
+    pub node: TextStyle,
+    pub node_label: TextStyle,
+    pub redo_marker: TextStyle,
+    pub edge: TextStyle,
+    pub timestamp: TextStyle,
+    pub preview_title: TextStyle,
+    pub preview_label: TextStyle,
+    pub preview_text: TextStyle,
+    pub preview_dim: TextStyle,
+    pub preview_separator: TextStyle,
+    pub preview_deleted: TextStyle,
+    pub preview_inserted: TextStyle,
 }
 
 impl UndoTreeStyle {
@@ -634,22 +644,22 @@ impl UndoTreeStyle {
             preview_height_percent: 42,
             preview_min_height: 8,
             preview_max_height: 14,
-            title: ColorPair::new(theme.blue, theme.bg),
-            text: ColorPair::new(theme.white, theme.bg),
-            selected: ColorPair::new(theme.white, theme.black),
-            selected_indicator: ColorPair::new(theme.orange, theme.bg),
-            node: ColorPair::new(theme.white, theme.bg),
-            node_label: ColorPair::new(theme.light_gray, theme.bg),
-            redo_marker: ColorPair::new(theme.purple, theme.bg),
-            edge: ColorPair::new(theme.light_gray, theme.bg),
-            timestamp: ColorPair::new(theme.dark_gray, theme.bg),
-            preview_title: ColorPair::new(theme.light_gray, theme.bg),
-            preview_label: ColorPair::new(theme.light_gray, theme.bg),
-            preview_text: ColorPair::new(theme.white, theme.bg),
-            preview_dim: ColorPair::new(theme.dark_gray, theme.bg),
-            preview_separator: ColorPair::new(theme.dark_gray, theme.bg),
-            preview_deleted: ColorPair::new(theme.red, theme.bg),
-            preview_inserted: ColorPair::new(theme.green, theme.bg),
+            title: TextStyle::new(theme.blue, theme.bg).bold(),
+            text: TextStyle::new(theme.white, theme.bg),
+            selected: TextStyle::new(theme.white, theme.black),
+            selected_indicator: TextStyle::new(theme.orange, theme.bg),
+            node: TextStyle::new(theme.white, theme.bg),
+            node_label: TextStyle::new(theme.light_gray, theme.bg),
+            redo_marker: TextStyle::new(theme.purple, theme.bg),
+            edge: TextStyle::new(theme.light_gray, theme.bg),
+            timestamp: TextStyle::new(theme.dark_gray, theme.bg),
+            preview_title: TextStyle::new(theme.light_gray, theme.bg).bold(),
+            preview_label: TextStyle::new(theme.light_gray, theme.bg).bold(),
+            preview_text: TextStyle::new(theme.white, theme.bg),
+            preview_dim: TextStyle::new(theme.dark_gray, theme.bg),
+            preview_separator: TextStyle::new(theme.dark_gray, theme.bg),
+            preview_deleted: TextStyle::new(theme.red, theme.bg),
+            preview_inserted: TextStyle::new(theme.green, theme.bg),
         }
     }
 }
@@ -666,16 +676,16 @@ pub struct PerfStyle {
     pub height_percent: u16,
     pub min_width: u16,
     pub min_height: u16,
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub text: ColorPair,
-    pub label: ColorPair,
-    pub value: ColorPair,
-    pub dim: ColorPair,
-    pub good: ColorPair,
-    pub warn: ColorPair,
-    pub hot: ColorPair,
-    pub bar_bg: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub text: TextStyle,
+    pub label: TextStyle,
+    pub value: TextStyle,
+    pub dim: TextStyle,
+    pub good: TextStyle,
+    pub warn: TextStyle,
+    pub hot: TextStyle,
+    pub bar_bg: TextStyle,
 }
 
 impl PerfStyle {
@@ -685,16 +695,16 @@ impl PerfStyle {
             height_percent: 34,
             min_width: 40,
             min_height: 12,
-            border: ColorPair::new(theme.light_gray, theme.bg),
-            title: ColorPair::new(theme.yellow, theme.bg),
-            text: ColorPair::new(theme.white, theme.bg),
-            label: ColorPair::new(theme.light_gray, theme.bg),
-            value: ColorPair::new(theme.white, theme.bg),
-            dim: ColorPair::new(theme.dark_gray, theme.bg),
-            good: ColorPair::new(theme.green, theme.bg),
-            warn: ColorPair::new(theme.yellow, theme.bg),
-            hot: ColorPair::new(theme.red, theme.bg),
-            bar_bg: ColorPair::new(theme.dark_gray, theme.bg),
+            border: TextStyle::new(theme.light_gray, theme.bg),
+            title: TextStyle::new(theme.yellow, theme.bg).bold(),
+            text: TextStyle::new(theme.white, theme.bg),
+            label: TextStyle::new(theme.light_gray, theme.bg),
+            value: TextStyle::new(theme.white, theme.bg),
+            dim: TextStyle::new(theme.dark_gray, theme.bg),
+            good: TextStyle::new(theme.green, theme.bg),
+            warn: TextStyle::new(theme.yellow, theme.bg),
+            hot: TextStyle::new(theme.red, theme.bg),
+            bar_bg: TextStyle::new(theme.dark_gray, theme.bg),
         }
     }
 }
@@ -707,88 +717,88 @@ impl Default for PerfStyle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SyntaxStyle {
-    pub markdown_code: ColorPair,
-    pub markdown_emphasis: ColorPair,
-    pub markdown_frontmatter: ColorPair,
-    pub markdown_heading: ColorPair,
-    pub markdown_highlight: ColorPair,
-    pub markdown_link: ColorPair,
-    pub markdown_list_marker: ColorPair,
-    pub markdown_strong: ColorPair,
-    pub variable_builtin: ColorPair,
-    pub variable_parameter: ColorPair,
-    pub keyword: ColorPair,
-    pub keyword_operator: ColorPair,
-    pub keyword_import: ColorPair,
-    pub type_name: ColorPair,
-    pub type_builtin: ColorPair,
-    pub type_definition: ColorPair,
-    pub function: ColorPair,
-    pub function_macro: ColorPair,
-    pub function_method: ColorPair,
-    pub string: ColorPair,
-    pub string_escape: ColorPair,
-    pub character: ColorPair,
-    pub number: ColorPair,
-    pub boolean: ColorPair,
-    pub float: ColorPair,
-    pub comment: ColorPair,
-    pub constant: ColorPair,
-    pub constant_builtin: ColorPair,
-    pub constant_macro: ColorPair,
-    pub constructor: ColorPair,
-    pub attribute: ColorPair,
-    pub property: ColorPair,
-    pub operator: ColorPair,
-    pub punctuation_delimiter: ColorPair,
-    pub punctuation_bracket: ColorPair,
-    pub punctuation_special: ColorPair,
+    pub markdown_code: TextStyle,
+    pub markdown_emphasis: TextStyle,
+    pub markdown_frontmatter: TextStyle,
+    pub markdown_heading: TextStyle,
+    pub markdown_highlight: TextStyle,
+    pub markdown_link: TextStyle,
+    pub markdown_list_marker: TextStyle,
+    pub markdown_strong: TextStyle,
+    pub variable_builtin: TextStyle,
+    pub variable_parameter: TextStyle,
+    pub keyword: TextStyle,
+    pub keyword_operator: TextStyle,
+    pub keyword_import: TextStyle,
+    pub type_name: TextStyle,
+    pub type_builtin: TextStyle,
+    pub type_definition: TextStyle,
+    pub function: TextStyle,
+    pub function_macro: TextStyle,
+    pub function_method: TextStyle,
+    pub string: TextStyle,
+    pub string_escape: TextStyle,
+    pub character: TextStyle,
+    pub number: TextStyle,
+    pub boolean: TextStyle,
+    pub float: TextStyle,
+    pub comment: TextStyle,
+    pub constant: TextStyle,
+    pub constant_builtin: TextStyle,
+    pub constant_macro: TextStyle,
+    pub constructor: TextStyle,
+    pub attribute: TextStyle,
+    pub property: TextStyle,
+    pub operator: TextStyle,
+    pub punctuation_delimiter: TextStyle,
+    pub punctuation_bracket: TextStyle,
+    pub punctuation_special: TextStyle,
 }
 
 impl SyntaxStyle {
     pub fn from_theme(theme: BaseTheme) -> Self {
         let bg = theme.bg;
         Self {
-            markdown_code: ColorPair::new(theme.light_gray, bg),
-            markdown_emphasis: ColorPair::new(theme.orange, bg),
-            markdown_frontmatter: ColorPair::new(theme.dark_gray, bg),
-            markdown_heading: ColorPair::new(theme.blue, bg),
-            markdown_highlight: ColorPair::new(theme.black, theme.green),
-            markdown_link: ColorPair::new(theme.purple, bg),
-            markdown_list_marker: ColorPair::new(theme.light_gray, bg),
-            markdown_strong: ColorPair::new(theme.red, bg),
-            variable_builtin: ColorPair::new(theme.purple, bg),
-            variable_parameter: ColorPair::new(theme.orange, bg),
-            keyword: ColorPair::new(theme.red, bg),
-            keyword_operator: ColorPair::new(theme.white, bg),
-            keyword_import: ColorPair::new(theme.white, bg),
-            type_name: ColorPair::new(theme.light_blue, bg),
-            type_builtin: ColorPair::new(theme.light_orange, bg),
-            type_definition: ColorPair::new(theme.light_orange, bg),
-            function: ColorPair::new(theme.blue, bg),
-            function_macro: ColorPair::new(theme.purple, bg),
-            function_method: ColorPair::new(theme.blue, bg),
-            string: ColorPair::new(theme.green, bg),
-            string_escape: ColorPair::new(theme.orange, bg),
-            character: ColorPair::new(theme.green, bg),
-            number: ColorPair::new(theme.purple, bg),
-            boolean: ColorPair::new(theme.purple, bg),
-            float: ColorPair::new(theme.light_purple, bg),
-            comment: ColorPair::new(theme.dark_gray, bg),
-            constant: ColorPair::new(theme.purple, bg),
-            constant_builtin: ColorPair::new(theme.purple, bg),
-            constant_macro: ColorPair::new(theme.yellow, bg),
-            constructor: ColorPair::new(theme.white, bg),
-            attribute: ColorPair::new(theme.orange, bg),
-            property: ColorPair::new(theme.orange, bg),
-            operator: ColorPair::new(theme.white, bg),
-            punctuation_delimiter: ColorPair::new(theme.white, bg),
-            punctuation_bracket: ColorPair::new(theme.white, bg),
-            punctuation_special: ColorPair::new(theme.orange, bg),
+            markdown_code: TextStyle::new(theme.light_gray, bg),
+            markdown_emphasis: TextStyle::new(theme.orange, bg).italic(),
+            markdown_frontmatter: TextStyle::new(theme.dark_gray, bg),
+            markdown_heading: TextStyle::new(theme.blue, bg).bold().underlined(),
+            markdown_highlight: TextStyle::new(theme.black, theme.green),
+            markdown_link: TextStyle::new(theme.purple, bg),
+            markdown_list_marker: TextStyle::new(theme.light_gray, bg),
+            markdown_strong: TextStyle::new(theme.red, bg).bold(),
+            variable_builtin: TextStyle::new(theme.purple, bg),
+            variable_parameter: TextStyle::new(theme.orange, bg),
+            keyword: TextStyle::new(theme.red, bg),
+            keyword_operator: TextStyle::new(theme.white, bg),
+            keyword_import: TextStyle::new(theme.white, bg),
+            type_name: TextStyle::new(theme.light_blue, bg),
+            type_builtin: TextStyle::new(theme.light_orange, bg),
+            type_definition: TextStyle::new(theme.light_orange, bg),
+            function: TextStyle::new(theme.blue, bg),
+            function_macro: TextStyle::new(theme.purple, bg),
+            function_method: TextStyle::new(theme.blue, bg),
+            string: TextStyle::new(theme.green, bg),
+            string_escape: TextStyle::new(theme.orange, bg),
+            character: TextStyle::new(theme.green, bg),
+            number: TextStyle::new(theme.purple, bg),
+            boolean: TextStyle::new(theme.purple, bg),
+            float: TextStyle::new(theme.light_purple, bg),
+            comment: TextStyle::new(theme.dark_gray, bg).italic(),
+            constant: TextStyle::new(theme.purple, bg),
+            constant_builtin: TextStyle::new(theme.purple, bg),
+            constant_macro: TextStyle::new(theme.yellow, bg),
+            constructor: TextStyle::new(theme.white, bg),
+            attribute: TextStyle::new(theme.orange, bg),
+            property: TextStyle::new(theme.orange, bg),
+            operator: TextStyle::new(theme.white, bg),
+            punctuation_delimiter: TextStyle::new(theme.white, bg),
+            punctuation_bracket: TextStyle::new(theme.white, bg),
+            punctuation_special: TextStyle::new(theme.orange, bg),
         }
     }
 
-    pub fn color_for(self, role: SyntaxRole) -> ColorPair {
+    pub fn color_for(self, role: SyntaxRole) -> TextStyle {
         match role {
             SyntaxRole::MarkdownCode => self.markdown_code,
             SyntaxRole::MarkdownEmphasis => self.markdown_emphasis,
@@ -837,7 +847,48 @@ impl Default for SyntaxStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct DashboardStyle {
+    pub text: TextStyle,
+    pub selected: TextStyle,
+    pub hotkey: TextStyle,
+    pub version: TextStyle,
+    pub icon: TextStyle,
+    pub logo_red: TextStyle,
+    pub logo_white: TextStyle,
+    pub logo_blue: TextStyle,
+}
+
+impl DashboardStyle {
+    fn from_theme(theme: BaseTheme) -> Self {
+        Self {
+            text: TextStyle::new(theme.light_gray, theme.bg),
+            selected: TextStyle::new(theme.white, theme.bg),
+            hotkey: TextStyle::new(theme.blue, theme.bg).bold(),
+            version: TextStyle::new(theme.light_gray, theme.bg).italic(),
+            icon: TextStyle::new(theme.red, theme.bg),
+            logo_red: TextStyle::new(theme.red, theme.bg),
+            logo_white: TextStyle::new(theme.white, theme.bg),
+            logo_blue: TextStyle::new(theme.blue, theme.bg),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct UiStyle {
+    pub snippet: TextStyle,
+    pub gutter_current_line_number: TextStyle,
+    pub gutter_line_number: TextStyle,
+    pub completion_match: TextStyle,
+    pub completion_keyword: TextStyle,
+    pub completion_ghost: TextStyle,
+    pub text_formatting: bool,
+    pub dashboard: DashboardStyle,
+    pub editor_text: TextStyle,
+    pub pane_title: TextStyle,
+    pub section_title: TextStyle,
+    pub search_match: TextStyle,
+    pub search_current: TextStyle,
+    pub error_range: TextStyle,
     pub theme: BaseTheme,
     pub zen_margin: Color,
     pub zen_ghost: Color,
@@ -867,9 +918,9 @@ impl Default for UiStyle {
 const SUBSTITUTE_BACKGROUND_DIM_AMOUNT: f32 = 0.9;
 
 impl UiStyle {
-    pub(crate) fn substitute_colors(self, replacing: bool) -> ColorPair {
+    pub(crate) fn substitute_colors(self, replacing: bool) -> TextStyle {
         if replacing {
-            ColorPair::new(
+            TextStyle::new(
                 self.theme.light_green,
                 dim_foreground_color(
                     self.theme.light_green,
@@ -878,22 +929,33 @@ impl UiStyle {
                 ),
             )
         } else {
-            /*
-            ColorPair::new(
-                self.theme.light_red,
-                dim_foreground_color(
-                    self.theme.light_red,
-                    self.theme.bg,
-                    SUBSTITUTE_BACKGROUND_DIM_AMOUNT,
-                ),
-            )
-            */
             self.diagnostic_inline.error
         }
     }
 
     pub fn from_theme(theme: BaseTheme) -> Self {
         Self {
+            completion_ghost: TextStyle::new(theme.dark_gray, theme.bg),
+            completion_keyword: TextStyle::new(theme.light_gray, theme.bg),
+            completion_match: TextStyle::new(theme.white, theme.bg),
+            gutter_line_number: TextStyle::new(theme.dark_gray, theme.bg),
+            gutter_current_line_number: TextStyle::new(theme.white, theme.bg),
+            snippet: TextStyle::new(theme.dark_gray, theme.bg),
+            text_formatting: true,
+            dashboard: DashboardStyle::from_theme(theme),
+            editor_text: TextStyle::new(theme.white, theme.bg),
+            pane_title: TextStyle::new(theme.light_gray, theme.black).bold(),
+            section_title: TextStyle::new(Color::Transparent, Color::Transparent).bold(),
+            search_match: TextStyle::new(Color::Transparent, theme.selection_bg).underlined(),
+            search_current: TextStyle::new(Color::Transparent, theme.light_gray).underlined(),
+            error_range: TextStyle {
+                format: TextFormat {
+                    underline: Underline::Curl,
+                    underline_color: Some(theme.light_red),
+                    ..TextFormat::default()
+                },
+                ..TextStyle::new(Color::Transparent, Color::Transparent)
+            },
             theme,
             zen_margin: dim_foreground_color(theme.bg, Color::Rgb { r: 0, g: 0, b: 0 }, 0.12),
             zen_ghost: theme.dark_gray,
@@ -916,7 +978,7 @@ impl UiStyle {
     }
 }
 
-fn dim_foreground_color(color: Color, bg: Color, amount: f32) -> Color {
+pub(crate) fn dim_foreground_color(color: Color, bg: Color, amount: f32) -> Color {
     let background_weight = (amount.clamp(0.0, 1.0) * 1_000.0).round() as u16;
     let foreground_weight = 1_000u16.saturating_sub(background_weight);
     match color {
@@ -987,7 +1049,6 @@ fn dim_style_color(
     dimmed: BaseTheme,
     bg: Color,
     amount: f32,
-    is_foreground: bool,
 ) -> Color {
     let theme_colors = [
         (theme.bg, dimmed.bg),
@@ -1013,16 +1074,10 @@ fn dim_style_color(
         (theme.mid_gray, dimmed.mid_gray),
         (theme.light_gray, dimmed.light_gray),
     ];
-    if is_foreground
-        && let Some((_, replacement)) = theme_colors.iter().find(|(original, _)| *original == color)
-    {
+    if let Some((_, replacement)) = theme_colors.iter().find(|(original, _)| *original == color) {
         return *replacement;
     }
-    if is_foreground {
-        dim_foreground_color(color, bg, amount)
-    } else {
-        color
-    }
+    dim_foreground_color(color, bg, amount)
 }
 
 impl UiStyle {
@@ -1032,238 +1087,250 @@ impl UiStyle {
         let dimmed_theme = self.theme.dimmed(self.dim_amount);
         style.theme = dimmed_theme;
         style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, self.dim_amount);
-        macro_rules! dim {
-            ($($pair:expr),+ $(,)?) => { $(
-                $pair.fg = dim_style_color(
-                    $pair.fg, self.theme, dimmed_theme, bg, self.dim_amount, true,
-                );
-                $pair.bg = dim_style_color(
-                    $pair.bg, self.theme, dimmed_theme, bg, self.dim_amount, false,
-                );
-            )+ };
+        let dim = |pair: &mut TextStyle| {
+            pair.fg = dim_style_color(pair.fg, self.theme, dimmed_theme, bg, self.dim_amount);
+            if let Some(color) = pair.format.underline_color.as_mut() {
+                *color = dim_style_color(*color, self.theme, dimmed_theme, bg, self.dim_amount);
+            }
+        };
+        for (_, pair) in style.syntax_roles_mut() {
+            dim(pair);
         }
-        dim!(
-            style.git.added,
-            style.git.modified,
-            style.git.conflict,
-            style.git.removed,
-            style.status_line.bar,
-            style.status_line.path,
-            style.status_line.dirty,
-            style.status_line.mode_normal,
-            style.status_line.mode_insert,
-            style.status_line.mode_command,
-            style.status_line.mode_visual,
-            style.status_line.metadata.wrapper,
-            style.status_line.metadata.content,
-            style.status_line.coords.wrapper,
-            style.status_line.coords.content,
-            style.status_line.minimap_module.wrapper,
-            style.status_line.minimap_module.content,
-            style.status_line.minimap,
-            style.status_line.minimap_alt,
-            style.about.border,
-            style.about.title,
-            style.about.text,
-            style.about.logo_red,
-            style.about.logo_white,
-            style.about.logo_blue,
-            style.command_line.border,
-            style.command_line.title,
-            style.command_line.text,
-            style.command_line.prompt,
-            style.diagnostic_inline.error,
-            style.diagnostic_inline.warning,
-            style.diagnostic_inline.information,
-            style.diagnostic_inline.hint,
-            style.explorer.border,
-            style.explorer.title,
-            style.explorer.file,
-            style.explorer.directory,
-            style.explorer.executable,
-            style.explorer.hidden,
-            style.finder.border,
-            style.finder.title,
-            style.finder.text,
-            style.finder.prompt,
-            style.finder.query_title,
-            style.finder.dim,
-            style.finder.match_highlight,
-            style.finder.selected,
-            style.finder.pinned_bg,
-            style.finder.pinned_marker,
-            style.finder.hotkey,
-            style.finder.preview_title,
-            style.finder.preview_path,
-            style.perf.border,
-            style.perf.title,
-            style.perf.text,
-            style.perf.label,
-            style.perf.value,
-            style.perf.dim,
-            style.perf.good,
-            style.perf.warn,
-            style.perf.hot,
-            style.perf.bar_bg,
-            style.undo_tree.title,
-            style.undo_tree.text,
-            style.undo_tree.selected,
-            style.undo_tree.selected_indicator,
-            style.undo_tree.node,
-            style.undo_tree.node_label,
-            style.undo_tree.redo_marker,
-            style.undo_tree.edge,
-            style.undo_tree.timestamp,
-            style.undo_tree.preview_title,
-            style.undo_tree.preview_label,
-            style.undo_tree.preview_text,
-            style.undo_tree.preview_dim,
-            style.undo_tree.preview_separator,
-            style.undo_tree.preview_deleted,
-            style.undo_tree.preview_inserted,
-            style.syntax.markdown_code,
-            style.syntax.markdown_emphasis,
-            style.syntax.markdown_frontmatter,
-            style.syntax.markdown_heading,
-            style.syntax.markdown_highlight,
-            style.syntax.markdown_link,
-            style.syntax.markdown_list_marker,
-            style.syntax.markdown_strong,
-            style.syntax.variable_builtin,
-            style.syntax.variable_parameter,
-            style.syntax.keyword,
-            style.syntax.keyword_operator,
-            style.syntax.keyword_import,
-            style.syntax.type_name,
-            style.syntax.type_builtin,
-            style.syntax.type_definition,
-            style.syntax.function,
-            style.syntax.function_macro,
-            style.syntax.function_method,
-            style.syntax.string,
-            style.syntax.string_escape,
-            style.syntax.character,
-            style.syntax.number,
-            style.syntax.boolean,
-            style.syntax.float,
-            style.syntax.comment,
-            style.syntax.constant,
-            style.syntax.constant_builtin,
-            style.syntax.constant_macro,
-            style.syntax.constructor,
-            style.syntax.attribute,
-            style.syntax.property,
-            style.syntax.operator,
-            style.syntax.punctuation_delimiter,
-            style.syntax.punctuation_bracket,
-            style.syntax.punctuation_special,
-        );
+        for (_, pair) in style.ui_roles_mut() {
+            dim(pair);
+        }
         style
     }
 
-    pub(crate) fn set_syntax_color(&mut self, name: &str, color: ColorPair) -> anyhow::Result<()> {
-        let target = match name {
-            "markdown_code" => &mut self.syntax.markdown_code,
-            "markdown_emphasis" => &mut self.syntax.markdown_emphasis,
-            "markdown_frontmatter" => &mut self.syntax.markdown_frontmatter,
-            "markdown_heading" => &mut self.syntax.markdown_heading,
-            "markdown_highlight" => &mut self.syntax.markdown_highlight,
-            "markdown_link" => &mut self.syntax.markdown_link,
-            "markdown_list_marker" => &mut self.syntax.markdown_list_marker,
-            "markdown_strong" => &mut self.syntax.markdown_strong,
-            "variable_builtin" => &mut self.syntax.variable_builtin,
-            "variable_parameter" => &mut self.syntax.variable_parameter,
-            "keyword" => &mut self.syntax.keyword,
-            "keyword_operator" => &mut self.syntax.keyword_operator,
-            "keyword_import" => &mut self.syntax.keyword_import,
-            "type" | "type_name" => &mut self.syntax.type_name,
-            "type_builtin" => &mut self.syntax.type_builtin,
-            "type_definition" => &mut self.syntax.type_definition,
-            "function" => &mut self.syntax.function,
-            "function_macro" => &mut self.syntax.function_macro,
-            "function_method" => &mut self.syntax.function_method,
-            "string" => &mut self.syntax.string,
-            "string_escape" => &mut self.syntax.string_escape,
-            "character" => &mut self.syntax.character,
-            "number" => &mut self.syntax.number,
-            "boolean" => &mut self.syntax.boolean,
-            "float" => &mut self.syntax.float,
-            "comment" => &mut self.syntax.comment,
-            "constant" => &mut self.syntax.constant,
-            "constant_builtin" => &mut self.syntax.constant_builtin,
-            "constant_macro" => &mut self.syntax.constant_macro,
-            "constructor" => &mut self.syntax.constructor,
-            "attribute" => &mut self.syntax.attribute,
-            "property" => &mut self.syntax.property,
-            "operator" => &mut self.syntax.operator,
-            "punctuation_delimiter" => &mut self.syntax.punctuation_delimiter,
-            "punctuation_bracket" => &mut self.syntax.punctuation_bracket,
-            "punctuation_special" => &mut self.syntax.punctuation_special,
-            _ => anyhow::bail!("unknown syntax colour {name:?}"),
-        };
-        *target = color;
-        Ok(())
+    pub(crate) fn syntax_roles_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&'static str, &mut TextStyle)> {
+        [
+            ("markdown_code", &mut self.syntax.markdown_code),
+            ("markdown_emphasis", &mut self.syntax.markdown_emphasis),
+            (
+                "markdown_frontmatter",
+                &mut self.syntax.markdown_frontmatter,
+            ),
+            ("markdown_heading", &mut self.syntax.markdown_heading),
+            ("markdown_highlight", &mut self.syntax.markdown_highlight),
+            ("markdown_link", &mut self.syntax.markdown_link),
+            (
+                "markdown_list_marker",
+                &mut self.syntax.markdown_list_marker,
+            ),
+            ("markdown_strong", &mut self.syntax.markdown_strong),
+            ("variable_builtin", &mut self.syntax.variable_builtin),
+            ("variable_parameter", &mut self.syntax.variable_parameter),
+            ("keyword", &mut self.syntax.keyword),
+            ("keyword_operator", &mut self.syntax.keyword_operator),
+            ("keyword_import", &mut self.syntax.keyword_import),
+            ("type", &mut self.syntax.type_name),
+            ("type_builtin", &mut self.syntax.type_builtin),
+            ("type_definition", &mut self.syntax.type_definition),
+            ("function", &mut self.syntax.function),
+            ("function_macro", &mut self.syntax.function_macro),
+            ("function_method", &mut self.syntax.function_method),
+            ("string", &mut self.syntax.string),
+            ("string_escape", &mut self.syntax.string_escape),
+            ("character", &mut self.syntax.character),
+            ("number", &mut self.syntax.number),
+            ("boolean", &mut self.syntax.boolean),
+            ("float", &mut self.syntax.float),
+            ("comment", &mut self.syntax.comment),
+            ("constant", &mut self.syntax.constant),
+            ("constant_builtin", &mut self.syntax.constant_builtin),
+            ("constant_macro", &mut self.syntax.constant_macro),
+            ("constructor", &mut self.syntax.constructor),
+            ("attribute", &mut self.syntax.attribute),
+            ("property", &mut self.syntax.property),
+            ("operator", &mut self.syntax.operator),
+            (
+                "punctuation_delimiter",
+                &mut self.syntax.punctuation_delimiter,
+            ),
+            ("punctuation_bracket", &mut self.syntax.punctuation_bracket),
+            ("punctuation_special", &mut self.syntax.punctuation_special),
+        ]
+        .into_iter()
     }
 
-    pub(crate) fn set_ui_color(&mut self, name: &str, color: ColorPair) -> anyhow::Result<()> {
-        let single_color_target = match name {
-            "zen.margin" => Some(&mut self.zen_margin),
-            "zen.ghost" => Some(&mut self.zen_ghost),
-            "which_key.background" => Some(&mut self.which_key.background),
-            "which_key.edge" => Some(&mut self.which_key.edge),
-            "which_key.prefix" => Some(&mut self.which_key.prefix),
-            "which_key.key" => Some(&mut self.which_key.key),
-            "which_key.arrow" => Some(&mut self.which_key.arrow),
-            "which_key.text" => Some(&mut self.which_key.text),
-            _ => None,
-        };
-        if let Some(target) = single_color_target {
-            *target = color.fg;
-            return Ok(());
+    pub(crate) fn ui_roles_mut(&mut self) -> impl Iterator<Item = (&'static str, &mut TextStyle)> {
+        [
+            ("git.added", &mut self.git.added),
+            ("git.modified", &mut self.git.modified),
+            ("git.conflict", &mut self.git.conflict),
+            ("git.removed", &mut self.git.removed),
+            ("status.bar", &mut self.status_line.bar),
+            ("status.path", &mut self.status_line.path),
+            ("status.dirty", &mut self.status_line.dirty),
+            ("status.mode_normal", &mut self.status_line.mode_normal),
+            ("status.mode_insert", &mut self.status_line.mode_insert),
+            ("status.mode_command", &mut self.status_line.mode_command),
+            ("status.mode_visual", &mut self.status_line.mode_visual),
+            (
+                "status.metadata_wrapper",
+                &mut self.status_line.metadata.wrapper,
+            ),
+            (
+                "status.metadata_content",
+                &mut self.status_line.metadata.content,
+            ),
+            (
+                "status.coords_wrapper",
+                &mut self.status_line.coords.wrapper,
+            ),
+            (
+                "status.coords_content",
+                &mut self.status_line.coords.content,
+            ),
+            (
+                "status.minimap_wrapper",
+                &mut self.status_line.minimap_module.wrapper,
+            ),
+            (
+                "status.minimap_content",
+                &mut self.status_line.minimap_module.content,
+            ),
+            ("status.minimap", &mut self.status_line.minimap),
+            ("status.minimap_alt", &mut self.status_line.minimap_alt),
+            ("about.border", &mut self.about.border),
+            ("about.title", &mut self.about.title),
+            ("about.text", &mut self.about.text),
+            ("about.logo_red", &mut self.about.logo_red),
+            ("about.logo_white", &mut self.about.logo_white),
+            ("about.logo_blue", &mut self.about.logo_blue),
+            ("command_line.border", &mut self.command_line.border),
+            ("command_line.title", &mut self.command_line.title),
+            ("command_line.text", &mut self.command_line.text),
+            ("command_line.prompt", &mut self.command_line.prompt),
+            ("diagnostic.error", &mut self.diagnostic_inline.error),
+            ("diagnostic.warning", &mut self.diagnostic_inline.warning),
+            (
+                "diagnostic.information",
+                &mut self.diagnostic_inline.information,
+            ),
+            ("diagnostic.hint", &mut self.diagnostic_inline.hint),
+            ("explorer.border", &mut self.explorer.border),
+            ("explorer.title", &mut self.explorer.title),
+            ("explorer.file", &mut self.explorer.file),
+            ("explorer.directory", &mut self.explorer.directory),
+            ("explorer.executable", &mut self.explorer.executable),
+            ("explorer.hidden", &mut self.explorer.hidden),
+            ("finder.border", &mut self.finder.border),
+            ("finder.title", &mut self.finder.title),
+            ("finder.text", &mut self.finder.text),
+            ("finder.prompt", &mut self.finder.prompt),
+            ("finder.query_title", &mut self.finder.query_title),
+            ("finder.dim", &mut self.finder.dim),
+            ("finder.match_highlight", &mut self.finder.match_highlight),
+            ("finder.selected", &mut self.finder.selected),
+            ("finder.pinned_bg", &mut self.finder.pinned_bg),
+            ("finder.pinned_marker", &mut self.finder.pinned_marker),
+            ("finder.hotkey", &mut self.finder.hotkey),
+            ("finder.preview_title", &mut self.finder.preview_title),
+            ("finder.preview_path", &mut self.finder.preview_path),
+            ("perf.border", &mut self.perf.border),
+            ("perf.title", &mut self.perf.title),
+            ("perf.text", &mut self.perf.text),
+            ("perf.label", &mut self.perf.label),
+            ("perf.value", &mut self.perf.value),
+            ("perf.dim", &mut self.perf.dim),
+            ("perf.good", &mut self.perf.good),
+            ("perf.warn", &mut self.perf.warn),
+            ("perf.hot", &mut self.perf.hot),
+            ("perf.bar_bg", &mut self.perf.bar_bg),
+            ("undo_tree.title", &mut self.undo_tree.title),
+            ("undo_tree.text", &mut self.undo_tree.text),
+            ("undo_tree.selected", &mut self.undo_tree.selected),
+            (
+                "undo_tree.selected_indicator",
+                &mut self.undo_tree.selected_indicator,
+            ),
+            ("undo_tree.node", &mut self.undo_tree.node),
+            ("undo_tree.node_label", &mut self.undo_tree.node_label),
+            ("undo_tree.redo_marker", &mut self.undo_tree.redo_marker),
+            ("undo_tree.edge", &mut self.undo_tree.edge),
+            ("undo_tree.timestamp", &mut self.undo_tree.timestamp),
+            ("undo_tree.preview_title", &mut self.undo_tree.preview_title),
+            ("undo_tree.preview_label", &mut self.undo_tree.preview_label),
+            ("undo_tree.preview_text", &mut self.undo_tree.preview_text),
+            ("undo_tree.preview_dim", &mut self.undo_tree.preview_dim),
+            (
+                "undo_tree.preview_separator",
+                &mut self.undo_tree.preview_separator,
+            ),
+            (
+                "undo_tree.preview_deleted",
+                &mut self.undo_tree.preview_deleted,
+            ),
+            (
+                "undo_tree.preview_inserted",
+                &mut self.undo_tree.preview_inserted,
+            ),
+            ("command_line.error", &mut self.command_line.error),
+            (
+                "command_line.inactive_title",
+                &mut self.command_line.inactive_title,
+            ),
+            ("command_line.ghost", &mut self.command_line.ghost),
+            ("finder.directory", &mut self.finder.directory),
+            ("finder.pinned", &mut self.finder.pinned),
+            ("which_key.edge", &mut self.which_key.edge),
+            ("which_key.prefix", &mut self.which_key.prefix),
+            ("which_key.key", &mut self.which_key.key),
+            ("which_key.arrow", &mut self.which_key.arrow),
+            ("which_key.text", &mut self.which_key.text),
+            ("dashboard.text", &mut self.dashboard.text),
+            ("dashboard.selected", &mut self.dashboard.selected),
+            ("dashboard.hotkey", &mut self.dashboard.hotkey),
+            ("dashboard.version", &mut self.dashboard.version),
+            ("dashboard.icon", &mut self.dashboard.icon),
+            ("dashboard.logo_red", &mut self.dashboard.logo_red),
+            ("dashboard.logo_white", &mut self.dashboard.logo_white),
+            ("dashboard.logo_blue", &mut self.dashboard.logo_blue),
+            ("completion.ghost", &mut self.completion_ghost),
+            ("completion.keyword", &mut self.completion_keyword),
+            ("completion.match_highlight", &mut self.completion_match),
+            ("gutter.line_number", &mut self.gutter_line_number),
+            (
+                "gutter.current_line_number",
+                &mut self.gutter_current_line_number,
+            ),
+            ("editor.snippet", &mut self.snippet),
+            ("editor.text", &mut self.editor_text),
+            ("pane.title", &mut self.pane_title),
+            ("popup.section_title", &mut self.section_title),
+            ("search.match", &mut self.search_match),
+            ("search.current", &mut self.search_current),
+            ("diagnostic.error_range", &mut self.error_range),
+        ]
+        .into_iter()
+    }
+
+    pub(crate) fn syntax_style_mut(&mut self, name: &str) -> anyhow::Result<&mut TextStyle> {
+        let name = if name == "type_name" { "type" } else { name };
+        self.syntax_roles_mut()
+            .find(|(role, _)| *role == name)
+            .map(|(_, style)| style)
+            .ok_or_else(|| anyhow::anyhow!("unknown syntax style {name:?}"))
+    }
+
+    pub(crate) fn ui_style_mut(&mut self, name: &str) -> anyhow::Result<&mut TextStyle> {
+        self.ui_roles_mut()
+            .find(|(role, _)| *role == name)
+            .map(|(_, style)| style)
+            .ok_or_else(|| anyhow::anyhow!("unknown UI style {name:?}"))
+    }
+
+    pub(crate) fn disable_text_formatting(&mut self) {
+        self.text_formatting = false;
+        for (_, style) in self.syntax_roles_mut() {
+            style.format = TextFormat::default();
         }
-        macro_rules! color_target {
-            ($($name:literal => $target:expr),+ $(,)?) => {
-                match name { $($name => &mut $target,)+ _ => anyhow::bail!("unknown UI colour {name:?}"), }
-            };
+        for (_, style) in self.ui_roles_mut() {
+            style.format = TextFormat::default();
         }
-        let target = color_target! {
-            "git.added" => self.git.added, "git.modified" => self.git.modified,
-            "git.conflict" => self.git.conflict, "git.removed" => self.git.removed,
-            "status.bar" => self.status_line.bar, "status.path" => self.status_line.path,
-            "status.dirty" => self.status_line.dirty, "status.mode_normal" => self.status_line.mode_normal,
-            "status.mode_insert" => self.status_line.mode_insert, "status.mode_command" => self.status_line.mode_command,
-            "status.mode_visual" => self.status_line.mode_visual, "status.metadata_wrapper" => self.status_line.metadata.wrapper,
-            "status.metadata_content" => self.status_line.metadata.content, "status.coords_wrapper" => self.status_line.coords.wrapper,
-            "status.coords_content" => self.status_line.coords.content, "status.minimap_wrapper" => self.status_line.minimap_module.wrapper,
-            "status.minimap_content" => self.status_line.minimap_module.content, "status.minimap" => self.status_line.minimap,
-            "status.minimap_alt" => self.status_line.minimap_alt,
-            "about.border" => self.about.border, "about.title" => self.about.title, "about.text" => self.about.text,
-            "about.logo_red" => self.about.logo_red, "about.logo_white" => self.about.logo_white, "about.logo_blue" => self.about.logo_blue,
-            "command_line.border" => self.command_line.border, "command_line.title" => self.command_line.title,
-            "command_line.text" => self.command_line.text, "command_line.prompt" => self.command_line.prompt,
-            "diagnostic.error" => self.diagnostic_inline.error, "diagnostic.warning" => self.diagnostic_inline.warning,
-            "diagnostic.information" => self.diagnostic_inline.information, "diagnostic.hint" => self.diagnostic_inline.hint,
-            "explorer.border" => self.explorer.border, "explorer.title" => self.explorer.title, "explorer.file" => self.explorer.file,
-            "explorer.directory" => self.explorer.directory, "explorer.executable" => self.explorer.executable, "explorer.hidden" => self.explorer.hidden,
-            "finder.border" => self.finder.border, "finder.title" => self.finder.title, "finder.text" => self.finder.text,
-            "finder.prompt" => self.finder.prompt, "finder.query_title" => self.finder.query_title, "finder.dim" => self.finder.dim,
-            "finder.match_highlight" => self.finder.match_highlight, "finder.selected" => self.finder.selected,
-            "finder.pinned_bg" => self.finder.pinned_bg, "finder.pinned_marker" => self.finder.pinned_marker,
-            "finder.hotkey" => self.finder.hotkey, "finder.preview_title" => self.finder.preview_title, "finder.preview_path" => self.finder.preview_path,
-            "perf.border" => self.perf.border, "perf.title" => self.perf.title, "perf.text" => self.perf.text,
-            "perf.label" => self.perf.label, "perf.value" => self.perf.value, "perf.dim" => self.perf.dim,
-            "perf.good" => self.perf.good, "perf.warn" => self.perf.warn, "perf.hot" => self.perf.hot, "perf.bar_bg" => self.perf.bar_bg,
-            "undo_tree.title" => self.undo_tree.title, "undo_tree.text" => self.undo_tree.text, "undo_tree.selected" => self.undo_tree.selected,
-            "undo_tree.selected_indicator" => self.undo_tree.selected_indicator, "undo_tree.node" => self.undo_tree.node,
-            "undo_tree.node_label" => self.undo_tree.node_label, "undo_tree.redo_marker" => self.undo_tree.redo_marker,
-            "undo_tree.edge" => self.undo_tree.edge, "undo_tree.timestamp" => self.undo_tree.timestamp,
-            "undo_tree.preview_title" => self.undo_tree.preview_title, "undo_tree.preview_label" => self.undo_tree.preview_label,
-            "undo_tree.preview_text" => self.undo_tree.preview_text, "undo_tree.preview_dim" => self.undo_tree.preview_dim,
-            "undo_tree.preview_separator" => self.undo_tree.preview_separator, "undo_tree.preview_deleted" => self.undo_tree.preview_deleted,
-            "undo_tree.preview_inserted" => self.undo_tree.preview_inserted
-        };
-        *target = color;
-        Ok(())
     }
 
     pub fn set_popup_size(
@@ -1335,7 +1402,7 @@ mod tests {
         );
         assert_eq!(
             style.status_line.metadata.content,
-            ColorPair::new(style.theme.black, style.theme.dark_gray)
+            TextStyle::new(style.theme.black, style.theme.dark_gray)
         );
         assert_eq!(
             style.status_line.coords.wrapper.fg,
@@ -1343,7 +1410,7 @@ mod tests {
         );
         assert_eq!(
             style.status_line.coords.content,
-            ColorPair::new(style.theme.black, style.theme.dark_gray)
+            TextStyle::new(style.theme.black, style.theme.dark_gray)
         );
     }
 
@@ -1374,7 +1441,7 @@ mod tests {
     fn dimmed_style_preserves_matching_backgrounds_and_fades_custom_foregrounds() {
         let mut style = UiStyle::default();
         let background = style.theme.purple;
-        style.finder.selected = ColorPair::new(
+        style.finder.selected = TextStyle::new(
             Color::Rgb {
                 r: 200,
                 g: 100,

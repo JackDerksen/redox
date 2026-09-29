@@ -7,6 +7,7 @@ pub mod rain_animation;
 pub mod render;
 pub mod style;
 pub mod syntax;
+pub mod text_style;
 pub mod widgets;
 
 pub(crate) use rain_animation::RainAnimation;

@@ -1,6 +1,7 @@
+use crate::ui::text_style::TextStyle;
 use std::ops::Range;
 
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{CompletionEntry, CompletionPopup};
@@ -100,8 +101,8 @@ pub fn draw_completion_preview(
     if preview.is_empty() {
         return Ok(());
     }
-    let color = ColorPair::new(style.syntax.comment.fg, style.theme.bg);
-    window.write_str_colored(y, x, &preview, color)?;
+    let color = style.completion_ghost;
+    window.write_str_styled(y, x, &preview, color.into())?;
 
     let used_width = text_width(&preview) as u16;
     let remaining_width = available_width.saturating_sub(used_width);
@@ -112,11 +113,11 @@ pub fn draw_completion_preview(
     if suffix.is_empty() {
         return Ok(());
     }
-    window.write_str_colored(
+    window.write_str_styled(
         y,
         x.saturating_add(used_width),
         &suffix,
-        ColorPair::new(style.theme.white, style.theme.bg),
+        style.editor_text.into(),
     )
 }
 
@@ -232,23 +233,20 @@ fn draw_entries(
         let is_selected = idx == popup.selected;
         let kind_style = completion_kind_color(style, entry, is_selected);
         let dim_style = selection_aware_color(style.finder.dim, selected_style, is_selected);
-        let row_background = if is_selected {
-            selected_style.bg
-        } else {
-            style.finder.text.bg
-        };
-        let keyword_style = ColorPair::new(style.theme.light_gray, row_background);
-        let match_style = ColorPair::new(style.theme.white, row_background);
+        let keyword_style =
+            selection_aware_color(style.completion_keyword, selected_style, is_selected);
+        let match_style =
+            selection_aware_color(style.completion_match, selected_style, is_selected);
         let marker = if is_selected { "›" } else { " " };
         if is_selected {
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 x + 1,
                 &" ".repeat(width.saturating_sub(2) as usize),
-                selected_style,
+                selected_style.into(),
             )?;
         }
-        window.write_str_colored(row, x + 1, marker, dim_style)?;
+        window.write_str_styled(row, x + 1, marker, dim_style.into())?;
 
         let keyword_x = x + 2 + COMPLETION_SELECTOR_GAP as u16;
         let keyword = clip_text_to_cells(&entry.keyword, layout.keyword_width);
@@ -268,7 +266,7 @@ fn draw_entries(
             let kind = clip_text_to_cells(kind, layout.kind_width);
             let kind_x = x + width
                 .saturating_sub(1 + COMPLETION_TRAILING_PADDING as u16 + layout.kind_width as u16);
-            window.write_str_colored(row, kind_x, &kind, kind_style)?;
+            window.write_str_styled(row, kind_x, &kind, kind_style.into())?;
         }
     }
 
@@ -281,9 +279,13 @@ fn draw_completion_keyword(
     start_col: u16,
     keyword: &str,
     highlights: &[Range<usize>],
-    base: ColorPair,
-    highlighted: ColorPair,
+    base: TextStyle,
+    highlighted: TextStyle,
 ) -> minui::Result<()> {
+    let highlighted = TextStyle {
+        format: base.format.merge(highlighted.format),
+        ..highlighted
+    };
     let mut segment_start = 0usize;
     let mut segment_highlighted = None;
     let mut column = start_col;
@@ -296,11 +298,11 @@ fn draw_completion_keyword(
             && current != is_highlighted
         {
             let segment = &keyword[segment_start..byte_index];
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 column,
                 segment,
-                if current { highlighted } else { base },
+                (if current { highlighted } else { base }).into(),
             )?;
             column = column.saturating_add(text_width(segment) as u16);
             segment_start = byte_index;
@@ -308,25 +310,24 @@ fn draw_completion_keyword(
         segment_highlighted = Some(is_highlighted);
     }
     if let Some(is_highlighted) = segment_highlighted {
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             column,
             &keyword[segment_start..],
-            if is_highlighted { highlighted } else { base },
+            (if is_highlighted { highlighted } else { base }).into(),
         )?;
     }
     Ok(())
 }
 
-fn completion_kind_color(style: UiStyle, entry: &CompletionEntry, is_selected: bool) -> ColorPair {
+fn completion_kind_color(style: UiStyle, entry: &CompletionEntry, is_selected: bool) -> TextStyle {
     let role = completion_keyword_role(entry.kind.as_deref());
-    let mut color = style.syntax.color_for(role);
-    color.bg = if is_selected {
-        style.finder.selected.bg
+    let color = style.syntax.color_for(role);
+    if is_selected {
+        color.selected(style.finder.selected)
     } else {
-        style.finder.text.bg
-    };
-    color
+        color.with_colors(color.fg, style.finder.text.bg)
+    }
 }
 
 fn completion_keyword_role(kind: Option<&str>) -> SyntaxRole {
@@ -345,9 +346,9 @@ fn completion_keyword_role(kind: Option<&str>) -> SyntaxRole {
     }
 }
 
-fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool) -> ColorPair {
+fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
     if is_selected {
-        ColorPair::new(base.fg, selected.bg)
+        base.selected(selected)
     } else {
         base
     }

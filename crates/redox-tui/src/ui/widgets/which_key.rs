@@ -1,4 +1,4 @@
-use minui::{ColorPair, Window, cell_width};
+use minui::{Window, cell_width};
 
 use crate::input::{WhichKeyEntry, WhichKeyPopup};
 use crate::ui::widgets::popup::{
@@ -70,26 +70,20 @@ pub(crate) fn draw_which_key_popup(
         height,
     });
 
-    let popup_bg = style.which_key.background;
-    let fill = ColorPair::new(style.which_key.text, popup_bg);
+    let fill = style.which_key.text;
     let blank = " ".repeat(width as usize);
     for row in 0..height {
-        window.write_str_colored(y + row, x, &blank, fill)?;
-        window.write_str_colored(
-            y + row,
-            x,
-            "▌",
-            ColorPair::new(style.which_key.edge, popup_bg),
-        )?;
+        window.write_str_styled(y + row, x, &blank, fill.into())?;
+        window.write_str_styled(y + row, x, "▌", style.which_key.edge.into())?;
     }
 
     let header = format!(" {} …", popup.prefix);
     let header = clip_text_to_cells(&header, width.saturating_sub(2) as usize);
-    window.write_str_colored(
+    window.write_str_styled(
         y,
         x.saturating_add(1),
         &header,
-        ColorPair::new(style.which_key.prefix, popup_bg),
+        minui::Style::from(style.which_key.prefix),
     )?;
 
     let content_width = width.saturating_sub(2) as usize;
@@ -119,7 +113,6 @@ pub(crate) fn draw_which_key_popup(
             window,
             entry,
             style,
-            popup_bg,
             (entry_x, entry_y),
             column_width,
             key_widths[column],
@@ -169,7 +162,6 @@ fn draw_entry(
     window: &mut dyn Window,
     entry: &WhichKeyEntry,
     style: UiStyle,
-    popup_bg: minui::Color,
     (x, y): (u16, u16),
     width: usize,
     key_width: usize,
@@ -178,32 +170,27 @@ fn draw_entry(
         return Ok(());
     }
     let key = clip_text_to_cells(&entry.key, key_width);
-    window.write_str_colored(y, x, &key, ColorPair::new(style.which_key.key, popup_bg))?;
+    window.write_str_styled(y, x, &key, style.which_key.key.into())?;
 
     let key_cells = cell_width(&key, minui::TabPolicy::Fixed(4));
     let key_padding = key_width.saturating_sub(key_cells as usize);
     if key_padding > 0 {
-        window.write_str_colored(
+        window.write_str_styled(
             y,
             x.saturating_add(key_cells as u16),
             &" ".repeat(key_padding),
-            ColorPair::new(style.which_key.key, popup_bg),
+            style.which_key.key.into(),
         )?;
     }
     let arrow_x = x.saturating_add(key_width as u16);
-    window.write_str_colored(
-        y,
-        arrow_x,
-        " → ",
-        ColorPair::new(style.which_key.arrow, popup_bg),
-    )?;
+    window.write_str_styled(y, arrow_x, " → ", style.which_key.arrow.into())?;
 
     let description_width = width.saturating_sub(key_width).saturating_sub(3);
     let description = clip_text_to_cells(&entry.description, description_width);
-    window.write_str_colored(
+    window.write_str_styled(
         y,
         arrow_x.saturating_add(3),
         &description,
-        ColorPair::new(style.which_key.text, popup_bg),
+        style.which_key.text.into(),
     )
 }

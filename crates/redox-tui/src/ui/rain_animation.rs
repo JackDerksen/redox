@@ -1,9 +1,10 @@
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use crate::ui::text_style::TextStyle;
+use minui::{Style, TabPolicy, Window, cell_width};
 
 use super::helpers::apply_color_column;
 use super::render::RenderSnapshot;
 use super::style::UiStyle;
-use super::syntax::{VisibleLineSyntaxSpans, syntax_color_for_range};
+use super::syntax::{VisibleLineSyntaxSpans, syntax_style_for_range};
 
 // Credit to https://github.com/Eandrju/cellular-automaton.nvim for the inspiration here.
 
@@ -15,7 +16,7 @@ const RNG_INCREMENT: u64 = 1442695040888963407;
 #[derive(Debug, Clone)]
 struct RainParticle {
     glyph: Box<str>,
-    colors: ColorPair,
+    style: Style,
     disperse_direction: i8,
     processed: bool,
     width: usize,
@@ -43,7 +44,7 @@ impl RainAnimation {
         snapshot: &RenderSnapshot,
         scroll_x: usize,
         (width, height): (usize, usize),
-        default_colors: ColorPair,
+        default_colors: TextStyle,
         style: UiStyle,
         syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
         color_column: Option<(usize, minui::Color)>,
@@ -83,9 +84,9 @@ impl RainAnimation {
 
                 if grapheme != "\t" && grapheme != " " {
                     let end_byte = start_byte.saturating_add(grapheme.len());
-                    let base_colors = spans
+                    let text_style = spans
                         .map(|line_spans| {
-                            syntax_color_for_range(
+                            syntax_style_for_range(
                                 default_colors,
                                 style,
                                 line_spans,
@@ -93,9 +94,9 @@ impl RainAnimation {
                                 end_byte,
                             )
                         })
-                        .unwrap_or(default_colors);
+                        .unwrap_or_else(|| default_colors.into());
                     let colors = apply_color_column(
-                        base_colors,
+                        text_style.colors.unwrap_or(default_colors.colors()),
                         color_column,
                         used_cells,
                         used_cells.saturating_add(grapheme_width),
@@ -106,7 +107,7 @@ impl RainAnimation {
                         used_cells,
                         RainParticle {
                             glyph: grapheme.to_owned().into_boxed_str(),
-                            colors,
+                            style: text_style.with_colors(colors),
                             disperse_direction,
                             processed: false,
                             width: grapheme_width,
@@ -195,11 +196,11 @@ impl RainAnimation {
                 let RainCell::Head(particle) = &self.grid[row][col] else {
                     continue;
                 };
-                window.write_str_colored(
+                window.write_str_styled(
                     row_offset.saturating_add(row as u16),
                     col_offset.saturating_add(col as u16),
                     &particle.glyph,
-                    particle.colors,
+                    particle.style,
                 )?;
             }
         }

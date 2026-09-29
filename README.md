@@ -149,8 +149,9 @@ It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.to
 `redox --config /path/to/config.toml`.
 
 Configuration supports features like named themes, the complete base palette, every syntax role,
-UI colour pairs, optional Nerd Font icons, background dimming, popup dimensions, colour-column
-position, zen mode, undo-tree history size, the leader character, and mode-specific keybindings. See the
+per-role colours and font formatting, a global plain-text switch, optional Nerd Font icons,
+background dimming, popup dimensions, colour-column position, zen mode, undo-tree history size, 
+the leader character, and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
 defaults.
@@ -498,9 +499,39 @@ finer scrolling. Apply changes with `:config reload`. The `mouse_invert_vertical
 | `ctrl+-` | Split the active pane horizontally. |
 | <code>ctrl+\</code> | Split the active pane vertically. |
 | `ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l` | Focus the split to the left / down / up / right. |
+| `ctrl+left` / `ctrl+right` | Shrink / grow the current pane's width by one column. |
+| `ctrl+down` / `ctrl+up` | Shrink / grow the current pane's height by one row. |
 | `ctrl+x` | Close the active split. |
 
 Inactive editor panes show their filename centred in a muted strip along the top.
+With mouse input enabled, drag a split line to resize its neighbouring panes.
+Resizing stops at minimum pane sizes; fixed interface panes keep their sizes.
+Layout changes preserve cursor positions and buffer scroll offsets. If a cursor
+is clipped by a smaller pane, the next editing motion brings it back into view.
+
+### Integrated terminal
+
+Press <code>ctrl+`</code> to toggle a terminal pane across the bottom third of the editor.
+In zen mode, it follows the editor's centred width and keeps the dark side margins.
+`ctrl+space` works as an alias for terminals that encode both shortcuts identically.
+`:terminal` or `:term` also toggles the pane.
+
+The terminal starts in the directory where Redox was launched. Hiding the pane keeps
+its process, current directory, command history and output alive. The editor's
+statusline separates the panes. Use `ctrl+j` to move down through editor splits
+into the terminal, and `ctrl+k` to return to the last active editor pane. Clicking
+either pane also moves focus. Unfocused panes dim, including the terminal.
+Resize the terminal with `ctrl+up` / `ctrl+down`, or drag the statusline separator with mouse input enabled.
+The chosen height is kept when the pane is hidden and reopened.
+While the terminal has focus, other keys go to it, including
+Tab, arrow keys, Escape, Ctrl+C and Ctrl+D. Scroll with the mouse wheel or
+Shift+PageUp/PageDown. The pane keeps up to 5,000 lines of scrollback.
+
+Redox runs the program named by `$SHELL`, falling back to `/bin/sh`, in interactive mode.
+Its startup files, aliases, prompt and history settings apply. The terminal
+inherits the editor's environment and PATH. Terminal input is excluded from
+editor macros and event logs. After `exit`, hide and reopen the pane to start a
+fresh terminal. Closing Redox terminates the terminal and its foreground job.
 
 ### Repeating edits and macros
 

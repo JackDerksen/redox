@@ -31,7 +31,7 @@ src/
 │   ├── widgets/    # Popup/status/rendered UI components
 │   ├── overlays.rs # Scope guides, delimiter highlights, colour column
 │   ├── render.rs   # Text snapshot and render helpers
-│   └── style.rs    # Theme and colour definitions
+│   └── style.rs    # Theme roles, colours, formatting, and layout defaults
 ├── lib.rs          # Runtime entrypoint and main draw loop
 └── main.rs         # Binary entrypoint for this crate
 ```

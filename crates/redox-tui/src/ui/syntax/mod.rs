@@ -1,12 +1,14 @@
 //! Tree-sitter-backed syntax highlighting for the editor viewport.
 
+use crate::ui::text_style::TextStyle;
+
 use crate::ui::render::LineViewport;
 mod languages;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, TextDiff};
 use tree_sitter::{
     InputEdit, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree,
@@ -1282,7 +1284,7 @@ pub fn draw_line_with_syntax(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    base_color: ColorPair,
+    base_color: TextStyle,
     color_column: Option<(usize, minui::Color)>,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
@@ -1305,7 +1307,7 @@ pub fn draw_line_with_syntax(
     let mut pending_start: Option<usize> = None;
     let mut pending_end = 0usize;
     let mut pending_visible_x = 0usize;
-    let mut pending_colors = base_color;
+    let mut pending_style = Style::from(base_color);
 
     for g in source_line.graphemes(true) {
         let g_width = cell_width(g, TabPolicy::Fixed(4)) as usize;
@@ -1334,7 +1336,7 @@ pub fn draw_line_with_syntax(
             syntax_idx += 1;
         }
 
-        let colors = syntax_color_for_range(
+        let text_style = syntax_style_for_range(
             base_color,
             style,
             &spans[syntax_idx..],
@@ -1342,12 +1344,12 @@ pub fn draw_line_with_syntax(
             end_byte,
         );
         let visible_x = clipped_start.saturating_sub(scroll_x);
-        let colors = apply_color_column(
-            colors,
+        let text_style = text_style.with_colors(apply_color_column(
+            text_style.colors.unwrap_or(base_color.colors()),
             color_column,
             visible_x,
             clipped_end.saturating_sub(scroll_x),
-        );
+        ));
 
         if g == "\t" {
             flush_pending_syntax_span(
@@ -1357,10 +1359,15 @@ pub fn draw_line_with_syntax(
                 pending_start.take(),
                 pending_end,
                 pending_visible_x,
-                pending_colors,
+                pending_style,
             )?;
             let spaces = " ".repeat(clipped_end.saturating_sub(clipped_start));
-            window.write_str_colored(row, col.saturating_add(visible_x as u16), &spaces, colors)?;
+            window.write_str_styled(
+                row,
+                col.saturating_add(visible_x as u16),
+                &spaces,
+                text_style,
+            )?;
             continue;
         }
 
@@ -1368,7 +1375,7 @@ pub fn draw_line_with_syntax(
             continue;
         }
 
-        if pending_start.is_some() && pending_colors == colors && pending_end == start_byte {
+        if pending_start.is_some() && pending_style == text_style && pending_end == start_byte {
             pending_end = end_byte;
             continue;
         }
@@ -1380,12 +1387,12 @@ pub fn draw_line_with_syntax(
             pending_start.take(),
             pending_end,
             pending_visible_x,
-            pending_colors,
+            pending_style,
         )?;
         pending_start = Some(start_byte);
         pending_end = end_byte;
         pending_visible_x = visible_x;
-        pending_colors = colors;
+        pending_style = text_style;
     }
 
     flush_pending_syntax_span(
@@ -1395,7 +1402,7 @@ pub fn draw_line_with_syntax(
         pending_start,
         pending_end,
         pending_visible_x,
-        pending_colors,
+        pending_style,
     )?;
 
     draw_color_column_gap(
@@ -1416,7 +1423,7 @@ fn flush_pending_syntax_span(
     start: Option<usize>,
     end: usize,
     visible_x: usize,
-    colors: ColorPair,
+    style: Style,
 ) -> minui::Result<()> {
     let Some(start) = start else {
         return Ok(());
@@ -1425,26 +1432,36 @@ fn flush_pending_syntax_span(
         return Ok(());
     }
 
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         col.saturating_add(visible_x as u16),
         &source_line[start..end],
-        colors,
+        style,
     )
 }
 
-pub fn syntax_color_for_range(
-    base_color: ColorPair,
+pub fn syntax_style_for_range(
+    base_color: TextStyle,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
     start_byte: usize,
     end_byte: usize,
-) -> ColorPair {
-    if let Some(span) = best_span_for_range(spans, start_byte, end_byte) {
-        style.syntax.color_for(span.role)
-    } else {
-        base_color
+) -> Style {
+    let colors = best_span_for_range(spans, start_byte, end_byte)
+        .map_or(base_color, |span| style.syntax.color_for(span.role));
+    let mut text_style = base_color.format.apply_to(Style::from(colors.colors()));
+    for span in spans
+        .iter()
+        .take_while(|span| span.start_byte < end_byte)
+        .filter(|span| span.end_byte > start_byte)
+    {
+        text_style = style
+            .syntax
+            .color_for(span.role)
+            .format
+            .apply_to(text_style);
     }
+    text_style
 }
 
 pub fn lexical_fallback_line_spans(source_line: &str) -> Vec<LineSyntaxSpan> {
@@ -1683,11 +1700,11 @@ fn draw_color_column_gap(
         return Ok(());
     }
 
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         col.saturating_add(visible_col as u16),
         " ",
-        ColorPair::new(minui::Color::Transparent, bg),
+        (TextStyle::new(minui::Color::Transparent, bg)).into(),
     )
 }
 

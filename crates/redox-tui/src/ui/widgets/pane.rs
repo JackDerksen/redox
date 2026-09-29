@@ -1,4 +1,5 @@
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use crate::ui::text_style::TextStyle;
+use minui::{TabPolicy, Window, cell_width};
 
 use crate::app::PaneRect;
 use crate::ui::style::UiStyle;
@@ -7,18 +8,18 @@ use crate::ui::widgets::popup::clip_text_to_cells;
 pub fn draw_pane_filename(
     window: &mut dyn Window,
     filename: &str,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<()> {
     let (width, height) = window.get_size();
     if width == 0 || height == 0 {
         return Ok(());
     }
 
-    window.write_str_colored(0, 0, &" ".repeat(width as usize), colors)?;
+    window.write_str_styled(0, 0, &" ".repeat(width as usize), colors.into())?;
     let padding = u16::from(width > 2);
     let filename = clip_text_to_cells(filename, (width - padding * 2) as usize);
     let column = width.saturating_sub(cell_width(&filename, TabPolicy::Fixed(4))) / 2;
-    window.write_str_colored(0, column, &filename, colors)
+    window.write_str_styled(0, column, &filename, minui::Style::from(colors))
 }
 
 pub fn draw_pane_split_lines(
@@ -28,7 +29,7 @@ pub fn draw_pane_split_lines(
     width: u16,
     height: u16,
 ) -> minui::Result<()> {
-    let line_color = ColorPair::new(style.theme.light_gray, style.theme.bg);
+    let line_color = TextStyle::new(style.theme.light_gray, style.theme.bg);
     let mut line_cells = vec![false; width as usize * height as usize];
     for rect in rects {
         if rect.x > 0 {
@@ -62,7 +63,7 @@ pub fn draw_pane_split_lines(
             let left = x > 0 && line_cells[y as usize * width as usize + (x - 1) as usize];
             let right = x + 1 < width && line_cells[y as usize * width as usize + (x + 1) as usize];
             let glyph = pane_split_line_glyph(up, down, left, right);
-            window.write_str_colored(y, x, glyph, line_color)?;
+            window.write_str_styled(y, x, glyph, line_color.into())?;
         }
     }
     Ok(())

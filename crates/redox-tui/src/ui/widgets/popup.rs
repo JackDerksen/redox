@@ -1,6 +1,7 @@
+use crate::ui::text_style::TextStyle;
 pub(crate) use minui::widgets::WidgetArea as MouseRect;
 use minui::widgets::WindowView;
-use minui::{ColorPair, Event, RouteTarget, TabPolicy, UiScene, Window, cell_width};
+use minui::{Event, RouteTarget, TabPolicy, UiScene, Window, cell_width};
 use redox_core::Pos;
 use std::path::PathBuf;
 use unicode_segmentation::UnicodeSegmentation;
@@ -224,13 +225,13 @@ impl PopupMouseLayout {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PopupChrome {
-    pub border: ColorPair,
-    pub title: ColorPair,
-    pub fill: ColorPair,
+    pub border: TextStyle,
+    pub title: TextStyle,
+    pub fill: TextStyle,
 }
 
 impl PopupChrome {
-    pub fn new(border: ColorPair, title: ColorPair, fill: ColorPair) -> Self {
+    pub fn new(border: TextStyle, title: TextStyle, fill: TextStyle) -> Self {
         Self {
             border,
             title,
@@ -373,32 +374,37 @@ pub fn draw_popup_frame_at(
     let popup_w = inner_w.saturating_add(2);
     let popup_h = inner_h.saturating_add(2);
     let horizontal = "─".repeat(popup_w.saturating_sub(2) as usize);
-    window.write_str_colored(y, x, &format!("╭{}╮", horizontal), chrome.border)?;
+    window.write_str_styled(y, x, &format!("╭{}╮", horizontal), chrome.border.into())?;
     if popup_h > 1 {
         for row in (y + 1)..(y + popup_h.saturating_sub(1)) {
-            window.write_str_colored(row, x, "│", chrome.border)?;
-            window.write_str_colored(row, x + popup_w.saturating_sub(1), "│", chrome.border)?;
+            window.write_str_styled(row, x, "│", chrome.border.into())?;
+            window.write_str_styled(
+                row,
+                x + popup_w.saturating_sub(1),
+                "│",
+                chrome.border.into(),
+            )?;
         }
     }
     if popup_h > 1 {
-        window.write_str_colored(
+        window.write_str_styled(
             y + popup_h.saturating_sub(1),
             x,
             &format!("╰{}╯", horizontal),
-            chrome.border,
+            chrome.border.into(),
         )?;
     }
 
     if popup_w > 3 {
         let title_max = popup_w.saturating_sub(4) as usize;
         let title_text = clip_with_ellipsis(title, title_max);
-        window.write_str_colored(y, x + 2, &title_text, chrome.title)?;
+        window.write_str_styled(y, x + 2, &title_text, minui::Style::from(chrome.title))?;
     }
 
     if inner_w > 0 && inner_h > 0 {
         let blank_row = " ".repeat(inner_w as usize);
         for row in 0..inner_h {
-            window.write_str_colored(y + 1 + row, x + 1, &blank_row, chrome.fill)?;
+            window.write_str_styled(y + 1 + row, x + 1, &blank_row, chrome.fill.into())?;
         }
     }
 
@@ -425,16 +431,16 @@ pub fn popup_window_view<'a>(window: &'a mut dyn Window, layout: PopupLayout) ->
 pub fn draw_popup_view_divider(
     view: &mut WindowView<'_>,
     inner_row: u16,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<()> {
     if inner_row >= view.height {
         return Ok(());
     }
-    view.window.write_str_colored(
+    view.window.write_str_styled(
         view.y_offset.saturating_add(inner_row),
         view.x_offset.saturating_sub(1),
         &popup_divider_text(view.width),
-        colors,
+        colors.into(),
     )
 }
 

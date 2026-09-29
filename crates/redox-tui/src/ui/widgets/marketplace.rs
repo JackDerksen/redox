@@ -1,5 +1,6 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::WindowView;
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
@@ -82,12 +83,12 @@ fn draw_section_header(
     window: &mut WindowView<'_>,
     row: u16,
     text: &str,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<u16> {
     if row >= window.height {
         return Ok(row);
     }
-    window.write_str_colored(row, 1, text, colors)?;
+    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
     Ok(row.saturating_add(1))
 }
 
@@ -179,31 +180,31 @@ fn draw_marketplace_entries(
 
         if selected {
             let fill = " ".repeat(window.width.saturating_sub(2) as usize);
-            window.write_str_colored(row, 1, &fill, style.finder.selected)?;
+            window.write_str_styled(row, 1, &fill, style.finder.selected.into())?;
         }
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             1,
             &pad_or_clip(&prefix, shared_prefix_w as usize),
-            base_colors,
+            base_colors.into(),
         )?;
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             language_x,
             &pad_or_clip(&entry.language_label, language_w as usize),
-            dim_colors,
+            dim_colors.into(),
         )?;
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             tool_x,
             &pad_or_clip(&entry.tool_label, tool_w as usize),
-            base_colors,
+            base_colors.into(),
         )?;
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             status_x,
             &clip_text_to_cells(&entry.status_label, status_w as usize),
-            status_colors,
+            status_colors.into(),
         )?;
 
         row = row.saturating_add(1);
@@ -212,9 +213,9 @@ fn draw_marketplace_entries(
     Ok(row)
 }
 
-fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool) -> ColorPair {
+fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
     if is_selected {
-        ColorPair::new(base.fg, selected.bg)
+        base.selected(selected)
     } else {
         base
     }
@@ -246,29 +247,29 @@ fn draw_marketplace_column_header(
         .saturating_add(MARKETPLACE_TOOL_STATUS_GAP);
     let header_colors = style.finder.dim;
 
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         1,
         &pad_or_clip(prefix, shared_prefix_w as usize),
-        header_colors,
+        header_colors.into(),
     )?;
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         language_x,
         &pad_or_clip("Language", language_w as usize),
-        header_colors,
+        header_colors.into(),
     )?;
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         tool_x,
         &pad_or_clip("Tool", tool_w as usize),
-        header_colors,
+        header_colors.into(),
     )?;
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         status_x,
         &clip_text_to_cells("Status", status_w as usize),
-        header_colors,
+        header_colors.into(),
     )?;
     Ok(row.saturating_add(1))
 }
