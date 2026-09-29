@@ -229,7 +229,12 @@ impl TerminalPanel {
         Ok(())
     }
 
-    pub(crate) fn draw(&self, window: &mut dyn Window, style: UiStyle) -> minui::Result<()> {
+    pub(crate) fn draw(
+        &self,
+        window: &mut dyn Window,
+        style: UiStyle,
+        dimming: f32,
+    ) -> minui::Result<()> {
         let height = self.height(self.window_height);
         if height == 0 || self.width == 0 {
             return Ok(());
@@ -256,11 +261,11 @@ impl TerminalPanel {
                 if style.text_formatting && cell.inverse() {
                     std::mem::swap(&mut foreground, &mut background);
                 }
-                if !self.focused {
+                if dimming > 0.0 {
                     foreground = dim_foreground_color(
                         terminal_rgb(foreground),
                         terminal_rgb(background),
-                        style.dim_amount,
+                        dimming,
                     );
                 }
                 let mut cell_style = Style::from(ColorPair::new(foreground, background));

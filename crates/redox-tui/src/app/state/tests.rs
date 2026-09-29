@@ -2939,6 +2939,81 @@ fn pane_resizing_preserves_nested_neighbours_and_fixed_panes() {
 }
 
 #[test]
+fn pane_focus_crossfades_and_reverses_from_current_brightness() {
+    let path = temp_file_path("pane_focus_fade");
+    let mut state = state_with_text(path.clone(), "alpha");
+    let original = state.active_pane_id();
+    state.split_active_pane(SplitAxis::Vertical);
+    let other = state.active_pane_id();
+    let started = state.pane_focus_transition.as_ref().unwrap().started_at;
+    for (elapsed, expected) in [(Duration::ZERO, 0.0), (PANE_FOCUS_DURATION / 2, 0.5)] {
+        assert_eq!(
+            state.pane_focus_dimming(original, started + elapsed),
+            expected
+        );
+        assert_eq!(
+            state.pane_focus_dimming(other, started + elapsed),
+            1.0 - expected
+        );
+    }
+
+    state.pane_focus_transition.as_mut().unwrap().started_at =
+        Instant::now() - PANE_FOCUS_DURATION / 2;
+    state.focus_split(SplitDirection::Left);
+    assert_eq!(state.active_pane_id(), original);
+    let transition = state.pane_focus_transition.as_ref().unwrap();
+    for &(pane, amount) in &transition.from {
+        assert!((0.4..0.6).contains(&amount));
+        assert_eq!(
+            state.pane_focus_dimming(pane, transition.started_at),
+            amount
+        );
+    }
+    let expiry = transition.started_at + PANE_FOCUS_DURATION;
+    state.take_redraw_request();
+    state.update_background(expiry);
+    assert!(state.pane_focus_transition.is_none());
+    assert!(state.take_redraw_request());
+    assert_eq!(state.pane_focus_dimming(original, expiry), 0.0);
+    assert_eq!(state.pane_focus_dimming(other, expiry), 1.0);
+    state.focus_split(SplitDirection::Left);
+    assert!(state.pane_focus_transition.is_none());
+
+    let directory = tempfile::tempdir().unwrap();
+    state.terminal = crate::terminal::tests::configured_panel(directory.path());
+    state.terminal.toggle(directory.path()).unwrap();
+    for panes in [2, 1] {
+        if panes == 1 {
+            state.close_active_split();
+            state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+        }
+        let active = state.active_pane_id();
+        for focused in [true, false] {
+            state.terminal.set_focused(focused);
+            let started = Instant::now();
+            state.sync_terminal_focus(started);
+            let midpoint = started + PANE_FOCUS_DURATION / 2;
+            assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
+            assert_eq!(state.terminal_focus_dimming(midpoint), 0.5);
+            for pane in state.panes().iter().filter(|pane| pane.id != active) {
+                assert_eq!(state.pane_focus_dimming(pane.id, midpoint), 1.0);
+            }
+            let expiry = started + PANE_FOCUS_DURATION;
+            state.update_background(expiry);
+            assert_eq!(
+                state.pane_focus_dimming(active, expiry),
+                if focused { 1.0 } else { 0.0 }
+            );
+            assert_eq!(
+                state.terminal_focus_dimming(expiry),
+                if focused { 0.0 } else { 1.0 }
+            );
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn split_focus_skips_inaccessible_panes() {
     let path = temp_file_path("split_focus_inaccessible");
     let mut state = state_with_text(path.clone(), "alpha");

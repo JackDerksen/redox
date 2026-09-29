@@ -47,6 +47,7 @@ impl EditorState {
     }
 
     pub(crate) fn update_background(&mut self, now: Instant) -> Duration {
+        self.sync_terminal_focus(now);
         if self.terminal.poll() {
             self.request_redraw();
         }
@@ -83,9 +84,20 @@ impl EditorState {
             self.request_redraw();
         }
 
+        if self
+            .pane_focus_transition
+            .as_ref()
+            .is_some_and(|transition| {
+                now.saturating_duration_since(transition.started_at) >= super::PANE_FOCUS_DURATION
+            })
+        {
+            self.pane_focus_transition = None;
+            self.request_redraw();
+        }
         if (self.rain_is_active()
             || self.one_shot_highlight.is_some()
-            || self.save_confirmation.is_some())
+            || self.save_confirmation.is_some()
+            || self.pane_focus_transition.is_some())
             && now >= self.runtime.next_animation_frame
         {
             self.advance_rain_animation();
@@ -130,7 +142,8 @@ impl EditorState {
             || self.git.has_pending_work();
         let animation = self.rain_is_active()
             || self.one_shot_highlight.is_some()
-            || self.save_confirmation.is_some();
+            || self.save_confirmation.is_some()
+            || self.pane_focus_transition.is_some();
         let which_key = self
             .which_key_enabled
             .then(|| self.input.which_key_deadline(self.which_key_delay))

@@ -133,6 +133,7 @@ fn draw_buffer_view(
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
+    state.sync_terminal_focus(Instant::now());
     let (width, height) = window.get_size();
     let viewport_width = if state.zen.enabled {
         proportional_size(width, state.zen.width_percent, state.zen.min_width)
@@ -186,7 +187,11 @@ fn draw_buffer_view(
     if state.terminal.is_focused() {
         hide_cursor(&mut viewport);
     }
-    state.terminal.draw(&mut viewport, style)
+    state.terminal.draw(
+        &mut viewport,
+        style,
+        style.dim_amount * state.terminal_focus_dimming(Instant::now()),
+    )
 }
 
 fn draw_editor_area(
@@ -222,11 +227,12 @@ fn draw_editor_view(
         || state.explorer_popup().is_some()
         || state.about_popup().is_some()
         || which_key_popup.is_some();
-    let editor_unfocused = popup_overlay_active || state.terminal.is_focused();
-    let background_style = if editor_unfocused {
+    let background_style = if popup_overlay_active {
         style.dimmed()
     } else {
-        style
+        style.dimmed_by(
+            style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
+        )
     };
     let editor_text = background_style.editor_text;
     fill_background(window, vw, vh, editor_text)?;
@@ -413,14 +419,19 @@ fn draw_editor_view(
             state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
         }
         state.sync_active_pane_view();
+        let pane_style = if popup_overlay_active {
+            background_style
+        } else {
+            style
+        };
         draw_split_editor_panes(
             state,
-            background_style,
+            pane_style,
             window,
             vw,
             text_h,
-            editor_text,
-            !editor_unfocused,
+            pane_style.editor_text,
+            !popup_overlay_active,
         )?;
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
@@ -1515,6 +1526,7 @@ fn draw_split_editor_panes(
     dim_inactive: bool,
 ) -> minui::Result<()> {
     let rects = state.pane_rects(width, height);
+    let now = Instant::now();
     for rect in rects.iter().copied() {
         let Some((buffer_id, view, options)) = state
             .panes()
@@ -1529,13 +1541,13 @@ fn draw_split_editor_panes(
             .entry(buffer_id)
             .or_default()
             .copy_pane_state_from(&view);
-        let draws_as_active = state.pane_draws_as_active(rect.pane_id);
-        let pane_style = if !dim_inactive || draws_as_active {
-            style
+        let dimming = if dim_inactive {
+            state.pane_focus_dimming(rect.pane_id, now)
         } else {
-            style.dimmed()
+            0.0
         };
-        let pane_text = if !dim_inactive || draws_as_active {
+        let pane_style = style.dimmed_by(style.dim_amount * dimming);
+        let pane_text = if dimming == 0.0 {
             editor_text
         } else {
             pane_style.editor_text
@@ -4927,6 +4939,8 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
+        state.update_background(Instant::now() + Duration::from_millis(150));
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         assert!(window.row_text(19).contains("TERMINAL"));
         assert!(!window.row_text(20).contains("Ctrl+` hide"));
         assert!(window.cursor.unwrap().y >= 20);
@@ -5007,6 +5021,8 @@ mod tests {
             },
         );
         assert!(!state.terminal.is_focused());
+        state.sync_terminal_focus(Instant::now());
+        state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         let style = UiStyle::default();
         for (offset, expected) in &expected_attributes {
@@ -5080,6 +5096,8 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, navigation('j'));
         assert!(state.terminal.is_focused());
         let style = UiStyle::default();
+        state.sync_terminal_focus(Instant::now());
+        state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 19) {
             let (row, column) = (rect.y..rect.y + rect.height)
@@ -5892,6 +5910,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 [(InputAction::None, "alpha.txt"), (focus_back, "[No Name]")]
             {
                 state.apply_input(action, 80, 12);
+                state.update_background(Instant::now() + Duration::from_millis(150));
                 draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
                 for rect in state.pane_rects(80, 11) {
                     let row = rect.y as usize;

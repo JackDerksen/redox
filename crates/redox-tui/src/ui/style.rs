@@ -1084,15 +1084,22 @@ fn dim_style_color(
 
 impl UiStyle {
     pub fn dimmed(self) -> Self {
+        self.dimmed_by(self.dim_amount)
+    }
+
+    pub(crate) fn dimmed_by(self, amount: f32) -> Self {
+        if amount == 0.0 {
+            return self;
+        }
         let mut style = self;
         let bg = self.theme.bg;
-        let dimmed_theme = self.theme.dimmed(self.dim_amount);
+        let dimmed_theme = self.theme.dimmed(amount);
         style.theme = dimmed_theme;
-        style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, self.dim_amount);
+        style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, amount);
         let dim = |pair: &mut TextStyle| {
-            pair.fg = dim_style_color(pair.fg, self.theme, dimmed_theme, bg, self.dim_amount);
+            pair.fg = dim_style_color(pair.fg, self.theme, dimmed_theme, bg, amount);
             if let Some(color) = pair.format.underline_color.as_mut() {
-                *color = dim_style_color(*color, self.theme, dimmed_theme, bg, self.dim_amount);
+                *color = dim_style_color(*color, self.theme, dimmed_theme, bg, amount);
             }
         };
         for (_, pair) in style.syntax_roles_mut() {
