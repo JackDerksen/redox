@@ -86,7 +86,9 @@ struct OneShotHighlight {
     buffer_id: BufferId,
     selection: Selection,
     mode: VisualModeKind,
-    remaining_frames: u8,
+    started_at: Instant,
+    elapsed: Duration,
+    version: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1032,26 +1034,22 @@ impl EditorState {
         self.explorer_delete_confirmation_token.is_some()
     }
 
-    pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind)> {
+    pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind, Duration)> {
         let highlight = self.one_shot_highlight?;
-        (highlight.buffer_id == self.session.active_id())
-            .then_some((highlight.selection, highlight.mode))
+        (highlight.buffer_id == self.session.active_id()
+            && self.views.get(&highlight.buffer_id)?.analysis_version() == highlight.version)
+            .then_some((highlight.selection, highlight.mode, highlight.elapsed))
     }
 
-    pub fn advance_one_shot_highlight(&mut self) {
+    pub fn advance_one_shot_highlight(&mut self, now: Instant) {
         let Some(mut highlight) = self.one_shot_highlight.take() else {
             return;
         };
         if self.session.buffer(highlight.buffer_id).is_none() {
             return;
         }
-        if highlight.buffer_id != self.session.active_id() {
-            self.one_shot_highlight = Some(highlight);
-            return;
-        }
-
-        if highlight.remaining_frames > 1 {
-            highlight.remaining_frames -= 1;
+        highlight.elapsed = now.saturating_duration_since(highlight.started_at);
+        if highlight.elapsed < crate::ui::overlays::YankRipple::DURATION {
             self.one_shot_highlight = Some(highlight);
         }
     }
@@ -1061,7 +1059,13 @@ impl EditorState {
             buffer_id: self.session.active_id(),
             selection,
             mode,
-            remaining_frames: 2,
+            started_at: Instant::now(),
+            elapsed: Duration::ZERO,
+            version: self
+                .views
+                .entry(self.session.active_id())
+                .or_default()
+                .analysis_version(),
         });
     }
 

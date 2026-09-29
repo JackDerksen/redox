@@ -5055,7 +5055,8 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
         state.one_shot_highlight(),
         Some((
             Selection::new(Pos::new(0, 0), Pos::new(0, 3)),
-            VisualModeKind::Char
+            VisualModeKind::Char,
+            Duration::ZERO,
         ))
     );
     assert!(state.take_pending_system_clipboard().is_none());
@@ -5636,7 +5637,7 @@ fn normal_mode_dd_cuts_current_line() {
 }
 
 #[test]
-fn normal_mode_yy_yanks_current_line_and_sets_flash() {
+fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
     let path = temp_file_path("yy_yank_line");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
     let id = state.session.active_id();
@@ -5656,24 +5657,29 @@ fn normal_mode_yy_yanks_current_line_and_sets_flash() {
         state.one_shot_highlight(),
         Some((
             Selection::new(Pos::new(1, 0), Pos::new(1, 0)),
-            VisualModeKind::Line
+            VisualModeKind::Line,
+            Duration::ZERO,
         ))
     );
     let _ = fs::remove_file(path);
 }
 
 #[test]
-fn yank_flash_persists_for_two_frames() {
-    let path = temp_file_path("yy_yank_flash_duration");
+fn yank_ripple_uses_elapsed_time() {
+    let path = temp_file_path("yy_yank_ripple_duration");
     let mut state = state_with_text(path.clone(), "one\ntwo\n");
 
     state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
     assert!(state.one_shot_highlight().is_some());
 
-    state.advance_one_shot_highlight();
-    assert!(state.one_shot_highlight().is_some());
+    let started_at = state.one_shot_highlight.unwrap().started_at;
+    state.advance_one_shot_highlight(started_at + Duration::from_millis(140));
+    assert_eq!(
+        state.one_shot_highlight().unwrap().2,
+        Duration::from_millis(140)
+    );
 
-    state.advance_one_shot_highlight();
+    state.advance_one_shot_highlight(started_at + crate::ui::overlays::YankRipple::DURATION);
     assert!(state.one_shot_highlight().is_none());
 
     let _ = fs::remove_file(path);
@@ -5691,6 +5697,7 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
     let expected = Some((
         Selection::new(Pos::new(0, 0), Pos::new(0, 0)),
         VisualModeKind::Line,
+        Duration::ZERO,
     ));
     assert_eq!(state.one_shot_highlight(), expected);
 
@@ -5699,15 +5706,11 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
     assert_ne!(id_a, id_b);
     assert_eq!(state.one_shot_highlight(), None);
 
-    state.advance_one_shot_highlight();
+    let expiry =
+        state.one_shot_highlight.unwrap().started_at + crate::ui::overlays::YankRipple::DURATION;
+    state.advance_one_shot_highlight(expiry);
     run_command(&mut state, "bp");
     assert_eq!(state.session.active_id(), id_a);
-    assert_eq!(state.one_shot_highlight(), expected);
-
-    state.advance_one_shot_highlight();
-    assert!(state.one_shot_highlight().is_some());
-
-    state.advance_one_shot_highlight();
     assert!(state.one_shot_highlight().is_none());
 
     let _ = fs::remove_file(path_a);

@@ -2,8 +2,9 @@ use crate::ui::render::LineViewport;
 use crate::ui::text_style::TextStyle;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::time::Duration;
 
-use minui::{Color, Style, TabPolicy, Window, cell_width};
+use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -20,6 +21,53 @@ pub(crate) struct LineDecorations<'a> {
     pub search_style: TextStyle,
     pub current_style: TextStyle,
     pub error_style: TextStyle,
+    pub yank_ripple: Option<YankRipple<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct YankRipple<'a> {
+    cells: &'a [bool],
+    head: f32,
+    tail_width: f32,
+    colors: ColorPair,
+}
+
+impl<'a> YankRipple<'a> {
+    pub const DURATION: Duration = Duration::from_millis(150);
+
+    pub fn new(cells: &'a [bool], elapsed: Duration, colors: ColorPair) -> Option<Self> {
+        let start = cells.iter().position(|selected| *selected)?;
+        let end = cells.iter().rposition(|selected| *selected)?;
+        let width = (end - start + 1) as f32;
+        let tail_width = (width * 0.45).max(6.0);
+        let progress = (elapsed.as_secs_f32() / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        Some(Self {
+            cells,
+            head: start as f32 - 1.0 + progress * (width + tail_width),
+            tail_width,
+            colors,
+        })
+    }
+
+    fn apply(self, style: Style, range: std::ops::Range<usize>) -> Style {
+        let Some(cell) = range
+            .into_iter()
+            .find(|cell| self.cells.get(*cell) == Some(&true))
+        else {
+            return style;
+        };
+        let distance = self.head - cell as f32;
+        let strength =
+            (1.0 - distance / self.tail_width).clamp(0.0, 1.0) * (distance + 1.0).clamp(0.0, 1.0);
+        if strength == 0.0 {
+            return style;
+        }
+        let base = style.colors.unwrap_or(self.colors);
+        style.with_colors(ColorPair::new(
+            super::style::dim_foreground_color(base.fg, self.colors.bg, strength),
+            super::style::dim_foreground_color(self.colors.fg, base.bg, 1.0 - strength),
+        ))
+    }
 }
 
 impl LineDecorations<'_> {
@@ -37,6 +85,9 @@ impl LineDecorations<'_> {
         }
         if overlaps(self.error_cells) {
             style = self.error_style.overlay(style);
+        }
+        if let Some(ripple) = self.yank_ripple {
+            style = ripple.apply(style, range);
         }
         style
     }

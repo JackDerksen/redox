@@ -76,11 +76,11 @@ impl EditorState {
             self.request_redraw();
         }
 
-        if (self.rain_is_active() || self.one_shot_highlight().is_some())
+        if (self.rain_is_active() || self.one_shot_highlight.is_some())
             && now >= self.runtime.next_animation_frame
         {
             self.advance_rain_animation();
-            self.advance_one_shot_highlight();
+            self.advance_one_shot_highlight(now);
             self.runtime.next_animation_frame = now + ANIMATION_FRAME_INTERVAL;
             self.request_redraw();
         }
@@ -119,7 +119,7 @@ impl EditorState {
             || self.analysis_worker.is_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();
-        let animation = self.rain_is_active() || self.one_shot_highlight().is_some();
+        let animation = self.rain_is_active() || self.one_shot_highlight.is_some();
         let which_key = self
             .which_key_enabled
             .then(|| self.input.which_key_deadline(self.which_key_delay))
@@ -216,11 +216,15 @@ mod tests {
         assert!(state.take_redraw_request());
 
         state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
-        let frame = state.runtime.next_animation_frame;
+        let frame = state
+            .one_shot_highlight
+            .unwrap()
+            .started_at
+            .max(state.runtime.next_animation_frame);
         state.update_background(frame);
         assert!(state.one_shot_highlight().is_some());
         assert!(state.take_redraw_request());
-        state.update_background(frame + ANIMATION_FRAME_INTERVAL);
+        state.update_background(frame + crate::ui::overlays::YankRipple::DURATION);
         assert!(state.one_shot_highlight().is_none());
         assert!(
             state.take_redraw_request(),

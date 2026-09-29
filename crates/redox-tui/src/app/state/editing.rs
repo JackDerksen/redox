@@ -231,7 +231,10 @@ impl EditorState {
                         text: buffer.slice_pos_range(start, end),
                         register_kind: RegisterKind::CharWise,
                         preserve_blank_line_on_change: false,
-                        yank_highlight: None,
+                        yank_highlight: Some((
+                            Selection::new(start, inclusive_end),
+                            VisualModeKind::Char,
+                        )),
                     });
                 }
 
@@ -261,7 +264,13 @@ impl EditorState {
                     text: buffer.slice_pos_range(cursor, end),
                     register_kind: RegisterKind::CharWise,
                     preserve_blank_line_on_change: false,
-                    yank_highlight: None,
+                    yank_highlight: {
+                        let (start, end) = selection.ordered();
+                        Some((
+                            Selection::new(start, buffer.move_left(end)),
+                            VisualModeKind::Char,
+                        ))
+                    },
                 })
             }
             OperatorTarget::TextObject(spec) => {

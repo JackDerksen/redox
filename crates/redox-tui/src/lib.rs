@@ -39,7 +39,7 @@ use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
 use ui::overlays::{
-    LineDecorations, active_delimiter_highlights, active_scope_indent_guides,
+    LineDecorations, YankRipple, active_delimiter_highlights, active_scope_indent_guides,
     draw_delimiter_highlights, draw_indent_guides,
 };
 use ui::syntax::{
@@ -96,7 +96,7 @@ struct BufferDrawOptions {
 
 struct BufferHighlights<'a> {
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind, Duration)>,
     search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
@@ -123,7 +123,7 @@ struct SnapshotOverlays<'a> {
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind, Duration)>,
     focused_lines: Option<std::ops::Range<usize>>,
 }
 
@@ -1207,13 +1207,19 @@ fn draw_line_with_highlights(
         let text_style =
             decorations.apply(base_style.with_colors(color), visible_start..visible_end);
         if g == "\t" {
-            let spaces = " ".repeat(g_width.max(1));
-            window.write_str_styled(
-                row,
-                col.saturating_add(used_cells as u16),
-                &spaces,
-                text_style,
-            )?;
+            for cell in visible_start..visible_end {
+                let colors = highlight_color_at_cell(highlight_layers, cell, base_color.fg)
+                    .map(|colors| colors.colors())
+                    .unwrap_or_else(|| {
+                        apply_color_column(base_color, color_column, cell, cell + 1)
+                    });
+                window.write_str_styled(
+                    row,
+                    col.saturating_add(cell as u16),
+                    " ",
+                    decorations.apply(base_style.with_colors(colors), cell..cell + 1),
+                )?;
+            }
         } else {
             window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
         }
@@ -2161,9 +2167,20 @@ fn draw_snapshot_lines(
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
-                one_shot_highlight
-                    .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
+                one_shot_highlight.map(|(selection, mode, _)| (selection, mode, default_colors.bg))
             });
+
+        let selected_cells = transient_selection.and_then(|(selection, mode, _)| {
+            visual_selection_visible_cells(
+                buffer,
+                source_line,
+                selection,
+                mode,
+                line_idx,
+                scroll_x,
+                text_w,
+            )
+        });
 
         if transient_selection.is_none()
             && !has_search_highlights
@@ -2211,17 +2228,15 @@ fn draw_snapshot_lines(
             search_style: style.search_match,
             current_style: style.search_current,
             error_style: style.error_range,
+            yank_ripple: one_shot_highlight
+                .filter(|_| visual_selection.is_none())
+                .zip(selected_cells.as_deref())
+                .and_then(|((_, _, elapsed), cells)| {
+                    YankRipple::new(cells, elapsed, default_colors.colors())
+                }),
         };
-        if let Some((selection, mode, selection_bg)) = transient_selection
-            && let Some(selected_cells) = visual_selection_visible_cells(
-                buffer,
-                source_line,
-                selection,
-                mode,
-                line_idx,
-                scroll_x,
-                text_w,
-            )
+        if let Some((_, _, selection_bg)) = transient_selection
+            && let Some(selected_cells) = selected_cells.as_ref()
         {
             let highlight_empty_line = source_line.is_empty();
             let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
@@ -2283,7 +2298,7 @@ fn draw_snapshot_lines(
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
-                Some((&selected_cells, selection_bg)),
+                Some((selected_cells, selection_bg)),
                 decorations,
             )?;
             draw_delimiter_highlights(
@@ -5372,6 +5387,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 search_style: style.search_match,
                 current_style: style.search_current,
                 error_style: style.error_range,
+                yank_ripple: None,
             };
             let decorated = decorations
                 .apply(style.editor_text.into(), 0..1)
@@ -5491,6 +5507,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 search_style: style.search_match,
                                 current_style: style.search_current,
                                 error_style: style.error_range,
+                                yank_ripple: None,
                             },
                         },
                         style,
@@ -5553,6 +5570,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     search_style: style.search_match,
                     current_style: style.search_current,
                     error_style: style.error_range,
+                    yank_ripple: None,
                 };
                 let mut window = TestWindow::new(8, 1);
                 draw_line_with_highlights(
@@ -5648,6 +5666,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         search_style: style.search_match,
                         current_style: style.search_current,
                         error_style: style.error_range,
+                        yank_ripple: None,
                     },
                 },
                 style,

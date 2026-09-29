@@ -1,3 +1,4 @@
+use crate::ui::overlays::{LineDecorations, YankRipple};
 use crate::ui::render::LineViewport;
 use crate::ui::text_style::TextStyle;
 use crate::{draw_line_numbers, line_number_gutter_width};
@@ -62,6 +63,7 @@ pub(crate) fn draw_explorer_popup_view(
     let show_git_status_column = state.refresh_explorer_render_model();
 
     let visual_selection = state.active_visual_selection();
+    let one_shot_highlight = state.one_shot_highlight();
     let (snapshot, spec, cursor_line, total_lines, scroll_x) =
         state.with_active_buffer_view_mut(|buffer, explorer_view| {
             reconcile_explorer_cursor_for_popup(
@@ -138,15 +140,11 @@ pub(crate) fn draw_explorer_popup_view(
             });
         let line_idx = snapshot.first_line() + row;
         let source_line = line.source();
-        let text_style = if source_line.trim_end().ends_with('/') || source_line.trim() == ".." {
-            style
-                .explorer
-                .directory
-                .format
-                .apply_to(Style::from(row_style.text))
-        } else {
-            Style::from(row_style.text)
-        };
+        let mut text_colors = row_style.text;
+        if source_line.trim_end().ends_with('/') || source_line.trim() == ".." {
+            text_colors.format = text_colors.format.merge(style.explorer.directory.format);
+        }
+        let text_style = Style::from(text_colors);
         if line_idx < total_lines {
             mouse.clicks.push((
                 MouseRect {
@@ -202,7 +200,47 @@ pub(crate) fn draw_explorer_popup_view(
             draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
             continue;
         }
-        view.write_str_styled(row as u16, content_x, line.visible(), text_style)?;
+        if let Some((selection, mode, elapsed)) = one_shot_highlight
+            && let Some(cells) = crate::visual_selection_visible_cells(
+                state.session.active_buffer(),
+                source_line,
+                selection,
+                mode,
+                line_idx,
+                scroll_x,
+                inner_w.saturating_sub(content_x) as usize,
+            )
+        {
+            crate::draw_line_with_highlights(
+                &mut view,
+                LineViewport {
+                    row: row as u16,
+                    column: content_x,
+                    scroll_x,
+                    width: inner_w.saturating_sub(content_x) as usize,
+                },
+                source_line,
+                text_colors,
+                crate::LineHighlights {
+                    color_column: None,
+                    layers: &[(&cells, row_style.text.bg, None)],
+                    empty_line: true,
+                    decorations: LineDecorations {
+                        search_cells: &[],
+                        error_cells: &[],
+                        current_cells: &[],
+                        search_style: style.search_match,
+                        current_style: style.search_current,
+                        error_style: style.error_range,
+                        yank_ripple: YankRipple::new(&cells, elapsed, style.editor_text.colors()),
+                    },
+                },
+                style,
+                None,
+            )?;
+        } else {
+            view.write_str_styled(row as u16, content_x, line.visible(), text_style)?;
+        }
         draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
     }
     let cursor = spec.visible.then_some(CursorSpec {
