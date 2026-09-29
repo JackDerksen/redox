@@ -1083,6 +1083,7 @@ fn dim_style_color(
 }
 
 impl UiStyle {
+    #[cfg(test)]
     pub fn dimmed(self) -> Self {
         self.dimmed_by(self.dim_amount)
     }

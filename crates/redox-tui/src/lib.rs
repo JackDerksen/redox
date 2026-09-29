@@ -133,7 +133,7 @@ fn draw_buffer_view(
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
-    state.sync_terminal_focus(Instant::now());
+    state.sync_focus(Instant::now());
     let (width, height) = window.get_size();
     let viewport_width = if state.zen.enabled {
         proportional_size(width, state.zen.width_percent, state.zen.min_width)
@@ -222,18 +222,9 @@ fn draw_editor_view(
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
     let which_key_popup = state.which_key_popup(Instant::now());
-    let popup_overlay_active = (state.mode.has_popup_overlay()
-        && state.substitute_preview().is_none())
-        || state.explorer_popup().is_some()
-        || state.about_popup().is_some()
-        || which_key_popup.is_some();
-    let background_style = if popup_overlay_active {
-        style.dimmed()
-    } else {
-        style.dimmed_by(
-            style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
-        )
-    };
+    let background_style = style.dimmed_by(
+        style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
+    );
     let editor_text = background_style.editor_text;
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
@@ -267,15 +258,7 @@ fn draw_editor_view(
         let fallback_id = state
             .explorer_background_buffer_id()
             .filter(|_| !state.explorer_background_is_placeholder_blank());
-        draw_popup_background(
-            state,
-            background_style,
-            window,
-            vw,
-            text_h,
-            editor_text,
-            fallback_id,
-        )?;
+        draw_popup_background(state, style, window, vw, text_h, fallback_id)?;
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
         let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
         let popup_layout = stack_layout.popup;
@@ -314,11 +297,10 @@ fn draw_editor_view(
     if let Some(popup) = state.about_popup() {
         draw_popup_background(
             state,
-            background_style,
+            style,
             window,
             vw,
             text_h,
-            editor_text,
             state.about_background_buffer_id(),
         )?;
         let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
@@ -349,10 +331,9 @@ fn draw_editor_view(
         let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -367,10 +348,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -385,10 +365,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -419,20 +398,7 @@ fn draw_editor_view(
             state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
         }
         state.sync_active_pane_view();
-        let pane_style = if popup_overlay_active {
-            background_style
-        } else {
-            style
-        };
-        draw_split_editor_panes(
-            state,
-            pane_style,
-            window,
-            vw,
-            text_h,
-            pane_style.editor_text,
-            !popup_overlay_active,
-        )?;
+        draw_split_editor_panes(state, style, window, vw, text_h)?;
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
@@ -1435,22 +1401,13 @@ fn draw_command_line_below_popup(
 
 fn draw_modal_popup_background(
     state: &mut EditorState,
-    (style, background_style): (UiStyle, UiStyle),
+    style: UiStyle,
     window: &mut dyn Window,
     (width, text_height): (u16, u16),
-    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
     inner_size: (u16, u16),
 ) -> minui::Result<()> {
-    draw_popup_background(
-        state,
-        background_style,
-        window,
-        width,
-        text_height,
-        editor_text,
-        fallback_buffer_id,
-    )?;
+    draw_popup_background(state, style, window, width, text_height, fallback_buffer_id)?;
     let (inner_w, inner_h) = inner_size;
     state.set_viewport_size(
         inner_w as usize,
@@ -1476,18 +1433,20 @@ fn draw_popup_background(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
 ) -> minui::Result<()> {
+    let background_style = style.dimmed_by(
+        style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
+    );
     if let Some(selected) =
         fallback_buffer_id.and_then(|id| state.dashboard_selection_for_buffer(id))
     {
-        return draw_dashboard(window, style, selected, false);
+        return draw_dashboard(window, background_style, selected, false);
     }
     if state.panes().len() > 1 {
         let active_before_draw = state.session.active_id();
         state.sync_active_pane_view();
-        draw_split_editor_panes(state, style, window, width, height, editor_text, false)?;
+        draw_split_editor_panes(state, style, window, width, height)?;
         let _ = state.session.activate(active_before_draw);
         return Ok(());
     }
@@ -1495,13 +1454,13 @@ fn draw_popup_background(
     if let Some(buffer_id) = fallback_buffer_id {
         draw_buffer_snapshot_for_id(
             state,
-            style,
+            background_style,
             buffer_id,
             BufferDrawOptions {
                 width,
                 height,
                 has_line_numbers: true,
-                colors: editor_text,
+                colors: background_style.editor_text,
             },
             window,
             BufferHighlights {
@@ -1522,8 +1481,6 @@ fn draw_split_editor_panes(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: TextStyle,
-    dim_inactive: bool,
 ) -> minui::Result<()> {
     let rects = state.pane_rects(width, height);
     let now = Instant::now();
@@ -1541,17 +1498,8 @@ fn draw_split_editor_panes(
             .entry(buffer_id)
             .or_default()
             .copy_pane_state_from(&view);
-        let dimming = if dim_inactive {
-            state.pane_focus_dimming(rect.pane_id, now)
-        } else {
-            0.0
-        };
+        let dimming = state.pane_focus_dimming(rect.pane_id, now);
         let pane_style = style.dimmed_by(style.dim_amount * dimming);
-        let pane_text = if dimming == 0.0 {
-            editor_text
-        } else {
-            pane_style.editor_text
-        };
         let is_active_pane = rect.pane_id == state.active_pane_id();
         let inactive_filename = state
             .session
@@ -1616,7 +1564,7 @@ fn draw_split_editor_panes(
                     width: rect.width,
                     height: rect.height,
                     has_line_numbers: options.has_line_numbers,
-                    colors: pane_text,
+                    colors: pane_style.editor_text,
                 },
                 &mut pane_window,
                 BufferHighlights {
@@ -1634,6 +1582,7 @@ fn draw_split_editor_panes(
         state.sync_rendered_pane_view(rect.pane_id, buffer_id);
     }
     state.restore_active_pane_view();
+    let style = style.dimmed_by(style.dim_amount * state.popup_background_dimming(now));
     draw_pane_split_lines(window, style, &rects, width, height)
 }
 
@@ -5017,7 +4966,7 @@ mod tests {
             },
         );
         assert!(!state.terminal.is_focused());
-        state.sync_terminal_focus(Instant::now());
+        state.sync_focus(Instant::now());
         state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         let style = UiStyle::default();
@@ -5093,7 +5042,7 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, navigation('j'));
         assert!(state.terminal.is_focused());
         let style = UiStyle::default();
-        state.sync_terminal_focus(Instant::now());
+        state.sync_focus(Instant::now());
         state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 19) {

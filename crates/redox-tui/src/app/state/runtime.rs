@@ -47,7 +47,6 @@ impl EditorState {
     }
 
     pub(crate) fn update_background(&mut self, now: Instant) -> Duration {
-        self.sync_terminal_focus(now);
         if self.terminal.poll() {
             self.request_redraw();
         }
@@ -84,6 +83,7 @@ impl EditorState {
             self.request_redraw();
         }
 
+        self.sync_focus(now);
         if self
             .pane_focus_transition
             .as_ref()
@@ -192,7 +192,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             state.update_background(Instant::now());
-            if !state.analysis_worker.is_pending() && !state.git.has_pending_work() {
+            if !state.analysis_worker.is_pending()
+                && !state.git.has_pending_work()
+                && state.pane_focus_transition.is_none()
+            {
                 state.take_redraw_request();
                 return;
             }
@@ -234,9 +237,16 @@ mod tests {
         state.update_background(hint_due);
         assert!(state.take_redraw_request());
         assert!(state.which_key_popup(hint_due).is_some());
-        assert_eq!(state.next_wake_deadline(hint_due), None);
+        assert_eq!(
+            state.next_wake_deadline(hint_due),
+            Some(hint_due + ANIMATION_FRAME_INTERVAL)
+        );
+        let fade_end = hint_due + super::super::PANE_FOCUS_DURATION;
+        state.update_background(fade_end);
+        assert!(state.take_redraw_request());
+        assert_eq!(state.next_wake_deadline(fade_end), None);
         state.input.reset_prefixes();
-        state.update_background(hint_due);
+        state.update_background(fade_end);
         assert!(state.take_redraw_request());
 
         state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
@@ -245,6 +255,7 @@ mod tests {
             .unwrap()
             .started_at
             .max(state.runtime.next_animation_frame);
+        state.one_shot_highlight.as_mut().unwrap().started_at = frame;
         state.update_background(frame);
         assert!(state.one_shot_highlight().is_some());
         assert!(state.take_redraw_request());

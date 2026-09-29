@@ -113,6 +113,7 @@ struct PaneFocusTransition {
     started_at: Instant,
     from: Vec<(PaneId, f32)>,
     terminal_from: f32,
+    popup_from: f32,
 }
 
 impl PaneFocusTransition {
@@ -493,6 +494,7 @@ pub struct EditorState {
     active_pane: PaneId,
     pane_focus_transition: Option<PaneFocusTransition>,
     terminal_focused: bool,
+    popup_background_dimmed: bool,
     next_pane_id: usize,
     pane_use_tick: u64,
     next_external_file_check_at: Instant,
@@ -582,6 +584,7 @@ impl EditorState {
             active_pane: PaneId(0),
             pane_focus_transition: None,
             terminal_focused: false,
+            popup_background_dimmed: false,
             next_pane_id: 1,
             pane_use_tick: 1,
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
@@ -1086,7 +1089,10 @@ impl EditorState {
     }
 
     pub(crate) fn pane_focus_dimming(&self, pane_id: PaneId, now: Instant) -> f32 {
-        let target = if !self.terminal_focused && self.pane_draws_as_active(pane_id) {
+        let target = if !self.terminal_focused
+            && !self.popup_background_dimmed
+            && self.pane_draws_as_active(pane_id)
+        {
             0.0
         } else {
             1.0
@@ -1112,25 +1118,41 @@ impl EditorState {
     }
 
     fn start_pane_focus_transition(&mut self, now: Instant) {
-        self.pane_focus_transition = (self.panes.len() > 1
-            || self.terminal.is_visible()
-            || self.terminal_focused)
-            .then(|| PaneFocusTransition {
-                started_at: now,
-                from: self
-                    .panes
-                    .iter()
-                    .map(|pane| (pane.id, self.pane_focus_dimming(pane.id, now)))
-                    .collect(),
-                terminal_from: self.terminal_focus_dimming(now),
-            });
+        self.pane_focus_transition = Some(PaneFocusTransition {
+            started_at: now,
+            from: self
+                .panes
+                .iter()
+                .map(|pane| (pane.id, self.pane_focus_dimming(pane.id, now)))
+                .collect(),
+            terminal_from: self.terminal_focus_dimming(now),
+            popup_from: self.popup_background_dimming(now),
+        });
     }
 
-    pub(crate) fn sync_terminal_focus(&mut self, now: Instant) {
+    pub(crate) fn popup_background_dimming(&self, now: Instant) -> f32 {
+        let target = if self.popup_background_dimmed {
+            1.0
+        } else {
+            0.0
+        };
+        self.pane_focus_transition
+            .as_ref()
+            .map_or(target, |transition| {
+                transition.interpolate(transition.popup_from, target, now)
+            })
+    }
+
+    pub(crate) fn sync_focus(&mut self, now: Instant) {
         let focused = self.terminal.is_focused();
-        if focused != self.terminal_focused {
+        let popup_dimmed = (self.mode.has_popup_overlay() && self.substitute_preview().is_none())
+            || self.explorer_is_active()
+            || self.about_is_active()
+            || self.which_key_popup(now).is_some();
+        if focused != self.terminal_focused || popup_dimmed != self.popup_background_dimmed {
             self.start_pane_focus_transition(now);
             self.terminal_focused = focused;
+            self.popup_background_dimmed = popup_dimmed;
             self.request_redraw();
         }
     }

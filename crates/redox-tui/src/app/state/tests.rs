@@ -3004,7 +3004,7 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
         for focused in [true, false] {
             state.terminal.set_focused(focused);
             let started = Instant::now();
-            state.sync_terminal_focus(started);
+            state.sync_focus(started);
             let midpoint = started + PANE_FOCUS_DURATION / 2;
             assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
             assert_eq!(state.terminal_focus_dimming(midpoint), 0.5);
@@ -3024,6 +3024,73 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
         }
     }
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    for split in [false, true] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        if split {
+            state.split_active_pane(SplitAxis::Vertical);
+            state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+        }
+        let active = state.active_pane_id();
+        let started = Instant::now();
+        state.mode = EditorMode::Search;
+        state.sync_focus(started);
+        assert!(state.pane_focus_transition.is_none());
+
+        state.mode = EditorMode::Command;
+        state.sync_focus(started);
+        for (elapsed, expected) in [
+            (Duration::ZERO, 0.0),
+            (PANE_FOCUS_DURATION / 2, 0.5),
+            (PANE_FOCUS_DURATION, 1.0),
+        ] {
+            let now = started + elapsed;
+            assert_eq!(state.pane_focus_dimming(active, now), expected);
+            assert_eq!(state.popup_background_dimming(now), expected);
+            assert_eq!(state.terminal_focus_dimming(now), 1.0);
+            for pane in state.panes().iter().filter(|pane| pane.id != active) {
+                assert_eq!(state.pane_focus_dimming(pane.id, now), 1.0);
+            }
+        }
+
+        let midpoint = started + PANE_FOCUS_DURATION / 2;
+        state.mode = EditorMode::Finder;
+        state.sync_focus(midpoint);
+        assert_eq!(
+            state.pane_focus_transition.as_ref().unwrap().started_at,
+            started
+        );
+
+        state.mode = EditorMode::Search;
+        state.sync_focus(midpoint);
+        assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
+        let reopened = midpoint + PANE_FOCUS_DURATION / 2;
+        assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
+        state.mode = EditorMode::Command;
+        state.sync_focus(reopened);
+        assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
+
+        let closed = reopened + PANE_FOCUS_DURATION;
+        state.update_background(closed);
+        state.mode = EditorMode::Normal;
+        state.sync_focus(closed);
+        assert_eq!(state.pane_focus_dimming(active, closed), 1.0);
+        assert_eq!(
+            state.pane_focus_dimming(active, closed + PANE_FOCUS_DURATION / 2),
+            0.5
+        );
+        let expiry = closed + PANE_FOCUS_DURATION;
+        state.take_redraw_request();
+        state.update_background(expiry);
+        assert!(state.pane_focus_transition.is_none());
+        assert!(state.take_redraw_request());
+        assert_eq!(state.pane_focus_dimming(active, expiry), 0.0);
+        assert_eq!(state.popup_background_dimming(expiry), 0.0);
+    }
 }
 
 #[test]
