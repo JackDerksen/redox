@@ -5277,7 +5277,7 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
 
     assert_eq!(state.private_register, "alph");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("yanked"));
+    assert!(state.status_msg.is_none());
     assert_eq!(
         state.one_shot_highlight().map(|highlight| (
             highlight.selection,
@@ -5883,7 +5883,7 @@ fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
 
     assert_eq!(state.private_register, "two\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
-    assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
+    assert!(state.status_msg.is_none());
     assert_eq!(
         state.one_shot_highlight().map(|highlight| (
             highlight.selection,

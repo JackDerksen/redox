@@ -367,7 +367,7 @@ impl EditorState {
                 if let Some((selection, mode)) = plan.yank_highlight {
                     self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                 }
-                self.set_status("yanked");
+                self.confirm_yank("yanked");
             }
             TextObjectOperator::Select => {}
         }
@@ -444,7 +444,7 @@ impl EditorState {
             VisualModeKind::Line,
             super::HighlightKind::Yank,
         );
-        self.set_status(if start_line == end_line {
+        self.confirm_yank(if start_line == end_line {
             "yanked line"
         } else {
             "yanked lines"

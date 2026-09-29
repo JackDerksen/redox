@@ -298,6 +298,7 @@ mod tests {
             state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
             assert!(state.one_shot_highlight().is_none());
             assert!(!state.has_transient_animation());
+            assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
         }
     }
 

@@ -126,7 +126,9 @@ pub(crate) fn draw_explorer_popup_view(
         u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
         snapshot.first_line()..total_lines,
         cursor_line,
-        visual_selection.map(|(selection, _)| selection.line_range()),
+        visual_selection
+            .map(|(selection, _)| selection.line_range())
+            .or_else(|| one_shot_highlight.and_then(|highlight| highlight.yank_lines())),
     )?;
 
     for (row, line) in snapshot.iter().enumerate() {

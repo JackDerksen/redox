@@ -653,7 +653,9 @@ fn draw_editor_view(
         u16::from(gutter.show_git_marker_column),
         snapshot.first_line()..gutter.total_lines,
         active_cursor_line,
-        visual_selection.map(|(selection, _)| selection.line_range()),
+        visual_selection
+            .map(|(selection, _)| selection.line_range())
+            .or_else(|| one_shot_highlight.and_then(OneShotHighlight::yank_lines)),
     )?;
     draw_gutter_padding(
         window,
@@ -1932,8 +1934,9 @@ fn draw_buffer_snapshot_for_id(
                 snapshot.first_line()..total_lines,
                 cursor.line,
                 visual_selection
-                    .filter(|_| preview.is_none())
-                    .map(|(selection, _)| selection.line_range()),
+                    .map(|(selection, _)| selection.line_range())
+                    .or_else(|| one_shot_highlight.and_then(OneShotHighlight::yank_lines))
+                    .filter(|_| preview.is_none()),
             )?;
             draw_gutter_padding(
                 window,
@@ -3407,7 +3410,7 @@ fn handle_editor_event_inner(
                 if let Err(error) = system_clipboard.copy(&text) {
                     state.set_status(format!("clipboard copy failed: {error}"));
                 } else {
-                    state.set_status("yanked to system clipboard");
+                    state.confirm_yank("yanked to system clipboard");
                 }
             }
             None => {

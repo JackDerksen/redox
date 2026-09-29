@@ -941,7 +941,7 @@ impl EditorState {
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
-                    self.set_status("yanked");
+                    self.confirm_yank("yanked");
                 }
             }
 

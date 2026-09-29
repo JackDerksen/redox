@@ -102,6 +102,10 @@ pub(crate) struct OneShotHighlight {
 }
 
 impl OneShotHighlight {
+    pub(crate) fn yank_lines(self) -> Option<(usize, usize)> {
+        (self.kind == HighlightKind::Yank).then(|| self.selection.line_range())
+    }
+
     pub(crate) fn progress(self) -> f32 {
         crate::ui::helpers::animation_progress(self.elapsed, self.duration)
     }
@@ -788,6 +792,18 @@ impl EditorState {
     #[cfg(test)]
     pub(crate) fn status_message_is_sticky(&self) -> bool {
         self.status_msg.is_some() && self.status_msg_expires_at.is_none()
+    }
+
+    pub(crate) fn confirm_yank(&mut self, message: &str) {
+        if self
+            .animations
+            .duration(self.animations.yank_ripple_ms)
+            .is_zero()
+        {
+            self.set_status(message);
+        } else {
+            self.clear_status();
+        }
     }
 
     fn confirm_active_save(&mut self) {
