@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use super::EditorState;
 use crate::ANIMATION_FRAME_INTERVAL;
-use crate::ui::widgets::dashboard::LOGO_ENTRANCE_DURATION;
 
 // MinUI waits on terminal input. Poll only while a background producer may reply.
 pub(super) const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -16,6 +15,7 @@ const PERF_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) struct RuntimeState {
     redraw_requested: bool,
     next_animation_frame: Instant,
+    next_rain_frame: Instant,
     next_perf_refresh: Instant,
     which_key_visible: bool,
     loading_toast: Option<String>,
@@ -26,6 +26,7 @@ impl Default for RuntimeState {
         Self {
             redraw_requested: true,
             next_animation_frame: Instant::now(),
+            next_rain_frame: Instant::now(),
             next_perf_refresh: Instant::now(),
             which_key_visible: false,
             loading_toast: None,
@@ -34,6 +35,22 @@ impl Default for RuntimeState {
 }
 
 impl EditorState {
+    pub(super) fn reset_animation_deadlines(&mut self) {
+        let now = Instant::now();
+        self.runtime.next_animation_frame = now;
+        self.runtime.next_rain_frame = now;
+    }
+
+    fn has_transient_animation(&self) -> bool {
+        self.one_shot_highlight.is_some()
+            || self.save_confirmation.is_some()
+            || self.pane_focus_transition.is_some()
+            || self
+                .dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.logo_started_at.is_some())
+    }
+
     pub(crate) fn active_loading_toast(&self, now: Instant) -> Option<String> {
         self.active_lsp_loading_toast(now)
             .or_else(|| self.active_update_check_toast(now))
@@ -87,7 +104,8 @@ impl EditorState {
         self.sync_focus(now);
         if let Some(dashboard) = &mut self.dashboard
             && dashboard.logo_started_at.is_some_and(|started_at| {
-                now.saturating_duration_since(started_at) >= LOGO_ENTRANCE_DURATION
+                now.saturating_duration_since(started_at)
+                    >= self.animations.duration(self.animations.dashboard_logo_ms)
             })
         {
             dashboard.logo_started_at = None;
@@ -97,22 +115,21 @@ impl EditorState {
             .pane_focus_transition
             .as_ref()
             .is_some_and(|transition| {
-                now.saturating_duration_since(transition.started_at) >= super::PANE_FOCUS_DURATION
+                now.saturating_duration_since(transition.started_at) >= transition.duration
             })
         {
             self.pane_focus_transition = None;
             self.request_redraw();
         }
-        if (self.rain_is_active()
-            || self.one_shot_highlight.is_some()
-            || self.save_confirmation.is_some()
-            || self.dashboard_logo_elapsed(now).is_some()
-            || self.pane_focus_transition.is_some())
-            && now >= self.runtime.next_animation_frame
-        {
-            self.advance_rain_animation();
+        if self.has_transient_animation() && now >= self.runtime.next_animation_frame {
             self.advance_one_shot_highlight(now);
             self.runtime.next_animation_frame = now + ANIMATION_FRAME_INTERVAL;
+            self.request_redraw();
+        }
+        if self.rain_is_active() && now >= self.runtime.next_rain_frame {
+            self.advance_rain_animation();
+            self.runtime.next_rain_frame = now
+                + Duration::from_nanos(1_000_000_000 / u64::from(self.animations.rain_fps.max(1)));
             self.request_redraw();
         }
         let which_key_visible = self.which_key_popup(now).is_some();
@@ -150,11 +167,6 @@ impl EditorState {
             || self.analysis_worker.is_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();
-        let animation = self.rain_is_active()
-            || self.one_shot_highlight.is_some()
-            || self.save_confirmation.is_some()
-            || self.dashboard_logo_elapsed(now).is_some()
-            || self.pane_focus_transition.is_some();
         let which_key = self
             .which_key_enabled
             .then(|| self.input.which_key_deadline(self.which_key_delay))
@@ -183,7 +195,10 @@ impl EditorState {
             self.status_msg_expires_at,
             self.search_preview_due,
             which_key,
-            animation.then_some(self.runtime.next_animation_frame),
+            self.has_transient_animation()
+                .then_some(self.runtime.next_animation_frame),
+            self.rain_is_active()
+                .then_some(self.runtime.next_rain_frame),
             self.perf_visible.then_some(self.runtime.next_perf_refresh),
         ]
         .into_iter()
@@ -252,7 +267,7 @@ mod tests {
             state.next_wake_deadline(hint_due),
             Some(hint_due + ANIMATION_FRAME_INTERVAL)
         );
-        let fade_end = hint_due + super::super::PANE_FOCUS_DURATION;
+        let fade_end = hint_due + Duration::from_millis(state.animations.focus_fade_ms);
         state.update_background(fade_end);
         assert!(state.take_redraw_request());
         assert_eq!(state.next_wake_deadline(fade_end), None);
@@ -260,6 +275,7 @@ mod tests {
         state.update_background(fade_end);
         assert!(state.take_redraw_request());
 
+        state.animations.yank_ripple_ms = 240;
         state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
         let frame = state
             .one_shot_highlight
@@ -267,15 +283,22 @@ mod tests {
             .started_at
             .max(state.runtime.next_animation_frame);
         state.one_shot_highlight.as_mut().unwrap().started_at = frame;
-        state.update_background(frame);
-        assert!(state.one_shot_highlight().is_some());
-        assert!(state.take_redraw_request());
-        state.update_background(frame + crate::ui::overlays::YankRipple::DURATION);
+        state.update_background(frame + Duration::from_millis(120));
+        assert_eq!(state.one_shot_highlight().unwrap().progress(), 0.5);
+        state.take_redraw_request();
+        state.update_background(frame + Duration::from_millis(240));
         assert!(state.one_shot_highlight().is_none());
         assert!(
             state.take_redraw_request(),
             "the final frame must erase the highlight"
         );
+
+        for source in ["enabled = false", "yank_ripple_ms = 0"] {
+            state.configure_animations(toml::from_str(source).unwrap());
+            state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
+            assert!(state.one_shot_highlight().is_none());
+            assert!(!state.has_transient_animation());
+        }
     }
 
     #[test]

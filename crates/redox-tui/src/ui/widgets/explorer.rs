@@ -234,7 +234,7 @@ pub(crate) fn draw_explorer_popup_view(
                         error_style: style.error_range,
                         yank_ripple: YankRipple::new(
                             &cells,
-                            highlight.elapsed,
+                            highlight.progress(),
                             style.editor_text.colors(),
                         ),
                         jump_pulse: None,

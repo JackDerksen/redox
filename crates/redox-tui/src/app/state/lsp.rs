@@ -801,11 +801,20 @@ impl EditorState {
         if elapsed < LOADING_TOAST_DELAY {
             return None;
         }
-        let idx = ((elapsed.as_millis() / 100) as usize) % LSP_SPINNER_FRAMES.len();
         Some(format!(
             "{} loading {} diagnostics",
-            LSP_SPINNER_FRAMES[idx], client.provider.label
+            self.loading_spinner(elapsed),
+            client.provider.label
         ))
+    }
+
+    fn loading_spinner(&self, elapsed: Duration) -> &'static str {
+        let interval = self
+            .animations
+            .duration(self.animations.spinner_frame_ms)
+            .as_millis();
+        let frame = elapsed.as_millis().checked_div(interval).unwrap_or(0);
+        LSP_SPINNER_FRAMES[(frame % LSP_SPINNER_FRAMES.len() as u128) as usize]
     }
 
     pub fn poll_lsp(&mut self) {
@@ -3479,14 +3488,13 @@ impl EditorState {
             .min_by_key(|(_, operation)| operation.started_at)?;
         let item = marketplace_spec(item_id)?;
         let elapsed = now.saturating_duration_since(operation.started_at);
-        let idx = ((elapsed.as_millis() / 100) as usize) % LSP_SPINNER_FRAMES.len();
         let verb = match operation.kind {
             ProviderOperationKind::Installing => "installing",
             ProviderOperationKind::Uninstalling => "uninstalling",
         };
         Some(format!(
             "{} {} {}",
-            LSP_SPINNER_FRAMES[idx],
+            self.loading_spinner(elapsed),
             verb,
             item.label()
         ))

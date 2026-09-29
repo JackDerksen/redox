@@ -242,7 +242,7 @@ fn draw_editor_view(
             background_style,
             selected,
             state.mode == app::EditorMode::Normal,
-            state.dashboard_logo_elapsed(Instant::now()),
+            state.dashboard_logo_progress(Instant::now()),
         )?;
         if let Some(popup) = state.finder_popup() {
             let mouse = draw_finder_popup(&popup, style, window)?;
@@ -1452,7 +1452,7 @@ fn draw_popup_background(
             background_style,
             selected,
             false,
-            state.dashboard_logo_elapsed(Instant::now()),
+            state.dashboard_logo_progress(Instant::now()),
         );
     }
     if state.panes().len() > 1 {
@@ -2209,7 +2209,7 @@ fn draw_snapshot_lines(
                 })
                 .zip(selected_cells.as_deref())
                 .and_then(|(highlight, cells)| {
-                    YankRipple::new(cells, highlight.elapsed, default_colors.colors())
+                    YankRipple::new(cells, highlight.progress(), default_colors.colors())
                 }),
             jump_pulse: one_shot_highlight
                 .filter(|highlight| {
@@ -2217,7 +2217,7 @@ fn draw_snapshot_lines(
                         && highlight.kind == HighlightKind::Jump
                         && selected_cells.is_some()
                 })
-                .map(|highlight| JumpPulse::new(highlight.elapsed, style.editor_text.fg)),
+                .map(|highlight| JumpPulse::new(highlight.progress(), style.editor_text.fg)),
             delimiter_blink: one_shot_highlight
                 .filter(|highlight| {
                     visual_selection.is_none() && highlight.kind == HighlightKind::Delimiter
@@ -2227,7 +2227,7 @@ fn draw_snapshot_lines(
                     let column = cells.iter().position(|selected| *selected)?;
                     Some((
                         column,
-                        JumpPulse::new(highlight.elapsed, style.editor_text.fg),
+                        JumpPulse::new(highlight.progress(), style.editor_text.fg),
                     ))
                 }),
         };
@@ -3537,6 +3537,7 @@ fn reload_runtime_config(
             state.configure_update_checks(candidate.check_updates);
         }
         state.configure_logging(candidate.logging)?;
+        state.configure_animations(candidate.animations);
         *active_config = candidate;
         *style = candidate_style;
         *active_theme = candidate_theme;
@@ -3626,6 +3627,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut state = EditorState::new(session);
     let logging_result = state.configure_logging(config.logging);
     state.zen = config.zen;
+    state.configure_animations(config.animations);
     state.configure(
         input,
         config.undo_tree_history_size,
@@ -4804,12 +4806,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn frame_intervals_match_expected_cadence() {
-        assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
-        assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));
-    }
-
     fn temp_dir_path(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5413,7 +5409,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             assert_eq!(decorated.has(Attribute::Italic), enabled);
 
             window.clear_screen().unwrap();
-            draw_dashboard(&mut window, style, 0, false, None).unwrap();
+            draw_dashboard(&mut window, style, 0, false, 1.0).unwrap();
             let row = (0..24)
                 .find(|row| window.row_text(*row).contains("Finder"))
                 .unwrap();
@@ -5591,7 +5587,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     jump_pulse: None,
                     delimiter_blink: Some((
                         3 - scroll_x,
-                        JumpPulse::new(Duration::ZERO, style.editor_text.fg),
+                        JumpPulse::new(0.0, style.editor_text.fg),
                     )),
                 };
                 let mut window = TestWindow::new(8, 1);
@@ -6276,6 +6272,10 @@ leader = ","
 icons_enabled = true
 line_numbers = "absolute"
 
+[animations]
+jump_pulse_ms = 275
+dashboard_logo_ms = 0
+
 [zen]
 width_percent = 70
 hide_gutter = false
@@ -6318,6 +6318,9 @@ background = "#010203"
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
         assert!(!style.text_formatting);
+        assert_eq!(state.animations.jump_pulse_ms, 275);
+        assert_eq!(state.animations.dashboard_logo_ms, 0);
+        assert_eq!(state.animations.yank_ripple_ms, 150);
         assert!(!style.about.title.format.bold);
         assert_eq!(style.layout.line_numbers, ui::style::LineNumbers::Absolute);
         assert!(

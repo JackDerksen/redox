@@ -519,7 +519,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let scroll_width = scroll_glyph.chars().count() as u16;
     let coords_minimap_width =
         status_module_width(coords_width + STATUS_MODULE_SEPARATOR_WIDTH + scroll_width);
-    let save_confirmation = state.save_confirmation_remaining(buffer_id);
+    let save_confirmation = state.save_confirmation_opacity(buffer_id, std::time::Instant::now());
     let change_marker_width =
         u16::from(meta.dirty || meta.external_changed || save_confirmation.is_some());
     let right_module_width = change_marker_width + DIRTY_GAP_WIDTH + coords_minimap_width;
@@ -577,13 +577,13 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
             Segment::new("+")
                 .with_color(style.status_line.dirty)
                 .with_min_width(change_marker_width)
-        } else if let Some(remaining) = save_confirmation {
-            let fade = 1.0 - (remaining.as_secs_f32() / 0.15).clamp(0.0, 1.0);
+        } else if let Some(opacity) = save_confirmation {
             let colors = style.status_line.saved;
             Segment::new("✓")
-                .with_color(
-                    colors.with_colors(dim_foreground_color(colors.fg, colors.bg, fade), colors.bg),
-                )
+                .with_color(colors.with_colors(
+                    dim_foreground_color(colors.fg, colors.bg, 1.0 - opacity),
+                    colors.bg,
+                ))
                 .with_min_width(change_marker_width)
         } else {
             Segment::spacer(0)

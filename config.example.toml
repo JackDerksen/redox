@@ -18,6 +18,19 @@ color_column = 79 # Renders on top of cl=80
 line_numbers = "relative" # "absolute" shows the actual line number on every row
 leader = " "
 
+# Durations are milliseconds; 0 disables an effect. Reload with :config reload.
+[animations]
+enabled = true # false disables all animations
+yank_ripple_ms = 150
+jump_pulse_ms = 150
+delimiter_blink_ms = 150
+save_confirmation_ms = 600
+save_fade_ms = 150 # Final portion of the confirmation; 0 keeps it solid until expiry
+focus_fade_ms = 150 # Shared by panes, the terminal, and dimming popups
+dashboard_logo_ms = 500
+spinner_frame_ms = 100 # 0 keeps loading indicators still
+rain_fps = 60 # 0 disables :rain; otherwise 1..60 frames per second
+
 # Optional local logging history. Nothing is uploaded. Use :log "What happened" to
 # preserve a report under ~/.local/state/redox/logs/reports/.
 [logging]

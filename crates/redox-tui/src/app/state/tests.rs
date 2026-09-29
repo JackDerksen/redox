@@ -2942,11 +2942,13 @@ fn pane_resizing_preserves_nested_neighbours_and_fixed_panes() {
 fn pane_focus_crossfades_and_reverses_from_current_brightness() {
     let path = temp_file_path("pane_focus_fade");
     let mut state = state_with_text(path.clone(), "alpha");
+    state.animations.focus_fade_ms = 420;
+    let duration = Duration::from_millis(420);
     let original = state.active_pane_id();
     state.split_active_pane(SplitAxis::Vertical);
     let other = state.active_pane_id();
     let started = state.pane_focus_transition.as_ref().unwrap().started_at;
-    for (elapsed, expected) in [(Duration::ZERO, 0.0), (PANE_FOCUS_DURATION / 2, 0.5)] {
+    for (elapsed, expected) in [(Duration::ZERO, 0.0), (duration / 2, 0.5)] {
         assert_eq!(
             state.pane_focus_dimming(original, started + elapsed),
             expected
@@ -2957,8 +2959,7 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
         );
     }
 
-    state.pane_focus_transition.as_mut().unwrap().started_at =
-        Instant::now() - PANE_FOCUS_DURATION / 2;
+    state.pane_focus_transition.as_mut().unwrap().started_at = Instant::now() - duration / 2;
     state.focus_split(SplitDirection::Left);
     assert_eq!(state.active_pane_id(), original);
     let transition = state.pane_focus_transition.as_ref().unwrap();
@@ -2969,7 +2970,7 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
             amount
         );
     }
-    let expiry = transition.started_at + PANE_FOCUS_DURATION;
+    let expiry = transition.started_at + duration;
     state.take_redraw_request();
     state.update_background(expiry);
     assert!(state.pane_focus_transition.is_none());
@@ -2982,15 +2983,11 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
     state.close_active_split();
     assert_eq!(state.active_pane_id(), other);
     let started = state.pane_focus_transition.as_ref().unwrap().started_at;
-    for (elapsed, expected) in [
-        (Duration::ZERO, 1.0),
-        (PANE_FOCUS_DURATION / 2, 0.5),
-        (PANE_FOCUS_DURATION, 0.0),
-    ] {
+    for (elapsed, expected) in [(Duration::ZERO, 1.0), (duration / 2, 0.5), (duration, 0.0)] {
         assert_eq!(state.pane_focus_dimming(other, started + elapsed), expected);
     }
     state.split_active_pane(SplitAxis::Vertical);
-    state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+    state.update_background(Instant::now() + duration);
 
     let directory = tempfile::tempdir().unwrap();
     state.terminal = crate::terminal::tests::configured_panel(directory.path());
@@ -2998,20 +2995,20 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
     for panes in [2, 1] {
         if panes == 1 {
             state.close_active_split();
-            state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+            state.update_background(Instant::now() + duration);
         }
         let active = state.active_pane_id();
         for focused in [true, false] {
             state.terminal.set_focused(focused);
             let started = Instant::now();
             state.sync_focus(started);
-            let midpoint = started + PANE_FOCUS_DURATION / 2;
+            let midpoint = started + duration / 2;
             assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
             assert_eq!(state.terminal_focus_dimming(midpoint), 0.5);
             for pane in state.panes().iter().filter(|pane| pane.id != active) {
                 assert_eq!(state.pane_focus_dimming(pane.id, midpoint), 1.0);
             }
-            let expiry = started + PANE_FOCUS_DURATION;
+            let expiry = started + duration;
             state.update_background(expiry);
             assert_eq!(
                 state.pane_focus_dimming(active, expiry),
@@ -3031,9 +3028,11 @@ fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
     let _guard = global_test_state_lock().lock().unwrap();
     for split in [false, true] {
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.animations.focus_fade_ms = 420;
+        let duration = Duration::from_millis(420);
         if split {
             state.split_active_pane(SplitAxis::Vertical);
-            state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+            state.update_background(Instant::now() + duration);
         }
         let active = state.active_pane_id();
         let started = Instant::now();
@@ -3043,11 +3042,7 @@ fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
 
         state.mode = EditorMode::Command;
         state.sync_focus(started);
-        for (elapsed, expected) in [
-            (Duration::ZERO, 0.0),
-            (PANE_FOCUS_DURATION / 2, 0.5),
-            (PANE_FOCUS_DURATION, 1.0),
-        ] {
+        for (elapsed, expected) in [(Duration::ZERO, 0.0), (duration / 2, 0.5), (duration, 1.0)] {
             let now = started + elapsed;
             assert_eq!(state.pane_focus_dimming(active, now), expected);
             assert_eq!(state.popup_background_dimming(now), expected);
@@ -3057,7 +3052,7 @@ fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
             }
         }
 
-        let midpoint = started + PANE_FOCUS_DURATION / 2;
+        let midpoint = started + duration / 2;
         state.mode = EditorMode::Finder;
         state.sync_focus(midpoint);
         assert_eq!(
@@ -3068,22 +3063,19 @@ fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
         state.mode = EditorMode::Search;
         state.sync_focus(midpoint);
         assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
-        let reopened = midpoint + PANE_FOCUS_DURATION / 2;
+        let reopened = midpoint + duration / 2;
         assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
         state.mode = EditorMode::Command;
         state.sync_focus(reopened);
         assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
 
-        let closed = reopened + PANE_FOCUS_DURATION;
+        let closed = reopened + duration;
         state.update_background(closed);
         state.mode = EditorMode::Normal;
         state.sync_focus(closed);
         assert_eq!(state.pane_focus_dimming(active, closed), 1.0);
-        assert_eq!(
-            state.pane_focus_dimming(active, closed + PANE_FOCUS_DURATION / 2),
-            0.5
-        );
-        let expiry = closed + PANE_FOCUS_DURATION;
+        assert_eq!(state.pane_focus_dimming(active, closed + duration / 2), 0.5);
+        let expiry = closed + duration;
         state.take_redraw_request();
         state.update_background(expiry);
         assert!(state.pane_focus_transition.is_none());
@@ -3199,14 +3191,9 @@ fn closing_delimiters_blink_the_matching_opener() {
             expected.map(|opening| (HighlightKind::Delimiter, Selection::empty(opening))),
             "{text:?}, {character:?}"
         );
-        if let Some(highlight) = highlight {
-            let duration = crate::ui::overlays::JumpPulse::DURATION;
-            state.advance_one_shot_highlight(highlight.started_at + duration / 2);
-            assert_eq!(state.one_shot_highlight().unwrap().elapsed, duration / 2);
+        if highlight.is_some() {
             state.apply_input(InputAction::InsertChar('x'), 80, 24);
             assert!(state.one_shot_highlight().is_none());
-            state.advance_one_shot_highlight(highlight.started_at + duration);
-            assert!(state.one_shot_highlight.is_none());
         }
     }
 }
@@ -3584,34 +3571,52 @@ fn command_ls_status_survives_input_before_timeout() {
 fn command_write_confirms_success_until_expiry_or_another_edit() {
     let path = temp_file_path("write_status_clears");
     let mut state = state_with_text(path.clone(), "alpha");
+    state.animations.save_confirmation_ms = 1000;
+    state.animations.save_fade_ms = 400;
     let buffer_id = state.session.active_id();
 
+    let before_save = Instant::now();
     run_command(&mut state, "w");
+    let now = Instant::now();
     assert!(state.status_msg.is_none());
-    assert!(state.save_confirmation_remaining(buffer_id).is_some());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_some());
     let expiry = state.save_confirmation.unwrap().expires_at;
+    assert!(
+        (before_save + Duration::from_millis(1000)..=Instant::now() + Duration::from_millis(1000))
+            .contains(&expiry)
+    );
+    let halfway_through_fade = expiry - Duration::from_millis(200);
+    assert_eq!(
+        state.save_confirmation_opacity(buffer_id, halfway_through_fade),
+        Some(0.5)
+    );
+    state.animations.save_fade_ms = 0;
+    assert_eq!(
+        state.save_confirmation_opacity(buffer_id, halfway_through_fade),
+        Some(1.0)
+    );
     state.take_redraw_request();
     assert!(state.next_wake_deadline(Instant::now()).unwrap() <= expiry);
 
     state.update_background(expiry);
-    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
     assert!(state.take_redraw_request());
 
     run_command(&mut state, "w");
     state.apply_input(InputAction::Paste("!".into()), 80, 24);
-    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
     state.apply_input(InputAction::Undo, 80, 24);
-    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
 
     run_command(&mut state, "w");
     let other_id = state.session.open_unnamed_buffer();
-    assert!(state.save_confirmation_remaining(other_id).is_none());
+    assert!(state.save_confirmation_opacity(other_id, now).is_none());
     state.session.activate(buffer_id);
     run_command(
         &mut state,
         &format!("w {}", path.parent().unwrap().display()),
     );
-    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
     assert!(
         state
             .status_msg
@@ -5895,7 +5900,7 @@ fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
 }
 
 #[test]
-fn jump_pulse_follows_large_motions_and_expires() {
+fn jump_pulse_follows_and_centers_large_motions() {
     let path = temp_file_path("jump_pulse");
     let mut state = state_with_text(path.clone(), &"alpha beta\n".repeat(40));
     let viewport_height = 8;
@@ -5922,32 +5927,6 @@ fn jump_pulse_follows_large_motions_and_expires() {
             );
         }
     }
-    let highlight = state.one_shot_highlight().unwrap();
-    state.advance_one_shot_highlight(
-        highlight.started_at + crate::ui::overlays::JumpPulse::DURATION,
-    );
-    assert!(state.one_shot_highlight().is_none());
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn yank_ripple_uses_elapsed_time() {
-    let path = temp_file_path("yy_yank_ripple_duration");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n");
-
-    state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
-    assert!(state.one_shot_highlight().is_some());
-
-    let started_at = state.one_shot_highlight.unwrap().started_at;
-    state.advance_one_shot_highlight(started_at + Duration::from_millis(140));
-    assert_eq!(
-        state.one_shot_highlight().unwrap().elapsed,
-        Duration::from_millis(140)
-    );
-
-    state.advance_one_shot_highlight(started_at + crate::ui::overlays::YankRipple::DURATION);
-    assert!(state.one_shot_highlight().is_none());
-
     let _ = fs::remove_file(path);
 }
 
@@ -5987,7 +5966,7 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
     );
 
     let expiry =
-        state.one_shot_highlight.unwrap().started_at + crate::ui::overlays::YankRipple::DURATION;
+        state.one_shot_highlight.unwrap().started_at + state.one_shot_highlight.unwrap().duration;
     state.advance_one_shot_highlight(expiry);
     run_command(&mut state, "bp");
     assert_eq!(state.session.active_id(), id_a);

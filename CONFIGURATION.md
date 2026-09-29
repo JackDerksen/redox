@@ -29,6 +29,7 @@ immediately. Zen settings also update immediately; reloading preserves the curre
 `zen.enabled` changed in the configuration.
 Logging settings also take effect on reload, including enabling, disabling, and changing the
 event-history limit.
+Animation settings also reload immediately; changing them finishes any active visual feedback.
 
 Reloading is transactional: if the file cannot be read or contains an invalid option, colour,
 theme, mode, action, or key combination, Redox displays the error and keeps the active
@@ -102,6 +103,33 @@ leader = " "
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `line_numbers` | string | `"relative"` | `"relative"` shows the distance from the cursor, with the current line's actual number. `"absolute"` shows actual line numbers on every row. Applies to editor panes and the explorer. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
+
+## Animations
+
+Set these options under `[animations]`; all are optional. See
+[`config.example.toml`](config.example.toml) for a complete example.
+
+| Option | Default | Behaviour |
+| --- | --- | --- |
+| `enabled` | `true` | Set `false` to disable all animations. |
+| `yank_ripple_ms` | `150` | Ripple across copied text. |
+| `jump_pulse_ms` | `150` | Pulse on the destination line after a jump. |
+| `delimiter_blink_ms` | `150` | Blink the matching opening delimiter. |
+| `save_confirmation_ms` | `600` | Total lifetime of the save checkmark. |
+| `save_fade_ms` | `150` | Final portion of the checkmark's lifetime; capped at `save_confirmation_ms`. |
+| `focus_fade_ms` | `150` | Shared by pane and terminal focus, pane closing, and popup background dimming. |
+| `dashboard_logo_ms` | `500` | Entrance for both dashboard sizes. The About logo stays static. |
+| `spinner_frame_ms` | `100` | Interval between loading-spinner frames. |
+| `rain_fps` | `60` | Rain speed, from `1` to `60` frames per second. |
+
+Durations use non-negative integer milliseconds. Set a value to `0` to disable
+that effect. A zero `save_fade_ms` keeps the checkmark solid until expiry; a zero
+`spinner_frame_ms` leaves a static indicator while loading continues. A zero
+`rain_fps` disables `:rain`. Editing, copying, saving, jump centring, and focus
+changes still work normally with animations disabled.
+
+Use `:config reload` to apply changes. Active feedback finishes immediately and
+subsequent effects use the new timings. Rain adopts its new speed, or stops if disabled.
 
 ## Mouse support
 

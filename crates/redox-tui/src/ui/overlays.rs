@@ -2,7 +2,6 @@ use crate::ui::render::LineViewport;
 use crate::ui::text_style::TextStyle;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::time::Duration;
 
 use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
@@ -33,11 +32,8 @@ pub(crate) struct JumpPulse {
 }
 
 impl JumpPulse {
-    pub const DURATION: Duration = Duration::from_millis(150);
-
-    pub fn new(elapsed: Duration, foreground: Color) -> Self {
-        let remaining =
-            (1.0 - elapsed.as_secs_f32() / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    pub fn new(progress: f32, foreground: Color) -> Self {
+        let remaining = 1.0 - progress;
         Self {
             foreground,
             strength: 0.22 * remaining * remaining,
@@ -64,14 +60,11 @@ pub(crate) struct YankRipple<'a> {
 }
 
 impl<'a> YankRipple<'a> {
-    pub const DURATION: Duration = Duration::from_millis(150);
-
-    pub fn new(cells: &'a [bool], elapsed: Duration, colors: ColorPair) -> Option<Self> {
+    pub fn new(cells: &'a [bool], progress: f32, colors: ColorPair) -> Option<Self> {
         let start = cells.iter().position(|selected| *selected)?;
         let end = cells.iter().rposition(|selected| *selected)?;
         let width = (end - start + 1) as f32;
         let tail_width = (width * 0.45).max(6.0);
-        let progress = (elapsed.as_secs_f32() / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
         Some(Self {
             cells,
             head: start as f32 - 1.0 + progress * (width + tail_width),

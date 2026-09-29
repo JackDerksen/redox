@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use minui::Color;
@@ -26,6 +27,7 @@ pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
     pub text_formatting: bool,
+    pub animations: AnimationConfig,
     pub check_updates: bool,
     pub mouse: bool,
     pub mouse_invert_vertical: bool,
@@ -53,6 +55,7 @@ impl Default for Config {
             theme: "default".to_string(),
             icons_enabled: false,
             text_formatting: true,
+            animations: AnimationConfig::default(),
             check_updates: true,
             mouse: false,
             mouse_invert_vertical: false,
@@ -73,6 +76,44 @@ impl Default for Config {
             bind: Vec::new(),
             themes: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnimationConfig {
+    pub enabled: bool,
+    pub yank_ripple_ms: u64,
+    pub jump_pulse_ms: u64,
+    pub delimiter_blink_ms: u64,
+    pub save_confirmation_ms: u64,
+    pub save_fade_ms: u64,
+    pub focus_fade_ms: u64,
+    pub dashboard_logo_ms: u64,
+    pub spinner_frame_ms: u64,
+    pub rain_fps: u16,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            yank_ripple_ms: 150,
+            jump_pulse_ms: 150,
+            delimiter_blink_ms: 150,
+            save_confirmation_ms: 600,
+            save_fade_ms: 150,
+            focus_fade_ms: 150,
+            dashboard_logo_ms: 500,
+            spinner_frame_ms: 100,
+            rain_fps: 60,
+        }
+    }
+}
+
+impl AnimationConfig {
+    pub fn duration(self, milliseconds: u64) -> Duration {
+        Duration::from_millis(if self.enabled { milliseconds } else { 0 })
     }
 }
 
@@ -236,6 +277,9 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if self.animations.rain_fps > 60 {
+            bail!("animations.rain_fps must be between 0 and 60");
+        }
         for (name, step) in [
             (
                 "mouse_scroll_step_vertical",
@@ -587,6 +631,11 @@ type_name = "#112233"
             "[themes.default.syntax]\nkeyword = { underline_color = 'red' }",
             "[themes.default.ui]\n'unknown.role' = { bold = true }",
             "[themes.default.ui]\n'zen.margin' = { italic = false }",
+            "[animations]\nyank_ripple_ms = -1",
+            "[animations]\nfocus_fade_ms = 1.5",
+            "[animations]\ndashboard_logo_ms = 'fast'",
+            "[animations]\nunknown_effect_ms = 100",
+            "[animations]\nrain_fps = 61",
         ] {
             assert!(
                 toml::from_str::<Config>(source)

@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use minui::Event;
 use redox_core::{BufferId, BufferKind, Pos};
@@ -37,9 +37,11 @@ impl EditorState {
             self.set_status("cannot return to an editor buffer");
             return;
         }
+        let logo_started_at =
+            (self.animations.enabled && self.animations.dashboard_logo_ms > 0).then(Instant::now);
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.selected = 0;
-            dashboard.logo_started_at = Some(Instant::now());
+            dashboard.logo_started_at = logo_started_at;
             let _ = self.session.activate(dashboard.buffer_id);
         } else {
             self.sync_active_pane_view();
@@ -54,7 +56,7 @@ impl EditorState {
                 buffer_id,
                 return_to_buffer_id: (buffer_id != previous_id).then_some(previous_id),
                 selected: 0,
-                logo_started_at: Some(Instant::now()),
+                logo_started_at,
             });
         }
         self.mode = EditorMode::Normal;
@@ -81,11 +83,16 @@ impl EditorState {
         self.dashboard_selection_for_buffer(self.session.active_id())
     }
 
-    pub(crate) fn dashboard_logo_elapsed(&self, now: Instant) -> Option<Duration> {
+    pub(crate) fn dashboard_logo_progress(&self, now: Instant) -> f32 {
         self.dashboard
-            .as_ref()?
-            .logo_started_at
-            .map(|started_at| now.saturating_duration_since(started_at))
+            .as_ref()
+            .and_then(|dashboard| dashboard.logo_started_at)
+            .map_or(1.0, |started_at| {
+                crate::ui::helpers::animation_progress(
+                    now.saturating_duration_since(started_at),
+                    self.animations.duration(self.animations.dashboard_logo_ms),
+                )
+            })
     }
 
     pub(crate) fn dashboard_selection_for_buffer(&self, buffer_id: BufferId) -> Option<usize> {

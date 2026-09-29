@@ -67,8 +67,6 @@ const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
 const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
-const SAVE_CONFIRMATION_DURATION: Duration = Duration::from_millis(600);
-const PANE_FOCUS_DURATION: Duration = Duration::from_millis(150);
 const EXTERNAL_FILE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(test)]
@@ -99,7 +97,14 @@ pub(crate) struct OneShotHighlight {
     pub kind: HighlightKind,
     started_at: Instant,
     pub elapsed: Duration,
+    duration: Duration,
     version: u64,
+}
+
+impl OneShotHighlight {
+    pub(crate) fn progress(self) -> f32 {
+        crate::ui::helpers::animation_progress(self.elapsed, self.duration)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +117,7 @@ struct SaveConfirmation {
 #[derive(Debug)]
 struct PaneFocusTransition {
     started_at: Instant,
+    duration: Duration,
     from: Vec<(PaneId, f32)>,
     terminal_from: f32,
     popup_from: f32,
@@ -119,10 +125,10 @@ struct PaneFocusTransition {
 
 impl PaneFocusTransition {
     fn interpolate(&self, from: f32, target: f32, now: Instant) -> f32 {
-        let progress = (now.saturating_duration_since(self.started_at).as_secs_f32()
-            / PANE_FOCUS_DURATION.as_secs_f32())
-        .clamp(0.0, 1.0);
-        let progress = progress * progress * (3.0 - 2.0 * progress);
+        let progress = crate::ui::helpers::smoothstep(crate::ui::helpers::animation_progress(
+            now.saturating_duration_since(self.started_at),
+            self.duration,
+        ));
         from + (target - from) * progress
     }
 }
@@ -469,6 +475,7 @@ pub struct EditorState {
     substitution: substitute::SubstituteState,
     pub should_quit: bool,
     pub zen: crate::config::ZenConfig,
+    pub(crate) animations: crate::config::AnimationConfig,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
     viewport_width_cells: usize,
@@ -559,6 +566,7 @@ impl EditorState {
             substitution: substitute::SubstituteState::default(),
             should_quit: false,
             zen: crate::config::ZenConfig::default(),
+            animations: crate::config::AnimationConfig::default(),
             rain_animation: None,
             rain_pending_start: false,
             viewport_width_cells: 80,
@@ -604,6 +612,25 @@ impl EditorState {
         state.request_analysis(active, 0);
         state.initialise_lsp_state();
         state
+    }
+
+    pub(crate) fn configure_animations(&mut self, animations: crate::config::AnimationConfig) {
+        if self.animations == animations {
+            return;
+        }
+        self.animations = animations;
+        self.reset_animation_deadlines();
+        self.one_shot_highlight = None;
+        self.save_confirmation = None;
+        self.pane_focus_transition = None;
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.logo_started_at = None;
+        }
+        if !animations.enabled || animations.rain_fps == 0 {
+            self.rain_animation = None;
+            self.rain_pending_start = false;
+        }
+        self.request_redraw();
     }
 
     pub fn configure(
@@ -765,19 +792,26 @@ impl EditorState {
 
     fn confirm_active_save(&mut self) {
         self.clear_status();
-        self.save_confirmation = Some(SaveConfirmation {
+        let duration = self
+            .animations
+            .duration(self.animations.save_confirmation_ms);
+        self.save_confirmation = (!duration.is_zero()).then(|| SaveConfirmation {
             buffer_id: self.session.active_id(),
             version: self
                 .views
                 .entry(self.session.active_id())
                 .or_default()
                 .analysis_version(),
-            expires_at: Instant::now() + SAVE_CONFIRMATION_DURATION,
+            expires_at: Instant::now() + duration,
         });
         self.request_redraw();
     }
 
-    pub(crate) fn save_confirmation_remaining(&self, buffer_id: BufferId) -> Option<Duration> {
+    pub(crate) fn save_confirmation_opacity(
+        &self,
+        buffer_id: BufferId,
+        now: Instant,
+    ) -> Option<f32> {
         let confirmation = self.save_confirmation?;
         let meta = self.session.meta(buffer_id)?;
         if confirmation.buffer_id != buffer_id
@@ -787,9 +821,13 @@ impl EditorState {
         {
             return None;
         }
-        confirmation
-            .expires_at
-            .checked_duration_since(Instant::now())
+        let remaining = confirmation.expires_at.checked_duration_since(now)?;
+        let fade = self.animations.duration(
+            self.animations
+                .save_fade_ms
+                .min(self.animations.save_confirmation_ms),
+        );
+        Some(crate::ui::helpers::animation_progress(remaining, fade))
     }
 
     pub fn toggle_zen(&mut self) {
@@ -1119,8 +1157,10 @@ impl EditorState {
     }
 
     fn start_pane_focus_transition(&mut self, now: Instant) {
-        self.pane_focus_transition = Some(PaneFocusTransition {
+        let duration = self.animations.duration(self.animations.focus_fade_ms);
+        self.pane_focus_transition = (!duration.is_zero()).then(|| PaneFocusTransition {
             started_at: now,
+            duration,
             from: self
                 .panes
                 .iter()
@@ -1196,13 +1236,7 @@ impl EditorState {
             return;
         }
         highlight.elapsed = now.saturating_duration_since(highlight.started_at);
-        let duration = match highlight.kind {
-            HighlightKind::Yank => crate::ui::overlays::YankRipple::DURATION,
-            HighlightKind::Jump | HighlightKind::Delimiter => {
-                crate::ui::overlays::JumpPulse::DURATION
-            }
-        };
-        if highlight.elapsed < duration {
+        if highlight.elapsed < highlight.duration {
             self.one_shot_highlight = Some(highlight);
         }
     }
@@ -1213,7 +1247,12 @@ impl EditorState {
         mode: VisualModeKind,
         kind: HighlightKind,
     ) {
-        self.one_shot_highlight = Some(OneShotHighlight {
+        let duration = self.animations.duration(match kind {
+            HighlightKind::Yank => self.animations.yank_ripple_ms,
+            HighlightKind::Jump => self.animations.jump_pulse_ms,
+            HighlightKind::Delimiter => self.animations.delimiter_blink_ms,
+        });
+        self.one_shot_highlight = (!duration.is_zero()).then(|| OneShotHighlight {
             buffer_id: self.session.active_id(),
             pane_id: self.active_pane_id(),
             selection,
@@ -1221,6 +1260,7 @@ impl EditorState {
             kind,
             started_at: Instant::now(),
             elapsed: Duration::ZERO,
+            duration,
             version: self
                 .views
                 .entry(self.session.active_id())
