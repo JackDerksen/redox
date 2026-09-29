@@ -1,8 +1,11 @@
+use std::time::Duration;
+
 use minui::{Style, Window, window::CursorSpec};
 
 use crate::app::state::dashboard::DASHBOARD_ITEMS;
 use crate::ui::UiStyle;
 use crate::ui::icons::dashboard_icon;
+use crate::ui::style::{TextStyle, dim_foreground_color};
 use crate::ui::widgets::popup::clip_text_to_cells;
 
 const MIN_VERTICAL_MARGIN_ROWS: u16 = 2;
@@ -14,6 +17,7 @@ const ICON_WIDTH_COLS: u16 = 1;
 const ICON_LABEL_GAP_COLS: u16 = 2;
 const MIN_LABEL_HOTKEY_GAP_COLS: u16 = 1;
 const HOTKEY_WIDTH_COLS: u16 = 1;
+pub(crate) const LOGO_ENTRANCE_DURATION: Duration = Duration::from_millis(500);
 
 /*
 const LOGO_TOP_CONNECTOR: &[&str] = &[
@@ -63,6 +67,7 @@ pub(crate) fn draw_dashboard(
     style: UiStyle,
     selected: usize,
     show_cursor: bool,
+    logo_elapsed: Option<Duration>,
 ) -> minui::Result<()> {
     let (width, height) = window.get_size();
     if width == 0 || height == 0 {
@@ -130,14 +135,28 @@ pub(crate) fn draw_dashboard(
     let hotkey_column = menu_left + menu_width - HOTKEY_WIDTH_COLS;
     let label_column = menu_left + icon_prefix_width;
     let label_width = hotkey_column.saturating_sub(label_column + MIN_LABEL_HOTKEY_GAP_COLS);
+    let progress = logo_elapsed.map_or(1.0, |elapsed| {
+        (elapsed.as_secs_f32() / LOGO_ENTRANCE_DURATION.as_secs_f32()).clamp(0.0, 1.0)
+    });
 
     if large_logo {
         let left = (width - logo_width) / 2;
         let lines = logo_sections
             .iter()
-            .flat_map(|(lines, color)| lines.iter().map(move |text| (text, *color)));
-        for (row, (text, color)) in lines.enumerate() {
-            window.write_str_styled(top + row as u16, left, text, color.into())?;
+            .enumerate()
+            .flat_map(|(section, (lines, color))| {
+                lines.iter().map(move |text| (section, text, *color))
+            });
+        for (row, (section, text, color)) in lines.enumerate() {
+            draw_logo_line(
+                window,
+                top + row as u16,
+                left,
+                text,
+                color,
+                section,
+                progress,
+            )?;
         }
     } else if logo_height > 0 {
         let compact_logo_width = compact_logo
@@ -147,7 +166,7 @@ pub(crate) fn draw_dashboard(
             .unwrap_or(0) as u16;
         let left = width.saturating_sub(compact_logo_width) / 2;
         for (row, (text, color)) in compact_logo.iter().enumerate() {
-            write_clipped(window, top + row as u16, left, text, Style::from(*color))?;
+            draw_logo_line(window, top + row as u16, left, text, *color, row, progress)?;
         }
     }
     if logo_height > 0 {
@@ -204,6 +223,53 @@ pub(crate) fn draw_dashboard(
                 visible: true,
             });
         }
+    }
+    Ok(())
+}
+
+fn draw_logo_line(
+    window: &mut dyn Window,
+    row: u16,
+    column: u16,
+    text: &str,
+    style: TextStyle,
+    section: usize,
+    progress: f32,
+) -> minui::Result<()> {
+    if progress >= 1.0 {
+        return write_clipped(window, row, column, text, style);
+    }
+    let progress = progress * progress * (3.0 - 2.0 * progress);
+    let start = text
+        .chars()
+        .take_while(|character| *character == ' ')
+        .count();
+    let end = text.chars().count().saturating_sub(1);
+    for (offset, character) in text.chars().enumerate().skip(start) {
+        // The bars reveal in opposite directions; the wordmark fades in just behind them.
+        let opacity = if section == 1 {
+            ((progress - 0.15) / 0.85).clamp(0.0, 1.0)
+        } else {
+            let distance = if section == 0 {
+                offset - start
+            } else {
+                end - offset
+            };
+            let distance = distance as f32 / end.saturating_sub(start).max(1) as f32;
+            ((progress * 1.3 - distance) / 0.3).clamp(0.0, 1.0)
+        };
+        if opacity == 0.0 {
+            continue;
+        }
+        let foreground = dim_foreground_color(style.fg, style.bg, 1.0 - opacity);
+        let mut encoded = [0; 4];
+        write_clipped(
+            window,
+            row,
+            column + offset as u16,
+            character.encode_utf8(&mut encoded),
+            style.with_colors(foreground, style.bg),
+        )?;
     }
     Ok(())
 }

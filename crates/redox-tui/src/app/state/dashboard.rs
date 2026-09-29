@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use minui::Event;
 use redox_core::{BufferId, BufferKind, Pos};
@@ -21,6 +22,7 @@ pub(super) struct DashboardState {
     pub buffer_id: BufferId,
     return_to_buffer_id: Option<BufferId>,
     selected: usize,
+    pub(super) logo_started_at: Option<Instant>,
 }
 
 impl EditorState {
@@ -37,6 +39,7 @@ impl EditorState {
         }
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.selected = 0;
+            dashboard.logo_started_at = Some(Instant::now());
             let _ = self.session.activate(dashboard.buffer_id);
         } else {
             self.sync_active_pane_view();
@@ -51,6 +54,7 @@ impl EditorState {
                 buffer_id,
                 return_to_buffer_id: (buffer_id != previous_id).then_some(previous_id),
                 selected: 0,
+                logo_started_at: Some(Instant::now()),
             });
         }
         self.mode = EditorMode::Normal;
@@ -75,6 +79,13 @@ impl EditorState {
 
     pub(crate) fn dashboard_selection(&self) -> Option<usize> {
         self.dashboard_selection_for_buffer(self.session.active_id())
+    }
+
+    pub(crate) fn dashboard_logo_elapsed(&self, now: Instant) -> Option<Duration> {
+        self.dashboard
+            .as_ref()?
+            .logo_started_at
+            .map(|started_at| now.saturating_duration_since(started_at))
     }
 
     pub(crate) fn dashboard_selection_for_buffer(&self, buffer_id: BufferId) -> Option<usize> {

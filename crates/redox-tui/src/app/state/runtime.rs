@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::EditorState;
 use crate::ANIMATION_FRAME_INTERVAL;
+use crate::ui::widgets::dashboard::LOGO_ENTRANCE_DURATION;
 
 // MinUI waits on terminal input. Poll only while a background producer may reply.
 pub(super) const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -84,6 +85,14 @@ impl EditorState {
         }
 
         self.sync_focus(now);
+        if let Some(dashboard) = &mut self.dashboard
+            && dashboard.logo_started_at.is_some_and(|started_at| {
+                now.saturating_duration_since(started_at) >= LOGO_ENTRANCE_DURATION
+            })
+        {
+            dashboard.logo_started_at = None;
+            self.request_redraw();
+        }
         if self
             .pane_focus_transition
             .as_ref()
@@ -97,6 +106,7 @@ impl EditorState {
         if (self.rain_is_active()
             || self.one_shot_highlight.is_some()
             || self.save_confirmation.is_some()
+            || self.dashboard_logo_elapsed(now).is_some()
             || self.pane_focus_transition.is_some())
             && now >= self.runtime.next_animation_frame
         {
@@ -143,6 +153,7 @@ impl EditorState {
         let animation = self.rain_is_active()
             || self.one_shot_highlight.is_some()
             || self.save_confirmation.is_some()
+            || self.dashboard_logo_elapsed(now).is_some()
             || self.pane_focus_transition.is_some();
         let which_key = self
             .which_key_enabled

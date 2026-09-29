@@ -242,6 +242,7 @@ fn draw_editor_view(
             background_style,
             selected,
             state.mode == app::EditorMode::Normal,
+            state.dashboard_logo_elapsed(Instant::now()),
         )?;
         if let Some(popup) = state.finder_popup() {
             let mouse = draw_finder_popup(&popup, style, window)?;
@@ -1446,7 +1447,13 @@ fn draw_popup_background(
     if let Some(selected) =
         fallback_buffer_id.and_then(|id| state.dashboard_selection_for_buffer(id))
     {
-        return draw_dashboard(window, background_style, selected, false);
+        return draw_dashboard(
+            window,
+            background_style,
+            selected,
+            false,
+            state.dashboard_logo_elapsed(Instant::now()),
+        );
     }
     if state.panes().len() > 1 {
         let active_before_draw = state.session.active_id();
@@ -5406,7 +5413,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             assert_eq!(decorated.has(Attribute::Italic), enabled);
 
             window.clear_screen().unwrap();
-            draw_dashboard(&mut window, style, 0, false).unwrap();
+            draw_dashboard(&mut window, style, 0, false, None).unwrap();
             let row = (0..24)
                 .find(|row| window.row_text(*row).contains("Finder"))
                 .unwrap();
