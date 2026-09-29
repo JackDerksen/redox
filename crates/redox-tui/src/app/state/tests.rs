@@ -2979,6 +2979,19 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
     state.focus_split(SplitDirection::Left);
     assert!(state.pane_focus_transition.is_none());
 
+    state.close_active_split();
+    assert_eq!(state.active_pane_id(), other);
+    let started = state.pane_focus_transition.as_ref().unwrap().started_at;
+    for (elapsed, expected) in [
+        (Duration::ZERO, 1.0),
+        (PANE_FOCUS_DURATION / 2, 0.5),
+        (PANE_FOCUS_DURATION, 0.0),
+    ] {
+        assert_eq!(state.pane_focus_dimming(other, started + elapsed), expected);
+    }
+    state.split_active_pane(SplitAxis::Vertical);
+    state.update_background(Instant::now() + PANE_FOCUS_DURATION);
+
     let directory = tempfile::tempdir().unwrap();
     state.terminal = crate::terminal::tests::configured_panel(directory.path());
     state.terminal.toggle(directory.path()).unwrap();

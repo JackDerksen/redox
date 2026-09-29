@@ -945,9 +945,9 @@ impl EditorState {
             .max_by_key(|pane| pane.last_used)
             .map(|pane| pane.id);
         if remove_pane_from_split(&mut self.split_root, closing) {
-            self.panes.retain(|pane| pane.id != closing);
             let next = next.unwrap_or_else(|| first_pane_id(&self.split_root));
             let _ = self.activate_pane(next);
+            self.panes.retain(|pane| pane.id != closing);
             self.refresh_active_split_viewport_size();
             self.log_event("split_closed", serde_json::json!({"pane": closing.0}));
         }
