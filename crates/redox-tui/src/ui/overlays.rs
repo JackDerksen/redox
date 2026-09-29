@@ -23,6 +23,7 @@ pub(crate) struct LineDecorations<'a> {
     pub error_style: TextStyle,
     pub yank_ripple: Option<YankRipple<'a>>,
     pub jump_pulse: Option<JumpPulse>,
+    pub delimiter_blink: Option<(usize, JumpPulse)>,
 }
 
 #[derive(Clone, Copy)]
@@ -115,6 +116,11 @@ impl LineDecorations<'_> {
         }
         if overlaps(self.error_cells) {
             style = self.error_style.overlay(style);
+        }
+        if let Some((column, blink)) = self.delimiter_blink
+            && range.contains(&column)
+        {
+            style = blink.apply(style);
         }
         if let Some(ripple) = self.yank_ripple {
             style = ripple.apply(style, range);

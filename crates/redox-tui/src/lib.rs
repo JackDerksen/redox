@@ -1152,7 +1152,7 @@ fn draw_line_with_highlights(
         if start_cell < scroll_x {
             continue;
         }
-        if used_cells.saturating_add(g_width) > width_cells {
+        if end_cell > max_visible_cell {
             break;
         }
 
@@ -1198,9 +1198,14 @@ fn draw_line_with_highlights(
                 )?;
             }
         } else {
-            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
+            window.write_str_styled(
+                row,
+                col.saturating_add(visible_start as u16),
+                g,
+                text_style,
+            )?;
         }
-        used_cells = used_cells.saturating_add(g_width);
+        used_cells = visible_end;
     }
 
     draw_highlight_spaces(
@@ -2206,6 +2211,18 @@ fn draw_snapshot_lines(
                         && selected_cells.is_some()
                 })
                 .map(|highlight| JumpPulse::new(highlight.elapsed, style.editor_text.fg)),
+            delimiter_blink: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::Delimiter
+                })
+                .zip(selected_cells.as_deref())
+                .and_then(|(highlight, cells)| {
+                    let column = cells.iter().position(|selected| *selected)?;
+                    Some((
+                        column,
+                        JumpPulse::new(highlight.elapsed, style.editor_text.fg),
+                    ))
+                }),
         };
         if let Some((_, _, selection_bg)) = transient_selection
             && let Some(selected_cells) = selected_cells.as_ref()
@@ -2986,29 +3003,36 @@ fn draw_plain_line(
         if start_cell < scroll_x {
             continue;
         }
-        if used_cells.saturating_add(g_width) > width_cells {
+        let visible_start = start_cell.saturating_sub(scroll_x);
+        let visible_end = end_cell.saturating_sub(scroll_x);
+        if visible_end > width_cells {
             break;
         }
 
         let colors = apply_color_column(
             default_colors.colors(),
             color_column,
-            start_cell.saturating_sub(scroll_x),
-            end_cell.saturating_sub(scroll_x),
+            visible_start,
+            visible_end,
         );
         let text_style = minui::Style::from(default_colors).with_colors(colors);
         if g == "\t" {
             let spaces = " ".repeat(g_width.max(1));
             window.write_str_styled(
                 row,
-                col.saturating_add(used_cells as u16),
+                col.saturating_add(visible_start as u16),
                 &spaces,
                 text_style,
             )?;
         } else {
-            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
+            window.write_str_styled(
+                row,
+                col.saturating_add(visible_start as u16),
+                g,
+                text_style,
+            )?;
         }
-        used_cells = used_cells.saturating_add(g_width);
+        used_cells = visible_end;
     }
 
     if let Some((visible_col, bg)) = color_column
@@ -5371,6 +5395,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 error_style: style.error_range,
                 yank_ripple: None,
                 jump_pulse: None,
+                delimiter_blink: None,
             };
             let decorated = decorations
                 .apply(style.editor_text.into(), 0..1)
@@ -5492,6 +5517,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 error_style: style.error_range,
                                 yank_ripple: None,
                                 jump_pulse: None,
+                                delimiter_blink: None,
                             },
                         },
                         style,
@@ -5556,6 +5582,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     error_style: style.error_range,
                     yank_ripple: None,
                     jump_pulse: None,
+                    delimiter_blink: Some((
+                        3 - scroll_x,
+                        JumpPulse::new(Duration::ZERO, style.editor_text.fg),
+                    )),
                 };
                 let mut window = TestWindow::new(8, 1);
                 draw_line_with_highlights(
@@ -5620,6 +5650,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     window.backgrounds[0][2 - scroll_x],
                     Some(style.theme.selection_bg)
                 );
+                assert_ne!(window.backgrounds[0][3 - scroll_x], Some(style.theme.scope));
             }
         }
         for source in ["", "text"] {
@@ -5653,6 +5684,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         error_style: style.error_range,
                         yank_ripple: None,
                         jump_pulse: None,
+                        delimiter_blink: None,
                     },
                 },
                 style,

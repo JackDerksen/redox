@@ -87,6 +87,7 @@ enum RegisterKind {
 pub(crate) enum HighlightKind {
     Yank,
     Jump,
+    Delimiter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1197,7 +1198,9 @@ impl EditorState {
         highlight.elapsed = now.saturating_duration_since(highlight.started_at);
         let duration = match highlight.kind {
             HighlightKind::Yank => crate::ui::overlays::YankRipple::DURATION,
-            HighlightKind::Jump => crate::ui::overlays::JumpPulse::DURATION,
+            HighlightKind::Jump | HighlightKind::Delimiter => {
+                crate::ui::overlays::JumpPulse::DURATION
+            }
         };
         if highlight.elapsed < duration {
             self.one_shot_highlight = Some(highlight);

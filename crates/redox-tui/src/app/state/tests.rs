@@ -3170,6 +3170,48 @@ fn insert_mode_pairing_handles_skip_and_backspace() {
     }
 }
 #[test]
+fn closing_delimiters_blink_the_matching_opener() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    for (text, cursor, character, expected) in [
+        ("()", Pos::new(0, 1), ')', Some(Pos::zero())),
+        ("[]", Pos::new(0, 1), '\t', Some(Pos::zero())),
+        ("{\nvalue", Pos::new(1, 5), '}', Some(Pos::zero())),
+        ("\t界(foo)", Pos::new(0, 6), ')', Some(Pos::new(0, 2))),
+        ("\"text\"", Pos::new(0, 5), '"', Some(Pos::zero())),
+        ("`x`", Pos::new(0, 2), '`', Some(Pos::zero())),
+        ("orphan", Pos::new(0, 6), ')', None),
+        ("\\(", Pos::new(0, 2), ')', None),
+        ("(", Pos::new(0, 1), 'x', None),
+        ("\"", Pos::new(0, 1), '"', None),
+    ] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(text);
+        state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = cursor);
+        state.mode = EditorMode::Insert;
+        state.apply_input(InputAction::InsertChar(character), 80, 24);
+        assert_eq!(
+            state.active_cursor_pos(),
+            Pos::new(cursor.line, cursor.col + 1)
+        );
+        let highlight = state.one_shot_highlight();
+        assert_eq!(
+            highlight.map(|highlight| (highlight.kind, highlight.selection)),
+            expected.map(|opening| (HighlightKind::Delimiter, Selection::empty(opening))),
+            "{text:?}, {character:?}"
+        );
+        if let Some(highlight) = highlight {
+            let duration = crate::ui::overlays::JumpPulse::DURATION;
+            state.advance_one_shot_highlight(highlight.started_at + duration / 2);
+            assert_eq!(state.one_shot_highlight().unwrap().elapsed, duration / 2);
+            state.apply_input(InputAction::InsertChar('x'), 80, 24);
+            assert!(state.one_shot_highlight().is_none());
+            state.advance_one_shot_highlight(highlight.started_at + duration);
+            assert!(state.one_shot_highlight.is_none());
+        }
+    }
+}
+
+#[test]
 fn insert_mode_soft_tabs_follow_stops_and_backspace_as_a_unit() {
     let cases = [
         (

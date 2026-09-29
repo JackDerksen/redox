@@ -1264,6 +1264,7 @@ impl EditorState {
                 };
                 self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
                 self.queue_auto_completion_after_insert(ch);
+                self.start_delimiter_blink();
             }
             InsertCharBehavior::MoveRight => {
                 let view = self.views.entry(active_id).or_default();
@@ -1271,6 +1272,7 @@ impl EditorState {
                 view.cursor.cursor = buffer.clamp_pos(Pos::new(cursor.line, cursor.col + 1));
                 view.cursor
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                self.start_delimiter_blink();
             }
             InsertCharBehavior::InsertPair(close) => {
                 let before = self.capture_active_insert_coalesced_checkpoint();
@@ -1309,6 +1311,33 @@ impl EditorState {
                 self.queue_auto_completion_after_insert(ch);
             }
         }
+    }
+
+    fn start_delimiter_blink(&mut self) {
+        if self.session.active_meta().kind != redox_core::BufferKind::File {
+            return;
+        }
+        let cursor = self.active_cursor_pos();
+        let Some(column) = cursor.col.checked_sub(1) else {
+            return;
+        };
+        let closing = Pos::new(cursor.line, column);
+        let buffer = self.session.active_buffer();
+        if !buffer.char_at(closing).is_some_and(is_auto_pair_closer) {
+            return;
+        }
+        let Some(opening) = buffer
+            .matching_delimiter(closing)
+            .filter(|opening| *opening < closing)
+        else {
+            return;
+        };
+        self.set_one_shot_highlight(
+            Selection::empty(opening),
+            redox_core::VisualModeKind::Char,
+            super::HighlightKind::Delimiter,
+        );
+        self.request_redraw();
     }
 
     fn scroll_viewport_and_center_cursor(&mut self, down: bool, text_vh: usize) {

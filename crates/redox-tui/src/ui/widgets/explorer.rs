@@ -238,6 +238,7 @@ pub(crate) fn draw_explorer_popup_view(
                             style.editor_text.colors(),
                         ),
                         jump_pulse: None,
+                        delimiter_blink: None,
                     },
                 },
                 style,
