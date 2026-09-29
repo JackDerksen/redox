@@ -550,7 +550,8 @@ properties. Which-key text roles support full styles; their background defaults 
 - Zen mode: `zen.margin`, `zen.ghost`. These use the foreground value as a single colour.
 
 - Editor and pane text: `editor.text`, `editor.snippet`, `pane.title`
-- Gutter: `gutter.line_number`, `gutter.current_line_number`
+- Gutter: `gutter.line_number`, `gutter.current_line_number` (also used for lines covered by
+  a visual selection)
 - Search: `search.match`, `search.current`
 - Additional popup headings: `popup.section_title`
 - Completion: `completion.ghost`, `completion.keyword`, `completion.match_highlight`

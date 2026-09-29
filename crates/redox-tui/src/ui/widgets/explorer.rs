@@ -122,9 +122,9 @@ pub(crate) fn draw_explorer_popup_view(
         style,
         (gutter_w, inner_h),
         u16::from(show_git_status_column) * EXPLORER_STATUS_DOT_WIDTH,
-        snapshot.first_line(),
+        snapshot.first_line()..total_lines,
         cursor_line,
-        total_lines,
+        visual_selection.map(|(selection, _)| selection.line_range()),
     )?;
 
     for (row, line) in snapshot.iter().enumerate() {

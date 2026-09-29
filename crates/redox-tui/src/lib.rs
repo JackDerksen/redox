@@ -579,9 +579,9 @@ fn draw_editor_view(
             background_style,
             (gutter.gutter_w, text_h),
             u16::from(gutter.show_git_marker_column),
-            animation.first_line(),
+            animation.first_line()..gutter.total_lines,
             active_cursor_line,
-            gutter.total_lines,
+            None,
         )?;
         draw_gutter_padding(
             window,
@@ -673,9 +673,9 @@ fn draw_editor_view(
         background_style,
         (gutter.gutter_w, text_h),
         u16::from(gutter.show_git_marker_column),
-        snapshot.first_line(),
+        snapshot.first_line()..gutter.total_lines,
         active_cursor_line,
-        gutter.total_lines,
+        visual_selection.map(|(selection, _)| selection.line_range()),
     )?;
     draw_gutter_padding(
         window,
@@ -1038,9 +1038,9 @@ fn draw_line_numbers(
     style: UiStyle,
     (gutter_w, text_h): (u16, u16),
     marker_width: u16,
-    first_line: usize,
+    lines: std::ops::Range<usize>,
     cursor_line: usize,
-    total_lines: usize,
+    selected_lines: Option<(usize, usize)>,
 ) -> minui::Result<()> {
     if gutter_w == 0 || text_h == 0 {
         return Ok(());
@@ -1051,12 +1051,7 @@ fn draw_line_numbers(
     let other_line_color = style.gutter_line_number;
     let current_color = style.gutter_current_line_number;
 
-    for row in 0..text_h {
-        let line_idx = first_line.saturating_add(row as usize);
-        if line_idx >= total_lines {
-            continue;
-        }
-
+    for (row, line_idx) in (0..text_h).zip(lines) {
         let num = if style.layout.line_numbers == ui::style::LineNumbers::Absolute
             || line_idx == cursor_line
         {
@@ -1079,7 +1074,9 @@ fn draw_line_numbers(
 
         let text = format!("{clipped_num:>number_w$}");
 
-        let color = if line_idx == cursor_line {
+        let color = if line_idx == cursor_line
+            || selected_lines.is_some_and(|(start, end)| (start..=end).contains(&line_idx))
+        {
             current_color
         } else {
             other_line_color
@@ -1743,9 +1740,9 @@ fn draw_active_split_rain_pane(
         style,
         (gutter_w, height),
         u16::from(show_git_marker_column),
-        animation.first_line(),
+        animation.first_line()..total_lines,
         active_cursor_line,
-        total_lines,
+        None,
     )?;
     draw_gutter_padding(
         window,
@@ -1957,9 +1954,11 @@ fn draw_buffer_snapshot_for_id(
                 style,
                 (gutter_w, height),
                 u16::from(show_git_marker_column),
-                snapshot.first_line(),
+                snapshot.first_line()..total_lines,
                 cursor.line,
-                total_lines,
+                visual_selection
+                    .filter(|_| preview.is_none())
+                    .map(|(selection, _)| selection.line_range()),
             )?;
             draw_gutter_padding(
                 window,
@@ -5688,9 +5687,9 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         style,
                         (gutter_width, 5),
                         marker_width,
-                        7,
+                        7..11,
                         9,
-                        11,
+                        None,
                     )
                     .unwrap();
                     for (row, expected) in expected.iter().enumerate() {
