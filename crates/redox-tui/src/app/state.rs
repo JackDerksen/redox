@@ -67,6 +67,7 @@ const PREFETCH_PER_FRAME_BYTES: usize = 64 * 1024;
 const DEMAND_LOAD_BUDGET_BYTES: usize = 256 * 1024;
 const VIEWPORT_PREFETCH_MULTIPLIER: usize = 3;
 const STATUS_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
+const SAVE_CONFIRMATION_DURATION: Duration = Duration::from_millis(600);
 const EXTERNAL_FILE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(test)]
@@ -97,6 +98,13 @@ pub(crate) struct OneShotHighlight {
     started_at: Instant,
     pub elapsed: Duration,
     version: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SaveConfirmation {
+    buffer_id: BufferId,
+    version: u64,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +444,7 @@ pub struct EditorState {
     pub status_msg: Option<String>,
     pub status_msg_line_styles: Vec<StatusMessageStyle>,
     status_msg_expires_at: Option<Instant>,
+    save_confirmation: Option<SaveConfirmation>,
     command_history: CommandHistoryState,
     substitution: substitute::SubstituteState,
     pub should_quit: bool,
@@ -522,6 +531,7 @@ impl EditorState {
             status_msg: None,
             status_msg_line_styles: Vec::new(),
             status_msg_expires_at: None,
+            save_confirmation: None,
             command_history: CommandHistoryState::default(),
             substitution: substitute::SubstituteState::default(),
             should_quit: false,
@@ -725,6 +735,35 @@ impl EditorState {
     #[cfg(test)]
     pub(crate) fn status_message_is_sticky(&self) -> bool {
         self.status_msg.is_some() && self.status_msg_expires_at.is_none()
+    }
+
+    fn confirm_active_save(&mut self) {
+        self.clear_status();
+        self.save_confirmation = Some(SaveConfirmation {
+            buffer_id: self.session.active_id(),
+            version: self
+                .views
+                .entry(self.session.active_id())
+                .or_default()
+                .analysis_version(),
+            expires_at: Instant::now() + SAVE_CONFIRMATION_DURATION,
+        });
+        self.request_redraw();
+    }
+
+    pub(crate) fn save_confirmation_remaining(&self, buffer_id: BufferId) -> Option<Duration> {
+        let confirmation = self.save_confirmation?;
+        let meta = self.session.meta(buffer_id)?;
+        if confirmation.buffer_id != buffer_id
+            || meta.dirty
+            || meta.external_changed
+            || self.views.get(&buffer_id)?.analysis_version() != confirmation.version
+        {
+            return None;
+        }
+        confirmation
+            .expires_at
+            .checked_duration_since(Instant::now())
     }
 
     pub fn toggle_zen(&mut self) {

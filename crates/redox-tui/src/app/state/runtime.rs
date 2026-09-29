@@ -56,6 +56,13 @@ impl EditorState {
         self.poll_finder_results();
         self.poll_external_file_changes(now);
         self.expire_status_message(now);
+        if self
+            .save_confirmation
+            .is_some_and(|confirmation| now >= confirmation.expires_at)
+        {
+            self.save_confirmation = None;
+            self.request_redraw();
+        }
         self.poll_update_check();
         let load_start = Instant::now();
         self.pump_active_loading(self.viewport_height_rows.saturating_sub(1));
@@ -76,7 +83,9 @@ impl EditorState {
             self.request_redraw();
         }
 
-        if (self.rain_is_active() || self.one_shot_highlight.is_some())
+        if (self.rain_is_active()
+            || self.one_shot_highlight.is_some()
+            || self.save_confirmation.is_some())
             && now >= self.runtime.next_animation_frame
         {
             self.advance_rain_animation();
@@ -119,7 +128,9 @@ impl EditorState {
             || self.analysis_worker.is_pending()
             || self.finder_index_worker.is_some()
             || self.git.has_pending_work();
-        let animation = self.rain_is_active() || self.one_shot_highlight.is_some();
+        let animation = self.rain_is_active()
+            || self.one_shot_highlight.is_some()
+            || self.save_confirmation.is_some();
         let which_key = self
             .which_key_enabled
             .then(|| self.input.which_key_deadline(self.which_key_delay))

@@ -648,10 +648,6 @@ fn wait_for_finder_index_idle(state: &mut EditorState) {
     panic!("finder index worker did not finish before deadline");
 }
 
-fn expire_status_after_timeout(state: &mut EditorState) {
-    state.expire_status_message(Instant::now() + Duration::from_secs(10));
-}
-
 fn lock_global_test_state() -> std::sync::MutexGuard<'static, ()> {
     global_test_state_lock()
         .lock()
@@ -3388,15 +3384,44 @@ fn command_ls_status_survives_input_before_timeout() {
 }
 
 #[test]
-fn command_write_status_expires_after_timeout() {
+fn command_write_confirms_success_until_expiry_or_another_edit() {
     let path = temp_file_path("write_status_clears");
     let mut state = state_with_text(path.clone(), "alpha");
+    let buffer_id = state.session.active_id();
 
     run_command(&mut state, "w");
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
-
-    expire_status_after_timeout(&mut state);
     assert!(state.status_msg.is_none());
+    assert!(state.save_confirmation_remaining(buffer_id).is_some());
+    let expiry = state.save_confirmation.unwrap().expires_at;
+    state.take_redraw_request();
+    assert!(state.next_wake_deadline(Instant::now()).unwrap() <= expiry);
+
+    state.update_background(expiry);
+    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(state.take_redraw_request());
+
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+
+    run_command(&mut state, "w");
+    let other_id = state.session.open_unnamed_buffer();
+    assert!(state.save_confirmation_remaining(other_id).is_none());
+    state.session.activate(buffer_id);
+    run_command(
+        &mut state,
+        &format!("w {}", path.parent().unwrap().display()),
+    );
+    assert!(state.save_confirmation_remaining(buffer_id).is_none());
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .unwrap()
+            .starts_with("write failed:")
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -3477,7 +3502,7 @@ exit 1
             fs::read_to_string(&path).expect("failed to read saved file"),
             "def main():\n    print('hi')\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 
@@ -3519,7 +3544,7 @@ EOF
             fs::read_to_string(&path).expect("failed to read saved file"),
             "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 
@@ -3569,7 +3594,7 @@ exit 1
             fs::read_to_string(&path).expect("failed to read saved file"),
             "fn main() {\n    println!(\"hi\");\n}\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 

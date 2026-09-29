@@ -558,7 +558,7 @@ properties. Which-key text roles support full styles; their background defaults 
 - Dashboard: `dashboard.text`, `dashboard.selected`, `dashboard.hotkey`, `dashboard.version`,
   `dashboard.icon`, `dashboard.logo_red`, `dashboard.logo_white`, `dashboard.logo_blue`
 - Git: `git.added`, `git.modified`, `git.conflict`, `git.removed`
-- Status line: `status.bar`, `status.path`, `status.dirty`, `status.mode_normal`,
+- Status line: `status.bar`, `status.path`, `status.dirty`, `status.saved`, `status.mode_normal`,
   `status.mode_insert`, `status.mode_command`, `status.mode_visual`,
   `status.metadata_wrapper`, `status.metadata_content`, `status.coords_wrapper`,
   `status.coords_content`, `status.minimap_wrapper`, `status.minimap_content`, `status.minimap`,

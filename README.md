@@ -150,7 +150,7 @@ It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.to
 
 Configuration supports features like named themes, the complete base palette, every syntax role,
 per-role colours and font formatting, a global plain-text switch, optional Nerd Font icons,
-background dimming, popup dimensions, colour-column position, zen mode, undo-tree history size, 
+background dimming, popup dimensions, colour-column position, zen mode, undo-tree history size,
 the leader character, and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
@@ -201,6 +201,9 @@ are not restored.
 Name a new buffer on its first write, for example `:w file.rs`. The extension selects
 syntax highlighting and the existing formatting tools. A failed write keeps the
 buffer's previous name and contents, and a different existing file is never overwritten.
+
+A successful file save briefly shows a green checkmark beside the cursor coordinates.
+Customise its colour and text formatting with the `status.saved` UI style.
 
 Example:
 ```bash
@@ -464,7 +467,7 @@ Popups support scrolling, entry selection, double-click opening, and outside-cli
 Set `mouse_scroll_step_vertical` and `mouse_scroll_step_horizontal` to choose the number
 of rows and columns per wheel event in buffers and scrollable popups. Both default to `3`
 and accept integers from `1` to `65535` (although I wouldn't recommend that); use `1` for
-finer scrolling. Apply changes with `:config reload`. The `mouse_invert_vertical` and 
+finer scrolling. Apply changes with `:config reload`. The `mouse_invert_vertical` and
 `mouse_invert_horizontal` settings reverse each axis independently.
 
 | Keys | Behaviour |

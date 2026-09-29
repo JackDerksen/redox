@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
 use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, ZEN, filetype_icon};
-use crate::ui::style::StatusModuleColors;
+use crate::ui::style::{StatusModuleColors, dim_foreground_color};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
 const SCROLL_MINIMAP_GLYPHS: [&str; 8] = ["▇", "▆", "▅", "▄", "▄", "▃", "▂", "▁"];
@@ -519,7 +519,9 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let scroll_width = scroll_glyph.chars().count() as u16;
     let coords_minimap_width =
         status_module_width(coords_width + STATUS_MODULE_SEPARATOR_WIDTH + scroll_width);
-    let change_marker_width = u16::from(meta.dirty || meta.external_changed);
+    let save_confirmation = state.save_confirmation_remaining(buffer_id);
+    let change_marker_width =
+        u16::from(meta.dirty || meta.external_changed || save_confirmation.is_some());
     let right_module_width = change_marker_width + DIRTY_GAP_WIDTH + coords_minimap_width;
     let side_reserve_width = balanced_status_side_width(
         left_text_width,
@@ -574,6 +576,14 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
         } else if meta.dirty {
             Segment::new("+")
                 .with_color(style.status_line.dirty)
+                .with_min_width(change_marker_width)
+        } else if let Some(remaining) = save_confirmation {
+            let fade = 1.0 - (remaining.as_secs_f32() / 0.15).clamp(0.0, 1.0);
+            let colors = style.status_line.saved;
+            Segment::new("✓")
+                .with_color(
+                    colors.with_colors(dim_foreground_color(colors.fg, colors.bg, fade), colors.bg),
+                )
                 .with_min_width(change_marker_width)
         } else {
             Segment::spacer(0)

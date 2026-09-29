@@ -180,6 +180,7 @@ punctuation_special = "#b4d4cf"
 "status.bar" = { fg = "#cdcdcd", bg = "#1c1c24" }
 "status.path" = { fg = "#878787", bg = "#1c1c24" }
 "status.dirty" = { fg = "#f3be7c", bg = "#1c1c24" }
+"status.saved" = { fg = "#7fa563", bg = "#1c1c24" }
 "status.mode_normal" = { fg = "#141415", bg = "#9bb4bc" }
 "status.mode_insert" = { fg = "#141415", bg = "#7fa563" }
 "status.mode_command" = { fg = "#141415", bg = "#c48282" }

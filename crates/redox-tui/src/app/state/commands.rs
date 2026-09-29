@@ -641,6 +641,7 @@ impl EditorState {
     }
 
     pub(super) fn write_current_file(&mut self, path_arg: &str) -> bool {
+        self.save_confirmation = None;
         if self.explorer_is_active() {
             if !path_arg.is_empty() {
                 self.set_status("explorer writes do not accept a file name");
@@ -702,7 +703,7 @@ impl EditorState {
         let history_result = self.persist_active_undo_history();
         let lsp_result = self.notify_active_lsp_did_save();
         match (history_result, lsp_result) {
-            (Ok(()), Ok(())) => self.set_status("written"),
+            (Ok(()), Ok(())) => self.confirm_active_save(),
             (Err(error), Ok(())) => {
                 self.set_status(format!("written (undo history save failed: {error})"))
             }
