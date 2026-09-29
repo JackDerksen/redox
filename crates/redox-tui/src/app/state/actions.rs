@@ -124,6 +124,7 @@ impl EditorState {
                 if self.apply_undo_tree_motion(motion, count) {
                     return;
                 }
+                let previous_cursor = self.active_cursor_pos();
                 let is_explorer = self.explorer_is_active();
                 let active_id = self.session.active_id();
                 let view = self.views.entry(active_id).or_default();
@@ -146,6 +147,16 @@ impl EditorState {
                 }
                 if self.undo_tree_is_active() {
                     self.clamp_undo_tree_cursor();
+                }
+                let cursor = self.active_cursor_pos();
+                if cursor != previous_cursor
+                    && (cursor.line.abs_diff(previous_cursor.line) >= 5
+                        || matches!(
+                            motion,
+                            Motion::FileStart | Motion::FileEnd | Motion::MatchDelimiter
+                        ))
+                {
+                    self.start_jump_pulse(text_vh);
                 }
             }
 
@@ -733,17 +744,17 @@ impl EditorState {
                 }
             }
 
-            InputAction::ViewportDownCenter => {
+            action @ (InputAction::ViewportDownCenter | InputAction::ViewportUpCenter) => {
                 if self.mode == EditorMode::Normal {
+                    let previous_cursor = self.active_cursor_pos();
                     self.clear_search_highlights();
-                    self.scroll_viewport_and_center_cursor(true, text_vh);
-                }
-            }
-
-            InputAction::ViewportUpCenter => {
-                if self.mode == EditorMode::Normal {
-                    self.clear_search_highlights();
-                    self.scroll_viewport_and_center_cursor(false, text_vh);
+                    self.scroll_viewport_and_center_cursor(
+                        matches!(action, InputAction::ViewportDownCenter),
+                        text_vh,
+                    );
+                    if self.active_cursor_pos() != previous_cursor {
+                        self.start_jump_pulse(text_vh);
+                    }
                 }
             }
 
@@ -924,7 +935,7 @@ impl EditorState {
             InputAction::YankSelectionPrivate => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode);
+                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                     }
                     self.private_register = plan.text;
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
@@ -1005,7 +1016,7 @@ impl EditorState {
             InputAction::YankSelectionSystem => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode);
+                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                     }
                     self.private_register = plan.text.clone();
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);

@@ -365,7 +365,7 @@ impl EditorState {
                 self.private_register = plan.text;
                 self.private_register_kind = plan.register_kind;
                 if let Some((selection, mode)) = plan.yank_highlight {
-                    self.set_one_shot_highlight(selection, mode);
+                    self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                 }
                 self.set_status("yanked");
             }
@@ -442,6 +442,7 @@ impl EditorState {
         self.set_one_shot_highlight(
             Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
             VisualModeKind::Line,
+            super::HighlightKind::Yank,
         );
         self.set_status(if start_line == end_line {
             "yanked line"

@@ -28,7 +28,7 @@ mod storage;
 mod terminal;
 mod ui;
 
-use app::state::PaneId;
+use app::state::{HighlightKind, OneShotHighlight, PaneId};
 use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
 use input::{
     ConfiguredBinding, ConfiguredBindingTarget, InputAction, InputState, map_event_with_context,
@@ -39,8 +39,8 @@ use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
 use ui::overlays::{
-    LineDecorations, YankRipple, active_delimiter_highlights, active_scope_indent_guides,
-    draw_delimiter_highlights, draw_indent_guides,
+    JumpPulse, LineDecorations, YankRipple, active_delimiter_highlights,
+    active_scope_indent_guides, draw_delimiter_highlights, draw_indent_guides,
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
@@ -96,7 +96,7 @@ struct BufferDrawOptions {
 
 struct BufferHighlights<'a> {
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind, Duration)>,
+    one_shot_highlight: Option<OneShotHighlight>,
     search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
@@ -123,7 +123,7 @@ struct SnapshotOverlays<'a> {
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind, Duration)>,
+    one_shot_highlight: Option<OneShotHighlight>,
     focused_lines: Option<std::ops::Range<usize>>,
 }
 
@@ -2167,10 +2167,16 @@ fn draw_snapshot_lines(
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
-                one_shot_highlight.map(|(selection, mode, _)| (selection, mode, default_colors.bg))
+                one_shot_highlight
+                    .map(|highlight| (highlight.selection, highlight.mode, default_colors.bg))
             });
 
         let selected_cells = transient_selection.and_then(|(selection, mode, _)| {
+            if visual_selection.is_none()
+                && one_shot_highlight.is_some_and(|highlight| highlight.kind == HighlightKind::Jump)
+            {
+                return (selection.cursor.line == line_idx).then(|| vec![true; text_w]);
+            }
             visual_selection_visible_cells(
                 buffer,
                 source_line,
@@ -2229,11 +2235,20 @@ fn draw_snapshot_lines(
             current_style: style.search_current,
             error_style: style.error_range,
             yank_ripple: one_shot_highlight
-                .filter(|_| visual_selection.is_none())
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::Yank
+                })
                 .zip(selected_cells.as_deref())
-                .and_then(|((_, _, elapsed), cells)| {
-                    YankRipple::new(cells, elapsed, default_colors.colors())
+                .and_then(|(highlight, cells)| {
+                    YankRipple::new(cells, highlight.elapsed, default_colors.colors())
                 }),
+            jump_pulse: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none()
+                        && highlight.kind == HighlightKind::Jump
+                        && selected_cells.is_some()
+                })
+                .map(|highlight| JumpPulse::new(highlight.elapsed, style.editor_text.fg)),
         };
         if let Some((_, _, selection_bg)) = transient_selection
             && let Some(selected_cells) = selected_cells.as_ref()
@@ -2267,6 +2282,9 @@ fn draw_snapshot_lines(
                 }
                 layers
             };
+            if decorations.jump_pulse.is_some() {
+                highlight_layers.rotate_left(1);
+            }
             if let Some(active) = &active_search_cells {
                 highlight_layers.insert(
                     0,
@@ -5388,6 +5406,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 current_style: style.search_current,
                 error_style: style.error_range,
                 yank_ripple: None,
+                jump_pulse: None,
             };
             let decorated = decorations
                 .apply(style.editor_text.into(), 0..1)
@@ -5508,6 +5527,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 current_style: style.search_current,
                                 error_style: style.error_range,
                                 yank_ripple: None,
+                                jump_pulse: None,
                             },
                         },
                         style,
@@ -5571,6 +5591,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     current_style: style.search_current,
                     error_style: style.error_range,
                     yank_ripple: None,
+                    jump_pulse: None,
                 };
                 let mut window = TestWindow::new(8, 1);
                 draw_line_with_highlights(
@@ -5667,6 +5688,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         current_style: style.search_current,
                         error_style: style.error_range,
                         yank_ripple: None,
+                        jump_pulse: None,
                     },
                 },
                 style,

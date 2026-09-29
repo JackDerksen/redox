@@ -200,12 +200,12 @@ pub(crate) fn draw_explorer_popup_view(
             draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
             continue;
         }
-        if let Some((selection, mode, elapsed)) = one_shot_highlight
+        if let Some(highlight) = one_shot_highlight
             && let Some(cells) = crate::visual_selection_visible_cells(
                 state.session.active_buffer(),
                 source_line,
-                selection,
-                mode,
+                highlight.selection,
+                highlight.mode,
                 line_idx,
                 scroll_x,
                 inner_w.saturating_sub(content_x) as usize,
@@ -232,7 +232,12 @@ pub(crate) fn draw_explorer_popup_view(
                         search_style: style.search_match,
                         current_style: style.search_current,
                         error_style: style.error_range,
-                        yank_ripple: YankRipple::new(&cells, elapsed, style.editor_text.colors()),
+                        yank_ripple: YankRipple::new(
+                            &cells,
+                            highlight.elapsed,
+                            style.editor_text.colors(),
+                        ),
+                        jump_pulse: None,
                     },
                 },
                 style,

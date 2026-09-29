@@ -82,12 +82,20 @@ enum RegisterKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OneShotHighlight {
+pub(crate) enum HighlightKind {
+    Yank,
+    Jump,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OneShotHighlight {
     buffer_id: BufferId,
-    selection: Selection,
-    mode: VisualModeKind,
+    pane_id: PaneId,
+    pub selection: Selection,
+    pub mode: VisualModeKind,
+    pub kind: HighlightKind,
     started_at: Instant,
-    elapsed: Duration,
+    pub elapsed: Duration,
     version: u64,
 }
 
@@ -1034,11 +1042,14 @@ impl EditorState {
         self.explorer_delete_confirmation_token.is_some()
     }
 
-    pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind, Duration)> {
+    pub fn one_shot_highlight(&self) -> Option<OneShotHighlight> {
         let highlight = self.one_shot_highlight?;
         (highlight.buffer_id == self.session.active_id()
+            && highlight.pane_id == self.active_pane_id()
+            && (highlight.kind != HighlightKind::Jump
+                || highlight.selection.cursor.line == self.active_cursor_pos().line)
             && self.views.get(&highlight.buffer_id)?.analysis_version() == highlight.version)
-            .then_some((highlight.selection, highlight.mode, highlight.elapsed))
+            .then_some(highlight)
     }
 
     pub fn advance_one_shot_highlight(&mut self, now: Instant) {
@@ -1049,16 +1060,27 @@ impl EditorState {
             return;
         }
         highlight.elapsed = now.saturating_duration_since(highlight.started_at);
-        if highlight.elapsed < crate::ui::overlays::YankRipple::DURATION {
+        let duration = match highlight.kind {
+            HighlightKind::Yank => crate::ui::overlays::YankRipple::DURATION,
+            HighlightKind::Jump => crate::ui::overlays::JumpPulse::DURATION,
+        };
+        if highlight.elapsed < duration {
             self.one_shot_highlight = Some(highlight);
         }
     }
 
-    fn set_one_shot_highlight(&mut self, selection: Selection, mode: VisualModeKind) {
+    fn set_one_shot_highlight(
+        &mut self,
+        selection: Selection,
+        mode: VisualModeKind,
+        kind: HighlightKind,
+    ) {
         self.one_shot_highlight = Some(OneShotHighlight {
             buffer_id: self.session.active_id(),
+            pane_id: self.active_pane_id(),
             selection,
             mode,
+            kind,
             started_at: Instant::now(),
             elapsed: Duration::ZERO,
             version: self
@@ -1067,6 +1089,19 @@ impl EditorState {
                 .or_default()
                 .analysis_version(),
         });
+    }
+
+    fn start_jump_pulse(&mut self, text_vh: usize) {
+        if self.mode != EditorMode::Normal || self.session.active_meta().kind != BufferKind::File {
+            return;
+        }
+        self.center_active_cursor_line(text_vh);
+        self.set_one_shot_highlight(
+            Selection::empty(self.active_cursor_pos()),
+            VisualModeKind::Line,
+            HighlightKind::Jump,
+        );
+        self.request_redraw();
     }
 
     pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {

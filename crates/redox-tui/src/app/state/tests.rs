@@ -5052,7 +5052,11 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
     assert_eq!(state.mode, EditorMode::Normal);
     assert_eq!(state.status_msg.as_deref(), Some("yanked"));
     assert_eq!(
-        state.one_shot_highlight(),
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
         Some((
             Selection::new(Pos::new(0, 0), Pos::new(0, 3)),
             VisualModeKind::Char,
@@ -5654,13 +5658,53 @@ fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
     assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
     assert_eq!(
-        state.one_shot_highlight(),
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
         Some((
             Selection::new(Pos::new(1, 0), Pos::new(1, 0)),
             VisualModeKind::Line,
             Duration::ZERO,
         ))
     );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn jump_pulse_follows_large_motions_and_expires() {
+    let path = temp_file_path("jump_pulse");
+    let mut state = state_with_text(path.clone(), &"alpha beta\n".repeat(40));
+    let viewport_height = 8;
+    for (motion, count, expected_line) in [
+        (Motion::Down, 1, None),
+        (Motion::Down, 8, Some(9)),
+        (Motion::Up, 1, None),
+        (Motion::FileEnd, 1, Some(40)),
+        (Motion::FileStart, 1, Some(0)),
+    ] {
+        state.apply_input(InputAction::Motion { motion, count }, 80, viewport_height);
+        assert_eq!(
+            state
+                .one_shot_highlight()
+                .map(|highlight| (highlight.kind, highlight.selection.cursor.line)),
+            expected_line.map(|line| (HighlightKind::Jump, line)),
+        );
+        if let Some(line) = expected_line {
+            assert_eq!(
+                state.views[&state.session.active_id()]
+                    .cursor
+                    .scroll_y_lines,
+                line.saturating_sub((viewport_height - STATUS_BAR_HEIGHT_ROWS) / 2),
+            );
+        }
+    }
+    let highlight = state.one_shot_highlight().unwrap();
+    state.advance_one_shot_highlight(
+        highlight.started_at + crate::ui::overlays::JumpPulse::DURATION,
+    );
+    assert!(state.one_shot_highlight().is_none());
     let _ = fs::remove_file(path);
 }
 
@@ -5675,7 +5719,7 @@ fn yank_ripple_uses_elapsed_time() {
     let started_at = state.one_shot_highlight.unwrap().started_at;
     state.advance_one_shot_highlight(started_at + Duration::from_millis(140));
     assert_eq!(
-        state.one_shot_highlight().unwrap().2,
+        state.one_shot_highlight().unwrap().elapsed,
         Duration::from_millis(140)
     );
 
@@ -5699,12 +5743,26 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
         VisualModeKind::Line,
         Duration::ZERO,
     ));
-    assert_eq!(state.one_shot_highlight(), expected);
+    assert_eq!(
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
+        expected
+    );
 
     run_command(&mut state, &format!("e {}", path_b.display()));
     let id_b = state.session.active_id();
     assert_ne!(id_a, id_b);
-    assert_eq!(state.one_shot_highlight(), None);
+    assert_eq!(
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
+        None
+    );
 
     let expiry =
         state.one_shot_highlight.unwrap().started_at + crate::ui::overlays::YankRipple::DURATION;

@@ -1263,6 +1263,7 @@ impl EditorState {
             view.cursor.reconcile_after_edit(buffer, width, text_vh);
         });
         self.close_diagnostics_popup();
+        self.start_jump_pulse(text_vh);
     }
 
     pub(super) fn diagnostics_popup_open_selected(&mut self) {
@@ -3382,6 +3383,7 @@ impl EditorState {
                         .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
                 });
                 self.clear_status();
+                self.start_jump_pulse(text_vh);
             }
             Err(error) => {
                 self.set_status(format!("definition open failed: {error}"));

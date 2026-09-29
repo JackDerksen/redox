@@ -440,6 +440,7 @@ impl EditorState {
     }
 
     fn command_goto_line(&mut self, line_number: usize) {
+        let previous_cursor = self.active_cursor_pos();
         if !self.close_active_surfaces_for_command() {
             self.set_status("cannot return to an editor buffer");
             return;
@@ -460,6 +461,9 @@ impl EditorState {
         self.center_active_cursor_line(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
         self.clear_search_highlights();
         self.clear_status();
+        if self.active_cursor_pos() != previous_cursor {
+            self.start_jump_pulse(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
+        }
     }
 
     pub(super) fn reset_command_history_navigation(&mut self) {

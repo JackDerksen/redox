@@ -22,6 +22,36 @@ pub(crate) struct LineDecorations<'a> {
     pub current_style: TextStyle,
     pub error_style: TextStyle,
     pub yank_ripple: Option<YankRipple<'a>>,
+    pub jump_pulse: Option<JumpPulse>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct JumpPulse {
+    foreground: Color,
+    strength: f32,
+}
+
+impl JumpPulse {
+    pub const DURATION: Duration = Duration::from_millis(150);
+
+    pub fn new(elapsed: Duration, foreground: Color) -> Self {
+        let remaining =
+            (1.0 - elapsed.as_secs_f32() / Self::DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        Self {
+            foreground,
+            strength: 0.22 * remaining * remaining,
+        }
+    }
+
+    fn apply(self, style: Style) -> Style {
+        let Some(colors) = style.colors else {
+            return style;
+        };
+        style.with_colors(ColorPair::new(
+            colors.fg,
+            super::style::dim_foreground_color(self.foreground, colors.bg, 1.0 - self.strength),
+        ))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +118,9 @@ impl LineDecorations<'_> {
         }
         if let Some(ripple) = self.yank_ripple {
             style = ripple.apply(style, range);
+        }
+        if let Some(pulse) = self.jump_pulse {
+            style = pulse.apply(style);
         }
         style
     }
