@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use minui::Color;
-use serde::Deserialize;
+use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
+use serde::{Deserialize, Deserializer};
 
 use crate::input::cursor::DEFAULT_SCROLLOFF_ROWS;
 use crate::ui::UiStyle;
@@ -165,11 +166,35 @@ struct ThemeConfig {
     ui: BTreeMap<String, StyleValue>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 enum StyleValue {
     Foreground(String),
     Properties(StyleProperties),
+}
+
+impl<'de> Deserialize<'de> for StyleValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StyleValueVisitor;
+
+        impl<'de> Visitor<'de> for StyleValueVisitor {
+            type Value = StyleValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a colour string or style table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StyleValue::Foreground(value.to_owned()))
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                StyleProperties::deserialize(MapAccessDeserializer::new(map))
+                    .map(StyleValue::Properties)
+            }
+        }
+
+        deserializer.deserialize_any(StyleValueVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
