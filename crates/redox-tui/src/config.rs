@@ -459,7 +459,9 @@ impl StyleValue {
         match self {
             Self::Foreground(value) => {
                 target.fg = parse_color(value)?;
-                target.bg = background;
+                if target.bg != Color::Transparent {
+                    target.bg = background;
+                }
             }
             Self::Properties(properties) => {
                 if let Some(value) = &properties.fg {

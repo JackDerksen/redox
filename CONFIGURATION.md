@@ -459,7 +459,8 @@ markdown_highlight = { fg = "#25211d", bg = "#d8e8b8" }
 ```
 
 Colours use six-digit hexadecimal notation (`#RRGGBB`). `"transparent"` is also accepted. A plain
-string sets the foreground and uses the active theme background. Existing strings and `{ fg, bg }`
+string sets the foreground, retaining transparent backgrounds and using the active theme
+background for other roles. Existing strings and `{ fg, bg }`
 tables remain valid and retain the role's default formatting. Which-key text strings retain the
 which-key background.
 

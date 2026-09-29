@@ -97,8 +97,8 @@ yank_system = "<leader>y"
 # rejected at startup instead of being silently ignored.
 
 # Define any number of named themes, then select one with `theme` above. A
-# foreground-only colour inherits the editor background. Use { fg, bg } when
-# both sides should be explicit. Colours are #RRGGBB or "transparent".
+# foreground-only colour keeps transparency or uses the editor background.
+# Use { fg, bg } to set both. Colours are #RRGGBB or "transparent".
 # Every syntax/UI text role also accepts bold, italic, dim, reverse, strikethrough,
 # underline = "none"/"single"/"curl", and underline_color. Omitted properties keep
 # their defaults; false/"none" removes a role's default attribute. For example:
