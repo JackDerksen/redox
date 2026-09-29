@@ -1564,8 +1564,6 @@ fn draw_split_editor_panes(
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| meta.display_name.clone())
             });
-        let header_height = u16::from(inactive_filename.is_some()).min(rect.height);
-        let content_height = rect.height - header_height;
         let mut pane_window = WindowView {
             window,
             x_offset: rect.x,
@@ -1575,11 +1573,6 @@ fn draw_split_editor_panes(
             width: rect.width,
             height: rect.height,
         };
-        if let Some(filename) = inactive_filename {
-            draw_pane_filename(&mut pane_window, &filename, pane_style.pane_title)?;
-            pane_window.y_offset = pane_window.y_offset.saturating_add(header_height);
-            pane_window.height = content_height;
-        }
         if is_active_pane && state.active_rain_animation().is_some() {
             draw_active_split_rain_pane(
                 state,
@@ -1599,7 +1592,7 @@ fn draw_split_editor_panes(
                 .map_or(0, |buffer| buffer.len_lines().max(1));
             let (_, scroll_y) = view.cursor.viewport_scroll();
             let first_line = scroll_y.min(total_lines.saturating_sub(1));
-            let visible_len = (content_height as usize).min(total_lines.saturating_sub(first_line));
+            let visible_len = (rect.height as usize).min(total_lines.saturating_sub(first_line));
             let diagnostic_lines = if is_active_pane {
                 state.active_diagnostic_lines(first_line, visible_len)
             } else {
@@ -1621,7 +1614,7 @@ fn draw_split_editor_panes(
                 buffer_id,
                 BufferDrawOptions {
                     width: rect.width,
-                    height: content_height,
+                    height: rect.height,
                     has_line_numbers: options.has_line_numbers,
                     colors: pane_text,
                 },
@@ -1634,6 +1627,9 @@ fn draw_split_editor_panes(
                     snippet_placeholders: &snippet_placeholders,
                 },
             )?;
+        }
+        if let Some(filename) = inactive_filename {
+            draw_pane_filename(&mut pane_window, &filename, pane_style.pane_title)?;
         }
         state.sync_rendered_pane_view(rect.pane_id, buffer_id);
     }
@@ -3999,7 +3995,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_clicks_account_for_zen_margins_and_inactive_pane_headers() {
+    fn mouse_clicks_account_for_zen_margins_and_inactive_pane_overlays() {
         use minui::MouseButton;
         use redox_core::Pos;
         let _lock = app::state::global_test_state_lock().lock().unwrap();
@@ -4031,7 +4027,7 @@ mod tests {
             },
         );
         assert_eq!(state.active_pane_id(), inactive.pane_id);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for (x, y) in [(0, 2), (99, 2), (15, 11)] {
             handle_editor_event(
@@ -4043,7 +4039,7 @@ mod tests {
                     button: MouseButton::Left,
                 },
             );
-            assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+            assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         }
         state.mode = app::EditorMode::Insert;
         handle_editor_event(
@@ -4087,7 +4083,7 @@ mod tests {
             },
         );
         assert_eq!(state.mode, app::EditorMode::Insert);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         state.configure_mouse(false, false, false, 3, 3);
         for event in [
             Event::MouseClick {
@@ -4117,7 +4113,7 @@ mod tests {
             },
         );
         assert_eq!(state.mode, app::EditorMode::Command);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
     }
 
     #[test]
@@ -4690,8 +4686,8 @@ mod tests {
         let mut perf = FramePerfSample::default();
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 29) {
-            let first_row = rect.y + u16::from(rect.pane_id != state.active_pane_id());
-            let row = window.row_text(first_row);
+            let preview_row = rect.y + 2;
+            let row = window.row_text(preview_row);
             let pane_text: String = row
                 .chars()
                 .skip(rect.x as usize)
@@ -4708,17 +4704,17 @@ mod tests {
                 style.dimmed()
             };
             assert_eq!(
-                window.backgrounds[first_row as usize][column],
+                window.backgrounds[preview_row as usize][column],
                 Some(pane_style.substitute_colors(true).bg)
             );
             assert_eq!(
-                window.foregrounds[first_row as usize][column],
+                window.foregrounds[preview_row as usize][column],
                 Some(pane_style.substitute_colors(true).fg)
             );
             let keyword =
                 rect.x as usize + pane_text[..pane_text.find("let ").unwrap()].chars().count();
             assert_eq!(
-                window.foregrounds[first_row as usize][keyword],
+                window.foregrounds[preview_row as usize][keyword],
                 Some(pane_style.syntax.keyword.fg)
             );
         }
@@ -5049,6 +5045,7 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, Event::Character('i'));
         handle_editor_event(&mut state, &mut clipboard, Event::Character('x'));
         assert_eq!(state.session.active_buffer().to_string(), "x");
+        handle_editor_event(&mut state, &mut clipboard, Event::Paste("\nx".into()));
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -5888,7 +5885,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
     }
 
     #[test]
-    fn inactive_pane_filenames_follow_focus_and_disappear_when_the_split_closes() {
+    fn inactive_pane_filenames_overlay_the_top_row_without_shifting_text() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         for (axis, focus_back) in [
             (app::state::SplitAxis::Vertical, InputAction::SplitFocusLeft),
@@ -5918,6 +5915,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     let text = window.cells[row][columns.clone()]
                         .iter()
                         .collect::<String>();
+                    let second_line = window.cells[row + 1][columns.clone()]
+                        .iter()
+                        .collect::<String>();
+                    assert!(second_line.contains("body"), "{second_line:?}");
                     if rect.pane_id == state.active_pane_id() {
                         assert!(text.contains("first"), "{text:?}");
                     } else {
@@ -5926,10 +5927,6 @@ markdown_emphasis = { italic = false, strikethrough = true }
                             text.find(expected_filename),
                             Some((rect.width as usize - expected_filename.len()) / 2)
                         );
-                        let first_line = window.cells[row + 1][columns.clone()]
-                            .iter()
-                            .collect::<String>();
-                        assert!(first_line.contains("first"), "{first_line:?}");
                         assert!(
                             window.backgrounds[row][columns.clone()]
                                 .iter()

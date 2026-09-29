@@ -478,11 +478,7 @@ impl EditorState {
         if rect.width <= gutter {
             return None;
         }
-        let header = if is_tree {
-            UNDO_TREE_HEADER_ROWS
-        } else {
-            u16::from(!active)
-        };
+        let header = if is_tree { UNDO_TREE_HEADER_ROWS } else { 0 };
         let line = buffer.clamp_line(
             view.cursor.scroll_y_lines.saturating_add(
                 row.clamp(rect.y, rect.y + rect.height - 1)
@@ -618,13 +614,7 @@ impl EditorState {
             } else if let Some(buffer) = self.session.buffer(buffer_id) {
                 let cursor = &mut self.panes[pane_index].view.cursor;
                 cursor.set_scrolloff_rows(self.scrolloff_rows);
-                scroll_mouse_view(
-                    buffer,
-                    cursor,
-                    rows,
-                    columns,
-                    rect.height.saturating_sub(1) as usize,
-                );
+                scroll_mouse_view(buffer, cursor, rows, columns, rect.height as usize);
             }
         }
     }

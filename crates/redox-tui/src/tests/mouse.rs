@@ -725,7 +725,7 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
         .session
         .buffer(source_id)
         .unwrap()
-        .line_string(source_scroll + 5);
+        .line_string(source_scroll + 6);
     let source_row: String = window.cells[(source.y + 3) as usize][source.x as usize..]
         .iter()
         .collect();
@@ -739,7 +739,7 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
         source.y + 3,
     );
     assert_eq!(state.active_pane_id(), source_pane.id);
-    assert_eq!(state.active_cursor_pos(), Pos::new(source_scroll + 5, 2));
+    assert_eq!(state.active_cursor_pos(), Pos::new(source_scroll + 6, 2));
     let source_cursor = state.active_cursor_pos();
 
     wheel(&mut state, &mut window, tree.x + 2, tree.y + 2);
@@ -1040,13 +1040,12 @@ fn nested_split_mouse_switches_independent_views_of_the_same_buffer() {
             .unwrap()
             .view;
         let (scroll_x, scroll_y) = view.cursor.viewport_scroll();
-        let header = u16::from(pane.pane_id != state.active_pane_id());
         let content = pane_content_x(&state, pane.pane_id);
         click(
             &mut state,
             &mut window,
             12 + pane.x + content + 3,
-            pane.y + header + 2,
+            pane.y + 2,
         );
         assert_eq!(state.active_pane_id(), pane.pane_id);
         assert_eq!(state.session.active_id(), buffer);
