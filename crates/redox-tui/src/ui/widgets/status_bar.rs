@@ -1,5 +1,6 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::Widget;
-use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
+use minui::{Color, Result, TabPolicy, Window, cell_width};
 use redox_core::BufferLoadPhase;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -37,8 +38,8 @@ fn resolve_transparent_to(color: Color, fallback: Color) -> Color {
     }
 }
 
-fn resolve_minimap_pair(base: ColorPair, status_bg: Color) -> ColorPair {
-    ColorPair::new(
+fn resolve_minimap_pair(base: TextStyle, status_bg: Color) -> TextStyle {
+    base.with_colors(
         resolve_transparent_to(base.fg, status_bg),
         resolve_transparent_to(base.bg, status_bg),
     )
@@ -47,10 +48,10 @@ fn resolve_minimap_pair(base: ColorPair, status_bg: Color) -> ColorPair {
 pub(crate) fn scroll_minimap_cell(
     cursor_line: usize,
     total_lines: usize,
-    minimap: ColorPair,
-    minimap_alt: ColorPair,
+    minimap: TextStyle,
+    minimap_alt: TextStyle,
     status_bg: Color,
-) -> (&'static str, ColorPair) {
+) -> (&'static str, TextStyle) {
     let idx = scroll_progress_idx(cursor_line, total_lines);
     let glyph = SCROLL_MINIMAP_GLYPHS[idx];
     let colors = if idx < 4 {
@@ -87,7 +88,7 @@ pub enum Align {
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub text: String,
-    pub colors: Option<ColorPair>,
+    pub colors: Option<TextStyle>,
     pub align: Align,
     pub min_width: Option<u16>,
     clip: ClipMode,
@@ -104,7 +105,7 @@ impl Segment {
         }
     }
 
-    pub fn with_color(mut self, colors: ColorPair) -> Self {
+    pub fn with_color(mut self, colors: TextStyle) -> Self {
         self.colors = Some(colors);
         self
     }
@@ -199,7 +200,7 @@ fn status_module_segments(
     // `▌` paints its left half with the foreground and its right half with the
     // background; `▐` does the reverse. Deriving this pair prevents themes from
     // accidentally turning module edges into solid vertical blocks.
-    let edge_colors = ColorPair::new(status_bg, colors.content.bg);
+    let edge_colors = TextStyle::new(status_bg, colors.content.bg);
     let mut segments = vec![
         Segment::new(STATUS_MODULE_EDGE_LEFT)
             .with_color(edge_colors)
@@ -217,7 +218,7 @@ fn status_module_segments(
 #[derive(Debug, Clone)]
 pub struct EditorStatusBar {
     segments: Vec<Segment>,
-    bg_colors: Option<ColorPair>,
+    bg_colors: Option<TextStyle>,
     height: u16,
 }
 
@@ -236,7 +237,7 @@ impl EditorStatusBar {
         }
     }
 
-    pub fn with_bg(mut self, colors: ColorPair) -> Self {
+    pub fn with_bg(mut self, colors: TextStyle) -> Self {
         self.bg_colors = Some(colors);
         self
     }
@@ -275,7 +276,7 @@ impl EditorStatusBar {
 
         if let Some(bg) = self.bg_colors {
             let full = " ".repeat(width as usize);
-            window.write_str_colored(y, 0, &full, bg)?;
+            window.write_str_styled(y, 0, &full, bg.into())?;
         }
         Ok(())
     }
@@ -363,7 +364,7 @@ impl EditorStatusBar {
         };
 
         if let Some(colors) = segment.colors {
-            window.write_str_colored(y, x, &clipped, colors)?;
+            window.write_str_styled(y, x, &clipped, colors.into())?;
         } else {
             window.write_str(y, x, &clipped)?;
         }
@@ -445,7 +446,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
 
     let minimal = state.zen.enabled && state.zen.minimal_statusline;
     let zen_icon = (style.icons_enabled && state.zen.enabled).then_some(ZEN);
-    let icon_colors = ColorPair::new(style.theme.light_gray, style.theme.black);
+    let icon_colors = TextStyle::new(style.theme.light_gray, style.theme.black);
     let lsp_icon =
         if !minimal && style.icons_enabled && state.lsp_provider_installed_for_buffer(buffer_id) {
             meta.path.as_deref().and_then(filetype_icon)
@@ -587,7 +588,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                     .with_align(Align::Right)
                     .with_min_width(coords_width),
                 Segment::new(STATUS_MODULE_SEPARATOR)
-                    .with_color(ColorPair::new(
+                    .with_color(right_module_colors.wrapper.with_colors(
                         right_module_colors.wrapper.fg,
                         right_module_colors.content.bg,
                     ))
@@ -625,7 +626,7 @@ fn status_bar_mode_presentation(
     mode: EditorMode,
     rain_active: bool,
     style: UiStyle,
-) -> (&'static str, ColorPair) {
+) -> (&'static str, TextStyle) {
     if rain_active {
         return ("RAIN", style.status_line.mode_command);
     }
@@ -738,7 +739,7 @@ mod tests {
         let colors = StatusModuleColors {
             // The wrapper is deliberately unrelated to both surrounding
             // backgrounds so the separator assertion covers the complete pair.
-            wrapper: ColorPair::new(
+            wrapper: TextStyle::new(
                 accent,
                 Color::Rgb {
                     r: 90,
@@ -746,7 +747,7 @@ mod tests {
                     b: 92,
                 },
             ),
-            content: ColorPair::new(Color::White, body_bg),
+            content: TextStyle::new(Color::White, body_bg),
         };
         let segments = StatusModule::new(
             format!("left{STATUS_MODULE_SEPARATOR}right"),
@@ -755,7 +756,7 @@ mod tests {
         )
         .into_segments();
 
-        let edge = ColorPair::new(status_bg, body_bg);
+        let edge = TextStyle::new(status_bg, body_bg);
         assert_eq!(
             segments.first().and_then(|segment| segment.colors),
             Some(edge)

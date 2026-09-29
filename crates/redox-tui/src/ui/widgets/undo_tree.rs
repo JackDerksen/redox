@@ -1,4 +1,5 @@
-use minui::{Color, ColorPair, Result, Style, TabPolicy, Window, cell_width};
+use crate::ui::text_style::TextStyle;
+use minui::{Color, Result, Style, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{UndoTreeLineRole, UndoTreeLineSpan};
@@ -52,12 +53,7 @@ fn draw_undo_tree_header(
     fill_row(window, width, 0, style.text)?;
     let title = undo_tree_title(icons_enabled);
     let title = clip_text_to_cells(&title, width.saturating_sub(UNDO_TREE_TITLE_COL) as usize);
-    window.write_str_styled(
-        0,
-        UNDO_TREE_TITLE_COL,
-        &title,
-        Style::from(style.title).bold(),
-    )
+    window.write_str_styled(0, UNDO_TREE_TITLE_COL, &title, Style::from(style.title))
 }
 
 fn undo_tree_title(icons_enabled: bool) -> String {
@@ -104,7 +100,12 @@ fn draw_undo_tree_line(
     } else {
         style.text.bg
     };
-    fill_row(window, width, row, ColorPair::new(style.text.fg, bg))?;
+    fill_row(
+        window,
+        width,
+        row,
+        style.text.with_colors(style.text.fg, bg),
+    )?;
 
     let line = clip_text_to_cells(line, width as usize);
     let mut col = 0u16;
@@ -121,6 +122,11 @@ fn draw_undo_tree_line(
             Some(UndoTreeLineRole::SelectedIndicator) => with_bg(style.selected_indicator, bg),
             Some(UndoTreeLineRole::Node) => with_bg(style.node, bg),
             None => with_bg(style.text, bg),
+        };
+        let colors = if is_selected {
+            colors.selected(style.selected)
+        } else {
+            colors
         };
         col = write_grapheme(window, width, row, col, &ch.to_string(), colors)?;
     }
@@ -145,8 +151,8 @@ fn draw_preview_line(
             row_u16,
             scroll_x,
             &[
-                ("Node: ", Style::from(style.preview_label).bold()),
-                (rest, Style::from(style.preview_title).bold()),
+                ("Node: ", Style::from(style.preview_label)),
+                (rest, Style::from(style.preview_title)),
             ],
         );
     }
@@ -166,11 +172,7 @@ fn draw_preview_line(
     } else {
         style.preview_text
     };
-    let text_style = if line == "Original state" {
-        Style::from(colors).bold()
-    } else {
-        Style::from(colors)
-    };
+    let text_style = Style::from(colors);
     write_segments(window, width, row_u16, scroll_x, &[(line, text_style)])
 }
 
@@ -212,25 +214,25 @@ fn write_grapheme(
     row: u16,
     col: u16,
     grapheme: &str,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> Result<u16> {
     let width = (cell_width(grapheme, UNDO_TREE_TAB_POLICY) as u16).max(1);
     if col.saturating_add(width) > width_limit {
         return Ok(width_limit);
     }
-    window.write_str_colored(row, col, grapheme, colors)?;
+    window.write_str_styled(row, col, grapheme, colors.into())?;
     Ok(col.saturating_add(width))
 }
 
-fn fill_row(window: &mut dyn Window, width: u16, row: u16, colors: ColorPair) -> Result<()> {
+fn fill_row(window: &mut dyn Window, width: u16, row: u16, colors: TextStyle) -> Result<()> {
     if width == 0 {
         return Ok(());
     }
-    window.write_str_colored(row, 0, &" ".repeat(width as usize), colors)
+    window.write_str_styled(row, 0, &" ".repeat(width as usize), colors.into())
 }
 
-fn with_bg(colors: ColorPair, bg: Color) -> ColorPair {
-    ColorPair::new(colors.fg, bg)
+fn with_bg(colors: TextStyle, bg: Color) -> TextStyle {
+    colors.with_colors(colors.fg, bg)
 }
 
 #[cfg(test)]
@@ -240,7 +242,7 @@ mod tests {
     struct ColorWindow {
         width: u16,
         height: u16,
-        cells: Vec<Vec<Option<ColorPair>>>,
+        cells: Vec<Vec<Option<minui::ColorPair>>>,
     }
 
     impl ColorWindow {
@@ -252,7 +254,7 @@ mod tests {
             }
         }
 
-        fn color_at(&self, row: u16, col: u16) -> Option<ColorPair> {
+        fn color_at(&self, row: u16, col: u16) -> Option<minui::ColorPair> {
             self.cells
                 .get(row as usize)
                 .and_then(|row| row.get(col as usize))
@@ -263,10 +265,16 @@ mod tests {
 
     impl Window for ColorWindow {
         fn write_str(&mut self, y: u16, x: u16, s: &str) -> Result<()> {
-            self.write_str_colored(y, x, s, ColorPair::new(Color::Reset, Color::Reset))
+            self.write_str_styled(y, x, s, (TextStyle::new(Color::Reset, Color::Reset)).into())
         }
 
-        fn write_str_colored(&mut self, y: u16, x: u16, s: &str, colors: ColorPair) -> Result<()> {
+        fn write_str_colored(
+            &mut self,
+            y: u16,
+            x: u16,
+            s: &str,
+            colors: minui::ColorPair,
+        ) -> Result<()> {
             if y >= self.height {
                 return Ok(());
             }
@@ -338,15 +346,15 @@ mod tests {
         draw_undo_tree_preview_lines(&mut window, 4, 0, style, &lines, (0, None))
             .expect("preview should render");
 
-        assert_eq!(window.color_at(0, 0), Some(style.preview_label));
-        assert_eq!(window.color_at(1, 0), Some(style.preview_title));
-        assert_eq!(window.color_at(3, 0), Some(style.preview_dim));
+        assert_eq!(window.color_at(0, 0), Some(style.preview_label.colors()));
+        assert_eq!(window.color_at(1, 0), Some(style.preview_title.colors()));
+        assert_eq!(window.color_at(3, 0), Some(style.preview_dim.colors()));
     }
 
     #[test]
     fn preview_diff_lines_use_explicit_separator_colours() {
         let style = UndoTreeStyle {
-            preview_separator: ColorPair::new(Color::Yellow, Color::Blue),
+            preview_separator: TextStyle::new(Color::Yellow, Color::Blue),
             ..UndoTreeStyle::default()
         };
         let lines = [
@@ -379,7 +387,7 @@ mod tests {
                 if source_row >= first_line {
                     assert_eq!(
                         window.color_at((source_row - first_line) as u16, 0),
-                        Some(color)
+                        Some(color.colors())
                     );
                 }
             }

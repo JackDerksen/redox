@@ -253,7 +253,7 @@ impl TerminalPanel {
                 }
                 let mut foreground = terminal_color(cell.fgcolor(), style.theme.white);
                 let mut background = terminal_color(cell.bgcolor(), style.theme.bg);
-                if cell.inverse() {
+                if style.text_formatting && cell.inverse() {
                     std::mem::swap(&mut foreground, &mut background);
                 }
                 if !self.focused {
@@ -264,16 +264,16 @@ impl TerminalPanel {
                     );
                 }
                 let mut cell_style = Style::from(ColorPair::new(foreground, background));
-                if cell.bold() {
+                if style.text_formatting && cell.bold() {
                     cell_style = cell_style.bold();
                 }
-                if cell.dim() {
+                if style.text_formatting && cell.dim() {
                     cell_style = cell_style.dim();
                 }
-                if cell.italic() {
+                if style.text_formatting && cell.italic() {
                     cell_style = cell_style.italic();
                 }
-                if cell.underline() {
+                if style.text_formatting && cell.underline() {
                     cell_style = cell_style.underlined();
                 }
                 if let Some(previous) = run_style

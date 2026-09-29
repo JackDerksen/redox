@@ -1,5 +1,6 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::WindowView;
-use minui::{ColorPair, TabPolicy, Window, cell_width};
+use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{
@@ -417,7 +418,7 @@ fn strip_plain_text_code_indent(line: &str) -> &str {
     line.strip_prefix("    ").unwrap_or(line)
 }
 
-fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> ColorPair {
+fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> TextStyle {
     match kind {
         SymbolInfoDisplayKind::PlainText => style.finder.dim,
         SymbolInfoDisplayKind::Markdown | SymbolInfoDisplayKind::Code { .. } => style.finder.text,
@@ -525,7 +526,7 @@ pub fn draw_diagnostics_popup(
             } else {
                 style.finder.dim
             };
-            view.write_str_colored(row, 1, &fill, highlight)?;
+            view.write_str_styled(row, 1, &fill, highlight.into())?;
         }
 
         let highlight = if diagnostics_active {
@@ -548,15 +549,20 @@ pub fn draw_diagnostics_popup(
             .saturating_add(text_width(glyph))
             .saturating_add(1);
 
-        view.write_str_colored(row, 1, marker, dim_colors)?;
-        view.write_str_colored(row, 3, &location, dim_colors)?;
-        view.write_str_colored(row, 3 + location_width as u16, " ", row_colors)?;
-        view.write_str_colored(row, 4 + location_width as u16, glyph, severity_colors)?;
-        view.write_str_colored(
+        view.write_str_styled(row, 1, marker, dim_colors.into())?;
+        view.write_str_styled(row, 3, &location, dim_colors.into())?;
+        view.write_str_styled(row, 3 + location_width as u16, " ", row_colors.into())?;
+        view.write_str_styled(
+            row,
+            4 + location_width as u16,
+            glyph,
+            severity_colors.into(),
+        )?;
+        view.write_str_styled(
             row,
             4 + location_width as u16 + text_width(glyph) as u16,
             " ",
-            row_colors,
+            row_colors.into(),
         )?;
 
         let message_w = view.width.saturating_sub(prefix_w as u16).saturating_sub(3) as usize;
@@ -568,14 +574,14 @@ pub fn draw_diagnostics_popup(
         let action_hint_width = action_hint.map_or(0, |hint| text_width(hint) as u16);
         let message_w = message_w.saturating_sub(action_hint_width as usize + 1);
         let message = clip_text_to_cells(&entry.summary, message_w);
-        view.write_str_colored(row, prefix_w as u16 + 1, &message, row_colors)?;
+        view.write_str_styled(row, prefix_w as u16 + 1, &message, row_colors.into())?;
         if let Some(hint) = action_hint
             && action_hint_width.saturating_add(2) < view.width
         {
             let hint_col = view
                 .width
                 .saturating_sub(action_hint_width.saturating_add(1));
-            view.write_str_colored(row, hint_col, hint, dim_colors)?;
+            view.write_str_styled(row, hint_col, hint, dim_colors.into())?;
         }
     }
 
@@ -610,7 +616,9 @@ pub fn draw_diagnostics_popup(
                     title_row,
                     1,
                     &clip_text_to_cells(&title, view.width.saturating_sub(2) as usize),
-                    minui::Style::from(severity_color(style, selected.severity)).bold(),
+                    style
+                        .section_title
+                        .overlay(severity_color(style, selected.severity).into()),
                 )?;
             }
 
@@ -639,11 +647,11 @@ pub fn draw_diagnostics_popup(
                 if row >= view.height {
                     break;
                 }
-                view.write_str_colored(
+                view.write_str_styled(
                     row,
                     1,
                     &clip_text_to_cells(&line, detail_width),
-                    style.finder.text,
+                    style.finder.text.into(),
                 )?;
             }
         }
@@ -689,7 +697,7 @@ pub fn draw_code_actions_popup(
             1,
             1,
             &clip_text_to_cells(&popup.title, view.width.saturating_sub(2) as usize),
-            minui::Style::from(style.finder.dim).bold(),
+            style.section_title.overlay(style.finder.dim.into()),
         )?;
     }
 
@@ -732,19 +740,19 @@ fn draw_diagnostics_code_actions_split(
         title_row,
         1,
         &clip_text_to_cells(&pane.title, view.width.saturating_sub(2) as usize),
-        minui::Style::from(title_colors).bold(),
+        style.section_title.overlay(title_colors.into()),
     )?;
     if pane.loading {
         let message_row = title_row.saturating_add(1);
         if message_row < view.height {
-            view.write_str_colored(
+            view.write_str_styled(
                 message_row,
                 1,
                 &clip_text_to_cells(
                     "Loading quick fixes...",
                     view.width.saturating_sub(2) as usize,
                 ),
-                style.finder.dim,
+                style.finder.dim.into(),
             )?;
         }
         return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
@@ -831,7 +839,7 @@ fn draw_code_action_entries(
         let selected = idx == selected_index;
         if selected {
             let fill = " ".repeat(view.width.saturating_sub(2) as usize);
-            view.write_str_colored(row, 1, &fill, highlight)?;
+            view.write_str_styled(row, 1, &fill, highlight.into())?;
         }
 
         let row_colors = selection_aware_color(style.finder.text, highlight, selected);
@@ -844,11 +852,16 @@ fn draw_code_action_entries(
         let kind_width = text_width(&kind_text) as u16;
         let kind_col = view.width.saturating_sub(kind_width.saturating_add(1));
 
-        view.write_str_colored(row, 1, marker, dim_colors)?;
+        view.write_str_styled(row, 1, marker, dim_colors.into())?;
         let title_width = kind_col.saturating_sub(4) as usize;
-        view.write_str_colored(row, 3, &clip_text_to_cells(&title, title_width), row_colors)?;
+        view.write_str_styled(
+            row,
+            3,
+            &clip_text_to_cells(&title, title_width),
+            row_colors.into(),
+        )?;
         if kind_col > 3 {
-            view.write_str_colored(row, kind_col, &kind_text, dim_colors)?;
+            view.write_str_styled(row, kind_col, &kind_text, dim_colors.into())?;
         }
     }
 
@@ -859,12 +872,12 @@ fn draw_section_header(
     window: &mut WindowView<'_>,
     row: u16,
     text: &str,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<u16> {
     if row >= window.height {
         return Ok(row);
     }
-    window.write_str_styled(row, 1, text, minui::Style::from(colors).bold())?;
+    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
     Ok(row.saturating_add(1))
 }
 
@@ -877,21 +890,31 @@ fn severity_glyph(severity: DiagnosticSeverity, icons_enabled: bool) -> &'static
     glyphs[severity.sort_rank() as usize]
 }
 
-fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> ColorPair {
+fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> TextStyle {
     let popup_bg = style.finder.text.bg;
     match severity {
-        DiagnosticSeverity::Error => ColorPair::new(style.diagnostic_inline.error.fg, popup_bg),
-        DiagnosticSeverity::Warning => ColorPair::new(style.diagnostic_inline.warning.fg, popup_bg),
-        DiagnosticSeverity::Information => {
-            ColorPair::new(style.diagnostic_inline.information.fg, popup_bg)
-        }
-        DiagnosticSeverity::Hint => ColorPair::new(style.diagnostic_inline.hint.fg, popup_bg),
+        DiagnosticSeverity::Error => style
+            .diagnostic_inline
+            .error
+            .with_colors(style.diagnostic_inline.error.fg, popup_bg),
+        DiagnosticSeverity::Warning => style
+            .diagnostic_inline
+            .warning
+            .with_colors(style.diagnostic_inline.warning.fg, popup_bg),
+        DiagnosticSeverity::Information => style
+            .diagnostic_inline
+            .information
+            .with_colors(style.diagnostic_inline.information.fg, popup_bg),
+        DiagnosticSeverity::Hint => style
+            .diagnostic_inline
+            .hint
+            .with_colors(style.diagnostic_inline.hint.fg, popup_bg),
     }
 }
 
-fn selection_aware_color(base: ColorPair, selected: ColorPair, is_selected: bool) -> ColorPair {
+fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
     if is_selected {
-        ColorPair::new(base.fg, selected.bg)
+        base.selected(selected)
     } else {
         base
     }

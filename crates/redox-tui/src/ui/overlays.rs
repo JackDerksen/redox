@@ -1,8 +1,9 @@
 use crate::ui::render::LineViewport;
+use crate::ui::text_style::TextStyle;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width};
+use minui::{Color, Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -15,23 +16,29 @@ use crate::ui::{
 pub(crate) struct LineDecorations<'a> {
     pub search_cells: &'a [bool],
     pub error_cells: &'a [bool],
-    pub error_color: Color,
+    pub current_cells: &'a [bool],
+    pub search_style: TextStyle,
+    pub current_style: TextStyle,
+    pub error_style: TextStyle,
 }
 
 impl LineDecorations<'_> {
-    pub fn apply(self, style: Style, range: std::ops::Range<usize>) -> Style {
+    pub fn apply(self, mut style: Style, range: std::ops::Range<usize>) -> Style {
         let overlaps = |cells: &[bool]| {
             cells
                 .get(range.clone())
                 .is_some_and(|cells| cells.iter().any(|selected| *selected))
         };
-        if overlaps(self.error_cells) {
-            style.undercurled().with_underline_color(self.error_color)
-        } else if overlaps(self.search_cells) {
-            style.underlined()
-        } else {
-            style
+        if overlaps(self.search_cells) {
+            style = self.search_style.format.apply_to(style);
         }
+        if overlaps(self.current_cells) {
+            style = self.current_style.format.apply_to(style);
+        }
+        if overlaps(self.error_cells) {
+            style = self.error_style.overlay(style);
+        }
+        style
     }
 }
 
@@ -384,7 +391,7 @@ pub(crate) fn draw_indent_guides(
         } else {
             style.theme.bg
         };
-        let color = ColorPair::new(style.theme.scope, bg);
+        let color = TextStyle::new(style.theme.scope, bg);
         window.write_str_styled(
             row,
             col.saturating_add(visible_x as u16),
@@ -484,7 +491,7 @@ pub(crate) fn draw_delimiter_highlights(
     viewport: LineViewport,
     source_line: &str,
     (delimiter_highlight_chars, decorations): (&[usize], LineDecorations<'_>),
-    normal_color: ColorPair,
+    normal_color: TextStyle,
     style: UiStyle,
     syntax_spans: Option<&[LineSyntaxSpan]>,
 ) -> minui::Result<()> {
@@ -511,12 +518,12 @@ pub(crate) fn draw_delimiter_highlights(
                 syntax_style_for_range(normal_color, style, spans, cell.start_byte, cell.end_byte)
             })
             .unwrap_or_else(|| normal_color.into());
-        let colors = ColorPair::new(
-            base_style.colors.unwrap_or(normal_color).fg,
+        let colors = TextStyle::new(
+            base_style.colors.unwrap_or(normal_color.colors()).fg,
             style.theme.scope,
         );
         let text_style = decorations.apply(
-            base_style.with_colors(colors),
+            base_style.with_colors(colors.colors()),
             cell.visible_x..cell.visible_x + cell_width(&cell.text, TabPolicy::Fixed(4)) as usize,
         );
         window.write_str_styled(

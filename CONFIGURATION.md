@@ -70,9 +70,12 @@ legacy data is preserved rather than deleted.
 ```toml
 theme = "default"
 icons_enabled = false
+text_formatting = true # Set false for plain, unstyled text throughout Redox
 mouse = false
 mouse_invert_vertical = false
 mouse_invert_horizontal = false
+mouse_scroll_step_vertical = 3
+mouse_scroll_step_horizontal = 3
 check_updates = true
 scrolloff = 5 
 background_dimming = 0.5
@@ -86,9 +89,12 @@ leader = " "
 | --- | --- | --- | --- |
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
 | `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
+| `text_formatting` | boolean | `true` | Enables font decorations. Set `false` to suppress bold, italic, dim, reverse, strikethrough, and underlines throughout the UI, syntax highlighting, integrated terminal, and CLI output. Colours are retained. |
 | `mouse` | boolean | `false` | Enables mouse scrolling, cursor placement, and drag selection in editor panes. Takes effect on configuration reload. When disabled, terminal mouse capture is released. |
 | `mouse_invert_vertical` | boolean | `false` | Reverses the vertical wheel direction reported by the terminal. |
 | `mouse_invert_horizontal` | boolean | `false` | Reverses the horizontal wheel direction reported by the terminal. |
+| `mouse_scroll_step_vertical` | integer | `3` | Rows per vertical wheel event, from `1` to `65535`. |
+| `mouse_scroll_step_horizontal` | integer | `3` | Columns per horizontal wheel event, from `1` to `65535`. |
 | `check_updates` | boolean | `true` | Check GitHub for a newer release on startup. Successful checks are cached for 24 hours and require `curl`. `:check-update` performs a manual check at any time. |
 | `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
 | `background_dimming` | number | `0.301` | Popup background dimming from `0.0` (none) through `1.0` (maximum). |
@@ -429,7 +435,7 @@ option. A theme has three optional layers:
 
 1. `palette` changes the base colours from which all default roles are derived.
 2. `syntax` overrides individual syntax-highlight roles.
-3. `ui` overrides individual interface colour pairs.
+3. `ui` overrides individual interface styles.
 
 Use `:colorscheme <name>` to switch themes for the current session without editing the file. Bare
 `:colorscheme` reports the active name. A session override survives `:config reload` while that
@@ -453,11 +459,66 @@ markdown_highlight = { fg = "#25211d", bg = "#d8e8b8" }
 ```
 
 Colours use six-digit hexadecimal notation (`#RRGGBB`). `"transparent"` is also accepted. A plain
-string sets the foreground and inherits the active theme background. Use `{ fg = ..., bg = ... }`
-to control both sides of a syntax or UI role.
+string sets the foreground and uses the active theme background. Existing strings and `{ fg, bg }`
+tables remain valid and retain the role's default formatting. Which-key text strings retain the
+which-key background.
 
-Which-key roles are individual colours rather than foreground/background pairs, so plain colour
-strings are recommended for all six roles; `which_key.background` controls the popup fill directly.
+Syntax and UI text roles also accept partial tables. Omitted properties keep that role's defaults,
+so `{ italic = false }` changes only italics, and `{ fg = "#abcdef", bold = true }` changes only the
+foreground and bold setting.
+
+| Property | Values | Meaning |
+| --- | --- | --- |
+| `fg`, `bg` | Colour string | Foreground and background. |
+| `bold`, `italic`, `dim` | Boolean | Enable or disable the corresponding font attribute. |
+| `reverse` | Boolean | Swap the displayed foreground and background. |
+| `strikethrough` | Boolean | Draw a line through the text. |
+| `underline` | `"none"`, `"single"`, `"curl"` | No underline, a straight underline, or an undercurl. |
+| `underline_color` | Colour string | Underline colour; `"transparent"` follows the text colour. |
+
+```toml
+text_formatting = true
+
+[themes.default.syntax]
+comment = { italic = false }
+keyword = { bold = true }
+function = { italic = true, underline = "single" }
+markdown_heading = { bold = true, underline = "none" }
+
+[themes.default.ui]
+"finder.directory" = { bold = false, italic = true }
+"finder.pinned" = { italic = false, strikethrough = true }
+"dashboard.version" = { italic = false }
+"command_line.ghost" = { italic = true, dim = true }
+"diagnostic.error_range" = { underline = "curl", underline_color = "#ff8080" }
+```
+
+By default, titles, explorer directories, finder directory portions, dashboard hotkeys, and compact
+logos are bold. Pinned paths, comments, Markdown emphasis, and the dashboard version are italic.
+Markdown strong text is bold; Markdown headings are bold and underlined. Search matches have a
+straight underline, and diagnostic error ranges have an undercurl. Terminal applications retain
+the bold, dim, italic, underline, and reverse attributes supported by the terminal parser.
+
+Set the top-level `text_formatting = false` to disable all font attributes, overriding every theme
+role and terminal application. Reload with `:config reload` to apply changes immediately. CLI help
+and version output read the same configuration, including `--config`; redirected output remains
+plain. Invalid configuration does not prevent help from being displayed.
+
+Overlapping roles combine their enabled attributes. For example, emphasis inside a Markdown
+heading is both bold and italic. Setting a role's `bold = false` removes its own bold default; it
+does not cancel bold contributed by an enclosing role. Diagnostic range underlines take precedence
+over search underlines. Setting `diagnostic.error_range.underline` to `"none"` leaves any search or
+syntax underline visible. Terminal support determines how undercurl and underline colours appear.
+
+`finder.directory`, `finder.pinned`, `popup.section_title`, and `diagnostic.error_range` decorate
+existing text: transparent foregrounds/backgrounds inherit the text beneath them. Search roles
+set match colours and add formatting; selections retain their existing colour precedence. Finder
+matches preserve directory and pinned attributes. `finder.directory` affects directory portions of
+paths, while `explorer.directory` affects directory entries, including hidden directories.
+
+`zen.margin`, `zen.ghost`, and `which_key.background` remain single colours and reject font
+properties. Which-key text roles support full styles; their background defaults to
+`which_key.background`, and an explicit `bg` overrides it.
 
 ### Base palette keys
 
@@ -470,7 +531,7 @@ strings are recommended for all six roles; `which_key.background` controls the p
 - `light_red`, `light_green`, `light_yellow`, `light_blue`, `light_purple`, `light_orange`
 - `dark_gray`, `mid_gray`, `light_gray`
 
-### Syntax colour keys
+### Syntax style keys
 
 - Markdown: `markdown_code`, `markdown_emphasis`, `markdown_frontmatter`, `markdown_heading`,
   `markdown_highlight`, `markdown_link`, `markdown_list_marker`, `markdown_strong`
@@ -483,10 +544,17 @@ strings are recommended for all six roles; `which_key.background` controls the p
 - Other tokens: `comment`, `constructor`, `attribute`, `property`, `operator`,
   `punctuation_delimiter`, `punctuation_bracket`, `punctuation_special`
 
-### UI colour keys
+### UI style keys
 
 - Zen mode: `zen.margin`, `zen.ghost`. These use the foreground value as a single colour.
 
+- Editor and pane text: `editor.text`, `editor.snippet`, `pane.title`
+- Gutter: `gutter.line_number`, `gutter.current_line_number`
+- Search: `search.match`, `search.current`
+- Additional popup headings: `popup.section_title`
+- Completion: `completion.ghost`, `completion.keyword`, `completion.match_highlight`
+- Dashboard: `dashboard.text`, `dashboard.selected`, `dashboard.hotkey`, `dashboard.version`,
+  `dashboard.icon`, `dashboard.logo_red`, `dashboard.logo_white`, `dashboard.logo_blue`
 - Git: `git.added`, `git.modified`, `git.conflict`, `git.removed`
 - Status line: `status.bar`, `status.path`, `status.dirty`, `status.mode_normal`,
   `status.mode_insert`, `status.mode_command`, `status.mode_visual`,
@@ -496,17 +564,17 @@ strings are recommended for all six roles; `which_key.background` controls the p
 - About: `about.border`, `about.title`, `about.text`, `about.logo_red`, `about.logo_white`,
   `about.logo_blue`
 - Command line: `command_line.border`, `command_line.title`, `command_line.text`,
-  `command_line.prompt`
+  `command_line.prompt`, `command_line.ghost`, `command_line.error`, `command_line.inactive_title`
 - Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`, `which_key.key`,
   `which_key.arrow`, `which_key.text`
 - Inline diagnostics: `diagnostic.error`, `diagnostic.warning`, `diagnostic.information`,
-  `diagnostic.hint`
+  `diagnostic.hint`, `diagnostic.error_range`
 - Explorer: `explorer.border`, `explorer.title`, `explorer.file`, `explorer.directory`,
   `explorer.executable`, `explorer.hidden`
 - Finder and shared modal lists: `finder.border`, `finder.title`, `finder.text`, `finder.prompt`,
   `finder.query_title`, `finder.dim`, `finder.match_highlight`, `finder.selected`,
   `finder.pinned_bg`, `finder.pinned_marker`, `finder.hotkey`, `finder.preview_title`,
-  `finder.preview_path`
+  `finder.preview_path`, `finder.directory`, `finder.pinned`
 - Performance popup: `perf.border`, `perf.title`, `perf.text`, `perf.label`, `perf.value`,
   `perf.dim`, `perf.good`, `perf.warn`, `perf.hot`, `perf.bar_bg`
 - Undo tree: `undo_tree.title`, `undo_tree.text`, `undo_tree.selected`, `undo_tree.selected_indicator`,
@@ -514,6 +582,11 @@ strings are recommended for all six roles; `which_key.background` controls the p
   `undo_tree.timestamp`, `undo_tree.preview_title`, `undo_tree.preview_label`,
   `undo_tree.preview_text`, `undo_tree.preview_dim`, `undo_tree.preview_separator`,
   `undo_tree.preview_deleted`, `undo_tree.preview_inserted`
+
+About logo roles also style the compact dashboard and CLI logos. The `dashboard.logo_*` roles
+control the large dashboard artwork. Finder roles are shared by the pinboard and several modal
+lists; `finder.pinned` styles pinned paths in both the finder and pinboard. Diagnostic severity
+roles style messages, while `diagnostic.error_range` styles the corresponding source range.
 
 For status modules, each `*_content` pair controls the text foreground and the complete module
 background. The corresponding `*_wrapper` pair styles internal separators. Half-cell outer edges
@@ -523,5 +596,5 @@ manually invert edge foreground/background colours.
 Palette changes are applied first, followed by syntax and UI overrides. This means a small theme
 can replace only the base palette, while a detailed theme can control every exposed role.
 
-The repository also includes [`vague-theme.toml`](vague-theme.toml), a complete Redox port of the
+The [`config.example.toml`](config.example.toml) starter includes a complete Redox port of the
 Vague Neovim theme covering every palette entry, syntax role, and UI role.

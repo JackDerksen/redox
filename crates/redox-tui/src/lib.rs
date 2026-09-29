@@ -1,4 +1,5 @@
 use crate::ui::render::LineViewport;
+use crate::ui::text_style::TextStyle;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -13,7 +14,7 @@ use minui::KeybindAction;
 use minui::input::{Clipboard, KeyboardHandler};
 use minui::prelude::{
     input::{Event, KeyKind},
-    render::{Color, ColorPair, TabPolicy, TerminalWindow, Window, cell_width},
+    render::{Color, TabPolicy, TerminalWindow, Window, cell_width},
     widgets::Widget,
 };
 use minui::widgets::WindowView;
@@ -90,7 +91,7 @@ struct BufferDrawOptions {
     width: u16,
     height: u16,
     has_line_numbers: bool,
-    colors: ColorPair,
+    colors: TextStyle,
 }
 
 struct BufferHighlights<'a> {
@@ -108,7 +109,7 @@ struct SnapshotViewport {
 }
 
 struct SnapshotStyle<'a> {
-    default_colors: ColorPair,
+    default_colors: TextStyle,
     style: UiStyle,
     syntax_spans: Option<VisibleLineSyntaxSpans<'a>>,
     lexical_fallback_enabled: bool,
@@ -118,7 +119,7 @@ struct SnapshotOverlays<'a> {
     delimiter_highlights: &'a BTreeMap<usize, Vec<usize>>,
     active_scope_guides: &'a BTreeMap<usize, Vec<usize>>,
     search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
-    substitution_colors: Option<ColorPair>,
+    substitution_colors: Option<TextStyle>,
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
@@ -144,7 +145,7 @@ fn draw_buffer_view(
             window,
             width,
             height,
-            ColorPair::new(style.zen_margin, style.zen_margin),
+            TextStyle::new(style.zen_margin, style.zen_margin),
         )?;
     }
     let mut viewport = WindowView {
@@ -227,7 +228,7 @@ fn draw_editor_view(
     } else {
         style
     };
-    let editor_text = ColorPair::new(background_style.theme.white, background_style.theme.bg);
+    let editor_text = background_style.editor_text;
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
     let text_h = vh.saturating_sub(status_h);
@@ -969,7 +970,7 @@ fn draw_loading_toast(
         ui::widgets::popup::PopupChrome::command_line(style),
     )?;
     let mut view = ui::widgets::popup::popup_window_view(window, layout);
-    view.write_str_colored(0, 1, &message, style.command_line.text)?;
+    view.write_str_styled(0, 1, &message, style.command_line.text.into())?;
     Ok(Some(layout))
 }
 
@@ -1000,15 +1001,15 @@ fn draw_gutter_padding(
     }
 
     let pad = " ".repeat(padding_w as usize);
-    let color = ColorPair::new(style.theme.bg, style.theme.bg);
+    let color = TextStyle::new(style.theme.bg, style.theme.bg);
     for row in 0..text_h {
         if padding_w > 0 {
-            window.write_str_colored(row, gutter_w, &pad, color)?;
+            window.write_str_styled(row, gutter_w, &pad, color.into())?;
         }
         let line_idx = first_line.saturating_add(row as usize);
         if let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
             let (glyph, colors) = style.git.gutter_marker(kind);
-            window.write_str_colored(row, 0, glyph, colors)?;
+            window.write_str_styled(row, 0, glyph, colors.into())?;
         }
     }
     Ok(())
@@ -1047,8 +1048,8 @@ fn draw_line_numbers(
 
     let sep_x = gutter_w.saturating_sub(1);
     let number_w = gutter_w.saturating_sub(marker_width).saturating_sub(1) as usize;
-    let other_line_color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
-    let current_color = ColorPair::new(style.theme.white, style.theme.bg);
+    let other_line_color = style.gutter_line_number;
+    let current_color = style.gutter_current_line_number;
 
     for row in 0..text_h {
         let line_idx = first_line.saturating_add(row as usize);
@@ -1085,10 +1086,10 @@ fn draw_line_numbers(
         };
 
         if number_w > 0 {
-            window.write_str_colored(row, marker_width, &text, color)?;
+            window.write_str_styled(row, marker_width, &text, color.into())?;
         }
 
-        window.write_str_colored(row, sep_x, "▕", color)?;
+        window.write_str_styled(row, sep_x, "▕", color.into())?;
     }
 
     Ok(())
@@ -1098,7 +1099,7 @@ fn draw_line_with_highlights(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    normal_color: ColorPair,
+    normal_color: TextStyle,
     highlights: LineHighlights<'_>,
     style: UiStyle,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
@@ -1135,21 +1136,21 @@ fn draw_line_with_highlights(
                 && visible_col < width_cells
                 && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
             {
-                window.write_str_colored(
+                window.write_str_styled(
                     row,
                     col.saturating_add(visible_col as u16),
                     " ",
-                    ColorPair::new(normal_color.fg, bg),
+                    (normal_color.with_colors(normal_color.fg, bg)).into(),
                 )?;
             }
         } else if let Some((visible_col, bg)) = color_column
             && visible_col < width_cells
         {
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 col.saturating_add(visible_col as u16),
                 " ",
-                ColorPair::new(normal_color.fg, bg),
+                (normal_color.with_colors(normal_color.fg, bg)).into(),
             )?;
         }
         return Ok(());
@@ -1186,7 +1187,7 @@ fn draw_line_with_highlights(
         let base_style = syntax_spans
             .map(|spans| syntax_style_for_range(normal_color, style, spans, start_byte, end_byte))
             .unwrap_or_else(|| normal_color.into());
-        let base_color = base_style.colors.unwrap_or(normal_color);
+        let base_color = base_style.colors.unwrap_or(normal_color.colors());
         let highlight_color =
             highlight_layers
                 .iter()
@@ -1196,10 +1197,9 @@ fn draw_line_with_highlights(
                         && cells[visible_start..visible_end]
                             .iter()
                             .any(|selected| *selected))
-                    .then_some(ColorPair::new(
-                        foreground.unwrap_or(base_color.fg),
-                        *background,
-                    ))
+                    .then_some(
+                        TextStyle::new(foreground.unwrap_or(base_color.fg), *background).colors(),
+                    )
                 });
         let color = if let Some(color) = highlight_color {
             color
@@ -1238,11 +1238,11 @@ fn draw_line_with_highlights(
         && visible_col >= used_cells
         && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
     {
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             col.saturating_add(visible_col as u16),
             " ",
-            ColorPair::new(normal_color.fg, bg),
+            (normal_color.with_colors(normal_color.fg, bg)).into(),
         )?;
     }
 
@@ -1290,7 +1290,7 @@ fn highlight_color_at_cell(
     highlight_layers: &[(&[bool], Color, Option<Color>)],
     cell: usize,
     foreground: Color,
-) -> Option<ColorPair> {
+) -> Option<TextStyle> {
     highlight_layers
         .iter()
         .find_map(|(cells, background, override_foreground)| {
@@ -1298,7 +1298,7 @@ fn highlight_color_at_cell(
                 .get(cell)
                 .copied()
                 .unwrap_or(false)
-                .then_some(ColorPair::new(
+                .then_some(TextStyle::new(
                     override_foreground.unwrap_or(foreground),
                     *background,
                 ))
@@ -1309,7 +1309,7 @@ fn fill_background(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    colors: ColorPair,
+    colors: TextStyle,
 ) -> minui::Result<()> {
     if width == 0 || height == 0 {
         return Ok(());
@@ -1317,7 +1317,7 @@ fn fill_background(
 
     let row = " ".repeat(width as usize);
     for y in 0..height {
-        window.write_str_colored(y, 0, &row, colors)?;
+        window.write_str_styled(y, 0, &row, colors.into())?;
     }
     Ok(())
 }
@@ -1424,7 +1424,7 @@ fn draw_modal_popup_background(
     (style, background_style): (UiStyle, UiStyle),
     window: &mut dyn Window,
     (width, text_height): (u16, u16),
-    editor_text: ColorPair,
+    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
     inner_size: (u16, u16),
 ) -> minui::Result<()> {
@@ -1462,7 +1462,7 @@ fn draw_popup_background(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: ColorPair,
+    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
 ) -> minui::Result<()> {
     if let Some(selected) =
@@ -1508,7 +1508,7 @@ fn draw_split_editor_panes(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: ColorPair,
+    editor_text: TextStyle,
     dim_inactive: bool,
 ) -> minui::Result<()> {
     let rects = state.pane_rects(width, height);
@@ -1535,7 +1535,7 @@ fn draw_split_editor_panes(
         let pane_text = if !dim_inactive || draws_as_active {
             editor_text
         } else {
-            ColorPair::new(pane_style.theme.white, pane_style.theme.bg)
+            pane_style.editor_text
         };
         let is_active_pane = rect.pane_id == state.active_pane_id();
         let inactive_filename = state
@@ -1561,7 +1561,7 @@ fn draw_split_editor_panes(
             height: rect.height,
         };
         if let Some(filename) = inactive_filename {
-            draw_pane_filename(&mut pane_window, &filename, pane_style.status_line.bar)?;
+            draw_pane_filename(&mut pane_window, &filename, pane_style.pane_title)?;
             pane_window.y_offset = pane_window.y_offset.saturating_add(header_height);
             pane_window.height = content_height;
         }
@@ -2068,9 +2068,10 @@ fn draw_snapshot_lines(
         focused_lines,
     } = overlays;
 
-    let search_background =
-        substitution_colors.map_or(style.theme.selection_bg, |colors| colors.bg);
-    let search_foreground = substitution_colors.map(|colors| colors.fg);
+    let search_background = substitution_colors.map_or(style.search_match.bg, |colors| colors.bg);
+    let search_foreground = substitution_colors
+        .map(|colors| colors.fg)
+        .or_else(|| (style.search_match.fg != Color::Transparent).then_some(style.search_match.fg));
     let color_column = visible_color_column(
         scroll_x,
         text_w,
@@ -2093,7 +2094,7 @@ fn draw_snapshot_lines(
         let default_colors = if is_focused {
             default_colors
         } else {
-            ColorPair::new(style.zen_ghost, default_colors.bg)
+            default_colors.with_colors(style.zen_ghost, default_colors.bg)
         };
         let fallback_line_spans = (is_focused && lexical_fallback_enabled)
             .then(|| lexical_fallback_line_spans(source_line))
@@ -2207,7 +2208,10 @@ fn draw_snapshot_lines(
         let decorations = LineDecorations {
             search_cells: search_cells.as_deref().unwrap_or(&[]),
             error_cells,
-            error_color: style.diagnostic_inline.error.fg,
+            current_cells: active_search_cells.as_deref().unwrap_or(&[]),
+            search_style: style.search_match,
+            current_style: style.search_current,
+            error_style: style.error_range,
         };
         if let Some((selection, mode, selection_bg)) = transient_selection
             && let Some(selected_cells) = visual_selection_visible_cells(
@@ -2250,7 +2254,15 @@ fn draw_snapshot_lines(
                 layers
             };
             if let Some(active) = &active_search_cells {
-                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
+                highlight_layers.insert(
+                    0,
+                    (
+                        active.as_slice(),
+                        style.search_current.bg,
+                        (style.search_current.fg != Color::Transparent)
+                            .then_some(style.search_current.fg),
+                    ),
+                );
             }
             draw_line_with_highlights(
                 window,
@@ -2324,7 +2336,15 @@ fn draw_snapshot_lines(
                     )]
                 };
             if let Some(active) = &active_search_cells {
-                highlight_layers.insert(0, (active.as_slice(), style.theme.light_gray, None));
+                highlight_layers.insert(
+                    0,
+                    (
+                        active.as_slice(),
+                        style.search_current.bg,
+                        (style.search_current.fg != Color::Transparent)
+                            .then_some(style.search_current.fg),
+                    ),
+                );
             }
             draw_line_with_highlights(
                 window,
@@ -2348,7 +2368,7 @@ fn draw_snapshot_lines(
                 style,
                 active_search_cells
                     .as_ref()
-                    .map(|cells| (cells.as_slice(), style.theme.light_gray)),
+                    .map(|cells| (cells.as_slice(), style.search_current.bg)),
                 decorations,
             )?;
             draw_delimiter_highlights(
@@ -2546,7 +2566,7 @@ fn draw_snippet_placeholders(
     }
 
     let visible_end = scroll_x.saturating_add(text_w);
-    let color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
+    let color = style.snippet;
     let mut cell = 0usize;
     let mut char_col = 0usize;
     for (start_byte, grapheme) in source_line.grapheme_indices(true) {
@@ -2582,7 +2602,7 @@ fn draw_snippet_placeholders(
             start_byte,
             start_byte + grapheme.len(),
         )
-        .with_colors(color);
+        .with_colors(color.colors());
         let text_style = decorations.apply(base_style, visible_x..visible_x + width);
         if grapheme == "\t" {
             let spaces = " ".repeat(width.max(1));
@@ -2631,11 +2651,11 @@ fn clear_inline_diagnostic(
         return Ok(());
     };
     let blank = " ".repeat(text_w.saturating_sub(start_cell));
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         content_x.saturating_add(start_cell as u16),
         &blank,
-        ColorPair::new(style.theme.white, style.theme.bg),
+        style.editor_text.into(),
     )
 }
 
@@ -2675,11 +2695,11 @@ fn draw_inline_diagnostic_shifted(
 
     let colors = style.diagnostic_inline.colors(diagnostic.severity);
 
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         content_x.saturating_add(start_cell as u16),
         &inline_text,
-        colors,
+        colors.into(),
     )
 }
 
@@ -2948,7 +2968,7 @@ fn draw_plain_line(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    default_colors: ColorPair,
+    default_colors: TextStyle,
     color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
     let LineViewport {
@@ -2982,21 +3002,22 @@ fn draw_plain_line(
         }
 
         let colors = apply_color_column(
-            default_colors,
+            default_colors.colors(),
             color_column,
             start_cell.saturating_sub(scroll_x),
             end_cell.saturating_sub(scroll_x),
         );
+        let text_style = minui::Style::from(default_colors).with_colors(colors);
         if g == "\t" {
             let spaces = " ".repeat(g_width.max(1));
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 col.saturating_add(used_cells as u16),
                 &spaces,
-                colors,
+                text_style,
             )?;
         } else {
-            window.write_str_colored(row, col.saturating_add(used_cells as u16), g, colors)?;
+            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
         }
         used_cells = used_cells.saturating_add(g_width);
     }
@@ -3005,11 +3026,11 @@ fn draw_plain_line(
         && visible_col < width_cells
         && visible_col >= used_cells
     {
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             col.saturating_add(visible_col as u16),
             " ",
-            ColorPair::new(default_colors.fg, bg),
+            (default_colors.with_colors(default_colors.fg, bg)).into(),
         )?;
     }
 
@@ -3022,7 +3043,7 @@ fn draw_visible_ascii_plain_line(
     col: u16,
     visible_line: &str,
     width_cells: usize,
-    default_colors: ColorPair,
+    default_colors: TextStyle,
     color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
     if width_cells == 0 {
@@ -3032,50 +3053,70 @@ fn draw_visible_ascii_plain_line(
     let visible_len = visible_line.len().min(width_cells);
     let Some((visible_col, bg)) = color_column else {
         if visible_len > 0 {
-            window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+            window.write_str_styled(
+                row,
+                col,
+                &visible_line[..visible_len],
+                default_colors.into(),
+            )?;
         }
         return Ok(());
     };
 
     if visible_col >= width_cells {
         if visible_len > 0 {
-            window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+            window.write_str_styled(
+                row,
+                col,
+                &visible_line[..visible_len],
+                default_colors.into(),
+            )?;
         }
         return Ok(());
     }
 
     if visible_col < visible_len {
         if visible_col > 0 {
-            window.write_str_colored(row, col, &visible_line[..visible_col], default_colors)?;
+            window.write_str_styled(
+                row,
+                col,
+                &visible_line[..visible_col],
+                default_colors.into(),
+            )?;
         }
 
         let next = visible_col.saturating_add(1);
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             col.saturating_add(visible_col as u16),
             &visible_line[visible_col..next],
-            ColorPair::new(default_colors.fg, bg),
+            (default_colors.with_colors(default_colors.fg, bg)).into(),
         )?;
 
         if next < visible_len {
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 col.saturating_add(next as u16),
                 &visible_line[next..visible_len],
-                default_colors,
+                default_colors.into(),
             )?;
         }
         return Ok(());
     }
 
     if visible_len > 0 {
-        window.write_str_colored(row, col, &visible_line[..visible_len], default_colors)?;
+        window.write_str_styled(
+            row,
+            col,
+            &visible_line[..visible_len],
+            default_colors.into(),
+        )?;
     }
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         col.saturating_add(visible_col as u16),
         " ",
-        ColorPair::new(default_colors.fg, bg),
+        (default_colors.with_colors(default_colors.fg, bg)).into(),
     )
 }
 
@@ -3089,15 +3130,15 @@ fn visible_color_column(
     (visible_col < text_w).then_some((visible_col, bg))
 }
 
-fn print_cli_logo(wordmark: &str, color_enabled: bool) {
-    let style = ui::style::AboutStyle::default();
+fn print_cli_logo(wordmark: &str, color_enabled: bool, style: ui::style::AboutStyle) {
     for (line, color) in [
-        ("┏━┓", style.logo_red.fg),
-        (wordmark, style.logo_white.fg),
-        ("  ┗━┛", style.logo_blue.fg),
+        ("┏━┓", style.logo_red),
+        (wordmark, style.logo_white),
+        ("  ┗━┛", style.logo_blue),
     ] {
-        if color_enabled && let Color::Rgb { r, g, b } = color {
-            println!("\x1b[1;38;2;{r};{g};{b}m{line}\x1b[0m");
+        if color_enabled {
+            let text_style = minui::Style::from(color.with_colors(color.fg, Color::Transparent));
+            println!("{}\x1b[0m", text_style.to_crossterm().apply(line));
         } else {
             println!("{line}");
         }
@@ -3113,22 +3154,35 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
     let mut config_path = None;
     let mut target_path = None;
     let mut parse_options = true;
+    let mut show_help = None;
     while let Some(raw) = args.next() {
         if parse_options && raw == "--" {
             parse_options = false;
         } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
-            if stdout_is_terminal {
-                print_cli_logo(
-                    concat!("Redox - v", env!("CARGO_PKG_VERSION")),
-                    color_enabled,
-                );
-            } else {
-                println!("redox {}", env!("CARGO_PKG_VERSION"));
-            }
-            return Ok(None);
+            show_help.get_or_insert(false);
         } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
-            print_cli_logo("Redox - A tasteful text editor", color_enabled);
-            let (heading, bold, reset) = if color_enabled {
+            show_help.get_or_insert(true);
+        } else if parse_options && raw == "--config" {
+            config_path =
+                Some(PathBuf::from(args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--config requires a path")
+                })?));
+        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
+            config_path = Some(PathBuf::from(path));
+        } else if parse_options && raw.starts_with('-') {
+            anyhow::bail!("unknown option: {raw}");
+        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
+            anyhow::bail!("only one file or directory may be opened at launch");
+        }
+    }
+    if let Some(show_help) = show_help {
+        // Help remains available when the user's configuration is invalid.
+        let style = config::Config::load(config_path.as_deref())
+            .and_then(|(config, _)| config.style())
+            .unwrap_or_default();
+        if show_help {
+            print_cli_logo("Redox - A tasteful text editor", color_enabled, style.about);
+            let (heading, bold, reset) = if color_enabled && style.text_formatting {
                 ("\x1b[1;4m", "\x1b[1m", "\x1b[0m")
             } else {
                 ("", "", "")
@@ -3142,17 +3196,17 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
                  {bold}--{reset}               Treat remaining arguments as paths"
             );
             return Ok(None);
-        } else if parse_options && raw == "--config" {
-            config_path =
-                Some(PathBuf::from(args.next().ok_or_else(|| {
-                    anyhow::anyhow!("--config requires a path")
-                })?));
-        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
-            config_path = Some(PathBuf::from(path));
-        } else if parse_options && raw.starts_with('-') {
-            anyhow::bail!("unknown option: {raw}");
-        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
-            anyhow::bail!("only one file or directory may be opened at launch");
+        } else {
+            if stdout_is_terminal {
+                print_cli_logo(
+                    concat!("Redox - v", env!("CARGO_PKG_VERSION")),
+                    color_enabled,
+                    style.about,
+                );
+            } else {
+                println!("redox {}", env!("CARGO_PKG_VERSION"));
+            }
+            return Ok(None);
         }
     }
     let Some(path) = target_path else {
@@ -3709,7 +3763,7 @@ pub fn run() -> anyhow::Result<()> {
 mod tests {
     mod mouse;
     use super::*;
-    use minui::{ColorPair, Window};
+    use minui::Window;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4885,6 +4939,30 @@ mod tests {
             window.backgrounds[output_row as usize][output_column + 19],
             Some(colors[1])
         );
+        let plain_config: config::Config = toml::from_str("text_formatting = false").unwrap();
+        draw_buffer_view(
+            &mut state,
+            plain_config.style().unwrap(),
+            &mut window,
+            &mut perf,
+        )
+        .unwrap();
+        for offset in 0..=20 {
+            assert_eq!(
+                window.styles[output_row as usize][output_column + offset]
+                    .to_crossterm()
+                    .attributes,
+                crossterm::style::Attributes::default()
+            );
+        }
+        assert_eq!(
+            window.foregrounds[output_row as usize][output_column + 19],
+            Some(colors[1])
+        );
+        assert_eq!(
+            window.backgrounds[output_row as usize][output_column + 19],
+            Some(UiStyle::default().theme.bg)
+        );
         assert_eq!(state.mode, app::EditorMode::Normal);
         assert_eq!(state.session.active_buffer().to_string(), "");
         handle_editor_event(
@@ -5135,7 +5213,7 @@ mod tests {
             y: u16,
             x: u16,
             s: &str,
-            colors: ColorPair,
+            colors: minui::ColorPair,
         ) -> minui::Result<()> {
             self.write_text(y, x, s);
             if let Some(row) = self.backgrounds.get_mut(y as usize) {
@@ -5223,17 +5301,141 @@ mod tests {
     }
 
     #[test]
+    fn configured_formatting_reaches_renderers_and_plain_mode() {
+        use crossterm::style::Attribute;
+        use ui::syntax::{SyntaxLanguage, line_spans_for_source};
+
+        let mut config: config::Config = toml::from_str(
+            r#"
+[themes.default.syntax]
+markdown_heading = { bold = false, underline = "curl" }
+markdown_emphasis = { italic = false, strikethrough = true }
+[themes.default.ui]
+"editor.text" = { dim = true }
+"dashboard.hotkey" = { bold = false, italic = true }
+"about.logo_white" = { bold = false, strikethrough = true }
+"diagnostic.error_range" = { underline = "none" }
+"search.match" = { underline = "single", italic = true }
+"finder.selected" = { italic = true }
+"#,
+        )
+        .unwrap();
+        for enabled in [true, false] {
+            config.text_formatting = enabled;
+            let style = config.style().unwrap();
+            let mut window = TestWindow::new(40, 24);
+            let source = "# *nested*";
+            let spans = line_spans_for_source(source, Some(SyntaxLanguage::Markdown)).unwrap();
+            let viewport = LineViewport {
+                row: 0,
+                column: 0,
+                scroll_x: 0,
+                width: 40,
+            };
+            draw_line_with_syntax(
+                &mut window,
+                viewport,
+                source,
+                style.editor_text,
+                None,
+                style,
+                &spans[0],
+            )
+            .unwrap();
+            let attributes = window.styles[0][3].to_crossterm().attributes;
+            assert!(!attributes.has(Attribute::Bold));
+            assert!(!attributes.has(Attribute::Italic));
+            assert_eq!(attributes.has(Attribute::Dim), enabled);
+            assert_eq!(attributes.has(Attribute::CrossedOut), enabled);
+            assert_eq!(attributes.has(Attribute::Undercurled), enabled);
+
+            draw_plain_line(
+                &mut window,
+                viewport,
+                "é\tplain",
+                style.editor_text,
+                Some((0, Color::Blue)),
+            )
+            .unwrap();
+            assert_eq!(
+                window.styles[0][0]
+                    .to_crossterm()
+                    .attributes
+                    .has(Attribute::Dim),
+                enabled
+            );
+            assert_eq!(window.styles[0][0].colors.unwrap().bg, Color::Blue);
+
+            let decorations = LineDecorations {
+                search_cells: &[true],
+                error_cells: &[true],
+                current_cells: &[],
+                search_style: style.search_match,
+                current_style: style.search_current,
+                error_style: style.error_range,
+            };
+            let decorated = decorations
+                .apply(style.editor_text.into(), 0..1)
+                .to_crossterm()
+                .attributes;
+            assert_eq!(decorated.has(Attribute::Underlined), enabled);
+            assert!(!decorated.has(Attribute::Undercurled));
+            assert_eq!(decorated.has(Attribute::Italic), enabled);
+
+            window.clear_screen().unwrap();
+            draw_dashboard(&mut window, style, 0, false).unwrap();
+            let row = (0..24)
+                .find(|row| window.row_text(*row).contains("Finder"))
+                .unwrap();
+            let column = window.row_text(row).rfind('f').unwrap();
+            let attributes = window.styles[row as usize][column]
+                .to_crossterm()
+                .attributes;
+            assert!(!attributes.has(Attribute::Bold));
+            assert_eq!(attributes.has(Attribute::Italic), enabled);
+            let row = (0..24)
+                .find(|row| window.row_text(*row).contains("Redox"))
+                .unwrap();
+            let column = window.row_text(row).find("Redox").unwrap();
+            let attributes = window.styles[row as usize][column]
+                .to_crossterm()
+                .attributes;
+            assert!(!attributes.has(Attribute::Bold));
+            assert_eq!(attributes.has(Attribute::CrossedOut), enabled);
+            if !enabled {
+                assert!(
+                    window
+                        .styles
+                        .iter()
+                        .flatten()
+                        .all(|style| style.to_crossterm().attributes
+                            == crossterm::style::Attributes::default())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn syntax_decorations_survive_search_and_selection_without_leaking() {
         use crossterm::style::Attribute;
         use ui::syntax::{SyntaxLanguage, line_spans_for_source};
 
         let mut style = UiStyle::default();
-        let colors = ColorPair::new(style.theme.white, style.theme.bg);
+        let colors = TextStyle::new(style.theme.white, style.theme.bg);
         // Equal colours must still produce separate runs when attributes change.
-        style.syntax.comment = colors;
-        style.syntax.markdown_emphasis = colors;
-        style.syntax.markdown_strong = colors;
-        style.syntax.markdown_heading = colors;
+        style.syntax.comment = style.syntax.comment.with_colors(colors.fg, colors.bg);
+        style.syntax.markdown_emphasis = style
+            .syntax
+            .markdown_emphasis
+            .with_colors(colors.fg, colors.bg);
+        style.syntax.markdown_strong = style
+            .syntax
+            .markdown_strong
+            .with_colors(colors.fg, colors.bg);
+        style.syntax.markdown_heading = style
+            .syntax
+            .markdown_heading
+            .with_colors(colors.fg, colors.bg);
         for (source, language, checks) in [
             (
                 "plain *soft* **strong** ***both*** plain",
@@ -5286,7 +5488,10 @@ mod tests {
                             decorations: LineDecorations {
                                 search_cells: &selected,
                                 error_cells: &[],
-                                error_color: style.diagnostic_inline.error.fg,
+                                current_cells: &[],
+                                search_style: style.search_match,
+                                current_style: style.search_current,
+                                error_style: style.error_range,
                             },
                         },
                         style,
@@ -5314,7 +5519,10 @@ mod tests {
                             *italic,
                             "{source}: {word}"
                         );
-                        assert_eq!(attributes.has(Attribute::Underlined), searched);
+                        assert_eq!(
+                            attributes.has(Attribute::Underlined),
+                            searched || source.starts_with('#')
+                        );
                     }
                 }
                 assert_eq!(window.styles[0][source.len()], minui::Style::new());
@@ -5327,7 +5535,7 @@ mod tests {
         use crossterm::style::Attribute;
 
         let style = UiStyle::default();
-        let colors = ColorPair::new(style.theme.white, style.theme.bg);
+        let colors = TextStyle::new(style.theme.white, style.theme.bg);
         let source = "x(a)bc";
         for scroll_x in [0, 2] {
             let viewport = LineViewport {
@@ -5342,7 +5550,10 @@ mod tests {
                 let decorations = LineDecorations {
                     search_cells: &selected,
                     error_cells,
-                    error_color: style.diagnostic_inline.error.fg,
+                    current_cells: &[],
+                    search_style: style.search_match,
+                    current_style: style.search_current,
+                    error_style: style.error_range,
                 };
                 let mut window = TestWindow::new(8, 1);
                 draw_line_with_highlights(
@@ -5434,7 +5645,10 @@ mod tests {
                     decorations: LineDecorations {
                         search_cells: &search_cells,
                         error_cells: &[],
-                        error_color: style.diagnostic_inline.error.fg,
+                        current_cells: &[],
+                        search_style: style.search_match,
+                        current_style: style.search_current,
+                        error_style: style.error_range,
                     },
                 },
                 style,
@@ -5515,7 +5729,7 @@ mod tests {
         );
         let mut window = TestWindow::new(8, 1);
         let style = UiStyle::default();
-        let default_colors = ColorPair::new(style.theme.white, style.theme.bg);
+        let default_colors = TextStyle::new(style.theme.white, style.theme.bg);
 
         draw_snapshot_lines(
             &mut window,
@@ -6013,6 +6227,7 @@ mod tests {
             &config_path,
             r##"
 theme = "live"
+text_formatting = false
 leader = ","
 icons_enabled = true
 line_numbers = "absolute"
@@ -6058,6 +6273,8 @@ background = "#010203"
         assert_eq!(state.zen.width_percent, 70);
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
+        assert!(!style.text_formatting);
+        assert!(!style.about.title.format.bold);
         assert_eq!(style.layout.line_numbers, ui::style::LineNumbers::Absolute);
         assert!(
             keyboard.keybinds().values().any(|action| {

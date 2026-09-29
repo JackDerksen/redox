@@ -137,7 +137,7 @@ fn draw_command_line_popup_after(
 
     let mut chrome = PopupChrome::command_line(style);
     if searching {
-        chrome.title = minui::ColorPair::new(style.theme.light_gray, style.theme.bg);
+        chrome.title = style.command_line.inactive_title;
     }
     let layout = draw_popup_frame_at(window, x, y, inner_w, inner_h, &title, chrome)?;
     let mut mouse = PopupMouseLayout::new(if searching {
@@ -155,15 +155,15 @@ fn draw_command_line_popup_after(
     if let Some(error) = substitution_error
         && inner_h > 1
     {
-        view.write_str_colored(
+        view.write_str_styled(
             inner_h - 1,
             1,
             &clip_text_to_cells(error, inner_w.saturating_sub(2) as usize),
-            minui::ColorPair::new(style.theme.red, style.theme.bg),
+            style.command_line.error.into(),
         )?;
     }
     let prompt_col = 1u16.min(inner_w.saturating_sub(1));
-    view.write_str_colored(row, prompt_col, prompt, style.command_line.prompt)?;
+    view.write_str_styled(row, prompt_col, prompt, style.command_line.prompt.into())?;
 
     let input_col = prompt_col.saturating_add(command_text_width(prompt) as u16 + 1);
     let input_width = inner_w
@@ -188,18 +188,13 @@ fn draw_command_line_popup_after(
         &clipped,
         start_byte,
     );
-    view.write_str_colored(row, input_col, &clipped, style.command_line.text)?;
+    view.write_str_styled(row, input_col, &clipped, style.command_line.text.into())?;
     if searching
         && inner_h > 1
         && let Some(error) = state.search_error()
     {
         let message = clip_text_to_cells(error, inner_w.saturating_sub(2) as usize);
-        view.write_str_colored(
-            1,
-            1,
-            &message,
-            minui::ColorPair::new(style.theme.red, style.theme.bg),
-        )?;
+        view.write_str_styled(1, 1, &message, style.command_line.error.into())?;
     }
     let calculation = state.command_calculation_preview();
     if let Some(suffix) = calculation
@@ -210,11 +205,11 @@ fn draw_command_line_popup_after(
         let ghost_offset = cursor_offset + command_text_width(&state.command_line[cursor..]);
         let ghost = clip_text_to_cells(suffix, (input_width as usize).saturating_sub(ghost_offset));
         if !ghost.is_empty() {
-            view.write_str_colored(
+            view.write_str_styled(
                 row,
                 input_col.saturating_add(ghost_offset as u16),
                 &ghost,
-                style.command_line.ghost,
+                style.command_line.ghost.into(),
             )?;
         }
     }

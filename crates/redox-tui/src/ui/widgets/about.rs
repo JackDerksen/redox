@@ -1,3 +1,4 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::Widget;
 use minui::{Style, Window};
 
@@ -41,7 +42,7 @@ pub(crate) fn draw_about_popup_view(
         top,
         left,
         "┏━┓",
-        Style::from(style.about.logo_red).bold(),
+        Style::from(style.about.logo_red),
         max_line_w,
     )?;
     write_line(
@@ -49,7 +50,7 @@ pub(crate) fn draw_about_popup_view(
         top.saturating_add(1),
         left,
         "Redox",
-        Style::from(style.about.logo_white).bold(),
+        Style::from(style.about.logo_white),
         max_line_w,
     )?;
     write_line(
@@ -65,7 +66,7 @@ pub(crate) fn draw_about_popup_view(
         top.saturating_add(2),
         left,
         "  ┗━┛",
-        Style::from(style.about.logo_blue).bold(),
+        Style::from(style.about.logo_blue),
         max_line_w,
     )?;
 
@@ -146,7 +147,7 @@ fn write_wrapped_block(
     col: u16,
     width: u16,
     text: &str,
-    color: minui::ColorPair,
+    color: TextStyle,
 ) -> minui::Result<u16> {
     if width == 0 {
         return Ok(start_row);
@@ -158,7 +159,7 @@ fn write_wrapped_block(
         if row >= view.height {
             break;
         }
-        view.write_str_colored(row, col, &line, color)?;
+        view.write_str_styled(row, col, &line, color.into())?;
         row = row.saturating_add(1);
     }
     Ok(row)

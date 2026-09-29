@@ -1,3 +1,4 @@
+use crate::ui::text_style::TextStyle;
 use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
@@ -251,9 +252,9 @@ fn draw_bar(
     let width = width as usize;
     let filled = filled.min(width);
 
-    view.write_str_colored(row, col, &".".repeat(width), style.perf.bar_bg)?;
+    view.write_str_styled(row, col, &".".repeat(width), style.perf.bar_bg.into())?;
     if filled > 0 {
-        view.write_str_colored(row, col, &"#".repeat(filled), color)?;
+        view.write_str_styled(row, col, &"#".repeat(filled), color.into())?;
     }
     Ok(())
 }
@@ -263,7 +264,7 @@ fn write_line(
     row: u16,
     col: u16,
     text: &str,
-    color: minui::ColorPair,
+    color: TextStyle,
     width: u16,
 ) -> minui::Result<()> {
     if width == 0 {
@@ -271,7 +272,7 @@ fn write_line(
     }
 
     let clipped = clip_text_to_cells(text, width as usize);
-    view.write_str_colored(row, col, &clipped, color)
+    view.write_str_styled(row, col, &clipped, color.into())
 }
 
 #[cfg(test)]

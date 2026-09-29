@@ -1,5 +1,6 @@
+use crate::ui::text_style::TextStyle;
 use minui::widgets::WindowView;
-use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width, window::CursorSpec};
+use minui::{Color, Style, TabPolicy, Window, cell_width, window::CursorSpec};
 use std::ops::Range;
 use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
@@ -54,7 +55,8 @@ struct HighlightedText<'a> {
     highlights: &'a [Range<usize>],
     max_cells: usize,
     base: Style,
-    highlighted: Style,
+    highlighted: TextStyle,
+    directory: TextStyle,
 }
 
 struct FinderFooterIndicator {
@@ -62,9 +64,9 @@ struct FinderFooterIndicator {
     separator: &'static str,
     glyph: &'static str,
     right_edge: &'static str,
-    wrapper_colors: ColorPair,
-    content_colors: ColorPair,
-    minimap_colors: ColorPair,
+    wrapper_colors: TextStyle,
+    content_colors: TextStyle,
+    minimap_colors: TextStyle,
 }
 
 struct FinderRightFooter {
@@ -298,7 +300,10 @@ pub(crate) fn draw_pin_selector_popup(
         PopupChrome::new(
             style.finder.border,
             style.finder.title,
-            ColorPair::new(style.finder.text.fg, Color::Transparent),
+            style
+                .finder
+                .text
+                .with_colors(style.finder.text.fg, Color::Transparent),
         ),
     )?;
     mouse.add_frame(layout);
@@ -306,11 +311,15 @@ pub(crate) fn draw_pin_selector_popup(
     let mut view = popup_window_view(window, layout);
     let path_w = inner_w.saturating_sub(PIN_SELECTOR_HORIZONTAL_PADDING.saturating_mul(2));
     let path_label = clip_path_with_filename(&popup.path_label, path_w as usize);
-    view.write_str_colored(
+    view.write_str_styled(
         0,
         PIN_SELECTOR_HORIZONTAL_PADDING,
         &path_label,
-        ColorPair::new(style.finder.dim.fg, Color::Transparent),
+        (style
+            .finder
+            .dim
+            .with_colors(style.finder.dim.fg, Color::Transparent))
+        .into(),
     )?;
 
     for (idx, slot) in popup.slots.iter().enumerate() {
@@ -330,19 +339,19 @@ pub(crate) fn draw_pin_selector_popup(
             style.finder.dim
         };
         let row_colors = if selected {
-            ColorPair::new(unselected_colors.fg, style.finder.selected.bg)
+            unselected_colors.selected(style.finder.selected)
         } else {
             unselected_colors
         };
         let bg = if selected {
             row_colors
         } else {
-            ColorPair::new(row_colors.fg, Color::Transparent)
+            row_colors.with_colors(row_colors.fg, Color::Transparent)
         };
         let blank = " ".repeat(inner_w as usize);
-        view.write_str_colored(row, 0, &blank, bg)?;
+        view.write_str_styled(row, 0, &blank, bg.into())?;
         if selected {
-            view.write_str_colored(row, ENTRY_MARKER_COL, SELECTED_MARKER, bg)?;
+            view.write_str_styled(row, ENTRY_MARKER_COL, SELECTED_MARKER, bg.into())?;
         }
         let value = slot.path_label.as_deref().unwrap_or(VACANT_SLOT_LABEL);
         let hotkey = format!("Ctrl+{}", slot.slot + 1);
@@ -368,10 +377,10 @@ pub(crate) fn draw_pin_selector_popup(
         if style.icons_enabled
             && let Some(path) = slot.path_label.as_deref()
         {
-            view.write_str_colored(row, ENTRY_LABEL_COL, file_icon(Path::new(path)), bg)?;
+            view.write_str_styled(row, ENTRY_LABEL_COL, file_icon(Path::new(path)), bg.into())?;
         }
         let text_style = if slot.path_label.is_some() {
-            Style::from(bg).italic()
+            style.finder.pinned.overlay(Style::from(bg))
         } else {
             Style::from(bg)
         };
@@ -380,11 +389,17 @@ pub(crate) fn draw_pin_selector_popup(
             let hotkey_color = if selected {
                 bg
             } else if slot.path_label.is_some() {
-                ColorPair::new(style.finder.hotkey.fg, Color::Transparent)
+                style
+                    .finder
+                    .hotkey
+                    .with_colors(style.finder.hotkey.fg, Color::Transparent)
             } else {
-                ColorPair::new(style.finder.dim.fg, Color::Transparent)
+                style
+                    .finder
+                    .dim
+                    .with_colors(style.finder.dim.fg, Color::Transparent)
             };
-            view.write_str_colored(row, hotkey_col, &hotkey, hotkey_color)?;
+            view.write_str_styled(row, hotkey_col, &hotkey, hotkey_color.into())?;
         }
     }
 
@@ -405,7 +420,7 @@ fn draw_entries(
     layout: PopupLayout,
 ) -> minui::Result<()> {
     if popup.entries.is_empty() {
-        view.write_str_colored(0, 0, "<no matches>", style.dim)?;
+        view.write_str_styled(0, 0, "<no matches>", style.dim.into())?;
         return Ok(());
     }
 
@@ -432,12 +447,12 @@ fn draw_entries(
             style.text
         };
         let base = if selected {
-            ColorPair::new(unselected_base.fg, style.selected.bg)
+            unselected_base.selected(style.selected)
         } else {
             unselected_base
         };
         let blank = " ".repeat(view.width as usize);
-        view.write_str_colored(row, 0, &blank, base)?;
+        view.write_str_styled(row, 0, &blank, base.into())?;
 
         let marker = if selected {
             SELECTED_MARKER
@@ -453,7 +468,7 @@ fn draw_entries(
         } else {
             style.dim
         };
-        view.write_str_colored(row, ENTRY_MARKER_COL, marker, marker_color)?;
+        view.write_str_styled(row, ENTRY_MARKER_COL, marker, marker_color.into())?;
 
         let hotkey_w = entry
             .hotkey
@@ -463,17 +478,17 @@ fn draw_entries(
         if let Some(hotkey) = &entry.hotkey
             && hotkey_w < view.width
         {
-            view.write_str_colored(
+            view.write_str_styled(
                 row,
                 view.width.saturating_sub(hotkey_w),
                 hotkey,
-                if selected { base } else { style.hotkey },
+                (if selected { base } else { style.hotkey }).into(),
             )?;
         }
 
         let icon_w = if icons_enabled { PREFIX_WIDTH } else { 0 };
         if icons_enabled {
-            view.write_str_colored(row, ENTRY_LABEL_COL, file_icon(&entry.path), base)?;
+            view.write_str_styled(row, ENTRY_LABEL_COL, file_icon(&entry.path), base.into())?;
         }
         let label_col = ENTRY_LABEL_COL.saturating_add(icon_w);
         let text_w = view
@@ -482,7 +497,7 @@ fn draw_entries(
             .saturating_sub(hotkey_w)
             .max(1) as usize;
         let text_style = if entry.is_pinned {
-            Style::from(base).italic()
+            style.pinned.overlay(Style::from(base))
         } else {
             Style::from(base)
         };
@@ -495,9 +510,10 @@ fn draw_entries(
                 highlights: &entry.highlights,
                 max_cells: text_w,
                 base: text_style,
-                highlighted: text_style
-                    .with_colors(ColorPair::new(style.match_highlight.fg, base.bg))
-                    .underlined(),
+                directory: style.directory,
+                highlighted: style
+                    .match_highlight
+                    .with_colors(style.match_highlight.fg, base.bg),
             },
         )?;
     }
@@ -580,7 +596,7 @@ fn draw_preview(
         0,
         0,
         &clip_text_to_cells(&preview.title, view.width as usize),
-        Style::from(style.finder.preview_path).bold(),
+        Style::from(style.finder.preview_path),
     )?;
     for (idx, line) in preview
         .lines
@@ -618,40 +634,45 @@ fn draw_query_row(
     right_footer: &FinderRightFooter,
 ) -> minui::Result<u16> {
     let prompt_col = 1u16.min(view.width.saturating_sub(1));
-    view.write_str_colored(0, prompt_col, "❯", style.finder.prompt)?;
+    view.write_str_styled(0, prompt_col, "❯", style.finder.prompt.into())?;
     let right_w = visible_right_footer_width(right_footer, view.width);
     if right_w > 0 {
         let footer_col = view.width.saturating_sub(right_w);
         if let Some(indicator) = &right_footer.indicator {
-            view.write_str_colored(0, footer_col, indicator.left_edge, indicator.wrapper_colors)?;
-            view.write_str_colored(
+            view.write_str_styled(
+                0,
+                footer_col,
+                indicator.left_edge,
+                indicator.wrapper_colors.into(),
+            )?;
+            view.write_str_styled(
                 0,
                 footer_col.saturating_add(1),
                 &right_footer.text,
-                indicator.content_colors,
+                indicator.content_colors.into(),
             )?;
             let separator_col =
                 footer_col.saturating_add(1 + text_width(&right_footer.text) as u16);
-            view.write_str_colored(
+            view.write_str_styled(
                 0,
                 separator_col,
                 indicator.separator,
-                indicator.content_colors,
+                indicator.content_colors.into(),
             )?;
-            view.write_str_colored(
+            view.write_str_styled(
                 0,
                 separator_col.saturating_add(1),
                 indicator.glyph,
-                indicator.minimap_colors,
+                indicator.minimap_colors.into(),
             )?;
-            view.write_str_colored(
+            view.write_str_styled(
                 0,
                 separator_col.saturating_add(2),
                 indicator.right_edge,
-                indicator.wrapper_colors,
+                indicator.wrapper_colors.into(),
             )?;
         } else {
-            view.write_str_colored(0, footer_col, &right_footer.text, style.finder.dim)?;
+            view.write_str_styled(0, footer_col, &right_footer.text, style.finder.dim.into())?;
         }
     }
     let input_col = prompt_col.saturating_add(2);
@@ -661,7 +682,7 @@ fn draw_query_row(
         .saturating_sub(input_col.saturating_add(1))
         .max(1) as usize;
     let clipped = finder_input_view(&popup.query, popup.query_cursor, input_w);
-    view.write_str_colored(0, input_col, &clipped, style.command_line.text)?;
+    view.write_str_styled(0, input_col, &clipped, style.command_line.text.into())?;
     Ok(input_col)
 }
 
@@ -696,21 +717,14 @@ fn draw_highlighted_text(
             .highlights
             .iter()
             .any(|range| byte_idx < range.end && next_byte > range.start);
-        let style = if is_highlighted {
-            spec.highlighted
-        } else {
-            spec.base
-        };
-        view.write_str_styled(
-            spec.row,
-            cursor_col,
-            grapheme,
-            if byte_idx < directory_end {
-                style.bold()
-            } else {
-                style
-            },
-        )?;
+        let mut text_style = spec.base;
+        if byte_idx < directory_end {
+            text_style = spec.directory.overlay(text_style);
+        }
+        if is_highlighted {
+            text_style = spec.highlighted.overlay(text_style);
+        }
+        view.write_str_styled(spec.row, cursor_col, grapheme, text_style)?;
         cursor_col = cursor_col.saturating_add(text_width(grapheme) as u16);
         byte_idx = next_byte;
     }
@@ -784,7 +798,7 @@ fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter
     let indicator = {
         let module_bg = style.status_line.coords.wrapper.bg;
         let minimap_module_bg = style.status_line.minimap_module.wrapper.bg;
-        let capsule_colors = ColorPair::new(style.finder.text.bg, module_bg);
+        let capsule_colors = TextStyle::new(style.finder.text.bg, module_bg);
         let pinned_count = popup
             .entries
             .iter()

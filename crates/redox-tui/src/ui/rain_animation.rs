@@ -1,4 +1,5 @@
-use minui::{ColorPair, Style, TabPolicy, Window, cell_width};
+use crate::ui::text_style::TextStyle;
+use minui::{Style, TabPolicy, Window, cell_width};
 
 use super::helpers::apply_color_column;
 use super::render::RenderSnapshot;
@@ -43,7 +44,7 @@ impl RainAnimation {
         snapshot: &RenderSnapshot,
         scroll_x: usize,
         (width, height): (usize, usize),
-        default_colors: ColorPair,
+        default_colors: TextStyle,
         style: UiStyle,
         syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
         color_column: Option<(usize, minui::Color)>,
@@ -95,7 +96,7 @@ impl RainAnimation {
                         })
                         .unwrap_or_else(|| default_colors.into());
                     let colors = apply_color_column(
-                        text_style.colors.unwrap_or(default_colors),
+                        text_style.colors.unwrap_or(default_colors.colors()),
                         color_column,
                         used_cells,
                         used_cells.saturating_add(grapheme_width),

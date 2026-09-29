@@ -149,8 +149,9 @@ It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.to
 `redox --config /path/to/config.toml`.
 
 Configuration supports features like named themes, the complete base palette, every syntax role,
-UI colour pairs, optional Nerd Font icons, background dimming, popup dimensions, colour-column
-position, zen mode, undo-tree history size, the leader character, and mode-specific keybindings. See the
+per-role colours and font formatting, a global plain-text switch, optional Nerd Font icons,
+background dimming, popup dimensions, colour-column position, zen mode, undo-tree history size, 
+the leader character, and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
 [`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
 defaults.

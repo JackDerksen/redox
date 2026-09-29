@@ -1,4 +1,4 @@
-use minui::ColorPair;
+use crate::ui::text_style::TextStyle;
 
 use super::EditorState;
 use crate::ui::{TextViewport, UiStyle, language_for_path};
@@ -27,7 +27,7 @@ impl EditorState {
         &mut self,
         text_width: u16,
         text_height: u16,
-        default_colors: ColorPair,
+        default_colors: TextStyle,
         style: UiStyle,
     ) {
         if !self.rain_pending_start

@@ -1,12 +1,14 @@
 //! Tree-sitter-backed syntax highlighting for the editor viewport.
 
+use crate::ui::text_style::TextStyle;
+
 use crate::ui::render::LineViewport;
 mod languages;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
-use minui::{ColorPair, Style, TabPolicy, Window, cell_width};
+use minui::{Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, TextDiff};
 use tree_sitter::{
     InputEdit, Node, Parser, Point, Query, QueryCursor, Range, StreamingIterator, Tree,
@@ -1282,7 +1284,7 @@ pub fn draw_line_with_syntax(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    base_color: ColorPair,
+    base_color: TextStyle,
     color_column: Option<(usize, minui::Color)>,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
@@ -1343,7 +1345,7 @@ pub fn draw_line_with_syntax(
         );
         let visible_x = clipped_start.saturating_sub(scroll_x);
         let text_style = text_style.with_colors(apply_color_column(
-            text_style.colors.unwrap_or(base_color),
+            text_style.colors.unwrap_or(base_color.colors()),
             color_column,
             visible_x,
             clipped_end.saturating_sub(scroll_x),
@@ -1439,7 +1441,7 @@ fn flush_pending_syntax_span(
 }
 
 pub fn syntax_style_for_range(
-    base_color: ColorPair,
+    base_color: TextStyle,
     style: UiStyle,
     spans: &[LineSyntaxSpan],
     start_byte: usize,
@@ -1447,18 +1449,17 @@ pub fn syntax_style_for_range(
 ) -> Style {
     let colors = best_span_for_range(spans, start_byte, end_byte)
         .map_or(base_color, |span| style.syntax.color_for(span.role));
-    let mut text_style = Style::from(colors);
+    let mut text_style = base_color.format.apply_to(Style::from(colors.colors()));
     for span in spans
         .iter()
         .take_while(|span| span.start_byte < end_byte)
         .filter(|span| span.end_byte > start_byte)
     {
-        text_style = match span.role {
-            SyntaxRole::Comment | SyntaxRole::MarkdownEmphasis => text_style.italic(),
-            SyntaxRole::MarkdownHeading => text_style.underlined().bold(),
-            SyntaxRole::MarkdownStrong => text_style.bold(),
-            _ => text_style,
-        };
+        text_style = style
+            .syntax
+            .color_for(span.role)
+            .format
+            .apply_to(text_style);
     }
     text_style
 }
@@ -1699,11 +1700,11 @@ fn draw_color_column_gap(
         return Ok(());
     }
 
-    window.write_str_colored(
+    window.write_str_styled(
         row,
         col.saturating_add(visible_col as u16),
         " ",
-        ColorPair::new(minui::Color::Transparent, bg),
+        (TextStyle::new(minui::Color::Transparent, bg)).into(),
     )
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::text_style::TextStyle;
 use redox_core::{
     BufferLoadPhase, DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec,
     VisualModeKind, motion::Motion,
@@ -3275,7 +3276,7 @@ fn command_rain_captures_and_stop_clears_animation_state() {
     state.ensure_rain_animation(
         20,
         6,
-        minui::ColorPair::new(minui::Color::White, minui::Color::Black),
+        TextStyle::new(minui::Color::White, minui::Color::Black),
         crate::ui::UiStyle::default(),
     );
 

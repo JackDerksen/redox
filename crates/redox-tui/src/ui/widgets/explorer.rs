@@ -1,9 +1,10 @@
 use crate::ui::render::LineViewport;
+use crate::ui::text_style::TextStyle;
 use crate::{draw_line_numbers, line_number_gutter_width};
 use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
-use minui::{ColorPair, Style, TabPolicy, Window, cell_width, window::CursorSpec};
+use minui::{Style, TabPolicy, Window, cell_width, window::CursorSpec};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -22,7 +23,7 @@ const EXPLORER_STATUS_DOT_WIDTH: u16 = 2;
 
 #[derive(Debug, Clone, Copy)]
 struct ExplorerRowStyle {
-    text: ColorPair,
+    text: TextStyle,
     git_status: Option<GitFileStatusKind>,
 }
 
@@ -138,7 +139,11 @@ pub(crate) fn draw_explorer_popup_view(
         let line_idx = snapshot.first_line() + row;
         let source_line = line.source();
         let text_style = if source_line.trim_end().ends_with('/') || source_line.trim() == ".." {
-            Style::from(row_style.text).bold()
+            style
+                .explorer
+                .directory
+                .format
+                .apply_to(Style::from(row_style.text))
         } else {
             Style::from(row_style.text)
         };
@@ -167,7 +172,7 @@ pub(crate) fn draw_explorer_popup_view(
         if style.icons_enabled
             && let Some(icon) = explorer_entry_icon(&popup.dir_path, source_line)
         {
-            view.write_str_colored(row as u16, icon_col, icon, row_style.text)?;
+            view.write_str_styled(row as u16, icon_col, icon, row_style.text.into())?;
         }
         if let Some((selection, mode)) = visual_selection
             && let Some(sel_range) = state
@@ -187,7 +192,12 @@ pub(crate) fn draw_explorer_popup_view(
                 sel_range.start,
                 sel_range.end,
                 text_style,
-                text_style.with_colors(ColorPair::new(row_style.text.fg, style.theme.selection_bg)),
+                text_style.with_colors(
+                    row_style
+                        .text
+                        .with_colors(row_style.text.fg, style.theme.selection_bg)
+                        .colors(),
+                ),
             )?;
             draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
             continue;
@@ -289,7 +299,7 @@ fn draw_explorer_status_dot(
     };
 
     let color = style.git.file_status(status);
-    view.write_str_colored(row, col, EXPLORER_STATUS_DOT, color)?;
+    view.write_str_styled(row, col, EXPLORER_STATUS_DOT, color.into())?;
     Ok(())
 }
 
