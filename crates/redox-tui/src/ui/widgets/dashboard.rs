@@ -1,4 +1,4 @@
-use minui::{ColorPair, Window, window::CursorSpec};
+use minui::{ColorPair, Style, Window, window::CursorSpec};
 
 use crate::app::state::dashboard::DASHBOARD_ITEMS;
 use crate::ui::UiStyle;
@@ -147,7 +147,13 @@ pub(crate) fn draw_dashboard(
             .unwrap_or(0) as u16;
         let left = width.saturating_sub(compact_logo_width) / 2;
         for (row, (text, color)) in compact_logo.iter().enumerate() {
-            write_clipped(window, top + row as u16, left, text, *color)?;
+            write_clipped(
+                window,
+                top + row as u16,
+                left,
+                text,
+                Style::from(*color).bold(),
+            )?;
         }
     }
     let dim = ColorPair::new(style.theme.light_gray, style.theme.bg);
@@ -158,7 +164,7 @@ pub(crate) fn draw_dashboard(
             top + logo_height + LOGO_VERSION_GAP_ROWS,
             width.saturating_sub(version.len() as u16) / 2,
             &version,
-            dim,
+            Style::from(dim).italic(),
         )?;
     }
 
@@ -196,7 +202,7 @@ pub(crate) fn draw_dashboard(
             y,
             hotkey_column,
             &hotkey.to_string(),
-            style.about.logo_blue,
+            Style::from(style.about.logo_blue).bold(),
         )?;
         if show_cursor && row == selected {
             window.request_cursor(CursorSpec {
@@ -214,15 +220,15 @@ fn write_clipped(
     row: u16,
     column: u16,
     text: &str,
-    color: ColorPair,
+    style: impl Into<Style>,
 ) -> minui::Result<()> {
     let (width, height) = window.get_size();
     if row < height && column < width {
-        window.write_str_colored(
+        window.write_str_styled(
             row,
             column,
             &clip_text_to_cells(text, (width - column) as usize),
-            color,
+            style.into(),
         )?;
     }
     Ok(())

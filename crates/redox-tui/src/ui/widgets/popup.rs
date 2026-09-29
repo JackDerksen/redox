@@ -392,7 +392,12 @@ pub fn draw_popup_frame_at(
     if popup_w > 3 {
         let title_max = popup_w.saturating_sub(4) as usize;
         let title_text = clip_with_ellipsis(title, title_max);
-        window.write_str_colored(y, x + 2, &title_text, chrome.title)?;
+        window.write_str_styled(
+            y,
+            x + 2,
+            &title_text,
+            minui::Style::from(chrome.title).bold(),
+        )?;
     }
 
     if inner_w > 0 && inner_h > 0 {

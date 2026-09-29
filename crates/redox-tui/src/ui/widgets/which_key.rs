@@ -85,11 +85,11 @@ pub(crate) fn draw_which_key_popup(
 
     let header = format!(" {} …", popup.prefix);
     let header = clip_text_to_cells(&header, width.saturating_sub(2) as usize);
-    window.write_str_colored(
+    window.write_str_styled(
         y,
         x.saturating_add(1),
         &header,
-        ColorPair::new(style.which_key.prefix, popup_bg),
+        minui::Style::from(ColorPair::new(style.which_key.prefix, popup_bg)).bold(),
     )?;
 
     let content_width = width.saturating_sub(2) as usize;

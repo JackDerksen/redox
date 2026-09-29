@@ -1,4 +1,4 @@
-use minui::{Color, ColorPair, Result, TabPolicy, Window, cell_width};
+use minui::{Color, ColorPair, Result, Style, TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{UndoTreeLineRole, UndoTreeLineSpan};
@@ -52,7 +52,12 @@ fn draw_undo_tree_header(
     fill_row(window, width, 0, style.text)?;
     let title = undo_tree_title(icons_enabled);
     let title = clip_text_to_cells(&title, width.saturating_sub(UNDO_TREE_TITLE_COL) as usize);
-    window.write_str_colored(0, UNDO_TREE_TITLE_COL, &title, style.title)
+    window.write_str_styled(
+        0,
+        UNDO_TREE_TITLE_COL,
+        &title,
+        Style::from(style.title).bold(),
+    )
 }
 
 fn undo_tree_title(icons_enabled: bool) -> String {
@@ -139,7 +144,10 @@ fn draw_preview_line(
             width,
             row_u16,
             scroll_x,
-            &[("Node: ", style.preview_label), (rest, style.preview_title)],
+            &[
+                ("Node: ", Style::from(style.preview_label).bold()),
+                (rest, Style::from(style.preview_title).bold()),
+            ],
         );
     }
 
@@ -158,7 +166,12 @@ fn draw_preview_line(
     } else {
         style.preview_text
     };
-    write_segments(window, width, row_u16, scroll_x, &[(line, colors)])
+    let text_style = if line == "Original state" {
+        Style::from(colors).bold()
+    } else {
+        Style::from(colors)
+    };
+    write_segments(window, width, row_u16, scroll_x, &[(line, text_style)])
 }
 
 fn write_segments(
@@ -166,11 +179,11 @@ fn write_segments(
     width: u16,
     row: u16,
     scroll_x: usize,
-    segments: &[(&str, ColorPair)],
+    segments: &[(&str, Style)],
 ) -> Result<()> {
     let mut cell = 0usize;
     let visible_end = scroll_x.saturating_add(width as usize);
-    for (text, colors) in segments {
+    for (text, style) in segments {
         for grapheme in text.graphemes(true) {
             let start = cell;
             cell =
@@ -184,9 +197,9 @@ fn write_segments(
             let column = start.saturating_sub(scroll_x) as u16;
             if grapheme == "\t" || start < scroll_x || cell > visible_end {
                 let padding = cell.min(visible_end) - start.max(scroll_x);
-                window.write_str_colored(row, column, &" ".repeat(padding), *colors)?;
+                window.write_str_styled(row, column, &" ".repeat(padding), *style)?;
             } else {
-                window.write_str_colored(row, column, grapheme, *colors)?;
+                window.write_str_styled(row, column, grapheme, *style)?;
             }
         }
     }

@@ -87,7 +87,7 @@ fn draw_section_header(
     if row >= window.height {
         return Ok(row);
     }
-    window.write_str_colored(row, 1, text, colors)?;
+    window.write_str_styled(row, 1, text, minui::Style::from(colors).bold())?;
     Ok(row.saturating_add(1))
 }
 

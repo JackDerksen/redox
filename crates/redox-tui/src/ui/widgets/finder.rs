@@ -1,5 +1,5 @@
 use minui::widgets::WindowView;
-use minui::{Color, ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
+use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width, window::CursorSpec};
 use std::ops::Range;
 use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
@@ -53,8 +53,8 @@ struct HighlightedText<'a> {
     text: &'a str,
     highlights: &'a [Range<usize>],
     max_cells: usize,
-    base: ColorPair,
-    highlighted: ColorPair,
+    base: Style,
+    highlighted: Style,
 }
 
 struct FinderFooterIndicator {
@@ -370,7 +370,12 @@ pub(crate) fn draw_pin_selector_popup(
         {
             view.write_str_colored(row, ENTRY_LABEL_COL, file_icon(Path::new(path)), bg)?;
         }
-        view.write_str_colored(row, value_col, &value, bg)?;
+        let text_style = if slot.path_label.is_some() {
+            Style::from(bg).italic()
+        } else {
+            Style::from(bg)
+        };
+        view.write_str_styled(row, value_col, &value, text_style)?;
         if hotkey_w.saturating_add(PIN_SELECTOR_HORIZONTAL_PADDING) < inner_w {
             let hotkey_color = if selected {
                 bg
@@ -476,6 +481,11 @@ fn draw_entries(
             .saturating_sub(label_col)
             .saturating_sub(hotkey_w)
             .max(1) as usize;
+        let text_style = if entry.is_pinned {
+            Style::from(base).italic()
+        } else {
+            Style::from(base)
+        };
         draw_highlighted_text(
             view,
             HighlightedText {
@@ -484,8 +494,10 @@ fn draw_entries(
                 text: &entry.label,
                 highlights: &entry.highlights,
                 max_cells: text_w,
-                base,
-                highlighted: ColorPair::new(style.match_highlight.fg, base.bg),
+                base: text_style,
+                highlighted: text_style
+                    .with_colors(ColorPair::new(style.match_highlight.fg, base.bg))
+                    .underlined(),
             },
         )?;
     }
@@ -564,11 +576,11 @@ fn draw_preview(
     let scroll_x = preview
         .scroll_x
         .min(max_width.saturating_sub(view.width as usize));
-    view.write_str_colored(
+    view.write_str_styled(
         0,
         0,
         &clip_text_to_cells(&preview.title, view.width as usize),
-        style.finder.preview_path,
+        Style::from(style.finder.preview_path).bold(),
     )?;
     for (idx, line) in preview
         .lines
@@ -667,8 +679,12 @@ fn draw_highlighted_text(
     }
 
     let clipped = clip_text_to_cells(spec.text, spec.max_cells);
-    if spec.highlights.is_empty() {
-        view.write_str_colored(spec.row, spec.col, &clipped, spec.base)?;
+    let directory_end = spec
+        .text
+        .rfind(std::path::is_separator)
+        .map_or(0, |index| index + 1);
+    if spec.highlights.is_empty() && directory_end == 0 {
+        view.write_str_styled(spec.row, spec.col, &clipped, spec.base)?;
         return Ok(());
     }
 
@@ -680,14 +696,19 @@ fn draw_highlighted_text(
             .highlights
             .iter()
             .any(|range| byte_idx < range.end && next_byte > range.start);
-        view.write_str_colored(
+        let style = if is_highlighted {
+            spec.highlighted
+        } else {
+            spec.base
+        };
+        view.write_str_styled(
             spec.row,
             cursor_col,
             grapheme,
-            if is_highlighted {
-                spec.highlighted
+            if byte_idx < directory_end {
+                style.bold()
             } else {
-                spec.base
+                style
             },
         )?;
         cursor_col = cursor_col.saturating_add(text_width(grapheme) as u16);

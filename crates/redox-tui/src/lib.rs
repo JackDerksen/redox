@@ -38,12 +38,12 @@ use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
 use ui::overlays::{
-    active_delimiter_highlights, active_scope_indent_guides, draw_delimiter_highlights,
-    draw_indent_guides,
+    LineDecorations, active_delimiter_highlights, active_scope_indent_guides,
+    draw_delimiter_highlights, draw_indent_guides,
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
-    scope_guides_enabled, syntax_color_for_range,
+    scope_guides_enabled, syntax_style_for_range,
 };
 use ui::widgets::dashboard::draw_dashboard;
 use ui::widgets::pane::draw_pane_filename;
@@ -83,6 +83,7 @@ struct LineHighlights<'a> {
     color_column: Option<(usize, Color)>,
     layers: &'a [(&'a [bool], Color, Option<Color>)],
     empty_line: bool,
+    decorations: LineDecorations<'a>,
 }
 
 struct BufferDrawOptions {
@@ -1112,6 +1113,7 @@ fn draw_line_with_highlights(
         color_column,
         layers: highlight_layers,
         empty_line: highlight_empty_line,
+        decorations,
     } = highlights;
 
     if width_cells == 0 {
@@ -1122,12 +1124,12 @@ fn draw_line_with_highlights(
         if highlight_empty_line {
             draw_highlight_spaces(
                 window,
-                row,
-                col,
+                (row, col),
                 0,
                 width_cells,
                 normal_color.fg,
                 highlight_layers,
+                decorations,
             )?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
@@ -1181,9 +1183,10 @@ fn draw_line_with_highlights(
 
         let visible_start = start_cell.max(scroll_x).saturating_sub(scroll_x);
         let visible_end = end_cell.min(max_visible_cell).saturating_sub(scroll_x);
-        let base_color = syntax_spans
-            .map(|spans| syntax_color_for_range(normal_color, style, spans, start_byte, end_byte))
-            .unwrap_or(normal_color);
+        let base_style = syntax_spans
+            .map(|spans| syntax_style_for_range(normal_color, style, spans, start_byte, end_byte))
+            .unwrap_or_else(|| normal_color.into());
+        let base_color = base_style.colors.unwrap_or(normal_color);
         let highlight_color =
             highlight_layers
                 .iter()
@@ -1204,23 +1207,30 @@ fn draw_line_with_highlights(
             apply_color_column(base_color, color_column, visible_start, visible_end)
         };
 
+        let text_style =
+            decorations.apply(base_style.with_colors(color), visible_start..visible_end);
         if g == "\t" {
             let spaces = " ".repeat(g_width.max(1));
-            window.write_str_colored(row, col.saturating_add(used_cells as u16), &spaces, color)?;
+            window.write_str_styled(
+                row,
+                col.saturating_add(used_cells as u16),
+                &spaces,
+                text_style,
+            )?;
         } else {
-            window.write_str_colored(row, col.saturating_add(used_cells as u16), g, color)?;
+            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
         }
         used_cells = used_cells.saturating_add(g_width);
     }
 
     draw_highlight_spaces(
         window,
-        row,
-        col,
+        (row, col),
         used_cells,
         width_cells,
         normal_color.fg,
         highlight_layers,
+        decorations,
     )?;
 
     if let Some((visible_col, bg)) = color_column
@@ -1241,29 +1251,36 @@ fn draw_line_with_highlights(
 
 fn draw_highlight_spaces(
     window: &mut dyn Window,
-    row: u16,
-    col: u16,
+    (row, col): (u16, u16),
     start_cell: usize,
     width_cells: usize,
     fg: Color,
     highlight_layers: &[(&[bool], Color, Option<Color>)],
+    decorations: LineDecorations<'_>,
 ) -> minui::Result<()> {
+    let style_at = |cell| {
+        highlight_color_at_cell(highlight_layers, cell, fg)
+            .map(|colors| decorations.apply(colors.into(), cell..cell + 1))
+    };
     let mut cell = start_cell;
     while cell < width_cells {
-        let Some(colors) = highlight_color_at_cell(highlight_layers, cell, fg) else {
+        let Some(text_style) = style_at(cell) else {
             cell += 1;
             continue;
         };
 
         let run_start = cell;
         cell += 1;
-        while cell < width_cells
-            && highlight_color_at_cell(highlight_layers, cell, fg) == Some(colors)
-        {
+        while cell < width_cells && style_at(cell) == Some(text_style) {
             cell += 1;
         }
         let spaces = " ".repeat(cell - run_start);
-        window.write_str_colored(row, col.saturating_add(run_start as u16), &spaces, colors)?;
+        window.write_str_styled(
+            row,
+            col.saturating_add(run_start as u16),
+            &spaces,
+            text_style,
+        )?;
     }
 
     Ok(())
@@ -2134,6 +2151,13 @@ fn draw_snapshot_lines(
                     .max(diagnostic.start_col.saturating_add(1)),
             )
         });
+        let error_cells = diagnostic_cells
+            .as_deref()
+            .filter(|_| {
+                diagnostic_line
+                    .is_some_and(|diagnostic| diagnostic.severity == app::DiagnosticSeverity::Error)
+            })
+            .unwrap_or(&[]);
         let transient_selection = visual_selection
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
@@ -2180,6 +2204,11 @@ fn draw_snapshot_lines(
             .map(|range| {
                 search_highlight_cells(source_line, scroll_x, text_w, std::slice::from_ref(range))
             });
+        let decorations = LineDecorations {
+            search_cells: search_cells.as_deref().unwrap_or(&[]),
+            error_cells,
+            error_color: style.diagnostic_inline.error.fg,
+        };
         if let Some((selection, mode, selection_bg)) = transient_selection
             && let Some(selected_cells) = visual_selection_visible_cells(
                 buffer,
@@ -2232,29 +2261,38 @@ fn draw_snapshot_lines(
                     color_column,
                     layers: &highlight_layers,
                     empty_line: highlight_empty_line,
+                    decorations,
                 },
                 style,
                 syntax_line_spans,
             )?;
             draw_indent_guides(
                 window,
-                row as u16,
-                content_x,
+                (row as u16, content_x),
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
                 Some((&selected_cells, selection_bg)),
+                decorations,
             )?;
             draw_delimiter_highlights(
                 window,
                 line_viewport,
                 source_line,
-                highlighted_chars,
+                (highlighted_chars, decorations),
                 default_colors,
                 style,
                 syntax_line_spans,
             )?;
-            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
+            draw_snippet_placeholders(
+                window,
+                line_viewport,
+                source_line,
+                snippet_ranges,
+                style,
+                decorations,
+                syntax_line_spans,
+            )?;
             if let Some(diagnostic) = diagnostic_line {
                 draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
@@ -2297,31 +2335,40 @@ fn draw_snapshot_lines(
                     color_column,
                     layers: &highlight_layers,
                     empty_line: source_line.is_empty(),
+                    decorations,
                 },
                 style,
                 syntax_line_spans,
             )?;
             draw_indent_guides(
                 window,
-                row as u16,
-                content_x,
+                (row as u16, content_x),
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
                 active_search_cells
                     .as_ref()
                     .map(|cells| (cells.as_slice(), style.theme.light_gray)),
+                decorations,
             )?;
             draw_delimiter_highlights(
                 window,
                 line_viewport,
                 source_line,
-                highlighted_chars,
+                (highlighted_chars, decorations),
                 default_colors,
                 style,
                 syntax_line_spans,
             )?;
-            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
+            draw_snippet_placeholders(
+                window,
+                line_viewport,
+                source_line,
+                snippet_ranges,
+                style,
+                decorations,
+                syntax_line_spans,
+            )?;
             if let Some(diagnostic) = diagnostic_line {
                 draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
@@ -2346,6 +2393,7 @@ fn draw_snapshot_lines(
                         color_column,
                         layers: &highlight_layers,
                         empty_line: false,
+                        decorations,
                     },
                     style,
                     Some(spans),
@@ -2363,23 +2411,31 @@ fn draw_snapshot_lines(
             }
             draw_indent_guides(
                 window,
-                row as u16,
-                content_x,
+                (row as u16, content_x),
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
                 None,
+                decorations,
             )?;
             draw_delimiter_highlights(
                 window,
                 line_viewport,
                 source_line,
-                highlighted_chars,
+                (highlighted_chars, decorations),
                 default_colors,
                 style,
                 Some(spans),
             )?;
-            draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
+            draw_snippet_placeholders(
+                window,
+                line_viewport,
+                source_line,
+                snippet_ranges,
+                style,
+                decorations,
+                syntax_line_spans,
+            )?;
             if let Some(diagnostic) = diagnostic_line {
                 draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
             }
@@ -2401,6 +2457,7 @@ fn draw_snapshot_lines(
                     color_column,
                     layers: &highlight_layers,
                     empty_line: false,
+                    decorations,
                 },
                 style,
                 None,
@@ -2414,21 +2471,29 @@ fn draw_snapshot_lines(
                 color_column,
             )?;
         }
-        draw_snippet_placeholders(window, line_viewport, source_line, snippet_ranges, style)?;
+        draw_snippet_placeholders(
+            window,
+            line_viewport,
+            source_line,
+            snippet_ranges,
+            style,
+            decorations,
+            syntax_line_spans,
+        )?;
         draw_indent_guides(
             window,
-            row as u16,
-            content_x,
+            (row as u16, content_x),
             visible_indent_guides,
             &occupied_text_cells,
             style,
             None,
+            decorations,
         )?;
         draw_delimiter_highlights(
             window,
             line_viewport,
             source_line,
-            highlighted_chars,
+            (highlighted_chars, decorations),
             default_colors,
             style,
             syntax_line_spans,
@@ -2466,6 +2531,8 @@ fn draw_snippet_placeholders(
     source_line: &str,
     ranges: &[std::ops::Range<usize>],
     style: UiStyle,
+    decorations: LineDecorations<'_>,
+    syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
 ) -> minui::Result<()> {
     let LineViewport {
         row,
@@ -2482,7 +2549,7 @@ fn draw_snippet_placeholders(
     let color = ColorPair::new(style.theme.dark_gray, style.theme.bg);
     let mut cell = 0usize;
     let mut char_col = 0usize;
-    for grapheme in source_line.graphemes(true) {
+    for (start_byte, grapheme) in source_line.grapheme_indices(true) {
         let width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
         let start_cell = cell;
         let end_cell = cell.saturating_add(width);
@@ -2508,20 +2575,29 @@ fn draw_snippet_placeholders(
         }
 
         let visible_x = start_cell.saturating_sub(scroll_x);
+        let base_style = syntax_style_for_range(
+            color,
+            style,
+            syntax_spans.unwrap_or(&[]),
+            start_byte,
+            start_byte + grapheme.len(),
+        )
+        .with_colors(color);
+        let text_style = decorations.apply(base_style, visible_x..visible_x + width);
         if grapheme == "\t" {
             let spaces = " ".repeat(width.max(1));
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 content_x.saturating_add(visible_x as u16),
                 &spaces,
-                color,
+                text_style,
             )?;
         } else {
-            window.write_str_colored(
+            window.write_str_styled(
                 row,
                 content_x.saturating_add(visible_x as u16),
                 grapheme,
-                color,
+                text_style,
             )?;
         }
     }
@@ -3021,7 +3097,7 @@ fn print_cli_logo(wordmark: &str, color_enabled: bool) {
         ("  ┗━┛", style.logo_blue.fg),
     ] {
         if color_enabled && let Color::Rgb { r, g, b } = color {
-            println!("\x1b[38;2;{r};{g};{b}m{line}\x1b[0m");
+            println!("\x1b[1;38;2;{r};{g};{b}m{line}\x1b[0m");
         } else {
             println!("{line}");
         }
@@ -4751,7 +4827,7 @@ mod tests {
         handle_editor_event(
             &mut state,
             &mut clipboard,
-            Event::Paste("printf '\\033[31m__%s__\\033[38;2;80;160;240mRGB\\033[0m' ROUTED".into()),
+            Event::Paste("printf '\\033[31m__%s__\\033[38;2;80;160;240mRGB\\033[1mB\\033[3mI\\033[4mU\\033[22mN\\033[23;24mP\\033[2mD\\033[22;7mR\\033[0mZ' ROUTED".into()),
         );
         handle_editor_event(&mut state, &mut clipboard, Event::Enter);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -4779,6 +4855,36 @@ mod tests {
                 Some(color)
             );
         }
+        use crossterm::style::Attribute;
+        let expected_attributes = [
+            (13, vec![Attribute::Bold]),
+            (14, vec![Attribute::Bold, Attribute::Italic]),
+            (
+                15,
+                vec![Attribute::Bold, Attribute::Italic, Attribute::Underlined],
+            ),
+            (16, vec![Attribute::Italic, Attribute::Underlined]),
+            (17, vec![]),
+            (18, vec![Attribute::Dim]),
+            (19, vec![]),
+            (20, vec![]),
+        ];
+        for (offset, expected) in &expected_attributes {
+            assert_eq!(
+                window.styles[output_row as usize][output_column + offset]
+                    .to_crossterm()
+                    .attributes,
+                crossterm::style::Attributes::from(expected.as_slice()),
+            );
+        }
+        assert_eq!(
+            window.foregrounds[output_row as usize][output_column + 19],
+            Some(UiStyle::default().theme.bg)
+        );
+        assert_eq!(
+            window.backgrounds[output_row as usize][output_column + 19],
+            Some(colors[1])
+        );
         assert_eq!(state.mode, app::EditorMode::Normal);
         assert_eq!(state.session.active_buffer().to_string(), "");
         handle_editor_event(
@@ -4793,6 +4899,14 @@ mod tests {
         assert!(!state.terminal.is_focused());
         draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         let style = UiStyle::default();
+        for (offset, expected) in &expected_attributes {
+            assert_eq!(
+                window.styles[output_row as usize][output_column + offset]
+                    .to_crossterm()
+                    .attributes,
+                crossterm::style::Attributes::from(expected.as_slice()),
+            );
+        }
         for (offset, color) in [0, 10]
             .into_iter()
             .zip([Color::rgb(205, 49, 49), colors[1]])
@@ -4967,23 +5081,25 @@ mod tests {
         assert_eq!(state.mode, app::EditorMode::Insert);
     }
 
-    struct TestWindow {
+    pub(crate) struct TestWindow {
         width: u16,
         height: u16,
         cells: Vec<Vec<char>>,
         backgrounds: Vec<Vec<Option<Color>>>,
         foregrounds: Vec<Vec<Option<Color>>>,
+        pub(crate) styles: Vec<Vec<minui::Style>>,
         cursor: Option<minui::window::CursorSpec>,
     }
 
     impl TestWindow {
-        fn new(width: u16, height: u16) -> Self {
+        pub(crate) fn new(width: u16, height: u16) -> Self {
             Self {
                 width,
                 height,
                 cells: vec![vec![' '; width as usize]; height as usize],
                 backgrounds: vec![vec![None; width as usize]; height as usize],
                 foregrounds: vec![vec![None; width as usize]; height as usize],
+                styles: vec![vec![minui::Style::new(); width as usize]; height as usize],
                 cursor: None,
             }
         }
@@ -5030,6 +5146,27 @@ mod tests {
             if let Some(row) = self.foregrounds.get_mut(y as usize) {
                 for cell in row.iter_mut().skip(x as usize).take(s.chars().count()) {
                     *cell = Some(colors.fg);
+                }
+            }
+            if let Some(row) = self.styles.get_mut(y as usize) {
+                for cell in row.iter_mut().skip(x as usize).take(s.chars().count()) {
+                    *cell = colors.into();
+                }
+            }
+            Ok(())
+        }
+
+        fn write_str_styled(
+            &mut self,
+            y: u16,
+            x: u16,
+            text: &str,
+            style: minui::Style,
+        ) -> minui::Result<()> {
+            self.write_str_colored(y, x, text, style.colors.unwrap_or_default())?;
+            if let Some(row) = self.styles.get_mut(y as usize) {
+                for cell in row.iter_mut().skip(x as usize).take(text.chars().count()) {
+                    *cell = style;
                 }
             }
             Ok(())
@@ -5082,6 +5219,237 @@ mod tests {
             }
 
             Ok(())
+        }
+    }
+
+    #[test]
+    fn syntax_decorations_survive_search_and_selection_without_leaking() {
+        use crossterm::style::Attribute;
+        use ui::syntax::{SyntaxLanguage, line_spans_for_source};
+
+        let mut style = UiStyle::default();
+        let colors = ColorPair::new(style.theme.white, style.theme.bg);
+        // Equal colours must still produce separate runs when attributes change.
+        style.syntax.comment = colors;
+        style.syntax.markdown_emphasis = colors;
+        style.syntax.markdown_strong = colors;
+        style.syntax.markdown_heading = colors;
+        for (source, language, checks) in [
+            (
+                "plain *soft* **strong** ***both*** plain",
+                Some(SyntaxLanguage::Markdown),
+                vec![
+                    ("plain", false, false),
+                    ("soft", false, true),
+                    ("strong", true, false),
+                    ("both", true, true),
+                ],
+            ),
+            (
+                "# Heading *soft*",
+                Some(SyntaxLanguage::Markdown),
+                vec![("Heading", true, false), ("soft", true, true)],
+            ),
+            (
+                "let value = 1; // comment",
+                Some(SyntaxLanguage::Rust),
+                vec![("let", false, false), ("comment", false, true)],
+            ),
+            (
+                "value // comment",
+                None,
+                vec![("value", false, false), ("comment", false, true)],
+            ),
+        ] {
+            let spans = line_spans_for_source(source, language)
+                .map(|lines| lines.into_iter().next().unwrap())
+                .unwrap_or_else(|| lexical_fallback_line_spans(source));
+            let selected = selected_visible_cells(source, 0, 80, 0, source.len());
+            for searched in [false, true] {
+                let mut window = TestWindow::new(80, 1);
+                let viewport = LineViewport {
+                    row: 0,
+                    column: 0,
+                    scroll_x: 0,
+                    width: 80,
+                };
+                if searched {
+                    draw_line_with_highlights(
+                        &mut window,
+                        viewport,
+                        source,
+                        colors,
+                        LineHighlights {
+                            color_column: None,
+                            layers: &[(&selected, style.theme.selection_bg, None)],
+                            empty_line: false,
+                            decorations: LineDecorations {
+                                search_cells: &selected,
+                                error_cells: &[],
+                                error_color: style.diagnostic_inline.error.fg,
+                            },
+                        },
+                        style,
+                        Some(&spans),
+                    )
+                    .unwrap();
+                } else {
+                    draw_line_with_syntax(
+                        &mut window,
+                        viewport,
+                        source,
+                        colors,
+                        None,
+                        style,
+                        &spans,
+                    )
+                    .unwrap();
+                }
+                for (word, bold, italic) in &checks {
+                    for (column, _) in source.match_indices(word) {
+                        let attributes = window.styles[0][column].to_crossterm().attributes;
+                        assert_eq!(attributes.has(Attribute::Bold), *bold, "{source}: {word}");
+                        assert_eq!(
+                            attributes.has(Attribute::Italic),
+                            *italic,
+                            "{source}: {word}"
+                        );
+                        assert_eq!(attributes.has(Attribute::Underlined), searched);
+                    }
+                }
+                assert_eq!(window.styles[0][source.len()], minui::Style::new());
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_undercurl_survives_selection_and_source_overlays() {
+        use crossterm::style::Attribute;
+
+        let style = UiStyle::default();
+        let colors = ColorPair::new(style.theme.white, style.theme.bg);
+        let source = "x(a)bc";
+        for scroll_x in [0, 2] {
+            let viewport = LineViewport {
+                row: 0,
+                column: 0,
+                scroll_x,
+                width: 8,
+            };
+            let selected = selected_visible_cells(source, scroll_x, 8, 0, 6);
+            let diagnostic = selected_visible_cells(source, scroll_x, 8, 1, 5);
+            for error_cells in [diagnostic.as_slice(), &[]] {
+                let decorations = LineDecorations {
+                    search_cells: &selected,
+                    error_cells,
+                    error_color: style.diagnostic_inline.error.fg,
+                };
+                let mut window = TestWindow::new(8, 1);
+                draw_line_with_highlights(
+                    &mut window,
+                    viewport,
+                    source,
+                    colors,
+                    LineHighlights {
+                        color_column: None,
+                        layers: &[(&selected, style.theme.selection_bg, None)],
+                        empty_line: false,
+                        decorations,
+                    },
+                    style,
+                    None,
+                )
+                .unwrap();
+                draw_delimiter_highlights(
+                    &mut window,
+                    viewport,
+                    source,
+                    (&[1, 3], decorations),
+                    colors,
+                    style,
+                    None,
+                )
+                .unwrap();
+                draw_snippet_placeholders(
+                    &mut window,
+                    viewport,
+                    source,
+                    std::slice::from_ref(&(4..5)),
+                    style,
+                    decorations,
+                    None,
+                )
+                .unwrap();
+                for column in 0..source.len() - scroll_x {
+                    let text_style = window.styles[0][column];
+                    let undercurled =
+                        !error_cells.is_empty() && (1..5).contains(&(column + scroll_x));
+                    assert_eq!(
+                        text_style
+                            .to_crossterm()
+                            .attributes
+                            .has(Attribute::Undercurled),
+                        undercurled
+                    );
+                    assert_eq!(
+                        text_style.underline_color,
+                        undercurled.then_some(style.diagnostic_inline.error.fg)
+                    );
+                    assert_eq!(
+                        text_style
+                            .to_crossterm()
+                            .attributes
+                            .has(Attribute::Underlined),
+                        !undercurled
+                    );
+                }
+                assert_eq!(
+                    window.backgrounds[0][2 - scroll_x],
+                    Some(style.theme.selection_bg)
+                );
+            }
+        }
+        for source in ["", "text"] {
+            let search_cells = search_highlight_cells(
+                source,
+                0,
+                8,
+                std::slice::from_ref(&(source.len()..source.len())),
+            );
+            let mut window = TestWindow::new(8, 1);
+            draw_line_with_highlights(
+                &mut window,
+                LineViewport {
+                    row: 0,
+                    column: 0,
+                    scroll_x: 0,
+                    width: 8,
+                },
+                source,
+                colors,
+                LineHighlights {
+                    color_column: None,
+                    layers: &[(&search_cells, style.theme.selection_bg, None)],
+                    empty_line: true,
+                    decorations: LineDecorations {
+                        search_cells: &search_cells,
+                        error_cells: &[],
+                        error_color: style.diagnostic_inline.error.fg,
+                    },
+                },
+                style,
+                None,
+            )
+            .unwrap();
+            for column in 0..8 {
+                assert_eq!(
+                    window.styles[0][column]
+                        .to_crossterm()
+                        .attributes
+                        .has(Attribute::Underlined),
+                    column == source.len()
+                );
+            }
         }
     }
 

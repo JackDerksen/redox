@@ -9,9 +9,10 @@ use crate::app::state::{
 };
 use crate::ui::UiStyle;
 use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, PopupKind, popup_title};
+use crate::ui::render::LineViewport;
 use crate::ui::syntax::{
-    LineSyntaxSpan, SyntaxLanguage, language_for_name, lexical_fallback_line_spans,
-    line_spans_for_source, syntax_color_for_range,
+    LineSyntaxSpan, SyntaxLanguage, draw_line_with_syntax, language_for_name,
+    lexical_fallback_line_spans, line_spans_for_source,
 };
 use crate::ui::widgets::popup::{
     MousePopup, MouseRect, MouseScroll, MouseTarget, PopupChrome, PopupMouseLayout,
@@ -138,12 +139,17 @@ fn draw_symbol_info_line(
     }
     let clipped = clip_text_to_cells(&line.text, max_width);
     let base_color = symbol_info_base_color(style, &line.kind);
-    draw_symbol_info_spans(
+    draw_line_with_syntax(
         window,
-        (row, 0),
+        LineViewport {
+            row,
+            column: 0,
+            scroll_x: 0,
+            width: max_width,
+        },
         &clipped,
-        max_width,
         base_color,
+        None,
         style,
         &line.spans,
     )
@@ -418,123 +424,6 @@ fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> Color
     }
 }
 
-fn draw_symbol_info_spans(
-    window: &mut WindowView<'_>,
-    (row, base_col): (u16, u16),
-    source_line: &str,
-    width_cells: usize,
-    base_color: ColorPair,
-    style: UiStyle,
-    spans: &[LineSyntaxSpan],
-) -> minui::Result<()> {
-    let mut line_cells = 0usize;
-    let mut byte_idx = 0usize;
-    let mut syntax_idx = 0usize;
-    let mut pending_start: Option<usize> = None;
-    let mut pending_end = 0usize;
-    let mut pending_col = 0u16;
-    let mut pending_colors = base_color;
-
-    for grapheme in source_line.graphemes(true) {
-        let grapheme_width = cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-        let start_byte = byte_idx;
-        let end_byte = byte_idx.saturating_add(grapheme.len());
-        byte_idx = end_byte;
-
-        if line_cells >= width_cells {
-            break;
-        }
-
-        while syntax_idx < spans.len() && spans[syntax_idx].end_byte <= start_byte {
-            syntax_idx += 1;
-        }
-
-        let colors = syntax_color_for_range(
-            base_color,
-            style,
-            &spans[syntax_idx..],
-            start_byte,
-            end_byte,
-        );
-
-        if grapheme == "\t" {
-            flush_symbol_info_span(
-                window,
-                (row, base_col),
-                source_line,
-                pending_start.take(),
-                pending_end,
-                pending_col,
-                pending_colors,
-            )?;
-            let visible_width = grapheme_width.min(width_cells.saturating_sub(line_cells));
-            let spaces = " ".repeat(visible_width);
-            window.write_str_colored(
-                row,
-                base_col.saturating_add(line_cells as u16),
-                &spaces,
-                colors,
-            )?;
-            line_cells = line_cells.saturating_add(visible_width);
-            continue;
-        }
-
-        if pending_start.is_some() && pending_colors == colors && pending_end == start_byte {
-            pending_end = end_byte;
-            line_cells = line_cells.saturating_add(grapheme_width);
-            continue;
-        }
-
-        flush_symbol_info_span(
-            window,
-            (row, base_col),
-            source_line,
-            pending_start.take(),
-            pending_end,
-            pending_col,
-            pending_colors,
-        )?;
-        pending_start = Some(start_byte);
-        pending_end = end_byte;
-        pending_col = line_cells as u16;
-        pending_colors = colors;
-        line_cells = line_cells.saturating_add(grapheme_width);
-    }
-
-    flush_symbol_info_span(
-        window,
-        (row, base_col),
-        source_line,
-        pending_start,
-        pending_end,
-        pending_col,
-        pending_colors,
-    )
-}
-
-fn flush_symbol_info_span(
-    window: &mut WindowView<'_>,
-    (row, base_col): (u16, u16),
-    source_line: &str,
-    start: Option<usize>,
-    end: usize,
-    col: u16,
-    colors: ColorPair,
-) -> minui::Result<()> {
-    let Some(start) = start else {
-        return Ok(());
-    };
-    if start >= end {
-        return Ok(());
-    }
-    window.write_str_colored(
-        row,
-        base_col.saturating_add(col),
-        &source_line[start..end],
-        colors,
-    )
-}
-
 pub fn draw_diagnostics_popup(
     popup: &DiagnosticsPopup,
     style: UiStyle,
@@ -717,11 +606,11 @@ pub fn draw_diagnostics_popup(
                     selected.line + 1,
                     selected.col + 1
                 );
-                view.write_str_colored(
+                view.write_str_styled(
                     title_row,
                     1,
                     &clip_text_to_cells(&title, view.width.saturating_sub(2) as usize),
-                    severity_color(style, selected.severity),
+                    minui::Style::from(severity_color(style, selected.severity)).bold(),
                 )?;
             }
 
@@ -796,11 +685,11 @@ pub fn draw_code_actions_popup(
     let _ = draw_section_header(&mut view, 0, &summary, style.finder.query_title)?;
 
     if view.height > 2 {
-        view.write_str_colored(
+        view.write_str_styled(
             1,
             1,
             &clip_text_to_cells(&popup.title, view.width.saturating_sub(2) as usize),
-            style.finder.dim,
+            minui::Style::from(style.finder.dim).bold(),
         )?;
     }
 
@@ -839,11 +728,11 @@ fn draw_diagnostics_code_actions_split(
     } else {
         style.finder.dim
     };
-    view.write_str_colored(
+    view.write_str_styled(
         title_row,
         1,
         &clip_text_to_cells(&pane.title, view.width.saturating_sub(2) as usize),
-        title_colors,
+        minui::Style::from(title_colors).bold(),
     )?;
     if pane.loading {
         let message_row = title_row.saturating_add(1);
@@ -975,7 +864,7 @@ fn draw_section_header(
     if row >= window.height {
         return Ok(row);
     }
-    window.write_str_colored(row, 1, text, colors)?;
+    window.write_str_styled(row, 1, text, minui::Style::from(colors).bold())?;
     Ok(row.saturating_add(1))
 }
 

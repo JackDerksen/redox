@@ -3,7 +3,7 @@ use crate::{draw_line_numbers, line_number_gutter_width};
 use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
-use minui::{ColorPair, TabPolicy, Window, cell_width, window::CursorSpec};
+use minui::{ColorPair, Style, TabPolicy, Window, cell_width, window::CursorSpec};
 use redox_core::{Pos, TextBuffer};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -137,6 +137,11 @@ pub(crate) fn draw_explorer_popup_view(
             });
         let line_idx = snapshot.first_line() + row;
         let source_line = line.source();
+        let text_style = if source_line.trim_end().ends_with('/') || source_line.trim() == ".." {
+            Style::from(row_style.text).bold()
+        } else {
+            Style::from(row_style.text)
+        };
         if line_idx < total_lines {
             mouse.clicks.push((
                 MouseRect {
@@ -181,13 +186,13 @@ pub(crate) fn draw_explorer_popup_view(
                 source_line,
                 sel_range.start,
                 sel_range.end,
-                row_style.text,
-                ColorPair::new(row_style.text.fg, style.theme.selection_bg),
+                text_style,
+                text_style.with_colors(ColorPair::new(row_style.text.fg, style.theme.selection_bg)),
             )?;
             draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
             continue;
         }
-        view.write_str_colored(row as u16, content_x, line.visible(), row_style.text)?;
+        view.write_str_styled(row as u16, content_x, line.visible(), text_style)?;
         draw_explorer_status_dot(&mut view, style, 0, row as u16, row_style.git_status)?;
     }
     let cursor = spec.visible.then_some(CursorSpec {
@@ -294,8 +299,8 @@ fn draw_line_with_selection(
     source_line: &str,
     sel_start_char: usize,
     sel_end_char_exclusive: usize,
-    normal_color: ColorPair,
-    selected_color: ColorPair,
+    normal_style: Style,
+    selected_style: Style,
 ) -> minui::Result<()> {
     let LineViewport {
         row,
@@ -334,13 +339,13 @@ fn draw_line_with_selection(
         }
 
         let is_selected = start_char < sel_end_char_exclusive && end_char > sel_start_char;
-        let color = if is_selected {
-            selected_color
+        let style = if is_selected {
+            selected_style
         } else {
-            normal_color
+            normal_style
         };
 
-        view.write_str_colored(row, col + used_cells as u16, g, color)?;
+        view.write_str_styled(row, col + used_cells as u16, g, style)?;
         used_cells = used_cells.saturating_add(g_width);
     }
 

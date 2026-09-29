@@ -1,5 +1,5 @@
-use minui::Window;
 use minui::widgets::Widget;
+use minui::{Style, Window};
 
 use crate::app::AboutPopup;
 use crate::ui::icons::{PopupKind, popup_title};
@@ -41,7 +41,7 @@ pub(crate) fn draw_about_popup_view(
         top,
         left,
         "┏━┓",
-        style.about.logo_red,
+        Style::from(style.about.logo_red).bold(),
         max_line_w,
     )?;
     write_line(
@@ -49,7 +49,7 @@ pub(crate) fn draw_about_popup_view(
         top.saturating_add(1),
         left,
         "Redox",
-        style.about.logo_white,
+        Style::from(style.about.logo_white).bold(),
         max_line_w,
     )?;
     write_line(
@@ -65,7 +65,7 @@ pub(crate) fn draw_about_popup_view(
         top.saturating_add(2),
         left,
         "  ┗━┛",
-        style.about.logo_blue,
+        Style::from(style.about.logo_blue).bold(),
         max_line_w,
     )?;
 
@@ -129,7 +129,7 @@ fn write_line(
     row: u16,
     col: u16,
     text: &str,
-    color: minui::ColorPair,
+    style: impl Into<Style>,
     width: u16,
 ) -> minui::Result<()> {
     if width == 0 {
@@ -137,7 +137,7 @@ fn write_line(
     }
 
     let clipped = clip_text_to_cells(text, width as usize);
-    view.write_str_colored(row, col, &clipped, color)
+    view.write_str_styled(row, col, &clipped, style.into())
 }
 
 fn write_wrapped_block(

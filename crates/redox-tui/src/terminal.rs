@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use minui::{Color, ColorPair, Event, KeyKind, KeybindAction, TerminalWindow, Window};
+use minui::{Color, ColorPair, Event, KeyKind, KeybindAction, Style, TerminalWindow, Window};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::ui::UiStyle;
@@ -242,7 +242,7 @@ impl TerminalPanel {
         let mut text = String::with_capacity(self.width as usize);
         for row in 0..height {
             let mut start_column = 0;
-            let mut run_colors = None;
+            let mut run_style = None;
             text.clear();
             for column in 0..self.width {
                 let Some(cell) = screen.cell(row, column) else {
@@ -263,22 +263,34 @@ impl TerminalPanel {
                         style.dim_amount,
                     );
                 }
-                let colors = ColorPair::new(foreground, background);
-                if let Some(previous) = run_colors
-                    && previous != colors
+                let mut cell_style = Style::from(ColorPair::new(foreground, background));
+                if cell.bold() {
+                    cell_style = cell_style.bold();
+                }
+                if cell.dim() {
+                    cell_style = cell_style.dim();
+                }
+                if cell.italic() {
+                    cell_style = cell_style.italic();
+                }
+                if cell.underline() {
+                    cell_style = cell_style.underlined();
+                }
+                if let Some(previous) = run_style
+                    && previous != cell_style
                 {
-                    window.write_str_colored(top + row, start_column, &text, previous)?;
+                    window.write_str_styled(top + row, start_column, &text, previous)?;
                     text.clear();
                 }
                 if text.is_empty() {
                     start_column = column;
-                    run_colors = Some(colors);
+                    run_style = Some(cell_style);
                 }
                 let contents = cell.contents();
                 text.push_str(if contents.is_empty() { " " } else { contents });
             }
-            if let Some(colors) = run_colors {
-                window.write_str_colored(top + row, start_column, &text, colors)?;
+            if let Some(style) = run_style {
+                window.write_str_styled(top + row, start_column, &text, style)?;
             }
         }
         if self.focused {
