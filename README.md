@@ -24,7 +24,10 @@
 
 ## Project structure
 
-Redox is a Cargo workspace with an editor core, an LSP library, and a MinUI frontend. The core crate owns editor logic that should stay UI-agnostic. The LSP crate owns protocol and process mechanisms. The TUI crate owns input mapping, app state, rendering, popups, syntax highlighting, and terminal interaction.
+Redox is a Cargo workspace with an editor core, an LSP library, and a MinUI
+frontend. The core crate owns editor logic that should stay UI-agnostic. The LSP
+crate owns protocol and process mechanisms. The TUI crate owns input mapping,
+app state, rendering, popups, syntax highlighting, and terminal interaction.
 
 ```text
 redox/
@@ -55,7 +58,10 @@ redox/
             └── ui/             # UI rendering, widgets, animations, styling
 ```
 
-This split keeps buffer operations, indexing, motions, fuzzy scoring, session behaviour, and LSP mechanics testable without a terminal. The frontend can evolve the interface without pulling UI details into `redox-core` or `redox-lsp`.
+This split keeps buffer operations, indexing, motions, fuzzy scoring, session
+behaviour, and LSP mechanics testable without a terminal. The frontend can
+evolve the interface without pulling UI details into `redox-core` or
+`redox-lsp`.
 
 **The subcrates can be found here**:
 
@@ -67,9 +73,13 @@ This split keeps buffer operations, indexing, motions, fuzzy scoring, session be
 
 ### Requirements
 
-- Rust toolchain (`cargo` + `rustc`) for Cargo installs and source builds. Homebrew installs build tools automatically.
-- A terminal that supports basic ANSI features and raw mode (and ideally full colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for the best experience!
-- Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see [Language tools](#language-tools) for setup.
+- Rust toolchain (`cargo` + `rustc`) for Cargo installs and source builds.
+  Homebrew installs build tools automatically.
+- A terminal that supports basic ANSI features and raw mode (and ideally full
+  colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for
+  the best experience!
+- Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see
+  [Language tools](#language-tools) for setup.
 
 
 ### Install with Homebrew
@@ -87,9 +97,9 @@ brew update
 brew upgrade redox
 ```
 
-The [personal tap](https://github.com/JackDerksen/homebrew-tap) builds from a pinned
-release source archive. It checks for new stable releases hourly and tests formula
-updates on macOS and Linux before publishing them.
+The [personal tap](https://github.com/JackDerksen/homebrew-tap) builds from a
+pinned release source archive. It checks for new stable releases hourly and
+tests formula updates on macOS and Linux before publishing them.
 
 ### Install with Cargo
 
@@ -119,54 +129,60 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 ### Updates
 
-Redox checks GitHub's latest stable release in the background on startup and shows a
-toast when a newer version is available. Successful checks are cached for 24 hours
-under the Redox state directory. **Note**: Checks require `curl`; missing `curl`,
-offline connections, and other startup check failures stay quiet.
+Redox checks GitHub's latest stable release in the background on startup and
+shows a toast when a newer version is available. Successful checks are cached
+for 24 hours under the Redox state directory. **Note**: Checks require `curl`;
+missing `curl`, offline connections, and other startup check failures stay
+quiet.
 
-Run `:check-update` to check immediately, bypassing the cache, and see the result or
-any connection error. Set `check_updates = false` in your configuration to disable
-automatic checks (manual checks remain available).
+Run `:check-update` to check immediately, bypassing the cache, and see the
+result or any connection error. Set `check_updates = false` in your
+configuration to disable automatic checks (manual checks remain available).
 
-For Homebrew installs, run `brew update && brew upgrade redox`. For Cargo installs,
-run `cargo install redox-editor --locked` in your terminal to install the newest
-published crate. For release binaries, download the matching archive from
-[GitHub releases](https://github.com/JackDerksen/redox/releases/latest) and replace
-your installed `redox` binary after closing the editor. GitHub releases may appear
-before the corresponding crate is published. Redox only notifies you; it does not
-download or install updates itself.
+For Homebrew installs, run `brew update && brew upgrade redox`. For Cargo
+installs, run `cargo install redox-editor --locked` in your terminal to install
+the newest published crate. For release binaries, download the matching archive
+from [GitHub releases](https://github.com/JackDerksen/redox/releases/latest) and
+replace your installed `redox` binary after closing the editor. GitHub releases
+may appear before the corresponding crate is published. Redox only notifies you;
+it does not download or install updates itself.
 
 
 ## Usage guide
 
 ### Configuration
 
-Redox was designed from the ground-up to be pleasant without the need for configuration, but
-it is highly configurable, should you choose to modify the default behaviour or appearance.
+Redox was designed from the ground-up to be pleasant without the need for
+configuration. Despite this, it is highly configurable, should you choose to
+modify the default behaviour or appearance.
 
-It looks for configuration at `$REDOX_CONFIG`, `$XDG_CONFIG_HOME/redox/config.toml`, or
-`~/.config/redox/config.toml` (in that order). A different file can be selected with
+It looks for configuration at `$REDOX_CONFIG`,
+`$XDG_CONFIG_HOME/redox/config.toml`, or `~/.config/redox/config.toml` (in that
+order). A different file can be selected with
 `redox --config /path/to/config.toml`.
 
-Configuration supports features like named themes, the complete base palette, every syntax role,
-per-role colours and font formatting, a global plain-text switch, optional Nerd Font icons,
-background dimming, popup dimensions, colour-column position, zen mode, undo-tree history size,
-the leader character, and mode-specific keybindings. See the
+Configuration supports features like named themes, the complete base palette,
+every syntax role, per-role colours and font formatting, a global plain-text
+switch, optional Nerd Font icons, background dimming, popup dimensions,
+colour-column position, zen mode, undo-tree history size, the leader character,
+and mode-specific keybindings. See the
 [`config.example.toml`](config.example.toml) starter file and the complete
-[`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use the built-in
-defaults.
+[`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use
+the built-in defaults.
 
-Editor-managed data (such as undo history and LSP metadata) lives separately under
-`$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the configuration directory for
-`config.toml` alone. Existing legacy state is migrated automatically.
+Editor-managed data (such as undo history and LSP metadata) lives separately
+under `$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the
+configuration directory for `config.toml` alone. Existing legacy state is
+migrated automatically.
 
-Optional logging is disabled by default and stays entirely on your machine. Enable
-`[logging] enabled = true` in your config to retain up to 5,000 recent events per session (about 2 MB), or set
-`max_events` to another positive limit. Older session logs are pruned as needed. Run
-`:log "This is a description of what happened"` to preserve a report under
-`~/.local/state/redox/logs/reports/`. Redox never sends logs anywhere; share a report with the
-developer only if you choose to. See [optional logging](CONFIGURATION.md#optional-logging)
-for recorded events, exclusions, and storage details.
+Optional logging is disabled by default and stays entirely on your machine.
+Enable `[logging] enabled = true` in your config to retain up to 5,000 recent
+events per session (about 2 MB), or set `max_events` to another positive limit.
+Older session logs are pruned as needed. Run `:log "This is a description of
+what happened"` to preserve a report under `~/.local/state/redox/logs/reports/`.
+Redox never sends logs anywhere; share a report with the developer only if you
+choose to. See [optional logging](CONFIGURATION.md#optional-logging) for
+recorded events, exclusions, and storage details.
 
 <details>
 <summary>Command, navigation, editing, and search reference</summary>
@@ -176,10 +192,11 @@ for recorded events, exclusions, and storage details.
 redox <file_path>
 ```
 
-Use `redox --help` for launch options and `redox --version` to print the installed version.
+Use `redox --help` for launch options and `redox --version` to print the
+installed version.
 
-Run `redox` without a path to open the startup dashboard. Press a shortcut directly,
-or move with `j`/`k` and press `Enter`:
+Run `redox` without a path to open the startup dashboard. Press a shortcut
+directly, or move with `j`/`k` and press `Enter`:
 
 | Key | Action |
 | --- | --- |
@@ -193,17 +210,15 @@ or move with `j`/`k` and press `Enter`:
 Use `:dashboard` to reopen it while editing. Open buffers and unsaved edits are
 preserved; `Escape` returns to the previous buffer.
 
-Sessions remember saved files, their cursor positions, and the active file when Redox
-exits. They live under the Redox state directory in `sessions/`. Exiting an empty
-dashboard leaves the previous session intact. Unsaved contents and split layouts
-are not restored.
+Sessions remember saved files, their cursor positions, and the active file when
+Redox exits. They live under the Redox state directory in `sessions/`. Exiting
+an empty dashboard leaves the previous session intact. Unsaved contents and
+split layouts are not restored.
 
-Name a new buffer on its first write, for example `:w file.rs`. The extension selects
-syntax highlighting and the existing formatting tools. A failed write keeps the
-buffer's previous name and contents, and a different existing file is never overwritten.
-
-A successful file save briefly shows a green checkmark beside the cursor coordinates.
-Customise its colour and text formatting with the `status.saved` UI style.
+Name a new buffer on its first write, for example `:w file.rs`. The extension
+selects syntax highlighting and the existing formatting tools. A failed write
+keeps the buffer's previous name and contents, and a different existing file is
+never overwritten.
 
 Example:
 ```bash
@@ -217,7 +232,8 @@ redox src
 
 ### Command mode
 
-Enter command mode with `:`. This also stops rain mode and opens the command line.
+Enter command mode with `:`. This also stops rain mode and opens the command
+line.
 
 | Command | Behaviour |
 | ------- | --------- |
@@ -249,16 +265,29 @@ Enter command mode with `:`. This also stops rain mode and opens the command lin
 | `:lsp list` | Open the language tools marketplace. |
 | `:lsp status` | Show the active buffer's detected language tools. |
 
-Command and subcommand completions appear as ghost text at the end of the input, regardless of cursor position. Press `Tab` from anywhere in the input to accept and move the cursor to the end, `ctrl+n` / `ctrl+p` to cycle suggestions, or `Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within the command line, and `Escape` / `ctrl+c` to cancel.
+Command and subcommand completions appear as ghost text at the end of the input,
+regardless of cursor position. Press `Tab` from anywhere in the input to accept
+and move the cursor to the end, `ctrl+n` / `ctrl+p` to cycle suggestions, or
+`Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or
+accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within
+the command line, and `Escape` / `ctrl+c` to cancel.
 
-Command, search, and Finder inputs accept `ctrl+v` to paste from the system clipboard, as well as terminal paste. Text is inserted at the input cursor; line breaks become spaces and pasting does not submit the input.
+Command, search, and Finder inputs accept `ctrl+v` to paste from the system
+clipboard, as well as terminal paste. Text is inserted at the input cursor; line
+breaks become spaces and pasting does not submit the input.
 
-The command line calculator supports arithmetic, base and unit conversions, and RGB/hex colours, with live result previews. `Enter` pastes the result at the buffer cursor as one undoable edit.
+The command line calculator supports arithmetic, base and unit conversions, and
+RGB/hex colours, with live result previews. `Enter` pastes the result at the
+buffer cursor as one undoable edit.
 
 <details>
 <summary>Calculator usage</summary>
 
-Type an arithmetic expression after `:`, or use `:convert` for base, unit and colour conversions. The answer appears as ghost text and updates while you edit anywhere in the input. `Enter` inserts the result at the buffer cursor; `Escape` leaves the buffer untouched. Number and unit conversions insert just the resulting number. Colour conversions insert `#rrggbb` or `rgb(r, g, b)`.
+Type an arithmetic expression after `:`, or use `:convert` for base, unit and
+colour conversions. The answer appears as ghost text and updates while you edit
+anywhere in the input. `Enter` inserts the result at the buffer cursor; `Escape`
+leaves the buffer untouched. Number and unit conversions insert just the
+resulting number. Colour conversions insert `#rrggbb` or `rgb(r, g, b)`.
 
 | Input | Result |
 | ----- | ------ |
@@ -286,13 +315,25 @@ Type an arithmetic expression after `:`, or use `:convert` for base, unit and co
 | `convert FF8000 hex to rgb` | `rgb(255, 128, 0)` |
 | `convert #abc to rgb` | `rgb(170, 187, 204)` |
 
-Arithmetic supports `+`, `-`, `*` or `x`, `/`, `%`, `^`, parentheses, decimals and scientific notation.
+Arithmetic supports `+`, `-`, `*` or `x`, `/`, `%`, `^`, parentheses, decimals
+and scientific notation.
 
-Conversions use `convert value source to target`, such as `convert 100 km/h to mph`. All supported units accept spaces. Underscores remain accepted between the value and source, and before the target, within the `convert` command. Unit conversions can take an arithmetic expression as their value, such as `convert (5 + 2) kg to g`.
+Conversions use `convert value source to target`, such as `convert 100 km/h to
+mph`. All supported units accept spaces. Underscores remain accepted between the
+value and source, and before the target, within the `convert` command. Unit
+conversions can take an arithmetic expression as their value, such as `convert
+(5 + 2) kg to g`.
 
-Base conversions take signed integers. Use `binary` / `bin`, `octal` / `oct`, `decimal` / `dec`, or `hexadecimal` / `hex`. Any base from 2 through 36 can also be written as a number, such as `convert z 36 to decimal`. Hexadecimal numbers and colours share the name `hex`; the other format makes the conversion clear, as in `convert FF hex to decimal` and `convert FF8000 hex to rgb`.
+Base conversions take signed integers. Use `binary` / `bin`, `octal` / `oct`,
+`decimal` / `dec`, or `hexadecimal` / `hex`. Any base from 2 through 36 can also
+be written as a number, such as `convert z 36 to decimal`. Hexadecimal numbers
+and colours share the name `hex`; the other format makes the conversion clear,
+as in `convert FF hex to decimal` and `convert FF8000 hex to rgb`.
 
-Base conversions retain exact values within the signed 128-bit range, including integers beyond the arithmetic calculator's safe literal range of ±9,007,199,254,740,991. Unit conversions use the calculator's floating-point precision.
+Base conversions retain exact values within the signed 128-bit range, including
+integers beyond the arithmetic calculator's safe literal range of
+±9,007,199,254,740,991. Unit conversions use the calculator's floating-point
+precision.
 
 Unit symbols are case-sensitive and must measure the same quantity:
 
@@ -308,7 +349,10 @@ Unit symbols are case-sensitive and must measure the same quantity:
 | Angles | `deg`, `rad`, `turn` |
 | Data sizes | `b` / `bit`, `B` / `byte`, `kb`, `Mb`, `Gb`, `Tb`, `kB` / `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, `TiB` |
 
-Full names accept singular and plural forms, including irregular plurals such as `feet` and `inches`. They ignore case and accept Canadian/European and American spellings, so `metres` / `meters` and `litres` / `liters` both work. This applies on either side of `to`, and full names can be mixed with symbols.
+Full names accept singular and plural forms, including irregular plurals such as
+`feet` and `inches`. They ignore case and accept Canadian/European and American
+spellings, so `metres` / `meters` and `litres` / `liters` both work. This
+applies on either side of `to`, and full names can be mixed with symbols.
 
 | Quantity | Full name examples |
 | -------- | ------------------ |
@@ -322,17 +366,34 @@ Full names accept singular and plural forms, including irregular plurals such as
 | Angles | `degrees`, `radians`, `turns` |
 | Data sizes | `bits`, `bytes`, `kilobits`, `megabits`, `gigabits`, `terabits`, `kilobytes`, `megabytes`, `gigabytes`, `terabytes`, `kibibytes`, `mebibytes`, `gibibytes`, `tebibytes` |
 
-For example, `convert 100 kilometres per hour to miles per hour` and `convert (5 + 2) square metres to square feet` work directly. `secs`, `mins`, `hrs`, and `wks` are also accepted. Regional measures still need their qualifier: use `US gallons`, `Imperial gallons`, or `metric tons` rather than bare `gallons` or `tons`.
+For example, `convert 100 kilometres per hour to miles per hour` and `convert
+(5 + 2) square metres to square feet` work directly. `secs`, `mins`, `hrs`, and
+`wks` are also accepted. Regional measures still need their qualifier: use `US
+gallons`, `Imperial gallons`, or `metric tons` rather than bare `gallons` or
+`tons`.
 
-`t` is a metric tonne, `st` is a stone, and `oz` is an ounce of mass. Volume names beginning with `us` use US customary measures; `imp` means Imperial. A day is 24 hours and a week is seven days. Months, years and currencies are excluded because their conversions depend on context. Temperature conversions use absolute temperatures, with `C` for Celsius, `F` for Fahrenheit and `K` for kelvin.
+`t` is a metric tonne, `st` is a stone, and `oz` is an ounce of mass. Volume
+names beginning with `us` use US customary measures; `imp` means Imperial. A day
+is 24 hours and a week is seven days. Months, years and currencies are excluded
+because their conversions depend on context. Temperature conversions use
+absolute temperatures, with `C` for Celsius, `F` for Fahrenheit and `K` for
+kelvin.
 
-`MB` is decimal megabytes; `MiB` is binary mebibytes. Lowercase `b` denotes bits and uppercase `B` denotes bytes. These distinctions follow the [NIST binary prefix definitions](https://physics.nist.gov/cuu/Units/binary.html). Physical units follow standard definitions documented in the [NIST conversion reference](https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b9).
+`MB` is decimal megabytes; `MiB` is binary mebibytes. Lowercase `b` denotes bits
+and uppercase `B` denotes bytes. These distinctions follow the
+[NIST binary prefix definitions](https://physics.nist.gov/cuu/Units/binary.html).
+Physical units follow standard definitions documented in the
+[NIST conversion reference](https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b9).
 
-RGB inputs require three integers from 0 to 255. Hex colours accept three or six digits, with an optional `#` when specifying `hex` as the source. Alpha channels are not supported.
+RGB inputs require three integers from 0 to 255. Hex colours accept three or six
+digits, with an optional `#` when specifying `hex` as the source. Alpha channels
+are not supported, at least not yet.
 
 </details>
 
-`:colorscheme ` also completes theme names from your configuration, plus the built-in `default`. Commands from `[[bind]]` entries with a `command` field are included too. Suggestions refresh after `:config reload`.
+`:colorscheme ` also completes theme names from your configuration, plus the
+built-in `default`. Commands from `[[bind]]` entries with a `command` field are
+included too. Suggestions refresh after `:config reload`.
 
 ### File navigation
 
@@ -389,7 +450,8 @@ Pinboard controls:
 
 ### Language tools
 
-Redox can start installed language servers for supported file types and display diagnostics inline, in the status bar, and in a diagnostics popup.
+Redox can start installed language servers for supported file types and display
+diagnostics inline, in the status bar, and in a diagnostics popup.
 
 Open the language tools marketplace with `:lsp list`.
 
@@ -397,8 +459,8 @@ Go linting requires golangci-lint v2.0.0 or newer because Redox uses the v2-only
 `--output.json.path stdout` and `--output.text.path stderr` flags. Check
 `golangci-lint --version` before enabling it. If it reports v1, upgrade using the
 [golangci-lint installation guide](https://golangci-lint.run/docs/welcome/install/local/)
-and ensure the v2 binary is first on `PATH`. Existing v1 configurations also need
-the [v2 migration](https://golangci-lint.run/docs/product/migration-guide/).
+and ensure the v2 binary is first on `PATH`. Existing v1 configurations also
+need the [v2 migration](https://golangci-lint.run/docs/product/migration-guide/).
 
 Completion controls:
 
@@ -461,14 +523,16 @@ Other language tool commands:
 
 ### Editing and motion
 
-Optional mouse support is enabled with `mouse = true` in your configuration. It supports
-vertical and horizontal scrolling, click-to-position, and drag selection into visual mode.
-Popups support scrolling, entry selection, double-click opening, and outside-click dismissal.
-Set `mouse_scroll_step_vertical` and `mouse_scroll_step_horizontal` to choose the number
-of rows and columns per wheel event in buffers and scrollable popups. Both default to `3`
-and accept integers from `1` to `65535` (although I wouldn't recommend that); use `1` for
-finer scrolling. Apply changes with `:config reload`. The `mouse_invert_vertical` and
-`mouse_invert_horizontal` settings reverse each axis independently.
+Optional mouse support is enabled with `mouse = true` in your configuration. It
+supports vertical and horizontal scrolling, click-to-position, and drag
+selection into visual mode. Popups support scrolling, entry selection,
+double-click opening, and outside-click dismissal. Set
+`mouse_scroll_step_vertical` and `mouse_scroll_step_horizontal` to choose the
+number of rows and columns per wheel event in buffers and scrollable popups.
+Both default to `3` and accept integers from `1` to `65535` (although I wouldn't
+recommend that); use `1` for finer scrolling. Apply changes with `:config
+reload`. The `mouse_invert_vertical` and `mouse_invert_horizontal` settings
+reverse each axis independently.
 
 | Keys | Behaviour |
 | ---- | --------- |
@@ -514,32 +578,35 @@ is clipped by a smaller pane, the next editing motion brings it back into view.
 
 ### Integrated terminal
 
-Press <code>ctrl+`</code> to toggle a terminal pane across the bottom third of the editor.
-In zen mode, it follows the editor's centred width and keeps the dark side margins.
-`ctrl+space` works as an alias for terminals that encode both shortcuts identically.
-`:terminal` or `:term` also toggles the pane.
+Press <code>ctrl+`</code> to toggle a terminal pane across the bottom third of
+the editor. In zen mode, it follows the editor's centred width and keeps the
+dark side margins. `ctrl+space` works as an alias for terminals that encode both
+shortcuts identically. `:terminal` or `:term` also toggles the pane.
 
-The terminal starts in the directory where Redox was launched. Hiding the pane keeps
-its process, current directory, command history and output alive. The editor's
-statusline separates the panes. Use `ctrl+j` to move down through editor splits
-into the terminal, and `ctrl+k` to return to the last active editor pane. Clicking
-either pane also moves focus. Unfocused panes dim, including the terminal.
-Resize the terminal with `ctrl+up` / `ctrl+down`, or drag the statusline separator with mouse input enabled.
-The chosen height is kept when the pane is hidden and reopened.
-While the terminal has focus, other keys go to it, including
-Tab, arrow keys, Escape, Ctrl+C and Ctrl+D. Scroll with the mouse wheel or
-Shift+PageUp/PageDown. The pane keeps up to 5,000 lines of scrollback.
+The terminal starts in the directory where Redox was launched. Hiding the pane
+keeps its process, current directory, command history and output alive. The
+editor's statusline separates the panes. Use `ctrl+j` to move down through
+editor splits into the terminal, and `ctrl+k` to return to the last active
+editor pane. Clicking either pane also moves focus. Unfocused panes dim,
+including the terminal. Resize the terminal with `ctrl+up` / `ctrl+down`, or
+drag the statusline separator with mouse input enabled. The chosen height is
+kept when the pane is hidden and reopened. While the terminal has focus, other
+keys go to it, including Tab, arrow keys, Escape, Ctrl+C and Ctrl+D. Scroll with
+the mouse wheel or Shift+PageUp/PageDown. The pane keeps up to 5,000 lines of
+scrollback.
 
-Redox runs the program named by `$SHELL`, falling back to `/bin/sh`, in interactive mode.
-Its startup files, aliases, prompt and history settings apply. The terminal
-inherits the editor's environment and PATH. Terminal input is excluded from
-editor macros and event logs. After `exit`, hide and reopen the pane to start a
-fresh terminal. Closing Redox terminates the terminal and its foreground job.
+Redox runs the program named by `$SHELL`, falling back to `/bin/sh`, in
+interactive mode. Its startup files, aliases, prompt and history settings apply.
+The terminal inherits the editor's environment and PATH. Terminal input is
+excluded from editor macros and event logs. After `exit`, hide and reopen the
+pane to start a fresh terminal. Closing Redox terminates the terminal and its
+foreground job.
 
 ### Repeating edits and macros
 
-`.` repeats the last edit, including its inserted text or visual selection dimensions.
-Moving, searching, yanking, and undoing leave that edit available to repeat.
+`.` repeats the last edit, including its inserted text or visual selection
+dimensions. Moving, searching, yanking, and undoing leave that edit available to
+repeat.
 
 | Keys | Behaviour |
 | ---- | --------- |
@@ -550,18 +617,20 @@ Moving, searching, yanking, and undoing leave that edit available to repeat.
 | `Q!` ... `Q` / `@!` | Record / play punctuation register `!`. |
 | `@@` | Play the last-used macro again. |
 
-Registers accept letters, digits, punctuation, Space, Tab, Enter, Backspace, arrow keys,
-and supported Ctrl/Alt combinations. Function keys are excluded. Escape cancels register
-selection, and `@` is reserved for `@@`. Uppercase letters append to their lowercase register.
-Counts go before `@`: `3@a` plays register `a` three times, while `@3` plays register `3`.
+Registers accept letters, digits, punctuation, Space, Tab, Enter, Backspace,
+arrow keys, and supported Ctrl/Alt combinations. Function keys are excluded.
+Escape cancels register selection, and `@` is reserved for `@@`. Uppercase
+letters append to their lowercase register. Counts go before `@`: `3@a` plays
+register `a` three times, while `@3` plays register `3`.
 
-A persistent toast shows the recording register. Stopping displays
-the recorded key sequence. Lowercase `q` is unused; `Q` is ordinary text in insert mode.
-Macros last for the current editor session and replay recorded actions, including captured
-clipboard text. `:macros` lists saved registers and their sequences in a toast, like `:ls`.
-Playback groups the entire invocation into one undo step per buffer, including every repetition,
-nested macro call, and any undo/redo commands in the macro. Recursive or excessively long playback
-stops at a limit.
+A persistent toast shows the recording register. Stopping displays the recorded
+key sequence. Lowercase `q` is unused; `Q` is ordinary text in insert mode.
+Macros last for the current editor session and replay recorded actions,
+including captured clipboard text. `:macros` lists saved registers and their
+sequences in a toast, like `:ls`. Playback groups the entire invocation into one
+undo step per buffer, including every repetition, nested macro call, and any
+undo/redo commands in the macro. Recursive or excessively long playback stops at
+a limit.
 
 ### Visual modes
 
@@ -580,15 +649,26 @@ stops at a limit.
 | `<leader><` / `<leader>>` | Wrap the selection in `<...>`. |
 | `<leader>"` / `<leader>'` / <code>&lt;leader&gt;`</code> | Wrap the selection in double quotes, single quotes, or backticks. |
 
-The leader defaults to `Space`. Wrapping returns to normal mode and can be undone in one step.
-Visual line mode wraps the selected lines together, before the final newline. Visual block mode
-wraps each selected row separately, skipping rows with no selected text.
+The leader defaults to `Space`. Wrapping returns to normal mode and can be
+undone in one step. Visual line mode wraps the selected lines together, before
+the final newline. Visual block mode wraps each selected row separately,
+skipping rows with no selected text.
 
 ### Search and text objects
 
-`/` opens a compact search popup in the top-right corner. Matches highlight as you type, with the current result and total count shown in the title. `Down` / `Up` or `ctrl+n` / `ctrl+p` cycle through results and centre the active match where the file position allows. `Enter` keeps the result; `Escape` / `ctrl+c` restore the previous cursor, viewport, and search.
+`/` opens a compact search popup in the top-right corner. Matches highlight as
+you type, with the current result and total count shown in the title. `Down` /
+`Up` or `ctrl+n` / `ctrl+p` cycle through results and centre the active match
+where the file position allows. `Enter` keeps the result; `Escape` / `ctrl+c`
+restore the previous cursor, viewport, and search.
 
-The active result uses a distinct highlight while the popup is open. Searches accept regular expressions, such as `\bword\b`, `name\d+`, `^fn`, or `(?i)text` for case-insensitive matches. Escape punctuation to match it literally, for example `\.`. Anchors apply per line; `\n` and `(?s)` allow matches across lines. Invalid expressions show an error in the popup. Look-around and backreferences are unsupported. Character searches with `f` / `t` remain literal.
+The active result uses a distinct highlight while the popup is open. Searches
+accept regular expressions, such as `\bword\b`, `name\d+`, `^fn`, or `(?i)text`
+for case-insensitive matches. Escape punctuation to match it literally, for
+example `\.`. Anchors apply per line; `\n` and `(?s)` allow matches across
+lines. Invalid expressions show an error in the popup. Look-around and
+backreferences are unsupported. Character searches with `f` / `t` remain
+literal.
 
 | Keys | Behaviour |
 | ---- | --------- |
@@ -598,10 +678,13 @@ The active result uses a distinct highlight while the popup is open. Searches ac
 | `daw`, `ci"`, `yi(` | Apply operators to text objects. |
 
 Notes:
-- Count prefixes are supported for motions and many operators, for example `3w`, `5j`, `2G`, and `2ci]`.
-- Text objects include words, big words, paragraphs, parentheses, brackets, braces, single quotes, double quotes, and backticks.
+- Count prefixes are supported for motions and many operators, for example `3w`,
+  `5j`, `2G`, and `2ci]`.
+- Text objects include words, big words, paragraphs, parentheses, brackets,
+  braces, single quotes, double quotes, and backticks.
 - Compound motions are functional, such as `dap`, `ci"`, `d$`, `dt,`, and `ygg`.
-- Redox is intentionally opinionated, so keybindings may still move around as the editor settles.
+- Redox is intentionally opinionated, so keybindings may still move around as
+  the editor settles.
 
 </details>
 
@@ -610,7 +693,8 @@ Notes:
 <details>
 <summary>Current progress and planned work</summary>
 
-These have roughly been categorized, and so aren't necessarily in chronological order.
+These have roughly been categorized, and so aren't necessarily in chronological
+order.
 
 - [x] Rope-backed text buffer core (`redox-core`)
 - [x] TUI rendering with statusline + cursor projection
