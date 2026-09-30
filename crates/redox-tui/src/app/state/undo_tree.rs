@@ -7,7 +7,9 @@ use redox_core::{
     motion::Motion,
 };
 
-use super::{BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitSize};
+use super::{
+    BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitNode, SplitSize,
+};
 use crate::ui::UNDO_TREE_HEADER_ROWS;
 use crate::ui::style::UndoTreeStyle;
 use crate::ui::widgets::undo_tree::undo_tree_preview_content_width;
@@ -281,11 +283,13 @@ impl EditorState {
         let Some(editor_pane_id) = self.split_active_pane_with_options(
             SplitAxis::Vertical,
             PaneOptions::editor(),
-            SplitSize::first_percent(
-                undo_tree_style.width_percent,
-                undo_tree_style.min_width,
-                undo_tree_style.max_width,
-            ),
+            self.undo_tree_width.unwrap_or_else(|| {
+                SplitSize::first_percent(
+                    undo_tree_style.width_percent,
+                    undo_tree_style.min_width,
+                    undo_tree_style.max_width,
+                )
+            }),
         ) else {
             return;
         };
@@ -295,13 +299,17 @@ impl EditorState {
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
             pane.buffer_id = surface_id;
             pane.view = BufferViewState::default();
-            pane.options = PaneOptions::ui();
+            pane.options = PaneOptions {
+                resizable: true,
+                ..PaneOptions::ui()
+            };
         }
         self.views.entry(surface_id).or_default();
         let _ = self.activate_pane(pane_id);
         let Some(diff_pane_id) = self.split_active_pane_with_options(
             SplitAxis::Horizontal,
             PaneOptions {
+                resizable: true,
                 accessible: false,
                 ..PaneOptions::ui()
             },
@@ -321,10 +329,6 @@ impl EditorState {
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == diff_pane_id) {
             pane.buffer_id = diff_buffer_id;
             pane.view = BufferViewState::default();
-            pane.options = PaneOptions {
-                accessible: false,
-                ..PaneOptions::ui()
-            };
         }
         self.views.entry(diff_buffer_id).or_default();
         self.undo_tree = Some(UndoTreeState {
@@ -366,6 +370,7 @@ impl EditorState {
         let _ = self.session.close_buffer(tree.diff_buffer_id);
         self.views.remove(&tree.diff_buffer_id);
 
+        self.undo_tree_width = undo_tree_split_size(&self.split_root, tree.pane_id);
         let _ = self.activate_pane(tree.pane_id);
         if self.panes.len() > 1 {
             self.close_active_split();
@@ -541,6 +546,24 @@ impl EditorState {
         tree.selected_node = node;
         self.refresh_undo_tree_surface(false);
     }
+}
+
+fn undo_tree_split_size(node: &SplitNode, pane_id: PaneId) -> Option<SplitSize> {
+    let SplitNode::Split {
+        axis,
+        size,
+        first,
+        second,
+    } = node
+    else {
+        return None;
+    };
+    if *axis == SplitAxis::Vertical
+        && matches!(first.as_ref(), SplitNode::Pane(id) if *id == pane_id)
+    {
+        return Some(*size);
+    }
+    undo_tree_split_size(first, pane_id).or_else(|| undo_tree_split_size(second, pane_id))
 }
 
 fn undo_tree_scroll_top_for_row(

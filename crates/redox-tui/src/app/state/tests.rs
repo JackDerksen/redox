@@ -2912,7 +2912,7 @@ fn undo_tree_selection_tracks_source_history_changes() {
 }
 
 #[test]
-fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
+fn undo_tree_panes_resize_and_remember_width_for_the_session() {
     let path = temp_file_path("undo_tree_ui_pane");
     let mut state = state_with_text(path.clone(), "a");
     state.set_editor_area_size(100, 20);
@@ -2920,20 +2920,22 @@ fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
     run_command(&mut state, "undo-tree");
 
     let tree = state.undo_tree.as_ref().expect("missing undo tree");
+    let tree_pane_id = tree.pane_id;
+    let preview_pane_id = tree.diff_pane_id;
     let pane = state
         .panes()
         .iter()
         .find(|pane| pane.id == tree.pane_id)
         .expect("missing undo tree pane");
     assert!(!pane.options.has_line_numbers);
-    assert!(!pane.options.resizable);
+    assert!(pane.options.resizable);
     let diff_pane = state
         .panes()
         .iter()
         .find(|pane| pane.id == tree.diff_pane_id)
         .expect("missing undo tree diff pane");
     assert!(!diff_pane.options.has_line_numbers);
-    assert!(!diff_pane.options.resizable);
+    assert!(diff_pane.options.resizable);
     assert!(!diff_pane.options.accessible);
 
     let rects = state.pane_rects(100, 20);
@@ -2948,6 +2950,100 @@ fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
         .find(|rect| rect.pane_id == tree.diff_pane_id)
         .expect("missing undo tree diff rect");
     assert_eq!(diff_rect.height, 8);
+
+    for key in [minui::KeyKind::Right, minui::KeyKind::Up] {
+        crate::handle_editor_event(
+            &mut state,
+            &mut None,
+            minui::Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key,
+                mods: minui::KeyModifiers::ctrl(),
+            }),
+        );
+    }
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!((tree_rect.width, tree_rect.height), (33, 12));
+    assert_eq!((preview_rect.width, preview_rect.height), (33, 7));
+
+    run_command(&mut state, "undo-tree");
+    assert!(state.undo_tree.is_none());
+    run_command(&mut state, "undo-tree");
+    let tree = state.undo_tree.as_ref().unwrap();
+    let tree_pane_id = tree.pane_id;
+    let preview_pane_id = tree.diff_pane_id;
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!(tree_rect.width, 33);
+    assert_eq!(preview_rect.width, 33);
+
+    state.configure_mouse(true, false, false, 3, 3);
+    state.set_mouse_viewport(0, 100, 21);
+    for (start_x, start_y, end_x, end_y) in
+        [(tree_rect.width, 0, 60, 0), (0, preview_rect.y - 1, 0, 6)]
+    {
+        for event in [
+            minui::Event::MouseClick {
+                x: start_x,
+                y: start_y,
+                button: minui::MouseButton::Left,
+            },
+            minui::Event::MouseDrag {
+                x: end_x,
+                y: end_y,
+                button: minui::MouseButton::Left,
+            },
+            minui::Event::MouseRelease {
+                x: end_x,
+                y: end_y,
+                button: minui::MouseButton::Left,
+            },
+        ] {
+            crate::handle_editor_event(&mut state, &mut None, event);
+        }
+    }
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!((tree_rect.width, tree_rect.height), (60, 6));
+    assert_eq!((preview_rect.width, preview_rect.height), (60, 13));
+    assert_eq!(state.active_pane_id(), tree_pane_id);
+
+    for (area_width, expected_width) in [(100, 60), (50, 37), (100, 60)] {
+        run_command(&mut state, "undo-tree");
+        assert!(state.undo_tree.is_none());
+        state.set_editor_area_size(area_width, 20);
+        run_command(&mut state, "undo-tree");
+        let tree = state.undo_tree.as_ref().unwrap();
+        for pane_id in [tree.pane_id, tree.diff_pane_id] {
+            let rect = state
+                .pane_rects(area_width as u16, 20)
+                .into_iter()
+                .find(|rect| rect.pane_id == pane_id)
+                .unwrap();
+            assert_eq!(rect.width, expected_width);
+        }
+    }
 
     let _ = fs::remove_file(path);
 }
