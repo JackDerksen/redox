@@ -26,6 +26,7 @@ jump_pulse_ms = 150
 delimiter_blink_ms = 150
 save_confirmation_ms = 600
 save_fade_ms = 150 # Final portion of the confirmation; 0 keeps it solid until expiry
+toast_fade_ms = 150 # Final portion of timed notifications; 0 keeps them solid until expiry
 focus_fade_ms = 150 # Shared by panes, the terminal, and dimming popups
 dashboard_logo_ms = 500
 spinner_frame_ms = 100 # 0 keeps loading indicators still

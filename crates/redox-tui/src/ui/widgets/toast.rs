@@ -4,6 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorState, StatusMessageStyle};
 use crate::ui::UiStyle;
+use crate::ui::style::dim_foreground_color;
 use crate::ui::widgets::command_line::search_toast_layout;
 use crate::ui::widgets::perf::{PerfPopupLayout, perf_popup_layout};
 use crate::ui::widgets::popup::{
@@ -53,6 +54,11 @@ pub fn draw_status_toast(
         return Ok(None);
     };
 
+    let style = faded_toast_style(
+        style,
+        state.status_message_opacity(std::time::Instant::now()),
+    );
+
     let layout = draw_popup_frame_at(
         window,
         toast.x,
@@ -77,6 +83,27 @@ pub fn draw_status_toast(
         )?;
     }
     Ok(Some(layout))
+}
+
+fn faded_toast_style(mut style: UiStyle, opacity: f32) -> UiStyle {
+    if opacity >= 1.0 {
+        return style;
+    }
+    let amount = 1.0 - opacity;
+    for role in [
+        &mut style.command_line.border,
+        &mut style.command_line.text,
+        &mut style.explorer.directory,
+    ] {
+        role.fg = dim_foreground_color(role.fg, style.theme.bg, amount);
+        role.bg = dim_foreground_color(role.bg, style.theme.bg, amount);
+        role.format.underline_color = role
+            .format
+            .underline_color
+            .map(|color| dim_foreground_color(color, style.theme.bg, amount));
+    }
+    style.theme.dark_gray = dim_foreground_color(style.theme.dark_gray, style.theme.bg, amount);
+    style
 }
 
 fn status_toast_perf_popup_layout(

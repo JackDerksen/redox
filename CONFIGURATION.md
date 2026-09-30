@@ -117,13 +117,14 @@ Set these options under `[animations]`; all are optional. See
 | `delimiter_blink_ms` | `150` | Blink the matching opening delimiter. |
 | `save_confirmation_ms` | `600` | Total lifetime of the save checkmark. |
 | `save_fade_ms` | `150` | Final portion of the checkmark's lifetime; capped at `save_confirmation_ms`. |
+| `toast_fade_ms` | `150` | Final portion of a timed notification's five-second lifetime; capped at that lifetime. Sticky messages and active recording or loading indicators stay solid. |
 | `focus_fade_ms` | `150` | Shared by pane and terminal focus, pane closing, and popup background dimming. |
 | `dashboard_logo_ms` | `500` | Entrance for both dashboard sizes. The About logo stays static. |
 | `spinner_frame_ms` | `100` | Interval between loading-spinner frames. |
 | `rain_fps` | `60` | Rain speed, from `1` to `60` frames per second. |
 
 Durations use non-negative integer milliseconds. Set a value to `0` to disable
-that effect. A zero `save_fade_ms` keeps the checkmark solid until expiry; a zero
+that effect. A zero `save_fade_ms` or `toast_fade_ms` keeps that feedback solid until expiry; a zero
 `spinner_frame_ms` leaves a static indicator while loading continues. A zero
 `rain_fps` disables `:rain`. Editing, copying, saving, jump centring, and focus
 changes still work normally with animations disabled.

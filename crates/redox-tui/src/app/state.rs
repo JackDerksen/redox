@@ -789,6 +789,33 @@ impl EditorState {
         }
     }
 
+    pub(super) fn status_message_fade_start(&self) -> Option<Instant> {
+        if self.status_msg.is_none() || self.recording_macro_register().is_some() {
+            return None;
+        }
+        let fade = self
+            .animations
+            .duration(self.animations.toast_fade_ms)
+            .min(STATUS_MESSAGE_TIMEOUT);
+        if fade.is_zero() {
+            return None;
+        }
+        self.status_msg_expires_at?.checked_sub(fade)
+    }
+
+    pub(crate) fn status_message_opacity(&self, now: Instant) -> f32 {
+        let Some((start, expiry)) = self
+            .status_message_fade_start()
+            .zip(self.status_msg_expires_at)
+        else {
+            return 1.0;
+        };
+        crate::ui::helpers::animation_progress(
+            expiry.saturating_duration_since(now),
+            expiry.duration_since(start),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn status_message_is_sticky(&self) -> bool {
         self.status_msg.is_some() && self.status_msg_expires_at.is_none()

@@ -41,10 +41,13 @@ impl EditorState {
         self.runtime.next_rain_frame = now;
     }
 
-    fn has_transient_animation(&self) -> bool {
+    fn has_transient_animation(&self, now: Instant) -> bool {
         self.one_shot_highlight.is_some()
             || self.save_confirmation.is_some()
             || self.pane_focus_transition.is_some()
+            || self
+                .status_message_fade_start()
+                .is_some_and(|start| now >= start)
             || self
                 .dashboard
                 .as_ref()
@@ -121,7 +124,7 @@ impl EditorState {
             self.pane_focus_transition = None;
             self.request_redraw();
         }
-        if self.has_transient_animation() && now >= self.runtime.next_animation_frame {
+        if self.has_transient_animation(now) && now >= self.runtime.next_animation_frame {
             self.advance_one_shot_highlight(now);
             self.runtime.next_animation_frame = now + ANIMATION_FRAME_INTERVAL;
             self.request_redraw();
@@ -193,9 +196,11 @@ impl EditorState {
                 .then_some(now + ANIMATION_FRAME_INTERVAL),
             self.lsp_poll_deadline(now),
             self.status_msg_expires_at,
+            self.status_message_fade_start()
+                .filter(|start| *start > now),
             self.search_preview_due,
             which_key,
-            self.has_transient_animation()
+            self.has_transient_animation(now)
                 .then_some(self.runtime.next_animation_frame),
             self.rain_is_active()
                 .then_some(self.runtime.next_rain_frame),
@@ -244,11 +249,48 @@ mod tests {
         state.set_status("temporary");
         assert!(state.take_redraw_request());
         let expiry = state.status_msg_expires_at.unwrap();
-        assert_eq!(state.next_wake_deadline(now), Some(expiry));
+        let fade_start = expiry - Duration::from_millis(state.animations.toast_fade_ms);
+        assert_eq!(state.next_wake_deadline(now), Some(fade_start));
+        assert_eq!(state.status_message_opacity(now), 1.0);
+        state.update_background(fade_start);
+        assert!(state.take_redraw_request());
+        assert_eq!(
+            state.next_wake_deadline(fade_start),
+            Some(fade_start + ANIMATION_FRAME_INTERVAL)
+        );
+        let halfway = expiry - Duration::from_millis(75);
+        state.update_background(halfway);
+        assert!(state.take_redraw_request());
+        assert_eq!(state.status_message_opacity(halfway), 0.5);
+        assert_eq!(state.status_message_opacity(expiry), 0.0);
+
+        for animations in ["enabled = false", "toast_fade_ms = 0"] {
+            state.configure_animations(toml::from_str(animations).unwrap());
+            state.take_redraw_request();
+            assert_eq!(state.status_message_opacity(halfway), 1.0);
+            assert_eq!(state.next_wake_deadline(halfway), Some(expiry));
+        }
+        state.configure_animations(crate::config::AnimationConfig::default());
+        state.animations.toast_fade_ms = u64::MAX;
+        assert_eq!(
+            state.status_message_fade_start(),
+            expiry.checked_sub(super::super::STATUS_MESSAGE_TIMEOUT)
+        );
+        state.animations.toast_fade_ms = 150;
         state.update_background(expiry);
         assert!(state.take_redraw_request());
         assert!(state.status_msg.is_none());
         assert_eq!(state.next_wake_deadline(expiry), None);
+
+        state.set_status_sticky_lines(vec![(
+            "sticky".into(),
+            super::super::StatusMessageStyle::Normal,
+        )]);
+        state.take_redraw_request();
+        assert_eq!(state.status_message_fade_start(), None);
+        assert_eq!(state.status_message_opacity(expiry), 1.0);
+        assert_eq!(state.next_wake_deadline(expiry), None);
+        state.clear_status();
 
         state.command_open_about();
         settle(&mut state);
@@ -297,7 +339,7 @@ mod tests {
             state.configure_animations(toml::from_str(source).unwrap());
             state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
             assert!(state.one_shot_highlight().is_none());
-            assert!(!state.has_transient_animation());
+            assert!(!state.has_transient_animation(Instant::now()));
             assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
         }
     }
