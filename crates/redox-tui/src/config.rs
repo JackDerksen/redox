@@ -390,7 +390,10 @@ impl Config {
                 }
             }
             for (name, value) in &theme.ui {
-                if name == "diagnostic.error_range" {
+                if matches!(
+                    name.as_str(),
+                    "diagnostic.error_range" | "status.language_icon"
+                ) {
                     continue;
                 }
                 let color_target = match name.as_str() {
@@ -413,6 +416,13 @@ impl Config {
                         .apply(style.ui_style_mut(name)?, role_background)
                         .with_context(|| format!("invalid UI style {name:?}"))?;
                 }
+            }
+            style.status_line.language_icon =
+                TextStyle::new(style.status_line.metadata.content.fg, Color::Transparent);
+            if let Some(value) = theme.ui.get("status.language_icon") {
+                value
+                    .apply(&mut style.status_line.language_icon, background)
+                    .context("invalid UI style 'status.language_icon'")?;
             }
         }
         style.error_range.format.underline_color = Some(style.diagnostic_inline.error.fg);
@@ -575,6 +585,8 @@ markdown_heading = { underline = "none" }
 type_name = "#112233"
 [themes.default.ui]
 "about.title" = "#010203"
+"status.bar" = { bg = "#445566" }
+"status.dirty" = "#778899"
 "finder.directory" = { bold = false, italic = true }
 "finder.selected" = { fg = "#040506", bg = "#070809", bold = true }
 "command_line.ghost" = { italic = true }
@@ -600,6 +612,8 @@ type_name = "#112233"
         assert_eq!(style.syntax.type_name.fg, Color::rgb(17, 34, 51));
         assert!(style.about.title.format.bold);
         assert_eq!(style.about.title.bg, style.theme.bg);
+        assert_eq!(style.status_line.dirty.fg, Color::rgb(119, 136, 153));
+        assert_eq!(style.status_line.dirty.bg, Color::Transparent);
         let format = style.syntax.keyword.format;
         assert!(
             format.bold && format.italic && format.dim && format.reverse && format.strikethrough

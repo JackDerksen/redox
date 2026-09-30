@@ -192,7 +192,7 @@ punctuation_special = "#b4d4cf"
 "git.removed" = { fg = "#d8647e", bg = "#141415" }
 "status.bar" = { fg = "#cdcdcd", bg = "#1c1c24" }
 "status.path" = { fg = "#878787", bg = "#1c1c24" }
-"status.dirty" = { fg = "#f3be7c", bg = "#1c1c24" }
+"status.dirty" = { fg = "#f3be7c", bg = "transparent" }
 "status.saved" = { fg = "#7fa563", bg = "#1c1c24" }
 "status.mode_normal" = { fg = "#141415", bg = "#9bb4bc" }
 "status.mode_insert" = { fg = "#141415", bg = "#7fa563" }
@@ -200,6 +200,7 @@ punctuation_special = "#b4d4cf"
 "status.mode_visual" = { fg = "#141415", bg = "#bb9dbd" }
 "status.metadata_wrapper" = { fg = "#1c1c24", bg = "#252530" }
 "status.metadata_content" = { fg = "#cdcdcd", bg = "#252530" }
+"status.language_icon" = { fg = "#cdcdcd", bg = "transparent" }
 "status.coords_wrapper" = { fg = "#1c1c24", bg = "#252530" }
 "status.coords_content" = { fg = "#cdcdcd", bg = "#252530" }
 "status.minimap_wrapper" = { fg = "#1c1c24", bg = "#252530" }

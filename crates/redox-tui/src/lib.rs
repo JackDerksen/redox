@@ -5917,12 +5917,12 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         assert!(
                             window.backgrounds[row][columns.clone()]
                                 .iter()
-                                .all(|color| { *color == Some(style.dimmed().status_line.bar.bg) })
+                                .all(|color| { *color == Some(style.dimmed().pane_title.bg) })
                         );
                         assert!(
                             window.foregrounds[row][columns]
                                 .iter()
-                                .all(|color| { *color == Some(style.dimmed().status_line.bar.fg) })
+                                .all(|color| { *color == Some(style.dimmed().pane_title.fg) })
                         );
                     }
                 }

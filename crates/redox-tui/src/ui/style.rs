@@ -262,6 +262,7 @@ pub struct StatusLinePalette {
     pub mode_command: TextStyle,
     pub mode_visual: TextStyle,
     pub metadata: StatusModuleColors,
+    pub language_icon: TextStyle,
     pub coords: StatusModuleColors,
     pub minimap_module: StatusModuleColors,
     pub minimap: TextStyle,
@@ -270,12 +271,17 @@ pub struct StatusLinePalette {
 
 impl StatusLinePalette {
     pub fn from_theme(theme: BaseTheme) -> Self {
+        // Muted text at approximately 4:1 contrast on the default status backgrounds.
+        let bar_text = dim_foreground_color(theme.white, theme.black, 0.515);
         let module_wrapper = TextStyle::new(theme.black, theme.dark_gray);
-        let module_text = TextStyle::new(theme.black, theme.dark_gray);
+        let module_text = TextStyle::new(
+            dim_foreground_color(theme.white, theme.dark_gray, 0.466),
+            theme.dark_gray,
+        );
         Self {
-            bar: TextStyle::new(theme.light_gray, theme.black),
-            path: TextStyle::new(theme.dark_gray, theme.black),
-            dirty: TextStyle::new(theme.light_gray, theme.black),
+            bar: TextStyle::new(bar_text, theme.black),
+            path: TextStyle::new(bar_text, theme.black),
+            dirty: TextStyle::new(bar_text, Color::Transparent),
             saved: TextStyle::new(theme.green, theme.black),
             mode_normal: TextStyle::new(theme.black, theme.purple),
             mode_insert: TextStyle::new(theme.black, theme.blue),
@@ -285,13 +291,14 @@ impl StatusLinePalette {
                 wrapper: module_wrapper,
                 content: module_text,
             },
+            language_icon: TextStyle::new(module_text.fg, Color::Transparent),
             coords: StatusModuleColors {
                 wrapper: module_wrapper,
                 content: module_text,
             },
             minimap_module: StatusModuleColors::solid(module_wrapper),
-            minimap: TextStyle::new(theme.light_gray, Color::Transparent),
-            minimap_alt: TextStyle::new(Color::Transparent, theme.light_gray),
+            minimap: TextStyle::new(module_text.fg, Color::Transparent),
+            minimap_alt: TextStyle::new(Color::Transparent, module_text.fg),
         }
     }
 }
@@ -1187,6 +1194,7 @@ impl UiStyle {
                 "status.metadata_content",
                 &mut self.status_line.metadata.content,
             ),
+            ("status.language_icon", &mut self.status_line.language_icon),
             (
                 "status.coords_wrapper",
                 &mut self.status_line.coords.wrapper,
@@ -1404,25 +1412,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_status_modules_keep_the_original_dark_palette() {
+    fn default_status_modules_keep_the_original_dark_backgrounds() {
         let style = UiStyle::default();
 
         assert_eq!(
             style.status_line.metadata.wrapper.fg,
             style.status_line.bar.bg
         );
-        assert_eq!(
-            style.status_line.metadata.content,
-            TextStyle::new(style.theme.black, style.theme.dark_gray)
-        );
+        assert_eq!(style.status_line.metadata.content.bg, style.theme.dark_gray);
         assert_eq!(
             style.status_line.coords.wrapper.fg,
             style.status_line.bar.bg
         );
-        assert_eq!(
-            style.status_line.coords.content,
-            TextStyle::new(style.theme.black, style.theme.dark_gray)
-        );
+        assert_eq!(style.status_line.coords.content.bg, style.theme.dark_gray);
     }
 
     #[test]

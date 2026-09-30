@@ -588,7 +588,7 @@ properties. Which-key text roles support full styles; their background defaults 
 - Git: `git.added`, `git.modified`, `git.conflict`, `git.removed`
 - Status line: `status.bar`, `status.path`, `status.dirty`, `status.saved`, `status.mode_normal`,
   `status.mode_insert`, `status.mode_command`, `status.mode_visual`,
-  `status.metadata_wrapper`, `status.metadata_content`, `status.coords_wrapper`,
+  `status.metadata_wrapper`, `status.metadata_content`, `status.language_icon`, `status.coords_wrapper`,
   `status.coords_content`, `status.minimap_wrapper`, `status.minimap_content`, `status.minimap`,
   `status.minimap_alt`
 - About: `about.border`, `about.title`, `about.text`, `about.logo_red`, `about.logo_white`,

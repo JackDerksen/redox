@@ -363,7 +363,10 @@ impl EditorStatusBar {
             Align::Right => region_x + region_w.saturating_sub(text_w),
         };
 
-        if let Some(colors) = segment.colors {
+        if let Some(mut colors) = segment.colors {
+            if let Some(bar_colors) = self.bg_colors {
+                colors.bg = resolve_transparent_to(colors.bg, bar_colors.bg);
+            }
             window.write_str_styled(y, x, &clipped, colors.into())?;
         } else {
             window.write_str(y, x, &clipped)?;
@@ -446,7 +449,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
 
     let minimal = state.zen.enabled && state.zen.minimal_statusline;
     let zen_icon = (style.icons_enabled && state.zen.enabled).then_some(ZEN);
-    let icon_colors = TextStyle::new(style.theme.light_gray, style.theme.black);
+    let icon_colors = style.status_line.bar;
     let lsp_icon =
         if !minimal && style.icons_enabled && state.lsp_provider_installed_for_buffer(buffer_id) {
             meta.path.as_deref().and_then(filetype_icon)
@@ -554,7 +557,7 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
     let status_bar = if let Some(icon) = lsp_icon {
         status_bar.add_segment(
             Segment::new(icon)
-                .with_color(icon_colors)
+                .with_color(style.status_line.language_icon)
                 .with_min_width(lsp_icon_width),
         )
     } else {
