@@ -2121,11 +2121,16 @@ fn draw_snapshot_lines(
         } else {
             default_colors.with_colors(style.zen_ghost, default_colors.bg)
         };
-        let fallback_line_spans = (is_focused && lexical_fallback_enabled)
+        let mut style = style;
+        if !is_focused {
+            for (_, syntax_style) in style.syntax_roles_mut() {
+                *syntax_style = syntax_style.with_colors(default_colors.fg, default_colors.bg);
+            }
+        }
+        let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
         let syntax_line_spans = syntax_spans
-            .filter(|_| is_focused)
             .and_then(|rows| rows.get(row))
             .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
@@ -6106,8 +6111,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
     #[test]
     fn zen_rendering_focuses_scope_and_restores_standard_layout() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
-        let source =
-            "fn first() {\n    let value = 1;\n}\n\nfn second() {\n    let other = 2;\n}\n";
+        let source = "fn first() {\n    let value = 1;\n}\n\nfn second() {\n    let other = 2; // comment\n}\n";
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         *state.session.active_buffer_mut() = TextBuffer::from_text(source);
         let meta = state.session.active_meta_mut();
@@ -6121,7 +6125,17 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     ui::syntax::SyntaxLanguage::Rust,
                 ));
         });
-        let style = UiStyle::default();
+        let config: config::Config = toml::from_str(
+            r##"
+[themes.default.syntax]
+keyword = { bold = true, italic = true, dim = true, reverse = true, strikethrough = true, underline = "curl", underline_color = "#abcdef" }
+function = { bg = "#445566", underline = "single" }
+number = { bold = true }
+comment = { italic = false }
+"##,
+        )
+        .unwrap();
+        let style = config.style().unwrap();
         let mut perf = FramePerfSample::default();
         let mut standard = TestWindow::new(120, 24);
         draw_buffer_view(&mut state, style, &mut standard, &mut perf).unwrap();
@@ -6138,6 +6152,31 @@ markdown_emphasis = { italic = false, strikethrough = true }
         assert_eq!(zen.row_text(0).find("fn first"), Some(12));
         assert_eq!(zen.foregrounds[0][12], keyword_color);
         assert_eq!(zen.foregrounds[4][12], Some(style.zen_ghost));
+        let ghost_colors = minui::ColorPair::new(style.zen_ghost, style.editor_text.bg);
+        for (row, token, role) in [
+            (4, "fn", ui::style::SyntaxRole::Keyword),
+            (4, "second", ui::style::SyntaxRole::Function),
+            (5, "//", ui::style::SyntaxRole::Comment),
+        ] {
+            let column = zen.row_text(row).find(token).unwrap();
+            assert_eq!(
+                zen.styles[row as usize][column],
+                minui::Style::from(style.syntax.color_for(role)).with_colors(ghost_colors),
+                "{token} should keep its syntax formatting while dimmed"
+            );
+        }
+        assert_eq!(zen.styles[4][14], minui::Style::from(ghost_colors));
+        assert_eq!(zen.styles[0][12], standard.styles[0][content_x]);
+
+        state.session.active_meta_mut().path = None;
+        let mut fallback = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut fallback, &mut perf).unwrap();
+        let column = fallback.row_text(5).find('2').unwrap();
+        assert_eq!(
+            fallback.styles[5][column],
+            minui::Style::from(style.syntax.number).with_colors(ghost_colors)
+        );
+        state.session.active_meta_mut().path = Some(PathBuf::from("source/focus.rs"));
         assert_eq!(zen.backgrounds[0][0], Some(style.zen_margin));
         assert_eq!(zen.backgrounds[0][119], Some(style.zen_margin));
         assert_eq!(
