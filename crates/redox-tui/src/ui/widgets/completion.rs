@@ -39,8 +39,8 @@ pub(crate) fn draw_completion_popup(
         return Ok(None);
     }
 
-    let visible_rows = popup_visible_len(popup);
-    let layout = completion_layout(popup, visible_rows, term_w, style.icons_enabled);
+    let visible_rows = popup.entries.len().min(COMPLETION_VISIBLE_ROWS);
+    let layout = completion_layout(popup, term_w, style.icons_enabled);
     let width = layout.width;
     let below_rows = text_bottom_y.saturating_sub(anchor_y.saturating_add(1)) as usize;
     let above_rows = anchor_y as usize;
@@ -130,20 +130,17 @@ struct CompletionLayout {
 
 fn completion_layout(
     popup: &CompletionPopup,
-    visible_rows: usize,
     term_w: u16,
     icons_enabled: bool,
 ) -> CompletionLayout {
-    let start = popup.scroll.min(popup.entries.len());
-    let end = start.saturating_add(visible_rows).min(popup.entries.len());
-    let visible = popup.entries[start..end].iter();
-    let keyword_width = visible
+    let entries = popup.entries.iter();
+    let keyword_width = entries
         .clone()
         .map(|entry| text_width(&entry.keyword))
         .max()
         .unwrap_or(12)
         .min(36);
-    let kind_width = visible
+    let kind_width = entries
         .filter_map(|entry| completion_kind_display(entry.kind.as_deref(), icons_enabled))
         .map(text_width)
         .max()
@@ -191,14 +188,6 @@ fn completion_kind_display(kind: Option<&str>, icons_enabled: bool) -> Option<&s
     }
 }
 
-fn popup_visible_len(popup: &CompletionPopup) -> usize {
-    popup
-        .entries
-        .len()
-        .saturating_sub(popup.scroll.min(popup.entries.len()))
-        .min(COMPLETION_VISIBLE_ROWS)
-}
-
 fn draw_entries(
     window: &mut dyn Window,
     popup: &CompletionPopup,
@@ -212,7 +201,12 @@ fn draw_entries(
     let selected_style = style.finder.selected;
     let entries: &[CompletionEntry] = &popup.entries;
     let width = layout.width;
-    let start = popup.scroll.min(entries.len());
+    let selected = popup.selected.min(entries.len().saturating_sub(1));
+    let start = popup
+        .scroll
+        .min(entries.len().saturating_sub(capacity))
+        .min(selected)
+        .max(selected.saturating_sub(capacity.saturating_sub(1)));
     let end = (start + capacity).min(entries.len());
 
     for (visible_idx, entry) in entries[start..end].iter().enumerate() {
@@ -230,7 +224,7 @@ fn draw_entries(
                 identity: entry.keyword.clone(),
             },
         ));
-        let is_selected = idx == popup.selected;
+        let is_selected = idx == selected;
         let kind_style = completion_kind_color(style, entry, is_selected);
         let dim_style = selection_aware_color(style.finder.dim, selected_style, is_selected);
         let keyword_style =
@@ -392,7 +386,7 @@ mod tests {
 
     #[test]
     fn completion_layout_keeps_keyword_and_kind_columns_separate() {
-        let layout = completion_layout(&popup_with_kind(), 1, COMPLETION_MIN_WIDTH, false);
+        let layout = completion_layout(&popup_with_kind(), COMPLETION_MIN_WIDTH, false);
         let inner_available = layout.width.saturating_sub(2) as usize;
         let used = layout.keyword_width + completion_fixed_width(layout.kind_width);
 
