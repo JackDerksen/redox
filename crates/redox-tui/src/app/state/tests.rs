@@ -2591,7 +2591,7 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .expect("missing undo tree buffer")
         .to_string();
     let lines = tree_text.lines().collect::<Vec<_>>();
-    assert!(lines[0].contains(">3<"));
+    assert!(lines[0].contains("●  3"));
     assert!(lines[0].contains("●"));
     assert!(lines[1].contains("2"));
     assert!(lines[2].contains("1"));
@@ -2601,8 +2601,8 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(diff_buffer_id)
         .expect("missing undo tree diff buffer")
         .to_string();
-    assert!(diff_text.starts_with("Node: 3\n\n"));
-    assert!(diff_text.contains("---\n"));
+    assert!(diff_text.starts_with("Change 3\nBefore · line 1\n"));
+    assert!(diff_text.contains("After · line 1\n"));
 
     state.apply_input(
         InputAction::Motion {
@@ -2626,8 +2626,8 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">3<"));
-    assert!(!tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  3"));
+    assert!(!tree_text.contains("●  1"));
     let tree_pane = state
         .panes()
         .iter()
@@ -2643,7 +2643,7 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  1"));
     assert_eq!(
         state
             .undo_tree
@@ -2906,7 +2906,7 @@ fn undo_tree_selection_tracks_source_history_changes() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  1"));
 
     let _ = fs::remove_file(path);
 }

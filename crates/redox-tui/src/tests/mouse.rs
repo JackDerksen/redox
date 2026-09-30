@@ -674,7 +674,7 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
         [preview.x as usize..preview.x as usize + 10]
         .iter()
         .collect();
-    assert_eq!(visible, " e latest ");
+    assert_eq!(visible, "  +  e lat");
     assert_eq!(state.active_pane_id(), tree_pane.id);
     assert_eq!(state.active_cursor_pos(), Pos::zero());
 
@@ -686,12 +686,12 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
     state.configure_mouse(true, false, false, 3, 3);
     horizontal(&mut state, &mut window, 127);
     let max_scroll = minui::cell_width(&preview_line, minui::TabPolicy::Fixed(4)) as usize
-        - preview.width as usize;
+        - ui::widgets::undo_tree::undo_tree_preview_content_width(preview.width as usize);
     state.with_buffer_view_mut(preview_pane.buffer_id, |_, view| {
         assert_eq!(view.cursor.viewport_scroll(), (max_scroll, 3));
     });
     assert_eq!(
-        window.cells[(preview.y + 1) as usize][(preview.x + preview.width - 1) as usize],
+        window.cells[(preview.y + 1) as usize][(preview.x + preview.width - 2) as usize],
         'f'
     );
     horizontal(&mut state, &mut window, -127);
@@ -714,7 +714,7 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
             .buffer(preview_pane.buffer_id)
             .unwrap()
             .to_string()
-            .starts_with("Node: 38\n")
+            .starts_with("Change 38\n")
     );
 
     let source_scroll = pane_scroll(&state, source_pane.id);
@@ -748,14 +748,14 @@ fn undo_tree_mouse_scrolls_hovered_panes_and_selects_without_restoring() {
     assert_eq!(state.active_cursor_pos(), source_cursor);
     click(&mut state, &mut window, tree.x + 2, tree.y + 3);
     assert_eq!(state.active_pane_id(), tree_pane.id);
-    assert_eq!(state.active_cursor_pos(), Pos::new(8, 0));
+    assert_eq!(state.active_cursor_pos(), Pos::new(7, 0));
     assert!(
         state
             .session
             .buffer(preview_pane.buffer_id)
             .unwrap()
             .to_string()
-            .starts_with("Node: 33\n")
+            .starts_with("Change 34\n")
     );
     click(&mut state, &mut window, preview.x + 2, preview.y + 2);
     assert_eq!(state.active_pane_id(), tree_pane.id);
