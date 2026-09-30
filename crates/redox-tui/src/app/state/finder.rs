@@ -30,6 +30,7 @@ pub struct FinderPopup {
     pub file_window_start: Option<usize>,
     pub result_count: usize,
     pub total_count: usize,
+    pub indexing: bool,
     pub preview: Option<FinderPreview>,
 }
 
@@ -164,7 +165,7 @@ impl FinderState {
         state
     }
 
-    fn popup(&self) -> FinderPopup {
+    fn popup(&self, indexing: bool) -> FinderPopup {
         FinderPopup {
             entries: self
                 .combined_entries
@@ -186,6 +187,7 @@ impl FinderState {
             file_window_start: self.file_window_start,
             result_count: self.file_results.len(),
             total_count: self.all_files.len(),
+            indexing,
             preview: self.preview.as_ref().map(|preview| preview.preview.clone()),
         }
     }
@@ -333,9 +335,8 @@ impl FinderState {
 
     fn refresh_results_to_bottom(&mut self, pinned_files: &[PinnedFileEntry]) {
         self.file_window_start = None;
-        self.refresh_results(pinned_files, None);
-        self.selected = self.last_file_entry_index();
         self.anchor_selection_to_bottom = true;
+        self.refresh_results(pinned_files, None);
     }
 
     fn last_file_entry_index(&self) -> usize {
@@ -613,7 +614,11 @@ impl EditorState {
 
     pub fn finder_popup(&self) -> Option<FinderPopup> {
         (self.mode == EditorMode::Finder)
-            .then(|| self.finder.as_ref().map(FinderState::popup))
+            .then(|| {
+                self.finder
+                    .as_ref()
+                    .map(|finder| finder.popup(self.finder_index_worker.is_some()))
+            })
             .flatten()
     }
 

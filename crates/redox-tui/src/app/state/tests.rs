@@ -1293,6 +1293,28 @@ fn finder_shows_pins_and_filters_files() {
                 .iter()
                 .any(|entry| entry.label.contains("src/main.rs"))
         );
+
+        state.finder_select_path(&notes_path);
+        state.apply_input(InputAction::FinderBackspace, 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        let selected = &popup.entries[popup.selected];
+        assert_eq!(popup.preview.as_ref().unwrap().title, selected.label);
+
+        wait_for_finder_index_idle(&mut state);
+        state.apply_input(InputAction::FinderChar('!'), 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        assert_eq!(popup.result_count, 0);
+        assert!(popup.entries.iter().all(|entry| entry.is_pinned));
+        let mut window = crate::tests::TestWindow::new(100, 30);
+        let layout =
+            crate::ui::draw_finder_popup(&popup, crate::ui::UiStyle::default(), &mut window)
+                .unwrap();
+        let results = layout.frames[0];
+        assert!(
+            window
+                .row_text(results.y + results.height - 2)
+                .contains("<no matches>")
+        );
     });
 }
 

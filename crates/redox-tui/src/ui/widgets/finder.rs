@@ -32,6 +32,7 @@ const VACANT_SLOT_LABEL: &str = "<empty>";
 const QUERY_GAP_ROWS: u16 = 0;
 const ENTRY_MARKER_COL: u16 = 1;
 const ENTRY_LABEL_COL: u16 = 3;
+const QUERY_MIN_WIDTH: u16 = 5;
 const PIN_SELECTOR_HORIZONTAL_PADDING: u16 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FinderFrameLayout {
@@ -95,8 +96,7 @@ pub(crate) fn draw_finder_popup(
         style.finder.min_width,
         style.finder.min_height,
     );
-    let show_preview =
-        term_w >= PREVIEW_THRESHOLD_COLS && popup.preview.is_some() && combined_inner_w >= 64;
+    let show_preview = term_w >= PREVIEW_THRESHOLD_COLS && combined_inner_w >= 64;
     let layout = compute_finder_popup_layout(
         term_w,
         term_h,
@@ -419,16 +419,27 @@ fn draw_entries(
     mouse: &mut PopupMouseLayout,
     layout: PopupLayout,
 ) -> minui::Result<()> {
-    if popup.entries.is_empty() {
-        view.write_str_styled(0, 0, "<no matches>", style.dim.into())?;
-        return Ok(());
-    }
-
     let pinned_count = popup
         .entries
         .iter()
         .take_while(|entry| entry.is_pinned)
         .count();
+    if popup.result_count == 0 && pinned_count < view.height as usize {
+        let label = if popup.indexing {
+            "<searching…>"
+        } else if popup.query.is_empty() {
+            "<no files>"
+        } else {
+            "<no matches>"
+        };
+        let label_col = ENTRY_LABEL_COL + if icons_enabled { PREFIX_WIDTH } else { 0 };
+        view.write_str_styled(
+            view.height.saturating_sub(1),
+            label_col,
+            &clip_text_to_cells(label, view.width.saturating_sub(label_col) as usize),
+            style.dim.into(),
+        )?;
+    }
     let rows = visible_entry_rows(
         popup.entries.len(),
         pinned_count,
@@ -688,7 +699,11 @@ fn draw_query_row(
 
 fn visible_right_footer_width(right_footer: &FinderRightFooter, available_w: u16) -> u16 {
     let right_w = right_footer.width();
-    if right_w < available_w { right_w } else { 0 }
+    if right_w.saturating_add(QUERY_MIN_WIDTH) <= available_w {
+        right_w
+    } else {
+        0
+    }
 }
 
 fn draw_highlighted_text(
@@ -794,7 +809,12 @@ fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
 }
 
 fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
-    let text = format!("{}/{}", popup.result_count, popup.total_count);
+    let text = format!(
+        "{:>width$}/{}",
+        popup.result_count,
+        popup.total_count,
+        width = popup.total_count.to_string().len()
+    );
     let indicator = {
         let module_bg = style.status_line.coords.wrapper.bg;
         let minimap_module_bg = style.status_line.minimap_module.wrapper.bg;
@@ -847,11 +867,12 @@ fn text_width(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        FinderFrameLayout, QUERY_GAP_ROWS, compute_finder_popup_layout,
+        FinderFrameLayout, QUERY_GAP_ROWS, compute_finder_popup_layout, draw_finder_popup,
         finder_file_scroll_position, finder_input_cursor_offset, finder_input_view,
         finder_right_footer, text_width, visible_entry_rows, visible_right_footer_width,
     };
-    use crate::app::FinderPopup;
+    use crate::app::{FinderPopup, FinderPreview};
+    use crate::tests::TestWindow;
     use crate::ui::UiStyle;
 
     #[test]
@@ -934,7 +955,7 @@ mod tests {
 
     #[test]
     fn finder_footer_reserves_counter_padding_and_scroll_indicator() {
-        let popup = FinderPopup {
+        let mut popup = FinderPopup {
             entries: Vec::new(),
             query: "main".to_string(),
             query_cursor: 4,
@@ -942,12 +963,86 @@ mod tests {
             file_window_start: None,
             result_count: 84,
             total_count: 84,
+            indexing: false,
             preview: None,
         };
         let footer = finder_right_footer(&popup, UiStyle::default());
 
         assert!(footer.indicator.is_some());
         assert_eq!(footer.width(), text_width("84/84") as u16 + 4);
+        for count in [0, 1, 9, 10, 84] {
+            popup.result_count = count;
+            assert_eq!(
+                finder_right_footer(&popup, UiStyle::default()).width(),
+                footer.width()
+            );
+        }
+        for width in 0..footer.width() + 5 {
+            assert_eq!(visible_right_footer_width(&footer, width), 0);
+        }
+    }
+
+    #[test]
+    fn finder_empty_states_preserve_frames_and_align_with_the_file_list() {
+        let mut popup = FinderPopup {
+            entries: Vec::new(),
+            query: "missing".into(),
+            query_cursor: 7,
+            selected: 0,
+            file_window_start: None,
+            result_count: 0,
+            total_count: 84,
+            indexing: false,
+            preview: None,
+        };
+        for width in [100, 160] {
+            for icons_enabled in [false, true] {
+                let style = UiStyle {
+                    icons_enabled,
+                    ..UiStyle::default()
+                };
+                let mut window = TestWindow::new(width, 40);
+                let empty = draw_finder_popup(&popup, style, &mut window).unwrap();
+                let results = empty.frames[0];
+                let row = results.y + results.height - 2;
+                let column = results.x
+                    + 1
+                    + super::ENTRY_LABEL_COL
+                    + if icons_enabled {
+                        super::PREFIX_WIDTH
+                    } else {
+                        0
+                    };
+                let text = window.row_text(row);
+                assert_eq!(
+                    text.find("<no matches>")
+                        .map(|start| text[..start].chars().count()),
+                    Some(column as usize)
+                );
+                assert_eq!(empty.frames.len(), if width >= 130 { 3 } else { 2 });
+
+                popup.preview = Some(FinderPreview {
+                    title: "main.rs".into(),
+                    lines: vec!["fn main() {}".into()],
+                    syntax_spans: Vec::new(),
+                    scroll_x: 0,
+                    scroll_y: 0,
+                });
+                let populated = draw_finder_popup(&popup, style, &mut window).unwrap();
+                assert_eq!(populated.frames, empty.frames);
+                popup.preview = None;
+                popup.indexing = true;
+                draw_finder_popup(&popup, style, &mut window).unwrap();
+                assert!(window.row_text(row).contains("<searching…>"));
+                popup.indexing = false;
+                popup.query.clear();
+                popup.query_cursor = 0;
+                draw_finder_popup(&popup, style, &mut window).unwrap();
+                assert!(window.row_text(row).contains("<no files>"));
+                popup.query = "missing".into();
+                popup.query_cursor = 7;
+            }
+        }
     }
 
     #[test]
@@ -960,6 +1055,7 @@ mod tests {
             file_window_start: None,
             result_count: 84,
             total_count: 84,
+            indexing: false,
             preview: None,
         };
         let footer = finder_right_footer(&popup, UiStyle::default());

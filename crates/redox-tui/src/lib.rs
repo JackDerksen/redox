@@ -5208,7 +5208,7 @@ mod tests {
             }
         }
 
-        fn row_text(&self, row: u16) -> String {
+        pub(crate) fn row_text(&self, row: u16) -> String {
             self.cells[row as usize].iter().collect()
         }
 
