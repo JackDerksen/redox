@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use redox_core::{BufferId, BufferKind, EditorSession, TextBuffer};
 use tempfile::NamedTempFile;
@@ -68,20 +68,32 @@ impl GitDiffStats {
 pub struct GitLineMarker {
     pub line: usize,
     pub kind: GitGutterKind,
+    pub staged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitDiffSnapshot {
     pub stats: GitDiffStats,
     pub markers: Vec<GitLineMarker>,
+    index_path: Option<PathBuf>,
+    index_modified_at: Option<SystemTime>,
 }
 
 impl GitDiffSnapshot {
-    pub fn marker_for_line(&self, line: usize) -> Option<GitGutterKind> {
+    pub fn marker_for_line(&self, line: usize) -> Option<GitLineMarker> {
         self.markers
             .iter()
             .find(|marker| marker.line == line)
-            .map(|marker| marker.kind)
+            .copied()
+    }
+
+    fn index_changed(&self) -> bool {
+        self.index_path.as_ref().is_some_and(|path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                != self.index_modified_at
+        })
     }
 }
 
@@ -327,7 +339,10 @@ impl GitState {
                     true
                 }
             }
-            Some(_) => false,
+            Some(entry) => entry
+                .snapshot
+                .as_ref()
+                .is_some_and(GitDiffSnapshot::index_changed),
             None => true,
         };
         if !should_refresh {
@@ -596,6 +611,7 @@ struct GitDiffWorker {
     // ponytail: retain one file's baseline; expand only if split-pane profiling warrants it.
     base: Option<GitDiffBase>,
     current_file: Option<NamedTempFile>,
+    index_file: Option<NamedTempFile>,
 }
 
 struct GitDiffBase {
@@ -604,6 +620,7 @@ struct GitDiffBase {
     head: Option<String>,
     generation: u64,
     file: NamedTempFile,
+    index_path: PathBuf,
 }
 
 impl GitDiffWorker {
@@ -635,17 +652,17 @@ impl GitDiffWorker {
         };
         // Check HEAD on each job so a commit, checkout, reset, or packed ref cannot leave a stale baseline.
         let head = git_stdout(&repo_root, &["rev-parse", "--verify", "HEAD"]);
+        let relative = path
+            .strip_prefix(&repo_root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
         if self.base.as_ref().is_none_or(|base| {
             base.path != path
                 || base.repo_root != repo_root
                 || base.head != head
                 || base.generation != generation
         }) {
-            let relative = path
-                .strip_prefix(&repo_root)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
             let text = head
                 .as_ref()
                 .and_then(|head| {
@@ -657,34 +674,72 @@ impl GitDiffWorker {
                 .unwrap_or_default();
             let mut file = NamedTempFile::new().ok()?;
             file.write_all(text.as_bytes()).ok()?;
+            let index_path = repo_root
+                .join(git_stdout(&repo_root, &["rev-parse", "--git-path", "index"])?.trim());
             self.base = Some(GitDiffBase {
                 path: path.to_path_buf(),
                 repo_root: repo_root.clone(),
                 head,
                 generation,
                 file,
+                index_path,
             });
         }
-        if self.current_file.is_none() {
-            self.current_file = Some(NamedTempFile::new().ok()?);
+        write_diff_file(&mut self.current_file, current_text)?;
+        let base = self.base.as_ref()?;
+        let mut snapshot = diff_files(
+            &repo_root,
+            base.file.path(),
+            self.current_file.as_ref()?.path(),
+        )?;
+        snapshot.index_path = Some(base.index_path.clone());
+        snapshot.index_modified_at = std::fs::metadata(&base.index_path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        if snapshot.markers.is_empty() {
+            return Some(snapshot);
         }
-        let current_file = self.current_file.as_mut()?;
-        current_file.as_file_mut().set_len(0).ok()?;
-        current_file.as_file_mut().seek(SeekFrom::Start(0)).ok()?;
-        current_file.write_all(current_text.as_bytes()).ok()?;
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&repo_root)
-            .args(["diff", "--no-index", "--no-ext-diff", "--unified=0", "--"])
-            .arg(self.base.as_ref()?.file.path())
-            .arg(current_file.path())
-            .output()
-            .ok()?;
-        if !(output.status.success() || output.status.code() == Some(1)) {
-            return None;
+        let index_text =
+            git_stdout(&repo_root, &["show", &format!(":{relative}")]).unwrap_or_default();
+        write_diff_file(&mut self.index_file, &index_text)?;
+        let unstaged = diff_files(
+            &repo_root,
+            self.index_file.as_ref()?.path(),
+            self.current_file.as_ref()?.path(),
+        )?;
+        let unstaged_lines: HashSet<_> =
+            unstaged.markers.iter().map(|marker| marker.line).collect();
+        for marker in &mut snapshot.markers {
+            marker.staged = !unstaged_lines.contains(&marker.line);
         }
-        Some(parse_git_patch(&String::from_utf8(output.stdout).ok()?))
+        Some(snapshot)
     }
+}
+
+fn write_diff_file(file: &mut Option<NamedTempFile>, text: &str) -> Option<()> {
+    if file.is_none() {
+        *file = Some(NamedTempFile::new().ok()?);
+    }
+    let file = file.as_mut()?;
+    file.as_file_mut().set_len(0).ok()?;
+    file.as_file_mut().seek(SeekFrom::Start(0)).ok()?;
+    file.write_all(text.as_bytes()).ok()?;
+    Some(())
+}
+
+fn diff_files(repo_root: &Path, base: &Path, current: &Path) -> Option<GitDiffSnapshot> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["diff", "--no-index", "--no-ext-diff", "--unified=0", "--"])
+        .arg(base)
+        .arg(current)
+        .output()
+        .ok()?;
+    if !(output.status.success() || output.status.code() == Some(1)) {
+        return None;
+    }
+    Some(parse_git_patch(&String::from_utf8(output.stdout).ok()?))
 }
 
 fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -825,8 +880,13 @@ fn parse_git_patch(patch: &str) -> GitDiffSnapshot {
         stats,
         markers: markers
             .into_iter()
-            .map(|(line, kind)| GitLineMarker { line, kind })
+            .map(|(line, kind)| GitLineMarker {
+                line,
+                kind,
+                staged: false,
+            })
             .collect(),
+        ..GitDiffSnapshot::default()
     }
 }
 
@@ -871,8 +931,18 @@ mod tests {
         let path = repo.join("example.txt");
         std::fs::write(&path, "one\ntwo\n").unwrap();
         let mut worker = super::GitDiffWorker::default();
-        assert_eq!(worker.diff(&path, "one\ntwo\n", 0).unwrap().stats.added, 2);
+        let snapshot = worker.diff(&path, "one\ntwo\n", 0).unwrap();
+        assert_eq!(snapshot.stats.added, 2);
+        assert!(snapshot.markers.iter().all(|marker| !marker.staged));
         git(&["add", "example.txt"]);
+        assert!(
+            worker
+                .diff(&path, "one\ntwo\n", 0)
+                .unwrap()
+                .markers
+                .iter()
+                .all(|marker| marker.staged)
+        );
         git(&[
             "-c",
             "user.name=Test",
@@ -952,6 +1022,84 @@ mod tests {
     }
 
     #[test]
+    fn staged_gutter_markers_dim_and_follow_index_changes_and_unsaved_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let git = |args: &[&str]| super::git_stdout(&root, args).expect("git command failed");
+        git(&["init", "-q"]);
+        let path = root.join("example.txt");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\nsix\n").unwrap();
+        git(&["add", "example.txt"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "initial",
+        ]);
+        std::fs::write(&path, "ONE\ntwo\nthree\nfive\nsix\nstaged\n").unwrap();
+        git(&["add", "example.txt"]);
+        let current_text = "ONE\ntwo\nextra\nthree\nfive\nsix\nstaged\nunstaged\n";
+        let mut worker = super::GitDiffWorker::default();
+        let snapshot = worker.diff(&path, current_text, 0).unwrap();
+        assert_eq!(
+            snapshot
+                .markers
+                .iter()
+                .map(|marker| (marker.line, marker.kind, marker.staged))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, GitGutterKind::Modified, true),
+                (2, GitGutterKind::Added, false),
+                (3, GitGutterKind::Removed, true),
+                (6, GitGutterKind::Added, true),
+                (7, GitGutterKind::Added, false),
+            ]
+        );
+        for amount in [0.0, 0.5, 1.0] {
+            let style = crate::ui::UiStyle {
+                dim_amount: amount,
+                ..Default::default()
+            };
+            let dimmed = style.dimmed();
+            let mut window = crate::tests::TestWindow::new(20, 8);
+            crate::draw_gutter_padding(&mut window, style, 3, 8, 1, 0, Some(&snapshot)).unwrap();
+            for marker in &snapshot.markers {
+                let expected = if marker.staged { dimmed } else { style };
+                let (glyph, marker_style) = expected.git.gutter_marker(marker.kind);
+                assert!(window.row_text(marker.line as u16).starts_with(glyph));
+                assert_eq!(window.styles[marker.line][0], marker_style.into());
+            }
+        }
+        assert!(!snapshot.index_changed());
+        git(&["reset", "-q", "HEAD", "--", "example.txt"]);
+        assert!(snapshot.index_changed());
+        assert!(
+            worker
+                .diff(&path, current_text, 0)
+                .unwrap()
+                .markers
+                .iter()
+                .all(|marker| !marker.staged)
+        );
+        std::fs::write(&path, current_text).unwrap();
+        git(&["add", "example.txt"]);
+        let staged = worker.diff(&path, current_text, 0).unwrap();
+        assert!(staged.markers.iter().all(|marker| marker.staged));
+        assert!(
+            worker
+                .diff(&path, &current_text.replacen("ONE", "ONE!", 1), 0)
+                .unwrap()
+                .marker_for_line(0)
+                .is_some_and(|marker| !marker.staged)
+        );
+    }
+
+    #[test]
     fn completed_diff_does_not_hide_an_edit_made_while_it_was_running() {
         let mut state = GitState::default();
         let session = redox_core::EditorSession::open_initial_unnamed().unwrap();
@@ -1020,6 +1168,7 @@ diff --git a/old b/new
 ";
 
         let snapshot = parse_git_patch(patch);
+        let marker_kind = |line| snapshot.marker_for_line(line).map(|marker| marker.kind);
         assert_eq!(
             snapshot.stats,
             GitDiffStats {
@@ -1028,11 +1177,11 @@ diff --git a/old b/new
                 removed: 2,
             }
         );
-        assert_eq!(snapshot.marker_for_line(0), Some(GitGutterKind::Modified));
-        assert_eq!(snapshot.marker_for_line(1), Some(GitGutterKind::Modified));
-        assert_eq!(snapshot.marker_for_line(2), Some(GitGutterKind::Added));
-        assert_eq!(snapshot.marker_for_line(6), Some(GitGutterKind::Modified));
-        assert_eq!(snapshot.marker_for_line(10), Some(GitGutterKind::Removed));
+        assert_eq!(marker_kind(0), Some(GitGutterKind::Modified));
+        assert_eq!(marker_kind(1), Some(GitGutterKind::Modified));
+        assert_eq!(marker_kind(2), Some(GitGutterKind::Added));
+        assert_eq!(marker_kind(6), Some(GitGutterKind::Modified));
+        assert_eq!(marker_kind(10), Some(GitGutterKind::Removed));
     }
 
     #[test]

@@ -982,13 +982,19 @@ fn draw_gutter_padding(
 
     let pad = " ".repeat(padding_w as usize);
     let color = TextStyle::new(style.theme.bg, style.theme.bg);
+    let staged_style = style.dimmed_by(style.dim_amount).git;
     for row in 0..text_h {
         if padding_w > 0 {
             window.write_str_styled(row, gutter_w, &pad, color.into())?;
         }
         let line_idx = first_line.saturating_add(row as usize);
-        if let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
-            let (glyph, colors) = style.git.gutter_marker(kind);
+        if let Some(marker) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
+            let marker_style = if marker.staged {
+                staged_style
+            } else {
+                style.git
+            };
+            let (glyph, colors) = marker_style.gutter_marker(marker.kind);
             window.write_str_styled(row, 0, glyph, colors.into())?;
         }
     }

@@ -98,7 +98,7 @@ leader = " "
 | `mouse_scroll_step_horizontal` | integer | `3` | Columns per horizontal wheel event, from `1` to `65535`. |
 | `check_updates` | boolean | `true` | Check GitHub for a newer release on startup. Successful checks are cached for 24 hours and require `curl`. `:check-update` performs a manual check at any time. |
 | `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
-| `background_dimming` | number | `0.301` | Dimming for inactive panes and popup backgrounds from `0.0` (none) through `1.0` (maximum). |
+| `background_dimming` | number | `0.301` | Dimming for inactive panes, popup backgrounds, and staged Git gutter markers from `0.0` (none) through `1.0` (maximum). |
 | `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `line_numbers` | string | `"relative"` | `"relative"` shows the distance from the cursor, with the current line's actual number. `"absolute"` shows actual line numbers on every row. Applies to editor panes and the explorer. |
