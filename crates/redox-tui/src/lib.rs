@@ -1515,17 +1515,9 @@ fn draw_split_editor_panes(
         let dimming = state.pane_focus_dimming(rect.pane_id, now);
         let pane_style = style.dimmed_by(style.dim_amount * dimming);
         let is_active_pane = rect.pane_id == state.active_pane_id();
-        let inactive_filename = state
-            .session
-            .meta(buffer_id)
-            .filter(|meta| !is_active_pane && meta.kind == redox_core::BufferKind::File)
-            .map(|meta| {
-                meta.path
-                    .as_deref()
-                    .and_then(std::path::Path::file_name)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| meta.display_name.clone())
-            });
+        let inactive_filename = (!is_active_pane)
+            .then(|| inactive_pane_filename(state, buffer_id))
+            .flatten();
         let mut pane_window = WindowView {
             window,
             x_offset: rect.x,
@@ -1590,14 +1582,47 @@ fn draw_split_editor_panes(
                 },
             )?;
         }
-        if let Some(filename) = inactive_filename {
-            draw_pane_filename(&mut pane_window, &filename, pane_style.pane_title)?;
+        if let Some((filename, dirty)) = inactive_filename {
+            draw_pane_filename(&mut pane_window, &filename, dirty, pane_style.pane_title)?;
         }
         state.sync_rendered_pane_view(rect.pane_id, buffer_id);
     }
     state.restore_active_pane_view();
     let style = style.dimmed_by(style.dim_amount * state.popup_background_dimming(now));
     draw_pane_split_lines(window, style, &rects, width, height)
+}
+
+fn inactive_pane_filename(state: &EditorState, buffer_id: BufferId) -> Option<(String, bool)> {
+    let meta = state
+        .session
+        .meta(buffer_id)
+        .filter(|meta| meta.kind == redox_core::BufferKind::File)?;
+    let filename = if let Some(path) = meta.path.as_deref()
+        && let Some(filename) = path.file_name()
+    {
+        let mut label = PathBuf::from(filename);
+        let mut parent = path.parent();
+        for _ in 0..2 {
+            let duplicate = state
+                .panes()
+                .iter()
+                .filter_map(|pane| state.session.meta(pane.buffer_id))
+                .filter_map(|meta| meta.path.as_deref())
+                .any(|other| other != path && other.ends_with(&label));
+            if !duplicate {
+                break;
+            }
+            let Some(directory) = parent.and_then(std::path::Path::file_name) else {
+                break;
+            };
+            label = PathBuf::from(directory).join(label);
+            parent = parent.and_then(std::path::Path::parent);
+        }
+        label.to_string_lossy().into_owned()
+    } else {
+        meta.display_name.clone()
+    };
+    Some((filename, meta.dirty))
 }
 
 struct PaneGutterLayout {
@@ -5931,6 +5956,60 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 assert_eq!(window.cells[cursor.y as usize][cursor.x as usize], 'f');
             }
 
+            let active_buffer = state.session.active_id();
+            let inactive_pane = state
+                .panes()
+                .iter()
+                .find(|pane| pane.id != state.active_pane_id())
+                .unwrap()
+                .clone();
+            for (path, dirty, expected_title) in [
+                ("other/alpha.txt", true, "other/alpha.txt +"),
+                ("other/beta.txt", false, "beta.txt"),
+                ("source/alpha.txt", true, "alpha.txt +"),
+                ("other/Alpha.txt", false, "Alpha.txt"),
+            ] {
+                state.session.activate(inactive_pane.buffer_id);
+                state.session.active_meta_mut().path = Some(PathBuf::from(path));
+                state.session.set_active_dirty(dirty);
+                state.session.activate(active_buffer);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                let rect = state
+                    .pane_rects(80, 11)
+                    .into_iter()
+                    .find(|rect| rect.pane_id == inactive_pane.id)
+                    .unwrap();
+                let text = window.cells[rect.y as usize]
+                    [rect.x as usize..(rect.x + rect.width) as usize]
+                    .iter()
+                    .collect::<String>();
+                assert_eq!(text.trim(), expected_title);
+                assert_eq!(
+                    text.find(expected_title),
+                    Some((rect.width as usize - expected_title.len()) / 2)
+                );
+            }
+
+            state.session.active_meta_mut().path =
+                Some(PathBuf::from("crates/redox-core/src/lib.rs"));
+            for (path, expected_title) in [
+                ("crates/redox-tui/src/lib.rs", "redox-tui/src/lib.rs"),
+                ("crates/redox-lsp/src/lib.rs", "redox-lsp/src/lib.rs"),
+                ("elsewhere/redox-core/src/lib.rs", "redox-core/src/lib.rs"),
+                ("crates/redox-core/src/lib.rs", "lib.rs"),
+                ("crates/redox-lsp/tests/lib.rs", "tests/lib.rs"),
+            ] {
+                state.session.activate(inactive_pane.buffer_id);
+                state.session.active_meta_mut().path = Some(PathBuf::from(path));
+                state.session.activate(active_buffer);
+                assert_eq!(
+                    inactive_pane_filename(&state, inactive_pane.buffer_id)
+                        .unwrap()
+                        .0,
+                    expected_title
+                );
+            }
+
             state.close_active_split();
             draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
             assert!(window.row_text(0).contains("first"));
@@ -5939,11 +6018,34 @@ markdown_emphasis = { italic = false, strikethrough = true }
         }
 
         let mut narrow = TestWindow::new(8, 1);
-        draw_pane_filename(&mut narrow, "é界🙂.txt", UiStyle::default().status_line.bar).unwrap();
+        draw_pane_filename(
+            &mut narrow,
+            "é界🙂.txt",
+            false,
+            UiStyle::default().status_line.bar,
+        )
+        .unwrap();
         assert_eq!(narrow.row_text(0).trim(), "é界🙂.");
         assert_eq!(narrow.row_text(0).find('é'), Some(1));
+        for width in [1, 2, 3, 8] {
+            let mut narrow = TestWindow::new(width, 1);
+            draw_pane_filename(
+                &mut narrow,
+                "é界🙂.txt",
+                true,
+                UiStyle::default().pane_title,
+            )
+            .unwrap();
+            assert!(narrow.row_text(0).contains('+'));
+        }
         let mut empty = TestWindow::new(0, 0);
-        draw_pane_filename(&mut empty, "alpha.txt", UiStyle::default().status_line.bar).unwrap();
+        draw_pane_filename(
+            &mut empty,
+            "alpha.txt",
+            true,
+            UiStyle::default().status_line.bar,
+        )
+        .unwrap();
     }
 
     #[test]
