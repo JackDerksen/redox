@@ -156,7 +156,7 @@ impl EditorState {
                             Motion::FileStart | Motion::FileEnd | Motion::MatchDelimiter
                         ))
                 {
-                    self.start_jump_pulse(text_vh);
+                    self.start_jump_highlight(text_vh);
                 }
             }
 
@@ -753,7 +753,7 @@ impl EditorState {
                         text_vh,
                     );
                     if self.active_cursor_pos() != previous_cursor {
-                        self.start_jump_pulse(text_vh);
+                        self.start_jump_highlight(text_vh);
                     }
                 }
             }

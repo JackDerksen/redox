@@ -2291,6 +2291,91 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
 }
 
 #[test]
+fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
+    use std::collections::BTreeMap;
+    let _guard = global_test_state_lock().lock().unwrap();
+    let style = crate::ui::UiStyle::default();
+    let render = |state: &mut EditorState| {
+        let highlight = state.one_shot_highlight();
+        let mut window = crate::tests::TestWindow::new(40, 8);
+        crate::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
+        crate::draw_buffer_snapshot_for_id(
+            state,
+            style,
+            state.session.active_id(),
+            crate::BufferDrawOptions {
+                width: 40,
+                height: 8,
+                has_line_numbers: false,
+                colors: style.editor_text,
+            },
+            &mut window,
+            crate::BufferHighlights {
+                visual_selection: None,
+                one_shot_highlight: highlight,
+                search_highlights: &BTreeMap::new(),
+                diagnostic_lines: &BTreeMap::new(),
+                snippet_placeholders: &BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        window
+    };
+    for (before, after, row, column) in [
+        ("abc", "abXc", 0, 2),
+        ("abc", "ac", 0, 1),
+        ("abc", "ab", 0, 2),
+        ("", "xy", 0, 0),
+        ("a\nb\nc", "a\nnew\nb\nc", 1, 0),
+        ("aé界b", "a🙂b", 0, 1),
+    ] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(before);
+        let checkpoint = state.capture_active_undo_checkpoint();
+        *state.session.active_buffer_mut() = TextBuffer::from_text(after);
+        state.record_active_undo_if_changed(checkpoint);
+        for (action, expected) in [(InputAction::Undo, before), (InputAction::Redo, after)] {
+            state.apply_input(action, 40, 8);
+            assert_eq!(state.session.active_buffer().to_string(), expected);
+            let highlight = state.one_shot_highlight.take().unwrap();
+            assert_eq!(highlight.kind, HighlightKind::UndoRedo);
+            let baseline = render(&mut state);
+            state.one_shot_highlight = Some(highlight);
+            let peak = render(&mut state);
+            let peak_colors = peak.styles[row][column].colors.unwrap();
+            let baseline_colors = baseline.styles[row][column].colors.unwrap();
+            assert_ne!(
+                peak_colors.bg, baseline_colors.bg,
+                "{before:?} -> {after:?}, {expected:?}, {:?}",
+                highlight.selection
+            );
+            assert_eq!(peak_colors.fg, baseline_colors.fg);
+            assert_eq!(peak.styles[0][30], baseline.styles[0][30]);
+            state.advance_one_shot_highlight(highlight.started_at + highlight.duration / 2);
+            let halfway = render(&mut state);
+            assert_ne!(
+                halfway.styles[row][column].colors.unwrap().bg,
+                peak_colors.bg
+            );
+            state.advance_one_shot_highlight(highlight.started_at + highlight.duration);
+            assert_eq!(render(&mut state).styles, baseline.styles);
+        }
+        state.apply_input(InputAction::Redo, 40, 8);
+        assert!(state.one_shot_highlight().is_none());
+        state.apply_input(InputAction::Undo, 40, 8);
+        state.apply_input(InputAction::Paste("!".into()), 40, 8);
+        assert!(state.one_shot_highlight().is_none());
+        for animations in ["enabled = false", "undo_redo_highlight_ms = 0"] {
+            state.configure_animations(toml::from_str(animations).unwrap());
+            state.apply_input(InputAction::Undo, 40, 8);
+            assert!(state.one_shot_highlight().is_none());
+            state.apply_input(InputAction::Redo, 40, 8);
+            assert!(state.one_shot_highlight().is_none());
+        }
+    }
+}
+
+#[test]
 fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
     let path = temp_file_path("undo_redo_basic");
     let mut state = state_with_text(path.clone(), "hello");
@@ -5890,7 +5975,7 @@ fn normal_mode_dd_cuts_current_line() {
 }
 
 #[test]
-fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
+fn normal_mode_yy_yanks_current_line_and_starts_highlight() {
     let path = temp_file_path("yy_yank_line");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
     let id = state.session.active_id();
@@ -5922,8 +6007,8 @@ fn normal_mode_yy_yanks_current_line_and_starts_ripple() {
 }
 
 #[test]
-fn jump_pulse_follows_and_centers_large_motions() {
-    let path = temp_file_path("jump_pulse");
+fn jump_highlight_follows_and_centers_large_motions() {
+    let path = temp_file_path("jump_highlight");
     let mut state = state_with_text(path.clone(), &"alpha beta\n".repeat(40));
     let viewport_height = 8;
     for (motion, count, expected_line) in [

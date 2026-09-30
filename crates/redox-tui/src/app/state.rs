@@ -85,6 +85,7 @@ enum RegisterKind {
 pub(crate) enum HighlightKind {
     Yank,
     Jump,
+    UndoRedo,
     Delimiter,
 }
 
@@ -824,7 +825,7 @@ impl EditorState {
     pub(crate) fn confirm_yank(&mut self, message: &str) {
         if self
             .animations
-            .duration(self.animations.yank_ripple_ms)
+            .duration(self.animations.yank_highlight_ms)
             .is_zero()
         {
             self.set_status(message);
@@ -1291,8 +1292,9 @@ impl EditorState {
         kind: HighlightKind,
     ) {
         let duration = self.animations.duration(match kind {
-            HighlightKind::Yank => self.animations.yank_ripple_ms,
-            HighlightKind::Jump => self.animations.jump_pulse_ms,
+            HighlightKind::Yank => self.animations.yank_highlight_ms,
+            HighlightKind::Jump => self.animations.jump_highlight_ms,
+            HighlightKind::UndoRedo => self.animations.undo_redo_highlight_ms,
             HighlightKind::Delimiter => self.animations.delimiter_blink_ms,
         });
         self.one_shot_highlight = (!duration.is_zero()).then(|| OneShotHighlight {
@@ -1312,7 +1314,7 @@ impl EditorState {
         });
     }
 
-    fn start_jump_pulse(&mut self, text_vh: usize) {
+    fn start_jump_highlight(&mut self, text_vh: usize) {
         if self.mode != EditorMode::Normal || self.session.active_meta().kind != BufferKind::File {
             return;
         }
@@ -1924,18 +1926,25 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let cursor = {
+        let (cursor, changed_range) = {
             let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo(buffer)
+            let changed_range = view.undo_history.last_undo_record().map(|record| {
+                record.diff.start_char..record.diff.start_char + record.diff.deleted.chars().count()
+            });
+            (view.undo_history.undo(buffer), changed_range)
         };
 
         let Some(cursor) = cursor else {
+            self.one_shot_highlight = None;
             self.set_status("nothing to undo");
             return;
         };
 
         self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
+        if let Some(range) = changed_range {
+            self.highlight_undo_redo(range);
+        }
     }
 
     fn redo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1944,18 +1953,36 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let cursor = {
+        let (cursor, changed_range) = {
             let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo(buffer)
+            let cursor = view.undo_history.redo(buffer);
+            let changed_range = view.undo_history.last_undo_record().map(|record| {
+                record.diff.start_char
+                    ..record.diff.start_char + record.diff.inserted.chars().count()
+            });
+            (cursor, changed_range)
         };
 
         let Some(cursor) = cursor else {
+            self.one_shot_highlight = None;
             self.set_status("nothing to redo");
             return;
         };
 
         self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
+        if let Some(range) = changed_range {
+            self.highlight_undo_redo(range);
+        }
+    }
+
+    fn highlight_undo_redo(&mut self, range: std::ops::Range<usize>) {
+        let buffer = self.session.active_buffer();
+        let selection = Selection::new(
+            buffer.char_to_pos(range.start),
+            buffer.char_to_pos(range.end.saturating_sub(1).max(range.start)),
+        );
+        self.set_one_shot_highlight(selection, VisualModeKind::Char, HighlightKind::UndoRedo);
     }
 
     fn reconcile_active_after_undo_restore(

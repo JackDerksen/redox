@@ -462,7 +462,7 @@ impl EditorState {
         self.clear_search_highlights();
         self.clear_status();
         if self.active_cursor_pos() != previous_cursor {
-            self.start_jump_pulse(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
+            self.start_jump_highlight(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
         }
     }
 

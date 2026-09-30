@@ -20,18 +20,19 @@ pub(crate) struct LineDecorations<'a> {
     pub search_style: TextStyle,
     pub current_style: TextStyle,
     pub error_style: TextStyle,
-    pub yank_ripple: Option<YankRipple<'a>>,
-    pub jump_pulse: Option<JumpPulse>,
-    pub delimiter_blink: Option<(usize, JumpPulse)>,
+    pub yank_highlight: Option<YankHighlight<'a>>,
+    pub jump_highlight: Option<HighlightFade>,
+    pub delimiter_blink: Option<(usize, HighlightFade)>,
+    pub undo_redo_highlight: Option<(&'a [bool], HighlightFade)>,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct JumpPulse {
+pub(crate) struct HighlightFade {
     foreground: Color,
     strength: f32,
 }
 
-impl JumpPulse {
+impl HighlightFade {
     pub fn new(progress: f32, foreground: Color) -> Self {
         let remaining = 1.0 - progress;
         Self {
@@ -52,14 +53,14 @@ impl JumpPulse {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct YankRipple<'a> {
+pub(crate) struct YankHighlight<'a> {
     cells: &'a [bool],
     head: f32,
     tail_width: f32,
     colors: ColorPair,
 }
 
-impl<'a> YankRipple<'a> {
+impl<'a> YankHighlight<'a> {
     pub fn new(cells: &'a [bool], progress: f32, colors: ColorPair) -> Option<Self> {
         let start = cells.iter().position(|selected| *selected)?;
         let end = cells.iter().rposition(|selected| *selected)?;
@@ -115,11 +116,16 @@ impl LineDecorations<'_> {
         {
             style = blink.apply(style);
         }
-        if let Some(ripple) = self.yank_ripple {
-            style = ripple.apply(style, range);
+        if let Some((cells, highlight)) = self.undo_redo_highlight
+            && overlaps(cells)
+        {
+            style = highlight.apply(style);
         }
-        if let Some(pulse) = self.jump_pulse {
-            style = pulse.apply(style);
+        if let Some(highlight) = self.yank_highlight {
+            style = highlight.apply(style, range);
+        }
+        if let Some(highlight) = self.jump_highlight {
+            style = highlight.apply(style);
         }
         style
     }

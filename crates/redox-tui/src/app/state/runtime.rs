@@ -317,7 +317,7 @@ mod tests {
         state.update_background(fade_end);
         assert!(state.take_redraw_request());
 
-        state.animations.yank_ripple_ms = 240;
+        state.animations.yank_highlight_ms = 240;
         state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
         let frame = state
             .one_shot_highlight
@@ -335,7 +335,7 @@ mod tests {
             "the final frame must erase the highlight"
         );
 
-        for source in ["enabled = false", "yank_ripple_ms = 0"] {
+        for source in ["enabled = false", "yank_highlight_ms = 0"] {
             state.configure_animations(toml::from_str(source).unwrap());
             state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
             assert!(state.one_shot_highlight().is_none());

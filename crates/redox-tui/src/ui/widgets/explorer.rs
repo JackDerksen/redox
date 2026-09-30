@@ -1,4 +1,4 @@
-use crate::ui::overlays::{LineDecorations, YankRipple};
+use crate::ui::overlays::{LineDecorations, YankHighlight};
 use crate::ui::render::LineViewport;
 use crate::ui::text_style::TextStyle;
 use crate::{draw_line_numbers, line_number_gutter_width};
@@ -234,13 +234,14 @@ pub(crate) fn draw_explorer_popup_view(
                         search_style: style.search_match,
                         current_style: style.search_current,
                         error_style: style.error_range,
-                        yank_ripple: YankRipple::new(
+                        yank_highlight: YankHighlight::new(
                             &cells,
                             highlight.progress(),
                             style.editor_text.colors(),
                         ),
-                        jump_pulse: None,
+                        jump_highlight: None,
                         delimiter_blink: None,
+                        undo_redo_highlight: None,
                     },
                 },
                 style,

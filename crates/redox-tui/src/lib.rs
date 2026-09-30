@@ -39,7 +39,7 @@ use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
 use ui::overlays::{
-    JumpPulse, LineDecorations, YankRipple, active_delimiter_highlights,
+    HighlightFade, LineDecorations, YankHighlight, active_delimiter_highlights,
     active_scope_indent_guides, draw_delimiter_highlights, draw_indent_guides,
 };
 use ui::syntax::{
@@ -1102,16 +1102,19 @@ fn draw_line_with_highlights(
         if highlight_empty_line {
             draw_highlight_spaces(
                 window,
-                (row, col),
+                viewport,
                 0,
-                width_cells,
-                normal_color.fg,
+                normal_color,
                 highlight_layers,
                 decorations,
+                color_column,
             )?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
                 && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
+                && decorations
+                    .undo_redo_highlight
+                    .is_none_or(|(cells, _)| cells.get(visible_col) != Some(&true))
             {
                 window.write_str_styled(
                     row,
@@ -1213,18 +1216,21 @@ fn draw_line_with_highlights(
 
     draw_highlight_spaces(
         window,
-        (row, col),
+        viewport,
         used_cells,
-        width_cells,
-        normal_color.fg,
+        normal_color,
         highlight_layers,
         decorations,
+        color_column,
     )?;
 
     if let Some((visible_col, bg)) = color_column
         && visible_col < width_cells
         && visible_col >= used_cells
         && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
+        && decorations
+            .undo_redo_highlight
+            .is_none_or(|(cells, _)| cells.get(visible_col) != Some(&true))
     {
         window.write_str_styled(
             row,
@@ -1239,16 +1245,33 @@ fn draw_line_with_highlights(
 
 fn draw_highlight_spaces(
     window: &mut dyn Window,
-    (row, col): (u16, u16),
+    viewport: LineViewport,
     start_cell: usize,
-    width_cells: usize,
-    fg: Color,
+    normal_color: TextStyle,
     highlight_layers: &[(&[bool], Color, Option<Color>)],
     decorations: LineDecorations<'_>,
+    color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        width: width_cells,
+        ..
+    } = viewport;
     let style_at = |cell| {
-        highlight_color_at_cell(highlight_layers, cell, fg)
-            .map(|colors| decorations.apply(colors.into(), cell..cell + 1))
+        let colors =
+            highlight_color_at_cell(highlight_layers, cell, normal_color.fg).or_else(|| {
+                let (cells, _) = decorations.undo_redo_highlight?;
+                (cells.get(cell) == Some(&true)).then(|| {
+                    normal_color.with_colors(
+                        normal_color.fg,
+                        color_column
+                            .filter(|(column, _)| *column == cell)
+                            .map_or(normal_color.bg, |(_, background)| background),
+                    )
+                })
+            })?;
+        Some(decorations.apply(colors.into(), cell..cell + 1))
     };
     let mut cell = start_cell;
     while cell < width_cells {
@@ -2174,6 +2197,20 @@ fn draw_snapshot_lines(
             {
                 return (selection.cursor.line == line_idx).then(|| vec![true; text_w]);
             }
+            if visual_selection.is_none()
+                && one_shot_highlight
+                    .is_some_and(|highlight| highlight.kind == HighlightKind::UndoRedo)
+                && selection.anchor == selection.cursor
+                && selection.cursor.line == line_idx
+                && selection.cursor.col >= source_line.chars().count()
+            {
+                return Some(search_highlight_cells(
+                    source_line,
+                    scroll_x,
+                    text_w,
+                    std::slice::from_ref(&(selection.cursor.col..selection.cursor.col)),
+                ));
+            }
             visual_selection_visible_cells(
                 buffer,
                 source_line,
@@ -2231,21 +2268,21 @@ fn draw_snapshot_lines(
             search_style: style.search_match,
             current_style: style.search_current,
             error_style: style.error_range,
-            yank_ripple: one_shot_highlight
+            yank_highlight: one_shot_highlight
                 .filter(|highlight| {
                     visual_selection.is_none() && highlight.kind == HighlightKind::Yank
                 })
                 .zip(selected_cells.as_deref())
                 .and_then(|(highlight, cells)| {
-                    YankRipple::new(cells, highlight.progress(), default_colors.colors())
+                    YankHighlight::new(cells, highlight.progress(), default_colors.colors())
                 }),
-            jump_pulse: one_shot_highlight
+            jump_highlight: one_shot_highlight
                 .filter(|highlight| {
                     visual_selection.is_none()
                         && highlight.kind == HighlightKind::Jump
                         && selected_cells.is_some()
                 })
-                .map(|highlight| JumpPulse::new(highlight.progress(), style.editor_text.fg)),
+                .map(|highlight| HighlightFade::new(highlight.progress(), style.editor_text.fg)),
             delimiter_blink: one_shot_highlight
                 .filter(|highlight| {
                     visual_selection.is_none() && highlight.kind == HighlightKind::Delimiter
@@ -2255,8 +2292,19 @@ fn draw_snapshot_lines(
                     let column = cells.iter().position(|selected| *selected)?;
                     Some((
                         column,
-                        JumpPulse::new(highlight.progress(), style.editor_text.fg),
+                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
                     ))
+                }),
+            undo_redo_highlight: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::UndoRedo
+                })
+                .zip(selected_cells.as_deref())
+                .map(|(highlight, cells)| {
+                    (
+                        cells,
+                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
+                    )
                 }),
         };
         if let Some((_, _, selection_bg)) = transient_selection
@@ -2291,8 +2339,11 @@ fn draw_snapshot_lines(
                 }
                 layers
             };
-            if decorations.jump_pulse.is_some() {
+            if decorations.jump_highlight.is_some() {
                 highlight_layers.rotate_left(1);
+            }
+            if decorations.undo_redo_highlight.is_some() {
+                highlight_layers.remove(0);
             }
             if let Some(active) = &active_search_cells {
                 highlight_layers.insert(
@@ -5424,9 +5475,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 search_style: style.search_match,
                 current_style: style.search_current,
                 error_style: style.error_range,
-                yank_ripple: None,
-                jump_pulse: None,
+                yank_highlight: None,
+                jump_highlight: None,
                 delimiter_blink: None,
+                undo_redo_highlight: None,
             };
             let decorated = decorations
                 .apply(style.editor_text.into(), 0..1)
@@ -5546,9 +5598,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 search_style: style.search_match,
                                 current_style: style.search_current,
                                 error_style: style.error_range,
-                                yank_ripple: None,
-                                jump_pulse: None,
+                                yank_highlight: None,
+                                jump_highlight: None,
                                 delimiter_blink: None,
+                                undo_redo_highlight: None,
                             },
                         },
                         style,
@@ -5611,11 +5664,12 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     search_style: style.search_match,
                     current_style: style.search_current,
                     error_style: style.error_range,
-                    yank_ripple: None,
-                    jump_pulse: None,
+                    yank_highlight: None,
+                    jump_highlight: None,
+                    undo_redo_highlight: None,
                     delimiter_blink: Some((
                         3 - scroll_x,
-                        JumpPulse::new(0.0, style.editor_text.fg),
+                        HighlightFade::new(0.0, style.editor_text.fg),
                     )),
                 };
                 let mut window = TestWindow::new(8, 1);
@@ -5713,9 +5767,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         search_style: style.search_match,
                         current_style: style.search_current,
                         error_style: style.error_range,
-                        yank_ripple: None,
-                        jump_pulse: None,
+                        yank_highlight: None,
+                        jump_highlight: None,
                         delimiter_blink: None,
+                        undo_redo_highlight: None,
                     },
                 },
                 style,
@@ -6378,7 +6433,9 @@ icons_enabled = true
 line_numbers = "absolute"
 
 [animations]
+yank_ripple_ms = 150
 jump_pulse_ms = 275
+undo_redo_ms = 200
 dashboard_logo_ms = 0
 
 [zen]
@@ -6423,9 +6480,10 @@ background = "#010203"
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
         assert!(!style.text_formatting);
-        assert_eq!(state.animations.jump_pulse_ms, 275);
+        assert_eq!(state.animations.jump_highlight_ms, 275);
+        assert_eq!(state.animations.undo_redo_highlight_ms, 200);
         assert_eq!(state.animations.dashboard_logo_ms, 0);
-        assert_eq!(state.animations.yank_ripple_ms, 150);
+        assert_eq!(state.animations.yank_highlight_ms, 150);
         assert!(!style.about.title.format.bold);
         assert_eq!(style.layout.line_numbers, ui::style::LineNumbers::Absolute);
         assert!(

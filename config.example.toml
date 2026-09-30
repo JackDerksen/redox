@@ -21,8 +21,9 @@ leader = " "
 # Durations are milliseconds; 0 disables an effect. Reload with :config reload.
 [animations]
 enabled = true # false disables all animations
-yank_ripple_ms = 150
-jump_pulse_ms = 150
+yank_highlight_ms = 150
+jump_highlight_ms = 150
+undo_redo_highlight_ms = 150 # Brief tint on the changed text after undo or redo
 delimiter_blink_ms = 150
 save_confirmation_ms = 600
 save_fade_ms = 150 # Final portion of the confirmation; 0 keeps it solid until expiry

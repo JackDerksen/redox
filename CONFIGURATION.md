@@ -112,8 +112,9 @@ Set these options under `[animations]`; all are optional. See
 | Option | Default | Behaviour |
 | --- | --- | --- |
 | `enabled` | `true` | Set `false` to disable all animations. |
-| `yank_ripple_ms` | `150` | Ripple across copied text. |
-| `jump_pulse_ms` | `150` | Pulse on the destination line after a jump. |
+| `yank_highlight_ms` | `150` | Sweep a highlight across copied text. |
+| `jump_highlight_ms` | `150` | Fade a highlight from the destination line after a jump. |
+| `undo_redo_highlight_ms` | `150` | Fade a faint white highlight from the changed text after undo or redo; removed text leaves a cue at the deletion point. |
 | `delimiter_blink_ms` | `150` | Blink the matching opening delimiter. |
 | `save_confirmation_ms` | `600` | Total lifetime of the save checkmark. |
 | `save_fade_ms` | `150` | Final portion of the checkmark's lifetime; capped at `save_confirmation_ms`. |
@@ -122,6 +123,9 @@ Set these options under `[animations]`; all are optional. See
 | `dashboard_logo_ms` | `500` | Entrance for both dashboard sizes. The About logo stays static. |
 | `spinner_frame_ms` | `100` | Interval between loading-spinner frames. |
 | `rain_fps` | `60` | Rain speed, from `1` to `60` frames per second. |
+
+The previous names `yank_ripple_ms`, `jump_pulse_ms`, and `undo_redo_ms`
+remain supported as aliases.
 
 Durations use non-negative integer milliseconds. Set a value to `0` to disable
 that effect. A zero `save_fade_ms` or `toast_fade_ms` keeps that feedback solid until expiry; a zero

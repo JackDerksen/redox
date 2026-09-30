@@ -241,7 +241,7 @@ impl EditorState {
             self.set_status("pattern not found");
         } else {
             self.set_status(format_search_match_count(&term, count));
-            self.start_jump_pulse(text_vh);
+            self.start_jump_highlight(text_vh);
         }
     }
 
@@ -297,7 +297,7 @@ impl EditorState {
         }
         self.move_cursor_to_search_match(next_index, viewport_width_cells, text_vh);
         self.clear_status();
-        self.start_jump_pulse(text_vh);
+        self.start_jump_highlight(text_vh);
     }
 
     pub(super) fn clear_search_highlights(&mut self) {

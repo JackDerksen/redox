@@ -83,8 +83,12 @@ impl Default for Config {
 #[serde(default, deny_unknown_fields)]
 pub struct AnimationConfig {
     pub enabled: bool,
-    pub yank_ripple_ms: u64,
-    pub jump_pulse_ms: u64,
+    #[serde(alias = "yank_ripple_ms")]
+    pub yank_highlight_ms: u64,
+    #[serde(alias = "jump_pulse_ms")]
+    pub jump_highlight_ms: u64,
+    #[serde(alias = "undo_redo_ms")]
+    pub undo_redo_highlight_ms: u64,
     pub delimiter_blink_ms: u64,
     pub save_confirmation_ms: u64,
     pub save_fade_ms: u64,
@@ -99,8 +103,9 @@ impl Default for AnimationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            yank_ripple_ms: 150,
-            jump_pulse_ms: 150,
+            yank_highlight_ms: 150,
+            jump_highlight_ms: 150,
+            undo_redo_highlight_ms: 150,
             delimiter_blink_ms: 150,
             save_confirmation_ms: 600,
             save_fade_ms: 150,
@@ -647,7 +652,7 @@ type_name = "#112233"
             "[themes.default.syntax]\nkeyword = { underline_color = 'red' }",
             "[themes.default.ui]\n'unknown.role' = { bold = true }",
             "[themes.default.ui]\n'zen.margin' = { italic = false }",
-            "[animations]\nyank_ripple_ms = -1",
+            "[animations]\nyank_highlight_ms = -1",
             "[animations]\nfocus_fade_ms = 1.5",
             "[animations]\ndashboard_logo_ms = 'fast'",
             "[animations]\nunknown_effect_ms = 100",
