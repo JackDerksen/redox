@@ -3473,6 +3473,52 @@ fn insert_mode_typing_existing_quote_advances_cursor() {
 }
 
 #[test]
+fn triple_backticks_pair_and_open_a_code_block() {
+    for (prefix, language_name) in [("", ""), ("  ", "rust"), ("é ", "")] {
+        let path = temp_file_path("triple_backticks").with_extension("md");
+        let mut state = state_with_text(path.clone(), prefix);
+        state.with_active_buffer_view_mut(|_, view| {
+            view.cursor.cursor = Pos::new(0, prefix.chars().count());
+        });
+        state.mode = EditorMode::Insert;
+        for (expected_ticks, cursor_offset) in [("``", 1), ("``", 2), ("``````", 3)] {
+            state.apply_input(InputAction::InsertChar('`'), 80, 24);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                format!("{prefix}{expected_ticks}")
+            );
+            assert_eq!(
+                state.active_cursor_pos(),
+                Pos::new(0, prefix.chars().count() + cursor_offset)
+            );
+        }
+        if prefix.trim().is_empty() {
+            for character in language_name.chars() {
+                state.apply_input(InputAction::InsertChar(character), 80, 24);
+            }
+            state.apply_input(InputAction::Enter, 80, 24);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                format!("{prefix}```{language_name}\n{prefix}\n{prefix}```")
+            );
+            assert_eq!(state.active_cursor_pos(), Pos::new(1, prefix.len()));
+            state.with_active_buffer_view_mut(|_, view| {
+                view.cursor.cursor = Pos::new(2, prefix.len());
+            });
+        }
+        let paired = state.session.active_buffer().to_string();
+        for _ in 0..3 {
+            state.apply_input(InputAction::InsertChar('`'), 80, 24);
+        }
+        assert_eq!(state.session.active_buffer().to_string(), paired);
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), prefix);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn normal_mode_cursor_clamps_to_line_content() {
     let cases = [
         ("nonempty", "abc\n", 5, Pos::new(0, 2)),

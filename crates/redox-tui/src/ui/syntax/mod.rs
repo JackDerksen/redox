@@ -868,13 +868,23 @@ pub(crate) fn smart_newline_insert(
     cursor: Pos,
     indent_size: usize,
 ) -> Option<(String, Pos)> {
-    let language = smart_indent_language(language)?;
-    let source = buffer.to_string();
     let cursor = buffer.clamp_pos(cursor);
     let line = buffer.clamp_line(cursor.line);
     let line_text = buffer.line_string(line);
     let left = line_text.chars().take(cursor.col).collect::<String>();
     let right = line_text.chars().skip(cursor.col).collect::<String>();
+    if let Some(info) = left.trim_start().strip_prefix("```")
+        && !info.contains('`')
+        && right.trim() == "```"
+    {
+        let indent = leading_indent(&line_text);
+        return Some((
+            format!("\n{indent}\n{indent}"),
+            Pos::new(line + 1, indent.chars().count()),
+        ));
+    }
+    let language = smart_indent_language(language)?;
+    let source = buffer.to_string();
     let virtual_source = if left == line_text {
         source
     } else {

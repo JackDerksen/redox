@@ -1430,7 +1430,17 @@ fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCha
         '{' => InsertCharBehavior::InsertPair("}".into()),
         '"' | '`' => {
             if should_auto_pair_symmetric_delimiter(buffer, cursor, ch) {
-                InsertCharBehavior::InsertPair(ch.to_string())
+                if ch == '`'
+                    && cursor.col >= 2
+                    && buffer.char_before(cursor) == Some('`')
+                    && buffer.char_at(Pos::new(cursor.line, cursor.col - 2)) == Some('`')
+                    && (cursor.col == 2
+                        || buffer.char_at(Pos::new(cursor.line, cursor.col - 3)) != Some('`'))
+                {
+                    InsertCharBehavior::InsertPair("```".into())
+                } else {
+                    InsertCharBehavior::InsertPair(ch.to_string())
+                }
             } else {
                 InsertCharBehavior::Plain
             }
