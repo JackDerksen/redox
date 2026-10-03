@@ -432,13 +432,11 @@ fn draw_entries(
         } else {
             "<no matches>"
         };
-        let label_col = ENTRY_LABEL_COL + if icons_enabled { PREFIX_WIDTH } else { 0 };
-        view.write_str_styled(
-            view.height.saturating_sub(1),
-            label_col,
-            &clip_text_to_cells(label, view.width.saturating_sub(label_col) as usize),
-            style.dim.into(),
-        )?;
+        let label = clip_text_to_cells(label, view.width as usize);
+        let label_col = view.width.saturating_sub(text_width(&label) as u16) / 2;
+        let first_empty_row = pinned_count as u16;
+        let label_row = first_empty_row + view.height.saturating_sub(first_empty_row + 1) / 2;
+        view.write_str_styled(label_row, label_col, &label, style.dim.into())?;
     }
     let rows = visible_entry_rows(
         popup.entries.len(),
@@ -983,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn finder_empty_states_preserve_frames_and_align_with_the_file_list() {
+    fn finder_empty_states_preserve_frames_and_center_messages() {
         let mut popup = FinderPopup {
             entries: Vec::new(),
             query: "missing".into(),
@@ -1004,15 +1002,8 @@ mod tests {
                 let mut window = TestWindow::new(width, 40);
                 let empty = draw_finder_popup(&popup, style, &mut window).unwrap();
                 let results = empty.frames[0];
-                let row = results.y + results.height - 2;
-                let column = results.x
-                    + 1
-                    + super::ENTRY_LABEL_COL
-                    + if icons_enabled {
-                        super::PREFIX_WIDTH
-                    } else {
-                        0
-                    };
+                let row = results.y + 1 + (results.height - 3) / 2;
+                let column = results.x + 1 + (results.width - 2 - 12) / 2;
                 let text = window.row_text(row);
                 assert_eq!(
                     text.find("<no matches>")
@@ -1038,7 +1029,12 @@ mod tests {
                 popup.query.clear();
                 popup.query_cursor = 0;
                 draw_finder_popup(&popup, style, &mut window).unwrap();
-                assert!(window.row_text(row).contains("<no files>"));
+                let text = window.row_text(row);
+                assert_eq!(
+                    text.find("<no files>")
+                        .map(|start| text[..start].chars().count()),
+                    Some((results.x + 1 + (results.width - 2 - 10) / 2) as usize)
+                );
                 popup.query = "missing".into();
                 popup.query_cursor = 7;
             }

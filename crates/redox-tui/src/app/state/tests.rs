@@ -1310,11 +1310,9 @@ fn finder_shows_pins_and_filters_files() {
             crate::ui::draw_finder_popup(&popup, crate::ui::UiStyle::default(), &mut window)
                 .unwrap();
         let results = layout.frames[0];
-        assert!(
-            window
-                .row_text(results.y + results.height - 2)
-                .contains("<no matches>")
-        );
+        let pinned_count = popup.entries.len() as u16;
+        let message_row = results.y + 1 + pinned_count + (results.height - 3 - pinned_count) / 2;
+        assert!(window.row_text(message_row).contains("<no matches>"));
     });
 }
 
