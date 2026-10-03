@@ -789,6 +789,7 @@ impl EditorState {
             let replacement = if let Some(content) = source
                 .strip_prefix(opening)
                 .and_then(|content| content.strip_suffix(closing))
+                .filter(|content| !content.contains(opening) && !content.contains(closing))
             {
                 let content = content.strip_prefix(' ').unwrap_or(content);
                 content.strip_suffix(' ').unwrap_or(content).to_string()

@@ -2414,6 +2414,23 @@ fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
 }
 
 #[test]
+fn paired_comment_toggle_keeps_embedded_delimiters_intact() {
+    for (original, expected) in [
+        ("/* a */\n/* b */\n", "/* /* a */\n/* b */ */\n"),
+        ("/* a /*\nb */\n", "/* /* a /*\nb */ */\n"),
+        ("/* a */\nb */\n", "/* /* a */\nb */ */\n"),
+    ] {
+        let path = temp_file_path("paired_comment_toggle").with_extension("css");
+        let mut state = state_with_text(path.clone(), original);
+        apply_keys(&mut state, "Vjgc");
+        assert_eq!(state.session.active_buffer().to_string(), expected);
+        apply_keys(&mut state, "u");
+        assert_eq!(state.session.active_buffer().to_string(), original);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn replay_dot_repeats_comment_toggle() {
     for (initial_keys, repeat_keys, commented, repeated) in [
         (
