@@ -6657,27 +6657,182 @@ fn smart_indent_floors_partial_tab_widths() {
 }
 
 #[test]
-fn markdown_list_indent_preserves_exact_continuation_width() {
-    let path = temp_file_path("smart_markdown_floor").with_extension("md");
-    let mut state = state_with_text(path.clone(), "    - item");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 10);
-    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+fn markdown_list_indent_survives_consecutive_enters_and_wrapped_lines() {
+    for (initial, expected, width) in [
+        ("    - item|", "    - item\n      |", 6),
+        (
+            "- item\n  wrapped|\n- next",
+            "- item\n  wrapped\n  |\n- next",
+            2,
+        ),
+        (
+            "- Command line: `command_line.border`, `command_line.title`,\n  `command_line.text`, `command_line.prompt`, `command_line.ghost`,  | `command_line.error`, `command_line.inactive_title`\n- Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`,",
+            "- Command line: `command_line.border`, `command_line.title`,\n  `command_line.text`, `command_line.prompt`, `command_line.ghost`,  \n  | `command_line.error`, `command_line.inactive_title`\n- Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`,",
+            2,
+        ),
+        ("-   item|", "-   item\n    |", 4),
+        ("12.  item|", "12.  item\n     |", 5),
+        ("-\titem|", "-\titem\n     |", 5),
+        ("> - item|", "> - item\n    |", 4),
+        ("- item\n  |", "- item\n  \n  |", 2),
+        ("- item\n|", "- item\n\n|", 0),
+        ("```\n- item|\n```", "```\n- item\n|\n```", 0),
+        ("```rs\nfn main() {|", "```rs\nfn main() {\n    |", 4),
+        ("`code`|", "`code`\n|", 0),
+    ] {
+        let path = temp_file_path("markdown_repeated_enter").with_extension("md");
+        let text = initial.replace('|', "");
+        let mut state = state_with_text(path.clone(), &text);
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor =
+                buffer.char_to_pos(initial.split_once('|').unwrap().0.chars().count());
+        });
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected.replace('|', ""),
+            "{initial}"
+        );
+        assert_eq!(state.active_cursor_pos().col, width, "{initial}");
 
-    state.apply_input(InputAction::Enter, 80, 24);
+        for character in "continuation".chars() {
+            state.apply_input(InputAction::InsertChar(character), 80, 24);
+        }
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.active_cursor_pos().col,
+            width,
+            "second Enter: {initial}"
+        );
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.active_cursor_pos().col,
+            width,
+            "blank Enter: {initial}"
+        );
 
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "    - item\n      "
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 6));
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            text,
+            "undo: {initial}"
+        );
+        let _ = fs::remove_file(path);
+    }
+}
 
-    let _ = fs::remove_file(path);
+#[test]
+fn insert_enter_continues_comments_without_commenting_strings_or_code() {
+    for (extension, initial, expected) in [
+        ("rs", "    // note|", "    // note\n    // |"),
+        ("rs", "/// café|", "/// café\n/// |"),
+        ("rs", "//! docs|", "//! docs\n//! |"),
+        (
+            "rs",
+            "let value = 1; // note|",
+            "let value = 1; // note\n// |",
+        ),
+        ("rs", "// first|second", "// first\n// |second"),
+        ("py", "  # note|", "  # note\n  # |"),
+        ("toml", "# note|", "# note\n# |"),
+        ("yaml", "# note|", "# note\n# |"),
+        ("lua", "-- note|", "-- note\n-- |"),
+        ("sql", "  -- note|", "  -- note\n  -- |"),
+        ("sh", "\t# note|", "\t# note\n\t# |"),
+        ("ini", ";; note|", ";; note\n;; |"),
+        ("java", "// note|", "// note\n// |"),
+        ("go", "// note|", "// note\n// |"),
+        ("cpp", "// note|", "// note\n// |"),
+        ("js", "// note|", "// note\n// |"),
+        ("tsx", "// note|", "// note\n// |"),
+        ("sql", "--[[ note|", "--[[ note\n-- |"),
+        ("c", "/* note|", "/* note\n * |"),
+        ("rs", "/**|*/", "/**\n * |\n */"),
+        ("css", "/*\n * body|*/", "/*\n * body\n * |\n */"),
+        (
+            "css",
+            "/* note\n * more|\n */",
+            "/* note\n * more\n * |\n */",
+        ),
+        ("html", "<!-- note| -->", "<!-- note\n|\n -->"),
+        ("md", "<!-- note|-->", "<!-- note\n|\n-->"),
+        ("lua", "--[[ note| ]]", "--[[ note\n|\n ]]"),
+        ("lua", "--[[ note|", "--[[ note\n|"),
+        ("c", "/* note */|", "/* note */\n|"),
+        (
+            "rs",
+            "let text = \"// note|\";",
+            "let text = \"// note\n|\";",
+        ),
+        (
+            "rs",
+            "let text = r#\"\n// note|\n\"#;",
+            "let text = r#\"\n// note\n|\n\"#;",
+        ),
+        (
+            "py",
+            "text = \"\"\"\n# note|\n\"\"\"",
+            "text = \"\"\"\n# note\n|\n\"\"\"",
+        ),
+        ("md", "# heading|", "# heading\n|"),
+        ("txt", "  text|", "  text\n  |"),
+    ] {
+        let path = temp_file_path("comment_enter").with_extension(extension);
+        let text = initial.replace('|', "");
+        let mut state = state_with_text(path.clone(), &text);
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor =
+                buffer.char_to_pos(initial.split_once('|').unwrap().0.chars().count());
+        });
+        state.apply_input(InputAction::Enter, 80, 24);
+        let expected_text = expected.replace('|', "");
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{extension}: {initial}"
+        );
+        assert_eq!(
+            state.active_cursor_pos(),
+            TextBuffer::from_text(&expected_text)
+                .char_to_pos(expected.split_once('|').unwrap().0.chars().count()),
+            "{extension}: {initial}",
+        );
+        for character in "continued".chars() {
+            state.apply_input(InputAction::InsertChar(character), 80, 24);
+        }
+        state.apply_input(InputAction::Enter, 80, 24);
+        let prefix = expected
+            .split_once('|')
+            .unwrap()
+            .0
+            .rsplit('\n')
+            .next()
+            .unwrap();
+        assert!(
+            state
+                .session
+                .active_buffer()
+                .line_string(state.active_cursor_pos().line)
+                .starts_with(prefix),
+            "repeat: {initial}"
+        );
+        assert_eq!(
+            state.active_cursor_pos().col,
+            prefix.chars().count(),
+            "repeat: {initial}"
+        );
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            text,
+            "undo: {initial}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]

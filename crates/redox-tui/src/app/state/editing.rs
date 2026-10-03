@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use redox_core::{
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
     motion::{Motion, apply_motion_for_operator},
@@ -8,7 +6,7 @@ use redox_core::{
 use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
 use crate::ui::language_for_path;
-use crate::ui::syntax::{SyntaxLanguage, desired_indent_for_line};
+use crate::ui::syntax::{comment_delimiters_for_path, desired_indent_for_line};
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -1232,49 +1230,6 @@ fn normalize_clipboard_text(text: &str) -> String {
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
         .collect()
-}
-
-fn comment_delimiters_for_path(path: Option<&Path>) -> Option<(&'static str, &'static str)> {
-    match language_for_path(path) {
-        Some(
-            SyntaxLanguage::C
-            | SyntaxLanguage::Cpp
-            | SyntaxLanguage::Go
-            | SyntaxLanguage::JavaScript
-            | SyntaxLanguage::Rust
-            | SyntaxLanguage::TypeScript
-            | SyntaxLanguage::Tsx,
-        ) => Some(("//", "")),
-        Some(SyntaxLanguage::Python | SyntaxLanguage::Toml | SyntaxLanguage::Yaml) => {
-            Some(("#", ""))
-        }
-        Some(SyntaxLanguage::Lua) => Some(("--", "")),
-        Some(SyntaxLanguage::Css) => Some(("/*", "*/")),
-        Some(SyntaxLanguage::Html | SyntaxLanguage::Markdown) => Some(("<!--", "-->")),
-        Some(SyntaxLanguage::Json) => None,
-        None => {
-            let path = path?;
-            let filename = path.file_name()?.to_str()?;
-            if matches!(
-                filename,
-                ".bashrc" | ".zshrc" | ".bash_profile" | ".zprofile" | ".env"
-            ) || filename.starts_with(".env.")
-            {
-                return Some(("#", ""));
-            }
-            match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-                "sh" | "bash" | "zsh" | "fish" | "rb" | "r" | "pl" | "conf" | "env" | "nu" => {
-                    Some(("#", ""))
-                }
-                "sql" => Some(("--", "")),
-                "ini" | "cfg" | "scm" | "ss" | "lisp" | "el" | "clj" | "cljs" | "cljc" => {
-                    Some((";", ""))
-                }
-                "java" | "cs" | "dart" | "jsonc" | "swift" | "kt" | "kts" => Some(("//", "")),
-                _ => None,
-            }
-        }
-    }
 }
 
 fn leading_line_indent(text: &str) -> &str {

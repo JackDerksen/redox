@@ -874,21 +874,24 @@ impl EditorState {
                     let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-                    let language = language_for_path(self.session.active_meta().path.as_deref());
                     let indent_size = self.active_indent_width();
                     let smart_insert = smart_newline_insert(
                         self.session.active_buffer(),
-                        language,
+                        self.session.active_meta().path.as_deref(),
                         cursor,
                         indent_size,
                     );
+                    let comment_prefix = smart_insert
+                        .as_ref()
+                        .filter(|insert| insert.comment_prefix_bytes > 0)
+                        .map(|insert| (insert.cursor.line, insert.comment_prefix_bytes));
                     let view = self.views.entry(active_id).or_default();
 
                     {
                         let buffer = self.session.active_buffer_mut();
-                        if let Some((text, cursor)) = smart_insert {
-                            let _ = buffer.insert(view.cursor.cursor, &text);
-                            view.cursor.cursor = cursor;
+                        if let Some(insert) = smart_insert {
+                            let _ = buffer.insert(view.cursor.cursor, &insert.text);
+                            view.cursor.cursor = insert.cursor;
                         } else {
                             let selection = Selection::empty(view.cursor.cursor);
                             let selection = buffer.insert_newline(selection);
@@ -899,6 +902,13 @@ impl EditorState {
                     }
 
                     self.invalidate_active_render_caches();
+                    if let Some((line, end_byte)) = comment_prefix {
+                        self.views
+                            .entry(active_id)
+                            .or_default()
+                            .syntax_highlighter
+                            .preserve_comment_prefix(line, end_byte);
+                    }
                     let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
