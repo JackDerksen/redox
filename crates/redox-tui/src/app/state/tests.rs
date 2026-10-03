@@ -2291,6 +2291,159 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
 }
 
 #[test]
+fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
+    use std::collections::BTreeMap;
+
+    let cases = [
+        (
+            InputMode::Normal,
+            "rs",
+            "  run();\nnext();\n",
+            0,
+            Some("  // run();\nnext();\n"),
+        ),
+        (
+            InputMode::Normal,
+            "css",
+            "p { color: red; }\n",
+            0,
+            Some("/* p { color: red; } */\n"),
+        ),
+        (
+            InputMode::Visual,
+            "rs",
+            "  café();\r\n\tstep();\r\n\r\noutside\r\n",
+            2,
+            Some("  // café();\r\n\t// step();\r\n\r\noutside\r\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "py",
+            "    # keep\n    run()\n",
+            1,
+            Some("    # # keep\n    # run()\n"),
+        ),
+        (
+            InputMode::VisualBlock,
+            "lua",
+            "  run()\n    next()\n",
+            1,
+            Some("  -- run()\n    -- next()\n"),
+        ),
+        (
+            InputMode::Visual,
+            "css",
+            "  p {\n    color: red;\n  }\noutside\n",
+            2,
+            Some("  /* p {\n    color: red;\n  } */\noutside\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "html",
+            "  <div>\n    text\n",
+            1,
+            Some("  <!-- <div>\n    text -->\n"),
+        ),
+        (
+            InputMode::VisualBlock,
+            "sql",
+            "SELECT value;\nFROM data;\n",
+            1,
+            Some("-- SELECT value;\n-- FROM data;\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "sh",
+            "echo hello\n",
+            0,
+            Some("# echo hello\n"),
+        ),
+        (InputMode::Visual, "json", "{\"value\": 1}\n", 0, None),
+    ];
+    for (mode, extension, original, end_line, commented) in cases {
+        let path = temp_file_path("visual_comment_toggle").with_extension(extension);
+        let mut state = state_with_text(path.clone(), original);
+        let active_id = state.session.active_id();
+        state.private_register = "keep register".to_string();
+        state.input.configure(',', &BTreeMap::new()).unwrap();
+        for expected in commented.into_iter().chain(std::iter::once(original)) {
+            state.apply_input(InputAction::SetMode(mode), 80, 24);
+            state.with_active_buffer_view_mut(|_, view| {
+                view.visual_anchor = (mode != InputMode::Normal).then_some(Pos::new(end_line, 0));
+                view.cursor.cursor = Pos::zero();
+            });
+            let keys = if mode == InputMode::Normal {
+                "gcc"
+            } else {
+                "gc"
+            };
+            for key in keys.chars() {
+                let action = crate::input::map_event_with_state(
+                    &mut state.input,
+                    mode,
+                    &minui::prelude::input::Event::Character(key),
+                );
+                state.apply_input(action, 80, 24);
+            }
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                expected,
+                "{extension}"
+            );
+            assert_eq!(state.private_register, "keep register");
+            if commented.is_none() {
+                assert!(state.active_visual_selection().is_some());
+                assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+                assert_eq!(
+                    state.status_msg.as_deref(),
+                    Some("comment syntax unavailable for this file")
+                );
+                continue;
+            }
+            assert_eq!(state.mode, EditorMode::Normal);
+            assert!(state.active_visual_selection().is_none());
+            if expected != original {
+                assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+                state.apply_input(InputAction::Undo, 80, 24);
+                assert_eq!(state.session.active_buffer().to_string(), original);
+                state.apply_input(InputAction::Redo, 80, 24);
+                assert_eq!(state.session.active_buffer().to_string(), expected);
+            }
+        }
+        assert!(!state.session.active_meta().dirty);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn replay_dot_repeats_comment_toggle() {
+    for (initial_keys, repeat_keys, commented, repeated) in [
+        (
+            "Vjgc",
+            "2j0.",
+            "// one();\n// two();\nthree();\nfour();\n",
+            "// one();\n// two();\n// three();\n// four();\n",
+        ),
+        (
+            "gcc",
+            "j0.",
+            "// one();\ntwo();\nthree();\nfour();\n",
+            "// one();\n// two();\nthree();\nfour();\n",
+        ),
+    ] {
+        let path = temp_file_path("dot_comment").with_extension("rs");
+        let mut state = state_with_text(path.clone(), "one();\ntwo();\nthree();\nfour();\n");
+        apply_keys(&mut state, initial_keys);
+        assert_eq!(state.session.active_buffer().to_string(), commented);
+        apply_keys(&mut state, repeat_keys);
+        assert_eq!(state.session.active_buffer().to_string(), repeated);
+        apply_keys(&mut state, "u");
+        assert_eq!(state.session.active_buffer().to_string(), commented);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
     use std::collections::BTreeMap;
     let _guard = global_test_state_lock().lock().unwrap();

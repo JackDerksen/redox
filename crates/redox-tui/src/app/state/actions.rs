@@ -1091,6 +1091,10 @@ impl EditorState {
                 self.wrap_active_visual_selection(opening, closing, viewport_width_cells, text_vh);
             }
 
+            InputAction::ToggleComments => {
+                self.toggle_active_comments(viewport_width_cells, text_vh);
+            }
+
             InputAction::MoveVisualSelectionUp { count } => {
                 if matches!(
                     self.mode,
@@ -1662,6 +1666,7 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
         | InputAction::ToggleCase { .. }
         | InputAction::ReplaceChar(_)
         | InputAction::WrapSelection { .. }
+        | InputAction::ToggleComments
         | InputAction::MoveVisualSelectionUp { .. }
         | InputAction::MoveVisualSelectionDown { .. }
         | InputAction::IndentVisualSelection { .. }

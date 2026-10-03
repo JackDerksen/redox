@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use redox_core::{
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
     motion::{Motion, apply_motion_for_operator},
@@ -6,7 +8,7 @@ use redox_core::{
 use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
 use crate::ui::language_for_path;
-use crate::ui::syntax::desired_indent_for_line;
+use crate::ui::syntax::{SyntaxLanguage, desired_indent_for_line};
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -722,6 +724,101 @@ impl EditorState {
         self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
     }
 
+    pub(super) fn toggle_active_comments(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if !matches!(
+            self.mode,
+            EditorMode::Normal
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
+        ) || !self.ensure_active_fully_loaded_for_edit_or_save()
+        {
+            return;
+        }
+        let Some((opening, closing)) =
+            comment_delimiters_for_path(self.session.active_meta().path.as_deref())
+        else {
+            self.set_status("comment syntax unavailable for this file");
+            return;
+        };
+        let (start_line, end_line) = if self.mode == EditorMode::Normal {
+            let line = self
+                .session
+                .active_buffer()
+                .clamp_line(self.active_cursor_pos().line);
+            (line, line)
+        } else {
+            let Some(range) = self.active_visual_line_range() else {
+                return;
+            };
+            range
+        };
+        let buffer = self.session.active_buffer();
+        let lines = (start_line..=end_line)
+            .map(|line| (line, buffer.line_string(line)))
+            .filter(|(_, text)| !text.trim().is_empty())
+            .collect::<Vec<_>>();
+        let Some((first_line, first_text)) = lines.first() else {
+            return;
+        };
+        let replacements = if closing.is_empty() {
+            let uncomment = lines
+                .iter()
+                .all(|(_, text)| text[leading_line_indent(text).len()..].starts_with(opening));
+            lines
+                .iter()
+                .map(|(line, text)| {
+                    let indent = leading_line_indent(text);
+                    let content = &text[indent.len()..];
+                    let replacement = if uncomment {
+                        let content = &content[opening.len()..];
+                        format!("{indent}{}", content.strip_prefix(' ').unwrap_or(content))
+                    } else {
+                        format!("{indent}{opening} {content}")
+                    };
+                    (
+                        Pos::new(*line, 0),
+                        Pos::new(*line, text.chars().count()),
+                        replacement,
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let (last_line, last_text) = lines.last().expect("nonempty selection");
+            let start = Pos::new(*first_line, leading_line_indent(first_text).chars().count());
+            let end = Pos::new(*last_line, last_text.trim_end().chars().count());
+            let source = buffer.slice_pos_range(start, end);
+            let replacement = if let Some(content) = source
+                .strip_prefix(opening)
+                .and_then(|content| content.strip_suffix(closing))
+            {
+                let content = content.strip_prefix(' ').unwrap_or(content);
+                content.strip_suffix(' ').unwrap_or(content).to_string()
+            } else {
+                format!("{opening} {source} {closing}")
+            };
+            vec![(start, end, replacement)]
+        };
+        let new_cursor = if self.mode == EditorMode::Normal {
+            self.active_cursor_pos()
+        } else {
+            Pos::new(*first_line, 0)
+        };
+        let before = self.capture_active_undo_checkpoint();
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            for (start, end, text) in replacements.into_iter().rev() {
+                let _ = buffer.replace_selection(Selection::new(start, end), &text);
+            }
+            view.cursor.cursor = new_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
     fn replace_char_under_cursor(
         &mut self,
         replacement: char,
@@ -1135,6 +1232,49 @@ fn normalize_clipboard_text(text: &str) -> String {
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
         .collect()
+}
+
+fn comment_delimiters_for_path(path: Option<&Path>) -> Option<(&'static str, &'static str)> {
+    match language_for_path(path) {
+        Some(
+            SyntaxLanguage::C
+            | SyntaxLanguage::Cpp
+            | SyntaxLanguage::Go
+            | SyntaxLanguage::JavaScript
+            | SyntaxLanguage::Rust
+            | SyntaxLanguage::TypeScript
+            | SyntaxLanguage::Tsx,
+        ) => Some(("//", "")),
+        Some(SyntaxLanguage::Python | SyntaxLanguage::Toml | SyntaxLanguage::Yaml) => {
+            Some(("#", ""))
+        }
+        Some(SyntaxLanguage::Lua) => Some(("--", "")),
+        Some(SyntaxLanguage::Css) => Some(("/*", "*/")),
+        Some(SyntaxLanguage::Html | SyntaxLanguage::Markdown) => Some(("<!--", "-->")),
+        Some(SyntaxLanguage::Json) => None,
+        None => {
+            let path = path?;
+            let filename = path.file_name()?.to_str()?;
+            if matches!(
+                filename,
+                ".bashrc" | ".zshrc" | ".bash_profile" | ".zprofile" | ".env"
+            ) || filename.starts_with(".env.")
+            {
+                return Some(("#", ""));
+            }
+            match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+                "sh" | "bash" | "zsh" | "fish" | "rb" | "r" | "pl" | "conf" | "env" | "nu" => {
+                    Some(("#", ""))
+                }
+                "sql" => Some(("--", "")),
+                "ini" | "cfg" | "scm" | "ss" | "lisp" | "el" | "clj" | "cljs" | "cljc" => {
+                    Some((";", ""))
+                }
+                "java" | "cs" | "dart" | "jsonc" | "swift" | "kt" | "kts" => Some(("//", "")),
+                _ => None,
+            }
+        }
+    }
 }
 
 fn leading_line_indent(text: &str) -> &str {
