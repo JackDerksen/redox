@@ -554,6 +554,7 @@ reverse each axis independently.
 | `p` / `P` | Paste after/before from the private register. |
 | `<space>p` | Paste from the system clipboard. |
 | `u` / `ctrl+r` | Undo / redo. |
+| `gcc` | Toggle a comment on the current line. |
 | `.` | Repeat the last edit at the cursor. A count replaces the edit's previous count. |
 | `ctrl+d` / `ctrl+u` | Scroll down/up by one viewport. |
 | `zz` | Centre the cursor line in the viewport. |
@@ -643,6 +644,7 @@ a limit.
 | `<space>y` | Yank the selection to the system clipboard. |
 | `tab` / `shift+tab` | Indent / outdent the selection. |
 | `J` / `K` | Move selected lines down/up. |
+| `gc` | Toggle comments on the selected lines using the file type's comment syntax. |
 | `<leader>[` / `<leader>]` | Wrap the selection in `[...]`. |
 | `<leader>{` / `<leader>}` | Wrap the selection in `{...}`. |
 | `<leader>(` / `<leader>)` | Wrap the selection in `(...)`. |
