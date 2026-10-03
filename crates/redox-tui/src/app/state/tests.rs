@@ -2356,6 +2356,13 @@ fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
             0,
             Some("# echo hello\n"),
         ),
+        (
+            InputMode::Visual,
+            "jsonc",
+            "{\"value\": 1}\n",
+            0,
+            Some("// {\"value\": 1}\n"),
+        ),
         (InputMode::Visual, "json", "{\"value\": 1}\n", 0, None),
     ];
     for (mode, extension, original, end_line, commented) in cases {
@@ -2414,18 +2421,52 @@ fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
 }
 
 #[test]
-fn paired_comment_toggle_keeps_embedded_delimiters_intact() {
-    for (original, expected) in [
-        ("/* a */\n/* b */\n", "/* /* a */\n/* b */ */\n"),
-        ("/* a /*\nb */\n", "/* /* a /*\nb */ */\n"),
-        ("/* a */\nb */\n", "/* /* a */\nb */ */\n"),
+fn paired_comment_toggle_uncomments_lines_and_rejects_unsafe_ranges() {
+    for (extension, keys, original, expected) in [
+        ("css", "Vjgc", "/* a */\n/* b */\n", "a\nb\n"),
+        (
+            "css",
+            "V2jgc",
+            "\t/* café */ \r\n \r\n  /* β */\t\r\n",
+            "\tcafé \r\n \r\n  β\t\r\n",
+        ),
+        (
+            "html",
+            "Vjgc",
+            "  <!-- <p>one</p> -->\n\t<!-- <p>two</p> -->\n",
+            "  <p>one</p>\n\t<p>two</p>\n",
+        ),
+        ("css", "Vjgc", "/* a /*\nb */\n", "/* a /*\nb */\n"),
+        ("css", "Vjgc", "/* a */\nb */\n", "/* a */\nb */\n"),
+        ("css", "Vjgc", "/* a */\nb\n", "/* a */\nb\n"),
+        (
+            "css",
+            "Vjgc",
+            "a { content: \"*/\"; }\nb {}\n",
+            "a { content: \"*/\"; }\nb {}\n",
+        ),
     ] {
-        let path = temp_file_path("paired_comment_toggle").with_extension("css");
+        let path = temp_file_path("paired_comment_toggle").with_extension(extension);
         let mut state = state_with_text(path.clone(), original);
-        apply_keys(&mut state, "Vjgc");
+        let active_id = state.session.active_id();
+        apply_keys(&mut state, keys);
         assert_eq!(state.session.active_buffer().to_string(), expected);
-        apply_keys(&mut state, "u");
-        assert_eq!(state.session.active_buffer().to_string(), original);
+        if expected == original {
+            assert!(!state.session.active_meta().dirty);
+            assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+            assert!(state.active_visual_selection().is_some());
+            assert_eq!(
+                state.status_msg.as_deref(),
+                Some("cannot toggle comments safely: selection contains comment delimiters")
+            );
+        } else {
+            assert_eq!(state.mode, EditorMode::Normal);
+            assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+            apply_keys(&mut state, "u");
+            assert_eq!(state.session.active_buffer().to_string(), original);
+            state.apply_input(InputAction::Redo, 80, 24);
+            assert_eq!(state.session.active_buffer().to_string(), expected);
+        }
         let _ = fs::remove_file(path);
     }
 }

@@ -893,6 +893,13 @@ fn is_html_void_tag(name: &str) -> bool {
 pub(crate) fn comment_delimiters_for_path(
     path: Option<&Path>,
 ) -> Option<(&'static str, &'static str)> {
+    if path
+        .and_then(Path::extension)
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonc"))
+    {
+        return Some(("//", ""));
+    }
     match language_for_path(path) {
         Some(
             SyntaxLanguage::C
@@ -928,7 +935,7 @@ pub(crate) fn comment_delimiters_for_path(
                 "ini" | "cfg" | "scm" | "ss" | "lisp" | "el" | "clj" | "cljs" | "cljc" => {
                     Some((";", ""))
                 }
-                "java" | "cs" | "dart" | "jsonc" | "swift" | "kt" | "kts" => Some(("//", "")),
+                "java" | "cs" | "dart" | "swift" | "kt" | "kts" => Some(("//", "")),
                 _ => None,
             }
         }

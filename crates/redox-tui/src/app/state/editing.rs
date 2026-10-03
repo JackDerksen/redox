@@ -786,17 +786,34 @@ impl EditorState {
             let start = Pos::new(*first_line, leading_line_indent(first_text).chars().count());
             let end = Pos::new(*last_line, last_text.trim_end().chars().count());
             let source = buffer.slice_pos_range(start, end);
-            let replacement = if let Some(content) = source
-                .strip_prefix(opening)
-                .and_then(|content| content.strip_suffix(closing))
-                .filter(|content| !content.contains(opening) && !content.contains(closing))
+            if let Some(content) = uncomment_paired_content(&source, opening, closing) {
+                vec![(start, end, content.to_string())]
+            } else if let Some(replacements) = lines
+                .iter()
+                .map(|(line, text)| {
+                    let indent = leading_line_indent(text);
+                    let content = uncomment_paired_content(
+                        text[indent.len()..].trim_end(),
+                        opening,
+                        closing,
+                    )?;
+                    Some((
+                        Pos::new(*line, indent.chars().count()),
+                        Pos::new(*line, text.trim_end().chars().count()),
+                        content.to_string(),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()
             {
-                let content = content.strip_prefix(' ').unwrap_or(content);
-                content.strip_suffix(' ').unwrap_or(content).to_string()
+                replacements
+            } else if source.contains(opening) || source.contains(closing) {
+                self.set_status(
+                    "cannot toggle comments safely: selection contains comment delimiters",
+                );
+                return;
             } else {
-                format!("{opening} {source} {closing}")
-            };
-            vec![(start, end, replacement)]
+                vec![(start, end, format!("{opening} {source} {closing}"))]
+            }
         };
         let new_cursor = if self.mode == EditorMode::Normal {
             self.active_cursor_pos()
@@ -1231,6 +1248,19 @@ fn normalize_clipboard_text(text: &str) -> String {
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
         .collect()
+}
+
+fn uncomment_paired_content<'source>(
+    source: &'source str,
+    opening: &str,
+    closing: &str,
+) -> Option<&'source str> {
+    let content = source.strip_prefix(opening)?.strip_suffix(closing)?;
+    if content.contains(opening) || content.contains(closing) {
+        return None;
+    }
+    let content = content.strip_prefix(' ').unwrap_or(content);
+    Some(content.strip_suffix(' ').unwrap_or(content))
 }
 
 fn leading_line_indent(text: &str) -> &str {
