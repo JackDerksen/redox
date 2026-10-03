@@ -21,6 +21,12 @@ lower-priority locations or merge multiple files. Empty or relative
 invalid values are rejected at startup so that spelling mistakes do not fail
 silently.
 
+Launch with `redox --default-config` to use only the built-in defaults. This
+skips configuration files, including paths supplied by `--config` or
+`REDOX_CONFIG`, and also applies to CLI help and version styling. The flag can
+be combined with a file or directory, for example
+`redox --default-config README.md`.
+
 For a compact starting point, try copying
 [`config.example.toml`](config.example.toml).
 
@@ -60,6 +66,10 @@ automatic location, `:config reload` discovers it. If an automatically
 discovered file is removed, reloading restores the built-in defaults. Paths
 supplied using `--config` or `REDOX_CONFIG` remain authoritative and must
 continue to exist.
+
+With `--default-config`, `:config reload` restores the built-in defaults without
+reading a configuration file. `:config` still opens the usual configuration
+path for editing; restart without the flag to load those changes.
 
 ## Managed state
 
@@ -101,7 +111,7 @@ for available controls.
 theme = "default"
 icons_enabled = false
 text_formatting = true # Set false for plain, unstyled text throughout Redox
-mouse = false
+mouse = true
 mouse_invert_vertical = false
 mouse_invert_horizontal = false
 mouse_scroll_step_vertical = 3
@@ -120,7 +130,7 @@ leader = " "
 | `theme` | string | `"default"` | Active built-in or user-defined theme name. |
 | `icons_enabled` | boolean | `false` | Enables built-in Nerd Font icons in status modules, file lists, and popup titles. Requires a Nerd Font in the terminal. |
 | `text_formatting` | boolean | `true` | Enables font decorations. Set `false` to suppress bold, italic, dim, reverse, strikethrough, and underlines throughout the UI, syntax highlighting, integrated terminal, and CLI output. Colours are retained. |
-| `mouse` | boolean | `false` | Enables scrolling, cursor placement, drag selection, popup interaction, and pane resizing. Takes effect on configuration reload. When disabled, terminal mouse capture is released. |
+| `mouse` | boolean | `true` | Enables scrolling, cursor placement, drag selection, popup interaction, and pane resizing. Takes effect on configuration reload. When disabled, terminal mouse capture is released. |
 | `mouse_invert_vertical` | boolean | `false` | Reverses the vertical wheel direction reported by the terminal. |
 | `mouse_invert_horizontal` | boolean | `false` | Reverses the horizontal wheel direction reported by the terminal. |
 | `mouse_scroll_step_vertical` | integer | `3` | Rows per vertical wheel event, from `1` to `65535`. |
@@ -168,12 +178,12 @@ disabled.
 
 ## Mouse support
 
-Set `mouse = true` at the top level of the configuration file, then run
-`:config reload`. Scroll vertically or horizontally to move the pane under the
-pointer without changing keyboard focus. Left-click to place the cursor or focus
-a split pane. Drag with the left button to enter characterwise visual mode; the
-selection remains active after release and accepts the usual visual-mode keys.
-Dragging beyond the pane's edge scrolls as drag events arrive.
+Mouse support is enabled by default. Scroll vertically or horizontally to move
+the pane under the pointer without changing keyboard focus. Left-click to place
+the cursor or focus a split pane. Drag with the left button to enter
+characterwise visual mode; the selection remains active after release and
+accepts the usual visual-mode keys. Dragging beyond the pane's edge scrolls as
+drag events arrive.
 
 Mouse scrolling moves the page without changing the cursor's document position,
 even beyond the viewport edge or `scrolloff` margin. The cursor is hidden
@@ -224,8 +234,10 @@ momentum from scrolling the buffer or another popup after dismissal.
 
 Redox ignores right-clicks and does not display a context menu.
 
-Mouse support defaults to `false`. Disabling it releases mouse capture so the
-terminal can handle selection and its own context menu.
+Set `mouse = false` and run `:config reload` to release mouse capture so the
+terminal can handle selection and its own context menu. Some terminals translate
+wheel gestures into arrow-key input while mouse capture is disabled, which moves
+the editor cursor instead of scrolling the viewport independently.
 
 ## Optional logging
 

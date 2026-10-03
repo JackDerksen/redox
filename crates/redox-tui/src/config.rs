@@ -57,7 +57,7 @@ impl Default for Config {
             text_formatting: true,
             animations: AnimationConfig::default(),
             check_updates: true,
-            mouse: false,
+            mouse: true,
             mouse_invert_vertical: false,
             mouse_invert_horizontal: false,
             mouse_scroll_step_vertical: 3,
@@ -724,7 +724,7 @@ type_name = "#112233"
         assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
         assert!(config.check_updates);
-        assert!(!config.mouse);
+        assert!(config.mouse);
         assert!(!config.mouse_invert_vertical);
         assert!(!config.mouse_invert_horizontal);
         assert_eq!(config.mouse_scroll_step_vertical, 3);
@@ -733,7 +733,7 @@ type_name = "#112233"
             toml::from_str("mouse_invert_vertical = true\nmouse_invert_horizontal = true").unwrap();
         assert!(mouse_config.mouse_invert_vertical);
         assert!(mouse_config.mouse_invert_horizontal);
-        assert!(toml::from_str::<Config>("mouse = true").unwrap().mouse);
+        assert!(!toml::from_str::<Config>("mouse = false").unwrap().mouse);
         assert!(
             !toml::from_str::<Config>("check_updates = false")
                 .unwrap()

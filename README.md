@@ -160,6 +160,8 @@ It looks for configuration at `$REDOX_CONFIG`,
 `$XDG_CONFIG_HOME/redox/config.toml`, or `~/.config/redox/config.toml` (in that
 order). A different file can be selected with
 `redox --config /path/to/config.toml`.
+Launch with `redox --default-config` to use only the built-in defaults,
+ignoring configuration files for the session.
 
 Configuration supports features like named themes, the complete base palette,
 every syntax role, per-role colours and font formatting, a global plain-text
@@ -523,7 +525,7 @@ Other language tool commands:
 
 ### Editing and motion
 
-Optional mouse support is enabled with `mouse = true` in your configuration. It
+Mouse support is enabled by default; set `mouse = false` to disable it. It
 supports vertical and horizontal scrolling, click-to-position, and drag
 selection into visual mode. Popups support scrolling, entry selection,
 double-click opening, and outside-click dismissal. Set

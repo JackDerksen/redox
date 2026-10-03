@@ -77,7 +77,23 @@ enum LaunchTarget {
 
 struct LaunchOptions {
     target: LaunchTarget,
-    config_path: Option<PathBuf>,
+    config: LaunchConfig,
+}
+
+#[derive(Default)]
+struct LaunchConfig {
+    path: Option<PathBuf>,
+    default_only: bool,
+}
+
+impl LaunchConfig {
+    fn load(&self) -> anyhow::Result<(config::Config, Option<PathBuf>)> {
+        if self.default_only {
+            Ok((config::Config::default(), None))
+        } else {
+            config::Config::load(self.path.as_deref())
+        }
+    }
 }
 
 struct LineHighlights<'a> {
@@ -3261,7 +3277,7 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
         && env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
         && env::var("TERM").as_deref() != Ok("dumb");
     let mut args = env::args().skip(1);
-    let mut config_path = None;
+    let mut config = LaunchConfig::default();
     let mut target_path = None;
     let mut parse_options = true;
     let mut show_help = None;
@@ -3272,13 +3288,15 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             show_help.get_or_insert(false);
         } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
             show_help.get_or_insert(true);
+        } else if parse_options && raw == "--default-config" {
+            config.default_only = true;
         } else if parse_options && raw == "--config" {
-            config_path =
+            config.path =
                 Some(PathBuf::from(args.next().ok_or_else(|| {
                     anyhow::anyhow!("--config requires a path")
                 })?));
         } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
-            config_path = Some(PathBuf::from(path));
+            config.path = Some(PathBuf::from(path));
         } else if parse_options && raw.starts_with('-') {
             anyhow::bail!("unknown option: {raw}");
         } else if target_path.replace(PathBuf::from(&raw)).is_some() {
@@ -3287,7 +3305,8 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
     }
     if let Some(show_help) = show_help {
         // Help remains available when the user's configuration is invalid.
-        let style = config::Config::load(config_path.as_deref())
+        let style = config
+            .load()
             .and_then(|(config, _)| config.style())
             .unwrap_or_default();
         if show_help {
@@ -3300,10 +3319,11 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             println!(
                 "\n{heading}Usage:{reset} {bold}redox{reset} [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
                  {heading}Options:{reset}\n  \
-                 {bold}--config{reset} <PATH>  Use a configuration file\n  \
-                 {bold}-h, --help{reset}       Print help\n  \
-                 {bold}-V, --version{reset}    Print version\n  \
-                 {bold}--{reset}               Treat remaining arguments as paths"
+                 {bold}--config{reset} <PATH>   Use a configuration file\n  \
+                 {bold}--default-config{reset}  Use only built-in defaults, ignoring configuration files\n  \
+                 {bold}-h, --help{reset}        Print help\n  \
+                 {bold}-V, --version{reset}     Print version\n  \
+                 {bold}--{reset}                Treat remaining arguments as paths"
             );
             return Ok(None);
         } else {
@@ -3319,22 +3339,12 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             return Ok(None);
         }
     }
-    let Some(path) = target_path else {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Empty,
-            config_path,
-        }));
+    let target = match target_path {
+        None => LaunchTarget::Empty,
+        Some(path) if path.is_dir() => LaunchTarget::Explorer(path),
+        Some(path) => LaunchTarget::File(path),
     };
-    if path.is_dir() {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Explorer(path),
-            config_path,
-        }));
-    }
-    Ok(Some(LaunchOptions {
-        target: LaunchTarget::File(path),
-        config_path,
-    }))
+    Ok(Some(LaunchOptions { target, config }))
 }
 
 fn is_cancel_event(event: &Event) -> bool {
@@ -3590,14 +3600,14 @@ fn reload_runtime_config(
     active_config: &mut config::Config,
     active_theme: &mut String,
     theme_override: &mut Option<String>,
-    explicit_path: Option<&std::path::Path>,
+    launch_config: &LaunchConfig,
 ) {
     if !state.take_config_reload_request() {
         return;
     }
 
     let result = (|| -> anyhow::Result<Option<PathBuf>> {
-        let (candidate, loaded_path) = config::Config::load(explicit_path)?;
+        let (candidate, loaded_path) = launch_config.load()?;
         let candidate_theme = theme_override
             .as_ref()
             .filter(|name| candidate.has_theme(name))
@@ -3643,6 +3653,9 @@ fn reload_runtime_config(
     match result {
         Ok(loaded_path) => match loaded_path {
             Some(path) => state.set_status(format!("configuration reloaded: {}", path.display())),
+            None if launch_config.default_only => {
+                state.set_status("configuration reloaded with built-in defaults (--default-config)")
+            }
             None => state
                 .set_status("configuration reloaded with built-in defaults (no config file found)"),
         },
@@ -3697,8 +3710,7 @@ pub fn run() -> anyhow::Result<()> {
     if let Err(error) = storage::migrate_legacy_state() {
         eprintln!("warning: could not migrate legacy Redox state: {error}");
     }
-    let explicit_config_path = options.config_path.clone();
-    let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
+    let (mut config, _) = options.config.load()?;
     let input = configured_input(&config)?;
     let mut style = config.style()?;
     let mut active_theme = config.theme.clone();
@@ -3802,7 +3814,7 @@ pub fn run() -> anyhow::Result<()> {
         }
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
-        open_runtime_config(&mut state, explicit_config_path.as_deref());
+        open_runtime_config(&mut state, options.config.path.as_deref());
         reload_runtime_config(
             &mut state,
             window.keyboard_mut(),
@@ -3810,7 +3822,7 @@ pub fn run() -> anyhow::Result<()> {
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            explicit_config_path.as_deref(),
+            &options.config,
         );
         if config.mouse != state.mouse.enabled {
             window.set_mouse_capture(config.mouse)?;
@@ -3902,9 +3914,21 @@ mod tests {
         assert_eq!(
             state.active_cursor_pos(),
             Pos::zero(),
-            "disabled by default"
+            "ignored before mouse configuration"
         );
-        state.configure_mouse(true, false, false, 3, 3);
+        let (config, _) = LaunchConfig {
+            default_only: true,
+            ..LaunchConfig::default()
+        }
+        .load()
+        .unwrap();
+        state.configure_mouse(
+            config.mouse,
+            config.mouse_invert_vertical,
+            config.mouse_invert_horizontal,
+            config.mouse_scroll_step_vertical,
+            config.mouse_scroll_step_horizontal,
+        );
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -6499,6 +6523,10 @@ background = "#010203"
 "##,
         )
         .expect("failed to write valid config");
+        let launch_config = LaunchConfig {
+            path: Some(config_path.clone()),
+            ..LaunchConfig::default()
+        };
 
         let session = EditorSession::open_initial_unnamed().expect("failed to open session");
         let mut state = EditorState::new(session);
@@ -6516,7 +6544,7 @@ background = "#010203"
             &mut active_config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(style.theme.bg, Color::Rgb { r: 1, g: 2, b: 3 });
@@ -6571,7 +6599,7 @@ background = "#010203"
             &mut active_config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(style.theme, previous_style.theme);
@@ -6691,6 +6719,10 @@ background = "#141415"
             "[themes.vague.palette]\nbackground = \"#141415\"\n",
         )
         .unwrap();
+        let launch_config = LaunchConfig {
+            path: Some(config_path.clone()),
+            ..LaunchConfig::default()
+        };
         let (mut config, _) = config::Config::load(Some(&config_path)).unwrap();
         let session = EditorSession::open_initial_unnamed().expect("failed to open session");
         let mut state = EditorState::new(session);
@@ -6734,7 +6766,7 @@ desc = "Open notes again"
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(active_theme, "vague");
@@ -6773,7 +6805,7 @@ desc = "Open notes again"
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
         for (prefix, expected) in [
             ("colorscheme v", None),

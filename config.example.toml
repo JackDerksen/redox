@@ -6,7 +6,7 @@
 theme = "default"
 icons_enabled = false # Requires a Nerd Font in the terminal
 text_formatting = true # false disables all font attributes, including terminal output
-mouse = false # Enable scrolling, cursor placement, and drag selection
+mouse = true # Scrolling, cursor placement, and drag selection; false releases mouse capture
 mouse_invert_vertical = false # Reverse the terminal's vertical wheel direction
 mouse_invert_horizontal = false # Reverse the terminal's horizontal wheel direction
 mouse_scroll_step_vertical = 3 # Rows per wheel event, 1..65535
