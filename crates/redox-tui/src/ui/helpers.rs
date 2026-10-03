@@ -1,6 +1,19 @@
 //! Small shared UI helpers for editor rendering paths.
 
 use minui::{Color, ColorPair};
+use std::time::Duration;
+
+pub(crate) fn animation_progress(elapsed: Duration, duration: Duration) -> f32 {
+    if duration.is_zero() {
+        1.0
+    } else {
+        (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+    }
+}
+
+pub(crate) fn smoothstep(progress: f32) -> f32 {
+    progress * progress * (3.0 - 2.0 * progress)
+}
 
 /// Size a region proportionally, keeping its minimum within the available space.
 pub fn proportional_size(available: u16, percent: u16, minimum: u16) -> u16 {

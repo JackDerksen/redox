@@ -3,7 +3,7 @@ use crate::ui::text_style::TextStyle;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-use minui::{Color, Style, TabPolicy, Window, cell_width};
+use minui::{Color, ColorPair, Style, TabPolicy, Window, cell_width};
 use redox_core::{Pos, TextBuffer, TextDiff};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -20,6 +20,79 @@ pub(crate) struct LineDecorations<'a> {
     pub search_style: TextStyle,
     pub current_style: TextStyle,
     pub error_style: TextStyle,
+    pub yank_highlight: Option<YankHighlight<'a>>,
+    pub jump_highlight: Option<HighlightFade>,
+    pub delimiter_blink: Option<(usize, HighlightFade)>,
+    pub undo_redo_highlight: Option<(&'a [bool], HighlightFade)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct HighlightFade {
+    foreground: Color,
+    strength: f32,
+}
+
+impl HighlightFade {
+    pub fn new(progress: f32, foreground: Color) -> Self {
+        let remaining = 1.0 - progress;
+        Self {
+            foreground,
+            strength: 0.22 * remaining * remaining,
+        }
+    }
+
+    fn apply(self, style: Style) -> Style {
+        let Some(colors) = style.colors else {
+            return style;
+        };
+        style.with_colors(ColorPair::new(
+            colors.fg,
+            super::style::dim_foreground_color(self.foreground, colors.bg, 1.0 - self.strength),
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct YankHighlight<'a> {
+    cells: &'a [bool],
+    head: f32,
+    tail_width: f32,
+    colors: ColorPair,
+}
+
+impl<'a> YankHighlight<'a> {
+    pub fn new(cells: &'a [bool], progress: f32, colors: ColorPair) -> Option<Self> {
+        let start = cells.iter().position(|selected| *selected)?;
+        let end = cells.iter().rposition(|selected| *selected)?;
+        let width = (end - start + 1) as f32;
+        let tail_width = (width * 0.45).max(6.0);
+        Some(Self {
+            cells,
+            head: start as f32 - 1.0 + progress * (width + tail_width),
+            tail_width,
+            colors,
+        })
+    }
+
+    fn apply(self, style: Style, range: std::ops::Range<usize>) -> Style {
+        let Some(cell) = range
+            .into_iter()
+            .find(|cell| self.cells.get(*cell) == Some(&true))
+        else {
+            return style;
+        };
+        let distance = self.head - cell as f32;
+        let strength =
+            (1.0 - distance / self.tail_width).clamp(0.0, 1.0) * (distance + 1.0).clamp(0.0, 1.0);
+        if strength == 0.0 {
+            return style;
+        }
+        let base = style.colors.unwrap_or(self.colors);
+        style.with_colors(ColorPair::new(
+            super::style::dim_foreground_color(base.fg, self.colors.bg, strength),
+            super::style::dim_foreground_color(self.colors.fg, base.bg, 1.0 - strength),
+        ))
+    }
 }
 
 impl LineDecorations<'_> {
@@ -37,6 +110,22 @@ impl LineDecorations<'_> {
         }
         if overlaps(self.error_cells) {
             style = self.error_style.overlay(style);
+        }
+        if let Some((column, blink)) = self.delimiter_blink
+            && range.contains(&column)
+        {
+            style = blink.apply(style);
+        }
+        if let Some((cells, highlight)) = self.undo_redo_highlight
+            && overlaps(cells)
+        {
+            style = highlight.apply(style);
+        }
+        if let Some(highlight) = self.yank_highlight {
+            style = highlight.apply(style, range);
+        }
+        if let Some(highlight) = self.jump_highlight {
+            style = highlight.apply(style);
         }
         style
     }

@@ -8,6 +8,7 @@ use crate::ui::widgets::popup::clip_text_to_cells;
 pub fn draw_pane_filename(
     window: &mut dyn Window,
     filename: &str,
+    dirty: bool,
     colors: TextStyle,
 ) -> minui::Result<()> {
     let (width, height) = window.get_size();
@@ -17,9 +18,21 @@ pub fn draw_pane_filename(
 
     window.write_str_styled(0, 0, &" ".repeat(width as usize), colors.into())?;
     let padding = u16::from(width > 2);
-    let filename = clip_text_to_cells(filename, (width - padding * 2) as usize);
-    let column = width.saturating_sub(cell_width(&filename, TabPolicy::Fixed(4))) / 2;
-    window.write_str_styled(0, column, &filename, minui::Style::from(colors))
+    let available_width = width - padding * 2;
+    let marker = if !dirty {
+        ""
+    } else if available_width > 1 {
+        " +"
+    } else {
+        "+"
+    };
+    let filename = clip_text_to_cells(
+        filename,
+        available_width.saturating_sub(marker.len() as u16) as usize,
+    );
+    let title = format!("{filename}{marker}");
+    let column = width.saturating_sub(cell_width(&title, TabPolicy::Fixed(4))) / 2;
+    window.write_str_styled(0, column, &title, minui::Style::from(colors))
 }
 
 pub fn draw_pane_split_lines(

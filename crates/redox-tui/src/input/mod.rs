@@ -143,6 +143,7 @@ pub enum InputAction {
         opening: char,
         closing: char,
     },
+    ToggleComments,
     MoveVisualSelectionUp {
         count: usize,
     },
@@ -278,6 +279,7 @@ enum SequenceAction {
     GotoDefinition,
     YankSelectionSystem,
     WrapSelection { opening: char, closing: char },
+    ToggleComments,
     PasteSystemClipboard,
     FileStart,
     CenterCursorLine,
@@ -350,6 +352,16 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
 
 const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
     SequenceBinding {
+        sequence: "gc",
+        fallback: PrefixFallback::Consume,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: "gcc",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::ToggleComments),
+    },
+    SequenceBinding {
         sequence: " p",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::PasteSystemClipboard),
@@ -367,6 +379,11 @@ const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
 ];
 
 const VISUAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
+    SequenceBinding {
+        sequence: "gc",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::ToggleComments),
+    },
     SequenceBinding {
         sequence: " y",
         fallback: PrefixFallback::Consume,
@@ -1153,9 +1170,11 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
         Some(SequenceAction::GotoDefinition) => "Go to definition",
         Some(SequenceAction::YankSelectionSystem) => "Yank to system clipboard",
         Some(SequenceAction::WrapSelection { .. }) => "Wrap selection",
+        Some(SequenceAction::ToggleComments) => "Toggle comments",
         Some(SequenceAction::PasteSystemClipboard) => "Paste system clipboard",
         Some(SequenceAction::FileStart) => "Start of file",
         Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
+        None if binding.sequence == "gc" => "+comment",
         None if binding.sequence.ends_with('c') => "+code",
         None => "+prefix",
     }
@@ -2505,6 +2524,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
         "open_line_below" => InputAction::OpenLineBelow,
         "open_line_above" => InputAction::OpenLineAbove,
         "delete_char" => InputAction::DeleteCharNoYank,
+        "toggle_comments" => InputAction::ToggleComments,
         "yank" => InputAction::YankSelectionPrivate,
         "delete" => InputAction::DeleteSelectionPrivate,
         "paste_system" => InputAction::PasteSystemClipboard,
@@ -2561,6 +2581,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
 
 fn input_action_description(action: &InputAction) -> &'static str {
     match action {
+        InputAction::ToggleComments => "Toggle comments",
         InputAction::OpenExplorer => "Open explorer",
         InputAction::ToggleUndoTree => "Toggle undo tree",
         InputAction::ToggleZen => "Toggle zen mode",
@@ -2692,6 +2713,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::WrapSelection { opening, closing }) => {
             state.reset_prefixes();
             InputAction::WrapSelection { opening, closing }
+        }
+        Some(SequenceAction::ToggleComments) => {
+            state.reset_prefixes();
+            InputAction::ToggleComments
         }
         Some(SequenceAction::PasteSystemClipboard) => {
             state.reset_prefixes();
@@ -3597,6 +3622,13 @@ mod tests {
             (InputMode::Visual, " z", InputAction::ToggleZen),
             (InputMode::Normal, " x", InputAction::ToggleDiagnosticsList),
             (InputMode::Normal, " ca", InputAction::TriggerCodeActions),
+            (InputMode::Visual, " c", InputAction::None),
+            (InputMode::VisualLine, " c", InputAction::None),
+            (InputMode::VisualBlock, " c", InputAction::None),
+            (InputMode::Normal, "gcc", InputAction::ToggleComments),
+            (InputMode::Visual, "gc", InputAction::ToggleComments),
+            (InputMode::VisualLine, "gc", InputAction::ToggleComments),
+            (InputMode::VisualBlock, "gc", InputAction::ToggleComments),
             (InputMode::Normal, "gd", InputAction::GotoDefinition),
             (InputMode::Normal, "gg", motion(Motion::FileStart, 1)),
             (InputMode::Normal, " p", InputAction::PasteSystemClipboard),
@@ -4232,6 +4264,12 @@ mod tests {
 
         assert_eq!(popup.prefix, "<leader>");
         assert!(
+            popup
+                .entries
+                .iter()
+                .any(|entry| { entry.key == "c" && entry.description == "+code" })
+        );
+        assert!(
             popup.entries.iter().any(|entry| {
                 entry.key == "y" && entry.description == "Yank to system clipboard"
             })
@@ -4242,6 +4280,25 @@ mod tests {
                     .entries
                     .iter()
                     .any(|entry| { entry.key == key && entry.description == "Wrap selection" })
+            );
+        }
+        for (mode, prefix) in [(InputMode::Visual, "g"), (InputMode::Normal, "gc")] {
+            state.reset_prefixes();
+            for key in prefix.chars() {
+                let _ = map_event_with_state(&mut state, mode, &Event::Character(key));
+            }
+            let popup = state
+                .which_key_popup(
+                    mode,
+                    Instant::now() + DEFAULT_WHICH_KEY_DELAY,
+                    DEFAULT_WHICH_KEY_DELAY,
+                )
+                .unwrap();
+            assert!(
+                popup
+                    .entries
+                    .iter()
+                    .any(|entry| { entry.key == "c" && entry.description == "Toggle comments" })
             );
         }
     }

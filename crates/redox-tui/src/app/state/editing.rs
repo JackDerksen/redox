@@ -6,7 +6,7 @@ use redox_core::{
 use super::{EditorMode, EditorState, RegisterKind};
 use crate::input::{OperatorTarget, TextObjectOperator};
 use crate::ui::language_for_path;
-use crate::ui::syntax::desired_indent_for_line;
+use crate::ui::syntax::{comment_delimiters_for_path, desired_indent_for_line};
 
 struct OperatorTargetPlan {
     delete_ranges: Vec<(Pos, Pos)>,
@@ -231,7 +231,10 @@ impl EditorState {
                         text: buffer.slice_pos_range(start, end),
                         register_kind: RegisterKind::CharWise,
                         preserve_blank_line_on_change: false,
-                        yank_highlight: None,
+                        yank_highlight: Some((
+                            Selection::new(start, inclusive_end),
+                            VisualModeKind::Char,
+                        )),
                     });
                 }
 
@@ -261,7 +264,13 @@ impl EditorState {
                     text: buffer.slice_pos_range(cursor, end),
                     register_kind: RegisterKind::CharWise,
                     preserve_blank_line_on_change: false,
-                    yank_highlight: None,
+                    yank_highlight: {
+                        let (start, end) = selection.ordered();
+                        Some((
+                            Selection::new(start, buffer.move_left(end)),
+                            VisualModeKind::Char,
+                        ))
+                    },
                 })
             }
             OperatorTarget::TextObject(spec) => {
@@ -356,9 +365,9 @@ impl EditorState {
                 self.private_register = plan.text;
                 self.private_register_kind = plan.register_kind;
                 if let Some((selection, mode)) = plan.yank_highlight {
-                    self.set_one_shot_highlight(selection, mode);
+                    self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                 }
-                self.set_status("yanked");
+                self.confirm_yank("yanked");
             }
             TextObjectOperator::Select => {}
         }
@@ -433,8 +442,9 @@ impl EditorState {
         self.set_one_shot_highlight(
             Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
             VisualModeKind::Line,
+            super::HighlightKind::Yank,
         );
-        self.set_status(if start_line == end_line {
+        self.confirm_yank(if start_line == end_line {
             "yanked line"
         } else {
             "yanked lines"
@@ -709,6 +719,119 @@ impl EditorState {
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
 
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
+    pub(super) fn toggle_active_comments(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        if !matches!(
+            self.mode,
+            EditorMode::Normal
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
+        ) || !self.ensure_active_fully_loaded_for_edit_or_save()
+        {
+            return;
+        }
+        let Some((opening, closing)) =
+            comment_delimiters_for_path(self.session.active_meta().path.as_deref())
+        else {
+            self.set_status("comment syntax unavailable for this file");
+            return;
+        };
+        let (start_line, end_line) = if self.mode == EditorMode::Normal {
+            let line = self
+                .session
+                .active_buffer()
+                .clamp_line(self.active_cursor_pos().line);
+            (line, line)
+        } else {
+            let Some(range) = self.active_visual_line_range() else {
+                return;
+            };
+            range
+        };
+        let buffer = self.session.active_buffer();
+        let lines = (start_line..=end_line)
+            .map(|line| (line, buffer.line_string(line)))
+            .filter(|(_, text)| !text.trim().is_empty())
+            .collect::<Vec<_>>();
+        let Some((first_line, first_text)) = lines.first() else {
+            return;
+        };
+        let replacements = if closing.is_empty() {
+            let uncomment = lines
+                .iter()
+                .all(|(_, text)| text[leading_line_indent(text).len()..].starts_with(opening));
+            lines
+                .iter()
+                .map(|(line, text)| {
+                    let indent = leading_line_indent(text);
+                    let content = &text[indent.len()..];
+                    let replacement = if uncomment {
+                        let content = &content[opening.len()..];
+                        format!("{indent}{}", content.strip_prefix(' ').unwrap_or(content))
+                    } else {
+                        format!("{indent}{opening} {content}")
+                    };
+                    (
+                        Pos::new(*line, 0),
+                        Pos::new(*line, text.chars().count()),
+                        replacement,
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let (last_line, last_text) = lines.last().expect("nonempty selection");
+            let start = Pos::new(*first_line, leading_line_indent(first_text).chars().count());
+            let end = Pos::new(*last_line, last_text.trim_end().chars().count());
+            let source = buffer.slice_pos_range(start, end);
+            if let Some(content) = uncomment_paired_content(&source, opening, closing) {
+                vec![(start, end, content.to_string())]
+            } else if let Some(replacements) = lines
+                .iter()
+                .map(|(line, text)| {
+                    let indent = leading_line_indent(text);
+                    let content = uncomment_paired_content(
+                        text[indent.len()..].trim_end(),
+                        opening,
+                        closing,
+                    )?;
+                    Some((
+                        Pos::new(*line, indent.chars().count()),
+                        Pos::new(*line, text.trim_end().chars().count()),
+                        content.to_string(),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()
+            {
+                replacements
+            } else if source.contains(opening) || source.contains(closing) {
+                self.set_status(
+                    "cannot toggle comments safely: selection contains comment delimiters",
+                );
+                return;
+            } else {
+                vec![(start, end, format!("{opening} {source} {closing}"))]
+            }
+        };
+        let new_cursor = if self.mode == EditorMode::Normal {
+            self.active_cursor_pos()
+        } else {
+            Pos::new(*first_line, 0)
+        };
+        let before = self.capture_active_undo_checkpoint();
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        {
+            let buffer = self.session.active_buffer_mut();
+            for (start, end, text) in replacements.into_iter().rev() {
+                let _ = buffer.replace_selection(Selection::new(start, end), &text);
+            }
+            view.cursor.cursor = new_cursor;
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
         self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
     }
 
@@ -1125,6 +1248,19 @@ fn normalize_clipboard_text(text: &str) -> String {
         .chars()
         .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
         .collect()
+}
+
+fn uncomment_paired_content<'source>(
+    source: &'source str,
+    opening: &str,
+    closing: &str,
+) -> Option<&'source str> {
+    let content = source.strip_prefix(opening)?.strip_suffix(closing)?;
+    if content.contains(opening) || content.contains(closing) {
+        return None;
+    }
+    let content = content.strip_prefix(' ').unwrap_or(content);
+    Some(content.strip_suffix(' ').unwrap_or(content))
 }
 
 fn leading_line_indent(text: &str) -> &str {

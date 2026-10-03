@@ -28,7 +28,7 @@ mod storage;
 mod terminal;
 mod ui;
 
-use app::state::PaneId;
+use app::state::{HighlightKind, OneShotHighlight, PaneId};
 use app::{EditorState, FramePerfSample, UndoTreeSurfaceRole};
 use input::{
     ConfiguredBinding, ConfiguredBindingTarget, InputAction, InputState, map_event_with_context,
@@ -39,8 +39,8 @@ use crate::ui::icons::{
     DIAGNOSTIC_ERROR, DIAGNOSTIC_HINT, DIAGNOSTIC_INFORMATION, DIAGNOSTIC_WARNING,
 };
 use ui::overlays::{
-    LineDecorations, active_delimiter_highlights, active_scope_indent_guides,
-    draw_delimiter_highlights, draw_indent_guides,
+    HighlightFade, LineDecorations, YankHighlight, active_delimiter_highlights,
+    active_scope_indent_guides, draw_delimiter_highlights, draw_indent_guides,
 };
 use ui::syntax::{
     VisibleLineSyntaxSpans, draw_line_with_syntax, lexical_fallback_line_spans,
@@ -77,7 +77,23 @@ enum LaunchTarget {
 
 struct LaunchOptions {
     target: LaunchTarget,
-    config_path: Option<PathBuf>,
+    config: LaunchConfig,
+}
+
+#[derive(Default)]
+struct LaunchConfig {
+    path: Option<PathBuf>,
+    default_only: bool,
+}
+
+impl LaunchConfig {
+    fn load(&self) -> anyhow::Result<(config::Config, Option<PathBuf>)> {
+        if self.default_only {
+            Ok((config::Config::default(), None))
+        } else {
+            config::Config::load(self.path.as_deref())
+        }
+    }
 }
 
 struct LineHighlights<'a> {
@@ -96,7 +112,7 @@ struct BufferDrawOptions {
 
 struct BufferHighlights<'a> {
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<OneShotHighlight>,
     search_highlights: &'a BTreeMap<usize, app::state::SearchLineHighlights>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
@@ -123,7 +139,7 @@ struct SnapshotOverlays<'a> {
     snippet_placeholders: &'a BTreeMap<usize, Vec<std::ops::Range<usize>>>,
     diagnostic_lines: &'a BTreeMap<usize, app::DiagnosticLine>,
     visual_selection: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
-    one_shot_highlight: Option<(redox_core::Selection, redox_core::VisualModeKind)>,
+    one_shot_highlight: Option<OneShotHighlight>,
     focused_lines: Option<std::ops::Range<usize>>,
 }
 
@@ -133,6 +149,7 @@ fn draw_buffer_view(
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
+    state.sync_focus(Instant::now());
     let (width, height) = window.get_size();
     let viewport_width = if state.zen.enabled {
         proportional_size(width, state.zen.width_percent, state.zen.min_width)
@@ -186,7 +203,11 @@ fn draw_buffer_view(
     if state.terminal.is_focused() {
         hide_cursor(&mut viewport);
     }
-    state.terminal.draw(&mut viewport, style)
+    state.terminal.draw(
+        &mut viewport,
+        style,
+        style.dim_amount * state.terminal_focus_dimming(Instant::now()),
+    )
 }
 
 fn draw_editor_area(
@@ -217,17 +238,9 @@ fn draw_editor_view(
 ) -> minui::Result<()> {
     let (vw, vh) = window.get_size();
     let which_key_popup = state.which_key_popup(Instant::now());
-    let popup_overlay_active = (state.mode.has_popup_overlay()
-        && state.substitute_preview().is_none())
-        || state.explorer_popup().is_some()
-        || state.about_popup().is_some()
-        || which_key_popup.is_some();
-    let editor_unfocused = popup_overlay_active || state.terminal.is_focused();
-    let background_style = if editor_unfocused {
-        style.dimmed()
-    } else {
-        style
-    };
+    let background_style = style.dimmed_by(
+        style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
+    );
     let editor_text = background_style.editor_text;
     fill_background(window, vw, vh, editor_text)?;
     let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
@@ -245,6 +258,7 @@ fn draw_editor_view(
             background_style,
             selected,
             state.mode == app::EditorMode::Normal,
+            state.dashboard_logo_progress(Instant::now()),
         )?;
         if let Some(popup) = state.finder_popup() {
             let mouse = draw_finder_popup(&popup, style, window)?;
@@ -261,15 +275,7 @@ fn draw_editor_view(
         let fallback_id = state
             .explorer_background_buffer_id()
             .filter(|_| !state.explorer_background_is_placeholder_blank());
-        draw_popup_background(
-            state,
-            background_style,
-            window,
-            vw,
-            text_h,
-            editor_text,
-            fallback_id,
-        )?;
+        draw_popup_background(state, style, window, vw, text_h, fallback_id)?;
         let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
         let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
         let popup_layout = stack_layout.popup;
@@ -308,11 +314,10 @@ fn draw_editor_view(
     if let Some(popup) = state.about_popup() {
         draw_popup_background(
             state,
-            background_style,
+            style,
             window,
             vw,
             text_h,
-            editor_text,
             state.about_background_buffer_id(),
         )?;
         let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
@@ -343,10 +348,9 @@ fn draw_editor_view(
         let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -361,10 +365,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -379,10 +382,9 @@ fn draw_editor_view(
         let inner_size = finder_popup_inner_size(vw, vh, style);
         draw_modal_popup_background(
             state,
-            (style, background_style),
+            style,
             window,
             (vw, text_h),
-            editor_text,
             Some(state.session.active_id()),
             inner_size,
         )?;
@@ -413,15 +415,7 @@ fn draw_editor_view(
             state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
         }
         state.sync_active_pane_view();
-        draw_split_editor_panes(
-            state,
-            background_style,
-            window,
-            vw,
-            text_h,
-            editor_text,
-            !editor_unfocused,
-        )?;
+        draw_split_editor_panes(state, style, window, vw, text_h)?;
         let status_start = Instant::now();
         let status = build_editor_status_bar(state, style);
         status.draw(window)?;
@@ -675,7 +669,9 @@ fn draw_editor_view(
         u16::from(gutter.show_git_marker_column),
         snapshot.first_line()..gutter.total_lines,
         active_cursor_line,
-        visual_selection.map(|(selection, _)| selection.line_range()),
+        visual_selection
+            .map(|(selection, _)| selection.line_range())
+            .or_else(|| one_shot_highlight.and_then(OneShotHighlight::yank_lines)),
     )?;
     draw_gutter_padding(
         window,
@@ -1002,13 +998,19 @@ fn draw_gutter_padding(
 
     let pad = " ".repeat(padding_w as usize);
     let color = TextStyle::new(style.theme.bg, style.theme.bg);
+    let staged_style = style.dimmed_by(style.dim_amount).git;
     for row in 0..text_h {
         if padding_w > 0 {
             window.write_str_styled(row, gutter_w, &pad, color.into())?;
         }
         let line_idx = first_line.saturating_add(row as usize);
-        if let Some(kind) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
-            let (glyph, colors) = style.git.gutter_marker(kind);
+        if let Some(marker) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
+            let marker_style = if marker.staged {
+                staged_style
+            } else {
+                style.git
+            };
+            let (glyph, colors) = marker_style.gutter_marker(marker.kind);
             window.write_str_styled(row, 0, glyph, colors.into())?;
         }
     }
@@ -1122,16 +1124,19 @@ fn draw_line_with_highlights(
         if highlight_empty_line {
             draw_highlight_spaces(
                 window,
-                (row, col),
+                viewport,
                 0,
-                width_cells,
-                normal_color.fg,
+                normal_color,
                 highlight_layers,
                 decorations,
+                color_column,
             )?;
             if let Some((visible_col, bg)) = color_column
                 && visible_col < width_cells
                 && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
+                && decorations
+                    .undo_redo_highlight
+                    .is_none_or(|(cells, _)| cells.get(visible_col) != Some(&true))
             {
                 window.write_str_styled(
                     row,
@@ -1175,7 +1180,7 @@ fn draw_line_with_highlights(
         if start_cell < scroll_x {
             continue;
         }
-        if used_cells.saturating_add(g_width) > width_cells {
+        if end_cell > max_visible_cell {
             break;
         }
 
@@ -1207,33 +1212,47 @@ fn draw_line_with_highlights(
         let text_style =
             decorations.apply(base_style.with_colors(color), visible_start..visible_end);
         if g == "\t" {
-            let spaces = " ".repeat(g_width.max(1));
+            for cell in visible_start..visible_end {
+                let colors = highlight_color_at_cell(highlight_layers, cell, base_color.fg)
+                    .map(|colors| colors.colors())
+                    .unwrap_or_else(|| {
+                        apply_color_column(base_color, color_column, cell, cell + 1)
+                    });
+                window.write_str_styled(
+                    row,
+                    col.saturating_add(cell as u16),
+                    " ",
+                    decorations.apply(base_style.with_colors(colors), cell..cell + 1),
+                )?;
+            }
+        } else {
             window.write_str_styled(
                 row,
-                col.saturating_add(used_cells as u16),
-                &spaces,
+                col.saturating_add(visible_start as u16),
+                g,
                 text_style,
             )?;
-        } else {
-            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
         }
-        used_cells = used_cells.saturating_add(g_width);
+        used_cells = visible_end;
     }
 
     draw_highlight_spaces(
         window,
-        (row, col),
+        viewport,
         used_cells,
-        width_cells,
-        normal_color.fg,
+        normal_color,
         highlight_layers,
         decorations,
+        color_column,
     )?;
 
     if let Some((visible_col, bg)) = color_column
         && visible_col < width_cells
         && visible_col >= used_cells
         && highlight_color_at_cell(highlight_layers, visible_col, normal_color.fg).is_none()
+        && decorations
+            .undo_redo_highlight
+            .is_none_or(|(cells, _)| cells.get(visible_col) != Some(&true))
     {
         window.write_str_styled(
             row,
@@ -1248,16 +1267,33 @@ fn draw_line_with_highlights(
 
 fn draw_highlight_spaces(
     window: &mut dyn Window,
-    (row, col): (u16, u16),
+    viewport: LineViewport,
     start_cell: usize,
-    width_cells: usize,
-    fg: Color,
+    normal_color: TextStyle,
     highlight_layers: &[(&[bool], Color, Option<Color>)],
     decorations: LineDecorations<'_>,
+    color_column: Option<(usize, Color)>,
 ) -> minui::Result<()> {
+    let LineViewport {
+        row,
+        column: col,
+        width: width_cells,
+        ..
+    } = viewport;
     let style_at = |cell| {
-        highlight_color_at_cell(highlight_layers, cell, fg)
-            .map(|colors| decorations.apply(colors.into(), cell..cell + 1))
+        let colors =
+            highlight_color_at_cell(highlight_layers, cell, normal_color.fg).or_else(|| {
+                let (cells, _) = decorations.undo_redo_highlight?;
+                (cells.get(cell) == Some(&true)).then(|| {
+                    normal_color.with_colors(
+                        normal_color.fg,
+                        color_column
+                            .filter(|(column, _)| *column == cell)
+                            .map_or(normal_color.bg, |(_, background)| background),
+                    )
+                })
+            })?;
+        Some(decorations.apply(colors.into(), cell..cell + 1))
     };
     let mut cell = start_cell;
     while cell < width_cells {
@@ -1418,22 +1454,13 @@ fn draw_command_line_below_popup(
 
 fn draw_modal_popup_background(
     state: &mut EditorState,
-    (style, background_style): (UiStyle, UiStyle),
+    style: UiStyle,
     window: &mut dyn Window,
     (width, text_height): (u16, u16),
-    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
     inner_size: (u16, u16),
 ) -> minui::Result<()> {
-    draw_popup_background(
-        state,
-        background_style,
-        window,
-        width,
-        text_height,
-        editor_text,
-        fallback_buffer_id,
-    )?;
+    draw_popup_background(state, style, window, width, text_height, fallback_buffer_id)?;
     let (inner_w, inner_h) = inner_size;
     state.set_viewport_size(
         inner_w as usize,
@@ -1459,18 +1486,26 @@ fn draw_popup_background(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: TextStyle,
     fallback_buffer_id: Option<BufferId>,
 ) -> minui::Result<()> {
+    let background_style = style.dimmed_by(
+        style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
+    );
     if let Some(selected) =
         fallback_buffer_id.and_then(|id| state.dashboard_selection_for_buffer(id))
     {
-        return draw_dashboard(window, style, selected, false);
+        return draw_dashboard(
+            window,
+            background_style,
+            selected,
+            false,
+            state.dashboard_logo_progress(Instant::now()),
+        );
     }
     if state.panes().len() > 1 {
         let active_before_draw = state.session.active_id();
         state.sync_active_pane_view();
-        draw_split_editor_panes(state, style, window, width, height, editor_text, false)?;
+        draw_split_editor_panes(state, style, window, width, height)?;
         let _ = state.session.activate(active_before_draw);
         return Ok(());
     }
@@ -1478,13 +1513,13 @@ fn draw_popup_background(
     if let Some(buffer_id) = fallback_buffer_id {
         draw_buffer_snapshot_for_id(
             state,
-            style,
+            background_style,
             buffer_id,
             BufferDrawOptions {
                 width,
                 height,
                 has_line_numbers: true,
-                colors: editor_text,
+                colors: background_style.editor_text,
             },
             window,
             BufferHighlights {
@@ -1505,10 +1540,9 @@ fn draw_split_editor_panes(
     window: &mut dyn Window,
     width: u16,
     height: u16,
-    editor_text: TextStyle,
-    dim_inactive: bool,
 ) -> minui::Result<()> {
     let rects = state.pane_rects(width, height);
+    let now = Instant::now();
     for rect in rects.iter().copied() {
         let Some((buffer_id, view, options)) = state
             .panes()
@@ -1523,31 +1557,12 @@ fn draw_split_editor_panes(
             .entry(buffer_id)
             .or_default()
             .copy_pane_state_from(&view);
-        let draws_as_active = state.pane_draws_as_active(rect.pane_id);
-        let pane_style = if !dim_inactive || draws_as_active {
-            style
-        } else {
-            style.dimmed()
-        };
-        let pane_text = if !dim_inactive || draws_as_active {
-            editor_text
-        } else {
-            pane_style.editor_text
-        };
+        let dimming = state.pane_focus_dimming(rect.pane_id, now);
+        let pane_style = style.dimmed_by(style.dim_amount * dimming);
         let is_active_pane = rect.pane_id == state.active_pane_id();
-        let inactive_filename = state
-            .session
-            .meta(buffer_id)
-            .filter(|meta| !is_active_pane && meta.kind == redox_core::BufferKind::File)
-            .map(|meta| {
-                meta.path
-                    .as_deref()
-                    .and_then(std::path::Path::file_name)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| meta.display_name.clone())
-            });
-        let header_height = u16::from(inactive_filename.is_some()).min(rect.height);
-        let content_height = rect.height - header_height;
+        let inactive_filename = (!is_active_pane)
+            .then(|| inactive_pane_filename(state, buffer_id))
+            .flatten();
         let mut pane_window = WindowView {
             window,
             x_offset: rect.x,
@@ -1557,11 +1572,6 @@ fn draw_split_editor_panes(
             width: rect.width,
             height: rect.height,
         };
-        if let Some(filename) = inactive_filename {
-            draw_pane_filename(&mut pane_window, &filename, pane_style.pane_title)?;
-            pane_window.y_offset = pane_window.y_offset.saturating_add(header_height);
-            pane_window.height = content_height;
-        }
         if is_active_pane && state.active_rain_animation().is_some() {
             draw_active_split_rain_pane(
                 state,
@@ -1581,7 +1591,7 @@ fn draw_split_editor_panes(
                 .map_or(0, |buffer| buffer.len_lines().max(1));
             let (_, scroll_y) = view.cursor.viewport_scroll();
             let first_line = scroll_y.min(total_lines.saturating_sub(1));
-            let visible_len = (content_height as usize).min(total_lines.saturating_sub(first_line));
+            let visible_len = (rect.height as usize).min(total_lines.saturating_sub(first_line));
             let diagnostic_lines = if is_active_pane {
                 state.active_diagnostic_lines(first_line, visible_len)
             } else {
@@ -1603,9 +1613,9 @@ fn draw_split_editor_panes(
                 buffer_id,
                 BufferDrawOptions {
                     width: rect.width,
-                    height: content_height,
+                    height: rect.height,
                     has_line_numbers: options.has_line_numbers,
-                    colors: pane_text,
+                    colors: pane_style.editor_text,
                 },
                 &mut pane_window,
                 BufferHighlights {
@@ -1617,10 +1627,47 @@ fn draw_split_editor_panes(
                 },
             )?;
         }
+        if let Some((filename, dirty)) = inactive_filename {
+            draw_pane_filename(&mut pane_window, &filename, dirty, pane_style.pane_title)?;
+        }
         state.sync_rendered_pane_view(rect.pane_id, buffer_id);
     }
     state.restore_active_pane_view();
+    let style = style.dimmed_by(style.dim_amount * state.popup_background_dimming(now));
     draw_pane_split_lines(window, style, &rects, width, height)
+}
+
+fn inactive_pane_filename(state: &EditorState, buffer_id: BufferId) -> Option<(String, bool)> {
+    let meta = state
+        .session
+        .meta(buffer_id)
+        .filter(|meta| meta.kind == redox_core::BufferKind::File)?;
+    let filename = if let Some(path) = meta.path.as_deref()
+        && let Some(filename) = path.file_name()
+    {
+        let mut label = PathBuf::from(filename);
+        let mut parent = path.parent();
+        for _ in 0..2 {
+            let duplicate = state
+                .panes()
+                .iter()
+                .filter_map(|pane| state.session.meta(pane.buffer_id))
+                .filter_map(|meta| meta.path.as_deref())
+                .any(|other| other != path && other.ends_with(&label));
+            if !duplicate {
+                break;
+            }
+            let Some(directory) = parent.and_then(std::path::Path::file_name) else {
+                break;
+            };
+            label = PathBuf::from(directory).join(label);
+            parent = parent.and_then(std::path::Path::parent);
+        }
+        label.to_string_lossy().into_owned()
+    } else {
+        meta.display_name.clone()
+    };
+    Some((filename, meta.dirty))
 }
 
 struct PaneGutterLayout {
@@ -1957,8 +2004,9 @@ fn draw_buffer_snapshot_for_id(
                 snapshot.first_line()..total_lines,
                 cursor.line,
                 visual_selection
-                    .filter(|_| preview.is_none())
-                    .map(|(selection, _)| selection.line_range()),
+                    .map(|(selection, _)| selection.line_range())
+                    .or_else(|| one_shot_highlight.and_then(OneShotHighlight::yank_lines))
+                    .filter(|_| preview.is_none()),
             )?;
             draw_gutter_padding(
                 window,
@@ -2095,11 +2143,16 @@ fn draw_snapshot_lines(
         } else {
             default_colors.with_colors(style.zen_ghost, default_colors.bg)
         };
-        let fallback_line_spans = (is_focused && lexical_fallback_enabled)
+        let mut style = style;
+        if !is_focused {
+            for (_, syntax_style) in style.syntax_roles_mut() {
+                *syntax_style = syntax_style.with_colors(default_colors.fg, default_colors.bg);
+            }
+        }
+        let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
         let syntax_line_spans = syntax_spans
-            .filter(|_| is_focused)
             .and_then(|rows| rows.get(row))
             .or(fallback_line_spans.as_deref());
         let highlighted_chars = delimiter_highlights
@@ -2162,8 +2215,39 @@ fn draw_snapshot_lines(
             .map(|(selection, mode)| (selection, mode, style.theme.selection_bg))
             .or_else(|| {
                 one_shot_highlight
-                    .map(|(selection, mode)| (selection, mode, style.theme.light_purple))
+                    .map(|highlight| (highlight.selection, highlight.mode, default_colors.bg))
             });
+
+        let selected_cells = transient_selection.and_then(|(selection, mode, _)| {
+            if visual_selection.is_none()
+                && one_shot_highlight.is_some_and(|highlight| highlight.kind == HighlightKind::Jump)
+            {
+                return (selection.cursor.line == line_idx).then(|| vec![true; text_w]);
+            }
+            if visual_selection.is_none()
+                && one_shot_highlight
+                    .is_some_and(|highlight| highlight.kind == HighlightKind::UndoRedo)
+                && selection.anchor == selection.cursor
+                && selection.cursor.line == line_idx
+                && selection.cursor.col >= source_line.chars().count()
+            {
+                return Some(search_highlight_cells(
+                    source_line,
+                    scroll_x,
+                    text_w,
+                    std::slice::from_ref(&(selection.cursor.col..selection.cursor.col)),
+                ));
+            }
+            visual_selection_visible_cells(
+                buffer,
+                source_line,
+                selection,
+                mode,
+                line_idx,
+                scroll_x,
+                text_w,
+            )
+        });
 
         if transient_selection.is_none()
             && !has_search_highlights
@@ -2211,17 +2295,47 @@ fn draw_snapshot_lines(
             search_style: style.search_match,
             current_style: style.search_current,
             error_style: style.error_range,
+            yank_highlight: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::Yank
+                })
+                .zip(selected_cells.as_deref())
+                .and_then(|(highlight, cells)| {
+                    YankHighlight::new(cells, highlight.progress(), default_colors.colors())
+                }),
+            jump_highlight: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none()
+                        && highlight.kind == HighlightKind::Jump
+                        && selected_cells.is_some()
+                })
+                .map(|highlight| HighlightFade::new(highlight.progress(), style.editor_text.fg)),
+            delimiter_blink: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::Delimiter
+                })
+                .zip(selected_cells.as_deref())
+                .and_then(|(highlight, cells)| {
+                    let column = cells.iter().position(|selected| *selected)?;
+                    Some((
+                        column,
+                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
+                    ))
+                }),
+            undo_redo_highlight: one_shot_highlight
+                .filter(|highlight| {
+                    visual_selection.is_none() && highlight.kind == HighlightKind::UndoRedo
+                })
+                .zip(selected_cells.as_deref())
+                .map(|(highlight, cells)| {
+                    (
+                        cells,
+                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
+                    )
+                }),
         };
-        if let Some((selection, mode, selection_bg)) = transient_selection
-            && let Some(selected_cells) = visual_selection_visible_cells(
-                buffer,
-                source_line,
-                selection,
-                mode,
-                line_idx,
-                scroll_x,
-                text_w,
-            )
+        if let Some((_, _, selection_bg)) = transient_selection
+            && let Some(selected_cells) = selected_cells.as_ref()
         {
             let highlight_empty_line = source_line.is_empty();
             let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
@@ -2252,6 +2366,12 @@ fn draw_snapshot_lines(
                 }
                 layers
             };
+            if decorations.jump_highlight.is_some() {
+                highlight_layers.rotate_left(1);
+            }
+            if decorations.undo_redo_highlight.is_some() {
+                highlight_layers.remove(0);
+            }
             if let Some(active) = &active_search_cells {
                 highlight_layers.insert(
                     0,
@@ -2283,7 +2403,7 @@ fn draw_snapshot_lines(
                 visible_indent_guides,
                 &occupied_text_cells,
                 style,
-                Some((&selected_cells, selection_bg)),
+                Some((selected_cells, selection_bg)),
                 decorations,
             )?;
             draw_delimiter_highlights(
@@ -2996,29 +3116,36 @@ fn draw_plain_line(
         if start_cell < scroll_x {
             continue;
         }
-        if used_cells.saturating_add(g_width) > width_cells {
+        let visible_start = start_cell.saturating_sub(scroll_x);
+        let visible_end = end_cell.saturating_sub(scroll_x);
+        if visible_end > width_cells {
             break;
         }
 
         let colors = apply_color_column(
             default_colors.colors(),
             color_column,
-            start_cell.saturating_sub(scroll_x),
-            end_cell.saturating_sub(scroll_x),
+            visible_start,
+            visible_end,
         );
         let text_style = minui::Style::from(default_colors).with_colors(colors);
         if g == "\t" {
             let spaces = " ".repeat(g_width.max(1));
             window.write_str_styled(
                 row,
-                col.saturating_add(used_cells as u16),
+                col.saturating_add(visible_start as u16),
                 &spaces,
                 text_style,
             )?;
         } else {
-            window.write_str_styled(row, col.saturating_add(used_cells as u16), g, text_style)?;
+            window.write_str_styled(
+                row,
+                col.saturating_add(visible_start as u16),
+                g,
+                text_style,
+            )?;
         }
-        used_cells = used_cells.saturating_add(g_width);
+        used_cells = visible_end;
     }
 
     if let Some((visible_col, bg)) = color_column
@@ -3150,7 +3277,7 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
         && env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
         && env::var("TERM").as_deref() != Ok("dumb");
     let mut args = env::args().skip(1);
-    let mut config_path = None;
+    let mut config = LaunchConfig::default();
     let mut target_path = None;
     let mut parse_options = true;
     let mut show_help = None;
@@ -3161,13 +3288,15 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             show_help.get_or_insert(false);
         } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
             show_help.get_or_insert(true);
+        } else if parse_options && raw == "--default-config" {
+            config.default_only = true;
         } else if parse_options && raw == "--config" {
-            config_path =
+            config.path =
                 Some(PathBuf::from(args.next().ok_or_else(|| {
                     anyhow::anyhow!("--config requires a path")
                 })?));
         } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
-            config_path = Some(PathBuf::from(path));
+            config.path = Some(PathBuf::from(path));
         } else if parse_options && raw.starts_with('-') {
             anyhow::bail!("unknown option: {raw}");
         } else if target_path.replace(PathBuf::from(&raw)).is_some() {
@@ -3176,7 +3305,8 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
     }
     if let Some(show_help) = show_help {
         // Help remains available when the user's configuration is invalid.
-        let style = config::Config::load(config_path.as_deref())
+        let style = config
+            .load()
             .and_then(|(config, _)| config.style())
             .unwrap_or_default();
         if show_help {
@@ -3189,10 +3319,11 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             println!(
                 "\n{heading}Usage:{reset} {bold}redox{reset} [OPTIONS] [FILE_OR_DIRECTORY]\n\n\
                  {heading}Options:{reset}\n  \
-                 {bold}--config{reset} <PATH>  Use a configuration file\n  \
-                 {bold}-h, --help{reset}       Print help\n  \
-                 {bold}-V, --version{reset}    Print version\n  \
-                 {bold}--{reset}               Treat remaining arguments as paths"
+                 {bold}--config{reset} <PATH>   Use a configuration file\n  \
+                 {bold}--default-config{reset}  Use only built-in defaults, ignoring configuration files\n  \
+                 {bold}-h, --help{reset}        Print help\n  \
+                 {bold}-V, --version{reset}     Print version\n  \
+                 {bold}--{reset}                Treat remaining arguments as paths"
             );
             return Ok(None);
         } else {
@@ -3208,22 +3339,12 @@ fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
             return Ok(None);
         }
     }
-    let Some(path) = target_path else {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Empty,
-            config_path,
-        }));
+    let target = match target_path {
+        None => LaunchTarget::Empty,
+        Some(path) if path.is_dir() => LaunchTarget::Explorer(path),
+        Some(path) => LaunchTarget::File(path),
     };
-    if path.is_dir() {
-        return Ok(Some(LaunchOptions {
-            target: LaunchTarget::Explorer(path),
-            config_path,
-        }));
-    }
-    Ok(Some(LaunchOptions {
-        target: LaunchTarget::File(path),
-        config_path,
-    }))
+    Ok(Some(LaunchOptions { target, config }))
 }
 
 fn is_cancel_event(event: &Event) -> bool {
@@ -3386,7 +3507,7 @@ fn handle_editor_event_inner(
                 if let Err(error) = system_clipboard.copy(&text) {
                     state.set_status(format!("clipboard copy failed: {error}"));
                 } else {
-                    state.set_status("yanked to system clipboard");
+                    state.confirm_yank("yanked to system clipboard");
                 }
             }
             None => {
@@ -3479,14 +3600,14 @@ fn reload_runtime_config(
     active_config: &mut config::Config,
     active_theme: &mut String,
     theme_override: &mut Option<String>,
-    explicit_path: Option<&std::path::Path>,
+    launch_config: &LaunchConfig,
 ) {
     if !state.take_config_reload_request() {
         return;
     }
 
     let result = (|| -> anyhow::Result<Option<PathBuf>> {
-        let (candidate, loaded_path) = config::Config::load(explicit_path)?;
+        let (candidate, loaded_path) = launch_config.load()?;
         let candidate_theme = theme_override
             .as_ref()
             .filter(|name| candidate.has_theme(name))
@@ -3516,6 +3637,7 @@ fn reload_runtime_config(
             state.configure_update_checks(candidate.check_updates);
         }
         state.configure_logging(candidate.logging)?;
+        state.configure_animations(candidate.animations);
         *active_config = candidate;
         *style = candidate_style;
         *active_theme = candidate_theme;
@@ -3531,6 +3653,9 @@ fn reload_runtime_config(
     match result {
         Ok(loaded_path) => match loaded_path {
             Some(path) => state.set_status(format!("configuration reloaded: {}", path.display())),
+            None if launch_config.default_only => {
+                state.set_status("configuration reloaded with built-in defaults (--default-config)")
+            }
             None => state
                 .set_status("configuration reloaded with built-in defaults (no config file found)"),
         },
@@ -3585,8 +3710,7 @@ pub fn run() -> anyhow::Result<()> {
     if let Err(error) = storage::migrate_legacy_state() {
         eprintln!("warning: could not migrate legacy Redox state: {error}");
     }
-    let explicit_config_path = options.config_path.clone();
-    let (mut config, _) = config::Config::load(options.config_path.as_deref())?;
+    let (mut config, _) = options.config.load()?;
     let input = configured_input(&config)?;
     let mut style = config.style()?;
     let mut active_theme = config.theme.clone();
@@ -3605,6 +3729,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut state = EditorState::new(session);
     let logging_result = state.configure_logging(config.logging);
     state.zen = config.zen;
+    state.configure_animations(config.animations);
     state.configure(
         input,
         config.undo_tree_history_size,
@@ -3689,7 +3814,7 @@ pub fn run() -> anyhow::Result<()> {
         }
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
-        open_runtime_config(&mut state, explicit_config_path.as_deref());
+        open_runtime_config(&mut state, options.config.path.as_deref());
         reload_runtime_config(
             &mut state,
             window.keyboard_mut(),
@@ -3697,7 +3822,7 @@ pub fn run() -> anyhow::Result<()> {
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            explicit_config_path.as_deref(),
+            &options.config,
         );
         if config.mouse != state.mouse.enabled {
             window.set_mouse_capture(config.mouse)?;
@@ -3789,9 +3914,21 @@ mod tests {
         assert_eq!(
             state.active_cursor_pos(),
             Pos::zero(),
-            "disabled by default"
+            "ignored before mouse configuration"
         );
-        state.configure_mouse(true, false, false, 3, 3);
+        let (config, _) = LaunchConfig {
+            default_only: true,
+            ..LaunchConfig::default()
+        }
+        .load()
+        .unwrap();
+        state.configure_mouse(
+            config.mouse,
+            config.mouse_invert_vertical,
+            config.mouse_invert_horizontal,
+            config.mouse_scroll_step_vertical,
+            config.mouse_scroll_step_horizontal,
+        );
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -3954,7 +4091,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_clicks_account_for_zen_margins_and_inactive_pane_headers() {
+    fn mouse_clicks_account_for_zen_margins_and_inactive_pane_overlays() {
         use minui::MouseButton;
         use redox_core::Pos;
         let _lock = app::state::global_test_state_lock().lock().unwrap();
@@ -3986,7 +4123,7 @@ mod tests {
             },
         );
         assert_eq!(state.active_pane_id(), inactive.pane_id);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for (x, y) in [(0, 2), (99, 2), (15, 11)] {
             handle_editor_event(
@@ -3998,7 +4135,7 @@ mod tests {
                     button: MouseButton::Left,
                 },
             );
-            assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+            assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         }
         state.mode = app::EditorMode::Insert;
         handle_editor_event(
@@ -4042,7 +4179,7 @@ mod tests {
             },
         );
         assert_eq!(state.mode, app::EditorMode::Insert);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
         state.configure_mouse(false, false, false, 3, 3);
         for event in [
             Event::MouseClick {
@@ -4072,7 +4209,7 @@ mod tests {
             },
         );
         assert_eq!(state.mode, app::EditorMode::Command);
-        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
     }
 
     #[test]
@@ -4645,8 +4782,8 @@ mod tests {
         let mut perf = FramePerfSample::default();
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 29) {
-            let first_row = rect.y + u16::from(rect.pane_id != state.active_pane_id());
-            let row = window.row_text(first_row);
+            let preview_row = rect.y + 2;
+            let row = window.row_text(preview_row);
             let pane_text: String = row
                 .chars()
                 .skip(rect.x as usize)
@@ -4663,17 +4800,17 @@ mod tests {
                 style.dimmed()
             };
             assert_eq!(
-                window.backgrounds[first_row as usize][column],
+                window.backgrounds[preview_row as usize][column],
                 Some(pane_style.substitute_colors(true).bg)
             );
             assert_eq!(
-                window.foregrounds[first_row as usize][column],
+                window.foregrounds[preview_row as usize][column],
                 Some(pane_style.substitute_colors(true).fg)
             );
             let keyword =
                 rect.x as usize + pane_text[..pane_text.find("let ").unwrap()].chars().count();
             assert_eq!(
-                window.foregrounds[first_row as usize][keyword],
+                window.foregrounds[preview_row as usize][keyword],
                 Some(pane_style.syntax.keyword.fg)
             );
         }
@@ -4783,12 +4920,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn frame_intervals_match_expected_cadence() {
-        assert_eq!(ANIMATION_FRAME_RATE_HZ, 60);
-        assert_eq!(ANIMATION_FRAME_INTERVAL, Duration::from_nanos(16_666_666));
-    }
-
     fn temp_dir_path(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4894,6 +5025,8 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
+        state.update_background(Instant::now() + Duration::from_millis(150));
+        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         assert!(window.row_text(19).contains("TERMINAL"));
         assert!(!window.row_text(20).contains("Ctrl+` hide"));
         assert!(window.cursor.unwrap().y >= 20);
@@ -4974,6 +5107,8 @@ mod tests {
             },
         );
         assert!(!state.terminal.is_focused());
+        state.sync_focus(Instant::now());
+        state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
         let style = UiStyle::default();
         for (offset, expected) in &expected_attributes {
@@ -5000,6 +5135,7 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, Event::Character('i'));
         handle_editor_event(&mut state, &mut clipboard, Event::Character('x'));
         assert_eq!(state.session.active_buffer().to_string(), "x");
+        handle_editor_event(&mut state, &mut clipboard, Event::Paste("\nx".into()));
         handle_editor_event(
             &mut state,
             &mut clipboard,
@@ -5047,6 +5183,8 @@ mod tests {
         handle_editor_event(&mut state, &mut clipboard, navigation('j'));
         assert!(state.terminal.is_focused());
         let style = UiStyle::default();
+        state.sync_focus(Instant::now());
+        state.update_background(Instant::now() + Duration::from_millis(150));
         draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 19) {
             let (row, column) = (rect.y..rect.y + rect.height)
@@ -5181,7 +5319,7 @@ mod tests {
             }
         }
 
-        fn row_text(&self, row: u16) -> String {
+        pub(crate) fn row_text(&self, row: u16) -> String {
             self.cells[row as usize].iter().collect()
         }
 
@@ -5372,6 +5510,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 search_style: style.search_match,
                 current_style: style.search_current,
                 error_style: style.error_range,
+                yank_highlight: None,
+                jump_highlight: None,
+                delimiter_blink: None,
+                undo_redo_highlight: None,
             };
             let decorated = decorations
                 .apply(style.editor_text.into(), 0..1)
@@ -5382,7 +5524,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             assert_eq!(decorated.has(Attribute::Italic), enabled);
 
             window.clear_screen().unwrap();
-            draw_dashboard(&mut window, style, 0, false).unwrap();
+            draw_dashboard(&mut window, style, 0, false, 1.0).unwrap();
             let row = (0..24)
                 .find(|row| window.row_text(*row).contains("Finder"))
                 .unwrap();
@@ -5491,6 +5633,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 search_style: style.search_match,
                                 current_style: style.search_current,
                                 error_style: style.error_range,
+                                yank_highlight: None,
+                                jump_highlight: None,
+                                delimiter_blink: None,
+                                undo_redo_highlight: None,
                             },
                         },
                         style,
@@ -5553,6 +5699,13 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     search_style: style.search_match,
                     current_style: style.search_current,
                     error_style: style.error_range,
+                    yank_highlight: None,
+                    jump_highlight: None,
+                    undo_redo_highlight: None,
+                    delimiter_blink: Some((
+                        3 - scroll_x,
+                        HighlightFade::new(0.0, style.editor_text.fg),
+                    )),
                 };
                 let mut window = TestWindow::new(8, 1);
                 draw_line_with_highlights(
@@ -5617,6 +5770,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     window.backgrounds[0][2 - scroll_x],
                     Some(style.theme.selection_bg)
                 );
+                assert_ne!(window.backgrounds[0][3 - scroll_x], Some(style.theme.scope));
             }
         }
         for source in ["", "text"] {
@@ -5648,6 +5802,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         search_style: style.search_match,
                         current_style: style.search_current,
                         error_style: style.error_range,
+                        yank_highlight: None,
+                        jump_highlight: None,
+                        delimiter_blink: None,
+                        undo_redo_highlight: None,
                     },
                 },
                 style,
@@ -5829,7 +5987,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
     }
 
     #[test]
-    fn inactive_pane_filenames_follow_focus_and_disappear_when_the_split_closes() {
+    fn inactive_pane_filenames_overlay_the_top_row_without_shifting_text() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         for (axis, focus_back) in [
             (app::state::SplitAxis::Vertical, InputAction::SplitFocusLeft),
@@ -5851,6 +6009,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 [(InputAction::None, "alpha.txt"), (focus_back, "[No Name]")]
             {
                 state.apply_input(action, 80, 12);
+                state.update_background(Instant::now() + Duration::from_millis(150));
                 draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
                 for rect in state.pane_rects(80, 11) {
                     let row = rect.y as usize;
@@ -5858,6 +6017,10 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     let text = window.cells[row][columns.clone()]
                         .iter()
                         .collect::<String>();
+                    let second_line = window.cells[row + 1][columns.clone()]
+                        .iter()
+                        .collect::<String>();
+                    assert!(second_line.contains("body"), "{second_line:?}");
                     if rect.pane_id == state.active_pane_id() {
                         assert!(text.contains("first"), "{text:?}");
                     } else {
@@ -5866,25 +6029,75 @@ markdown_emphasis = { italic = false, strikethrough = true }
                             text.find(expected_filename),
                             Some((rect.width as usize - expected_filename.len()) / 2)
                         );
-                        let first_line = window.cells[row + 1][columns.clone()]
-                            .iter()
-                            .collect::<String>();
-                        assert!(first_line.contains("first"), "{first_line:?}");
                         assert!(
                             window.backgrounds[row][columns.clone()]
                                 .iter()
-                                .all(|color| { *color == Some(style.dimmed().status_line.bar.bg) })
+                                .all(|color| { *color == Some(style.dimmed().pane_title.bg) })
                         );
                         assert!(
                             window.foregrounds[row][columns]
                                 .iter()
-                                .all(|color| { *color == Some(style.dimmed().status_line.bar.fg) })
+                                .all(|color| { *color == Some(style.dimmed().pane_title.fg) })
                         );
                     }
                 }
                 let cursor = window.cursor.unwrap();
                 assert!(cursor.visible);
                 assert_eq!(window.cells[cursor.y as usize][cursor.x as usize], 'f');
+            }
+
+            let active_buffer = state.session.active_id();
+            let inactive_pane = state
+                .panes()
+                .iter()
+                .find(|pane| pane.id != state.active_pane_id())
+                .unwrap()
+                .clone();
+            for (path, dirty, expected_title) in [
+                ("other/alpha.txt", true, "other/alpha.txt +"),
+                ("other/beta.txt", false, "beta.txt"),
+                ("source/alpha.txt", true, "alpha.txt +"),
+                ("other/Alpha.txt", false, "Alpha.txt"),
+            ] {
+                state.session.activate(inactive_pane.buffer_id);
+                state.session.active_meta_mut().path = Some(PathBuf::from(path));
+                state.session.set_active_dirty(dirty);
+                state.session.activate(active_buffer);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                let rect = state
+                    .pane_rects(80, 11)
+                    .into_iter()
+                    .find(|rect| rect.pane_id == inactive_pane.id)
+                    .unwrap();
+                let text = window.cells[rect.y as usize]
+                    [rect.x as usize..(rect.x + rect.width) as usize]
+                    .iter()
+                    .collect::<String>();
+                assert_eq!(text.trim(), expected_title);
+                assert_eq!(
+                    text.find(expected_title),
+                    Some((rect.width as usize - expected_title.len()) / 2)
+                );
+            }
+
+            state.session.active_meta_mut().path =
+                Some(PathBuf::from("crates/redox-core/src/lib.rs"));
+            for (path, expected_title) in [
+                ("crates/redox-tui/src/lib.rs", "redox-tui/src/lib.rs"),
+                ("crates/redox-lsp/src/lib.rs", "redox-lsp/src/lib.rs"),
+                ("elsewhere/redox-core/src/lib.rs", "redox-core/src/lib.rs"),
+                ("crates/redox-core/src/lib.rs", "lib.rs"),
+                ("crates/redox-lsp/tests/lib.rs", "tests/lib.rs"),
+            ] {
+                state.session.activate(inactive_pane.buffer_id);
+                state.session.active_meta_mut().path = Some(PathBuf::from(path));
+                state.session.activate(active_buffer);
+                assert_eq!(
+                    inactive_pane_filename(&state, inactive_pane.buffer_id)
+                        .unwrap()
+                        .0,
+                    expected_title
+                );
             }
 
             state.close_active_split();
@@ -5895,18 +6108,40 @@ markdown_emphasis = { italic = false, strikethrough = true }
         }
 
         let mut narrow = TestWindow::new(8, 1);
-        draw_pane_filename(&mut narrow, "é界🙂.txt", UiStyle::default().status_line.bar).unwrap();
+        draw_pane_filename(
+            &mut narrow,
+            "é界🙂.txt",
+            false,
+            UiStyle::default().status_line.bar,
+        )
+        .unwrap();
         assert_eq!(narrow.row_text(0).trim(), "é界🙂.");
         assert_eq!(narrow.row_text(0).find('é'), Some(1));
+        for width in [1, 2, 3, 8] {
+            let mut narrow = TestWindow::new(width, 1);
+            draw_pane_filename(
+                &mut narrow,
+                "é界🙂.txt",
+                true,
+                UiStyle::default().pane_title,
+            )
+            .unwrap();
+            assert!(narrow.row_text(0).contains('+'));
+        }
         let mut empty = TestWindow::new(0, 0);
-        draw_pane_filename(&mut empty, "alpha.txt", UiStyle::default().status_line.bar).unwrap();
+        draw_pane_filename(
+            &mut empty,
+            "alpha.txt",
+            true,
+            UiStyle::default().status_line.bar,
+        )
+        .unwrap();
     }
 
     #[test]
     fn zen_rendering_focuses_scope_and_restores_standard_layout() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
-        let source =
-            "fn first() {\n    let value = 1;\n}\n\nfn second() {\n    let other = 2;\n}\n";
+        let source = "fn first() {\n    let value = 1;\n}\n\nfn second() {\n    let other = 2; // comment\n}\n";
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         *state.session.active_buffer_mut() = TextBuffer::from_text(source);
         let meta = state.session.active_meta_mut();
@@ -5920,7 +6155,17 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     ui::syntax::SyntaxLanguage::Rust,
                 ));
         });
-        let style = UiStyle::default();
+        let config: config::Config = toml::from_str(
+            r##"
+[themes.default.syntax]
+keyword = { bold = true, italic = true, dim = true, reverse = true, strikethrough = true, underline = "curl", underline_color = "#abcdef" }
+function = { bg = "#445566", underline = "single" }
+number = { bold = true }
+comment = { italic = false }
+"##,
+        )
+        .unwrap();
+        let style = config.style().unwrap();
         let mut perf = FramePerfSample::default();
         let mut standard = TestWindow::new(120, 24);
         draw_buffer_view(&mut state, style, &mut standard, &mut perf).unwrap();
@@ -5937,6 +6182,31 @@ markdown_emphasis = { italic = false, strikethrough = true }
         assert_eq!(zen.row_text(0).find("fn first"), Some(12));
         assert_eq!(zen.foregrounds[0][12], keyword_color);
         assert_eq!(zen.foregrounds[4][12], Some(style.zen_ghost));
+        let ghost_colors = minui::ColorPair::new(style.zen_ghost, style.editor_text.bg);
+        for (row, token, role) in [
+            (4, "fn", ui::style::SyntaxRole::Keyword),
+            (4, "second", ui::style::SyntaxRole::Function),
+            (5, "//", ui::style::SyntaxRole::Comment),
+        ] {
+            let column = zen.row_text(row).find(token).unwrap();
+            assert_eq!(
+                zen.styles[row as usize][column],
+                minui::Style::from(style.syntax.color_for(role)).with_colors(ghost_colors),
+                "{token} should keep its syntax formatting while dimmed"
+            );
+        }
+        assert_eq!(zen.styles[4][14], minui::Style::from(ghost_colors));
+        assert_eq!(zen.styles[0][12], standard.styles[0][content_x]);
+
+        state.session.active_meta_mut().path = None;
+        let mut fallback = TestWindow::new(120, 24);
+        draw_buffer_view(&mut state, style, &mut fallback, &mut perf).unwrap();
+        let column = fallback.row_text(5).find('2').unwrap();
+        assert_eq!(
+            fallback.styles[5][column],
+            minui::Style::from(style.syntax.number).with_colors(ghost_colors)
+        );
+        state.session.active_meta_mut().path = Some(PathBuf::from("source/focus.rs"));
         assert_eq!(zen.backgrounds[0][0], Some(style.zen_margin));
         assert_eq!(zen.backgrounds[0][119], Some(style.zen_margin));
         assert_eq!(
@@ -6231,6 +6501,12 @@ leader = ","
 icons_enabled = true
 line_numbers = "absolute"
 
+[animations]
+yank_ripple_ms = 150
+jump_pulse_ms = 275
+undo_redo_ms = 200
+dashboard_logo_ms = 0
+
 [zen]
 width_percent = 70
 hide_gutter = false
@@ -6247,6 +6523,10 @@ background = "#010203"
 "##,
         )
         .expect("failed to write valid config");
+        let launch_config = LaunchConfig {
+            path: Some(config_path.clone()),
+            ..LaunchConfig::default()
+        };
 
         let session = EditorSession::open_initial_unnamed().expect("failed to open session");
         let mut state = EditorState::new(session);
@@ -6264,7 +6544,7 @@ background = "#010203"
             &mut active_config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(style.theme.bg, Color::Rgb { r: 1, g: 2, b: 3 });
@@ -6273,6 +6553,10 @@ background = "#010203"
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
         assert!(!style.text_formatting);
+        assert_eq!(state.animations.jump_highlight_ms, 275);
+        assert_eq!(state.animations.undo_redo_highlight_ms, 200);
+        assert_eq!(state.animations.dashboard_logo_ms, 0);
+        assert_eq!(state.animations.yank_highlight_ms, 150);
         assert!(!style.about.title.format.bold);
         assert_eq!(style.layout.line_numbers, ui::style::LineNumbers::Absolute);
         assert!(
@@ -6315,7 +6599,7 @@ background = "#010203"
             &mut active_config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(style.theme, previous_style.theme);
@@ -6435,6 +6719,10 @@ background = "#141415"
             "[themes.vague.palette]\nbackground = \"#141415\"\n",
         )
         .unwrap();
+        let launch_config = LaunchConfig {
+            path: Some(config_path.clone()),
+            ..LaunchConfig::default()
+        };
         let (mut config, _) = config::Config::load(Some(&config_path)).unwrap();
         let session = EditorSession::open_initial_unnamed().expect("failed to open session");
         let mut state = EditorState::new(session);
@@ -6478,7 +6766,7 @@ desc = "Open notes again"
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
 
         assert_eq!(active_theme, "vague");
@@ -6517,7 +6805,7 @@ desc = "Open notes again"
             &mut config,
             &mut active_theme,
             &mut theme_override,
-            Some(&config_path),
+            &launch_config,
         );
         for (prefix, expected) in [
             ("colorscheme v", None),

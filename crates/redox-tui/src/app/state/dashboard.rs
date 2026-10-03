@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use minui::Event;
 use redox_core::{BufferId, BufferKind, Pos};
@@ -6,6 +7,7 @@ use redox_core::{BufferId, BufferKind, Pos};
 use super::{EditorMode, EditorState};
 use crate::input::{InputAction, macro_key_label};
 use crate::storage::{self, SessionFile, SessionSnapshot};
+use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
 pub(crate) const DASHBOARD_ITEMS: [(char, &str); 6] = [
     ('r', "Restore previous session"),
@@ -21,6 +23,7 @@ pub(super) struct DashboardState {
     pub buffer_id: BufferId,
     return_to_buffer_id: Option<BufferId>,
     selected: usize,
+    pub(super) logo_started_at: Option<Instant>,
 }
 
 impl EditorState {
@@ -35,8 +38,11 @@ impl EditorState {
             self.set_status("cannot return to an editor buffer");
             return;
         }
+        let logo_started_at =
+            (self.animations.enabled && self.animations.dashboard_logo_ms > 0).then(Instant::now);
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.selected = 0;
+            dashboard.logo_started_at = logo_started_at;
             let _ = self.session.activate(dashboard.buffer_id);
         } else {
             self.sync_active_pane_view();
@@ -51,6 +57,7 @@ impl EditorState {
                 buffer_id,
                 return_to_buffer_id: (buffer_id != previous_id).then_some(previous_id),
                 selected: 0,
+                logo_started_at,
             });
         }
         self.mode = EditorMode::Normal;
@@ -75,6 +82,18 @@ impl EditorState {
 
     pub(crate) fn dashboard_selection(&self) -> Option<usize> {
         self.dashboard_selection_for_buffer(self.session.active_id())
+    }
+
+    pub(crate) fn dashboard_logo_progress(&self, now: Instant) -> f32 {
+        self.dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.logo_started_at)
+            .map_or(1.0, |started_at| {
+                crate::ui::helpers::animation_progress(
+                    now.saturating_duration_since(started_at),
+                    self.animations.duration(self.animations.dashboard_logo_ms),
+                )
+            })
     }
 
     pub(crate) fn dashboard_selection_for_buffer(&self, buffer_id: BufferId) -> Option<usize> {
@@ -176,6 +195,8 @@ impl EditorState {
             }
         };
         let previous = self.session.active_id();
+        let (viewport_width, viewport_height) = self.viewport_size();
+        let text_height = viewport_height.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
         let mut restored = 0;
         let mut skipped = 0;
         for file in snapshot.files.iter().rev() {
@@ -196,8 +217,12 @@ impl EditorState {
                 skipped += 1;
                 continue;
             }
-            let cursor = self.session.active_buffer().clamp_pos(file.cursor);
-            self.views.entry(buffer_id).or_default().cursor.cursor = cursor;
+            self.with_active_buffer_view_mut(|buffer, view| {
+                view.cursor.place_cursor(buffer.clamp_pos(file.cursor));
+                view.cursor
+                    .reconcile_scroll(buffer, viewport_width, text_height);
+            });
+            self.center_active_cursor_line(text_height);
             self.ensure_buffer_analysis(buffer_id);
             restored += 1;
         }
@@ -227,7 +252,7 @@ mod tests {
         let missing = directory.path().join("missing.txt");
         let snapshot_path = directory.path().join("session.json");
         for path in [&first, &second, &missing] {
-            std::fs::write(path, "alpha\nbeta\ngamma\n").unwrap();
+            std::fs::write(path, "alpha\nbeta\ngamma\n".repeat(30)).unwrap();
         }
         let mut previous = EditorState::new(EditorSession::open_initial_file(&first).unwrap());
         previous
@@ -235,7 +260,7 @@ mod tests {
             .get_mut(&previous.session.active_id())
             .unwrap()
             .cursor
-            .cursor = Pos::new(2, 2);
+            .cursor = Pos::new(40, 2);
         previous.command_edit(&missing.to_string_lossy());
         previous.command_edit(&second.to_string_lossy());
         previous
@@ -243,13 +268,14 @@ mod tests {
             .get_mut(&previous.session.active_id())
             .unwrap()
             .cursor
-            .cursor = Pos::new(1, 1);
+            .cursor = Pos::new(8, 1);
         previous.command_open_about();
         previous.save_previous_session(&snapshot_path).unwrap();
         std::fs::remove_file(&missing).unwrap();
 
         let mut restored = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         restored.open_dashboard();
+        restored.set_viewport_size(80, 11);
         let saved = std::fs::read(&snapshot_path).unwrap();
         restored.save_previous_session(&snapshot_path).unwrap();
         assert_eq!(std::fs::read(&snapshot_path).unwrap(), saved);
@@ -260,13 +286,21 @@ mod tests {
             restored.session.active_meta().path,
             Some(second.canonicalize().unwrap())
         );
-        assert_eq!(restored.active_cursor_pos(), Pos::new(1, 1));
+        assert_eq!(restored.active_cursor_pos(), Pos::new(8, 1));
+        assert_eq!(
+            restored.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll()),
+            (0, 3)
+        );
         restored.command_buffer_cycle_next();
         assert_eq!(
             restored.session.active_meta().path,
             Some(first.canonicalize().unwrap())
         );
-        assert_eq!(restored.active_cursor_pos(), Pos::new(2, 2));
+        assert_eq!(restored.active_cursor_pos(), Pos::new(40, 2));
+        assert_eq!(
+            restored.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll()),
+            (0, 35)
+        );
 
         let mut empty = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
         empty.open_dashboard();

@@ -7,9 +7,12 @@ use redox_core::{
     motion::Motion,
 };
 
-use super::{BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitSize};
+use super::{
+    BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitNode, SplitSize,
+};
 use crate::ui::UNDO_TREE_HEADER_ROWS;
 use crate::ui::style::UndoTreeStyle;
+use crate::ui::widgets::undo_tree::undo_tree_preview_content_width;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UndoTreeSurfaceRole {
@@ -154,6 +157,7 @@ impl EditorState {
         };
         if buffer_id == tree.diff_buffer_id {
             let pane_id = tree.diff_pane_id;
+            let separator_row = tree.diff_separator_row;
             self.with_buffer_view_mut(buffer_id, |buffer, view| {
                 view.cursor.scroll_y_lines = view
                     .cursor
@@ -161,7 +165,8 @@ impl EditorState {
                     .saturating_add_signed(rows)
                     .min(buffer.len_lines().saturating_sub(height));
                 if columns != 0 {
-                    let max_width = (0..buffer.len_lines())
+                    let max_width = (2..buffer.len_lines())
+                        .filter(|line| separator_row.is_some_and(|separator| *line != separator))
                         .map(|line| view.cursor.line_cell_width(buffer, line))
                         .max()
                         .unwrap_or(0);
@@ -169,7 +174,7 @@ impl EditorState {
                         .cursor
                         .scroll_x_cells
                         .saturating_add_signed(columns)
-                        .min(max_width.saturating_sub(width));
+                        .min(max_width.saturating_sub(undo_tree_preview_content_width(width)));
                 }
             });
             self.sync_rendered_pane_view(pane_id, buffer_id);
@@ -278,11 +283,13 @@ impl EditorState {
         let Some(editor_pane_id) = self.split_active_pane_with_options(
             SplitAxis::Vertical,
             PaneOptions::editor(),
-            SplitSize::first_percent(
-                undo_tree_style.width_percent,
-                undo_tree_style.min_width,
-                undo_tree_style.max_width,
-            ),
+            self.undo_tree_width.unwrap_or_else(|| {
+                SplitSize::first_percent(
+                    undo_tree_style.width_percent,
+                    undo_tree_style.min_width,
+                    undo_tree_style.max_width,
+                )
+            }),
         ) else {
             return;
         };
@@ -292,13 +299,17 @@ impl EditorState {
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
             pane.buffer_id = surface_id;
             pane.view = BufferViewState::default();
-            pane.options = PaneOptions::ui();
+            pane.options = PaneOptions {
+                resizable: true,
+                ..PaneOptions::ui()
+            };
         }
         self.views.entry(surface_id).or_default();
         let _ = self.activate_pane(pane_id);
         let Some(diff_pane_id) = self.split_active_pane_with_options(
             SplitAxis::Horizontal,
             PaneOptions {
+                resizable: true,
                 accessible: false,
                 ..PaneOptions::ui()
             },
@@ -318,10 +329,6 @@ impl EditorState {
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == diff_pane_id) {
             pane.buffer_id = diff_buffer_id;
             pane.view = BufferViewState::default();
-            pane.options = PaneOptions {
-                accessible: false,
-                ..PaneOptions::ui()
-            };
         }
         self.views.entry(diff_buffer_id).or_default();
         self.undo_tree = Some(UndoTreeState {
@@ -363,6 +370,7 @@ impl EditorState {
         let _ = self.session.close_buffer(tree.diff_buffer_id);
         self.views.remove(&tree.diff_buffer_id);
 
+        self.undo_tree_width = undo_tree_split_size(&self.split_root, tree.pane_id);
         let _ = self.activate_pane(tree.pane_id);
         if self.panes.len() > 1 {
             self.close_active_split();
@@ -540,6 +548,24 @@ impl EditorState {
     }
 }
 
+fn undo_tree_split_size(node: &SplitNode, pane_id: PaneId) -> Option<SplitSize> {
+    let SplitNode::Split {
+        axis,
+        size,
+        first,
+        second,
+    } = node
+    else {
+        return None;
+    };
+    if *axis == SplitAxis::Vertical
+        && matches!(first.as_ref(), SplitNode::Pane(id) if *id == pane_id)
+    {
+        return Some(*size);
+    }
+    undo_tree_split_size(first, pane_id).or_else(|| undo_tree_split_size(second, pane_id))
+}
+
 fn undo_tree_scroll_top_for_row(
     current_top: usize,
     selected_row: usize,
@@ -579,10 +605,11 @@ struct UndoTreePreviewChange {
     diff: TextDiff,
 }
 
-const UNDO_TREE_NODE_GLYPH: char = '●';
+const UNDO_TREE_NODE_GLYPH: char = '○';
+const UNDO_TREE_CURRENT_NODE_GLYPH: char = '●';
 const UNDO_TREE_VERTICAL_GLYPH: char = '│';
 const UNDO_TREE_HORIZONTAL_GLYPH: char = '─';
-const UNDO_TREE_SLOT_SPACING: usize = 1;
+const UNDO_TREE_SLOT_SPACING: usize = 2;
 
 #[derive(Debug, Clone)]
 struct RenderGraphRow {
@@ -931,159 +958,62 @@ fn undo_tree_node_line(
     redo_target: Option<UndoNodeId>,
     label_width: usize,
 ) -> (String, Vec<UndoTreeLineSpan>) {
-    let label = undo_tree_node_label(entry, redo_target, label_width);
-    let time = if entry.id == 0 {
-        None
+    let tree = if entry.is_current {
+        tree.replace(
+            UNDO_TREE_NODE_GLYPH,
+            &UNDO_TREE_CURRENT_NODE_GLYPH.to_string(),
+        )
     } else {
-        Some(relative_time_at(entry.created_at_ms, rendered_at_ms))
+        tree.to_string()
     };
     let tree = tree.trim_end();
-    let label_gap = tree_width
-        .saturating_sub(undo_tree_graph_width(tree))
-        .saturating_add(if label.is_marked { 1 } else { 2 });
-    let time = time
-        .map(|time| {
-            if label.is_marked {
-                format!(" {time}")
-            } else {
-                format!("  {time}")
-            }
-        })
-        .unwrap_or_default();
+    let label_gap = tree_width.saturating_sub(undo_tree_graph_width(tree)) + 2;
     let mut line = format!("  {tree}{}", " ".repeat(label_gap));
     let mut spans = undo_tree_graph_spans(tree, 2);
     let label_start = line.len();
-    line.push_str(&label.text);
-    spans.extend(
-        label
-            .spans
-            .into_iter()
-            .map(|span| offset_undo_tree_span(span, label_start)),
-    );
-    if !time.is_empty() {
-        let timestamp_start = line.len() + time.find('(').unwrap_or(time.len());
-        line.push_str(&time);
+    if entry.id == 0 {
+        line.push_str("original");
+    } else {
+        line.push_str(&format!("{:>label_width$}", entry.sequence));
+    }
+    spans.push(UndoTreeLineSpan {
+        range: label_start..line.len(),
+        role: UndoTreeLineRole::NodeLabel,
+    });
+    if entry.id != 0 {
+        line.push_str("  ");
+        let timestamp_start = line.len();
+        line.push_str(&relative_time_at(entry.created_at_ms, rendered_at_ms));
         spans.push(UndoTreeLineSpan {
             range: timestamp_start..line.len(),
             role: UndoTreeLineRole::Timestamp,
         });
     }
-    (line, spans)
-}
-
-struct UndoTreeNodeLabel {
-    text: String,
-    is_marked: bool,
-    spans: Vec<UndoTreeLineSpan>,
-}
-
-fn undo_tree_node_label(
-    entry: &UndoTreeEntry,
-    redo_target: Option<UndoNodeId>,
-    label_width: usize,
-) -> UndoTreeNodeLabel {
-    if entry.id == 0 {
-        return if entry.is_current {
-            UndoTreeNodeLabel {
-                text: ">original<".to_string(),
-                is_marked: true,
-                spans: vec![
-                    UndoTreeLineSpan {
-                        range: 0..1,
-                        role: UndoTreeLineRole::SelectedIndicator,
-                    },
-                    UndoTreeLineSpan {
-                        range: 1..9,
-                        role: UndoTreeLineRole::NodeLabel,
-                    },
-                    UndoTreeLineSpan {
-                        range: 9..10,
-                        role: UndoTreeLineRole::SelectedIndicator,
-                    },
-                ],
-            }
-        } else {
-            UndoTreeNodeLabel {
-                text: "original".to_string(),
-                is_marked: false,
-                spans: vec![UndoTreeLineSpan {
-                    range: 0..8,
-                    role: UndoTreeLineRole::NodeLabel,
-                }],
-            }
-        };
-    }
-
-    let number = entry.sequence.to_string();
-    if entry.is_current {
-        UndoTreeNodeLabel {
-            text: undo_tree_marked_node_label(&number, label_width, '>', '<'),
-            is_marked: true,
-            spans: undo_tree_marked_node_label_spans(
-                &number,
-                label_width,
-                UndoTreeLineRole::SelectedIndicator,
-            ),
-        }
+    let marker = if entry.is_current {
+        Some(("current", UndoTreeLineRole::SelectedIndicator))
     } else if redo_target == Some(entry.id) {
-        UndoTreeNodeLabel {
-            text: undo_tree_marked_node_label(&number, label_width, '{', '}'),
-            is_marked: true,
-            spans: undo_tree_marked_node_label_spans(
-                &number,
-                label_width,
-                UndoTreeLineRole::RedoMarker,
-            ),
-        }
+        Some(("redo", UndoTreeLineRole::RedoMarker))
     } else {
-        let padding = label_width.saturating_sub(number.len());
-        UndoTreeNodeLabel {
-            text: format!("{number:>label_width$}"),
-            is_marked: false,
-            spans: vec![UndoTreeLineSpan {
-                range: padding..padding + number.len(),
-                role: UndoTreeLineRole::NodeLabel,
-            }],
-        }
+        None
+    };
+    if let Some((label, role)) = marker {
+        line.push_str("  ");
+        let marker_start = line.len();
+        line.push_str(label);
+        spans.push(UndoTreeLineSpan {
+            range: marker_start..line.len(),
+            role,
+        });
     }
-}
-
-fn undo_tree_marked_node_label(
-    number: &str,
-    label_width: usize,
-    left_marker: char,
-    right_marker: char,
-) -> String {
-    let padding = " ".repeat(label_width.saturating_sub(number.len()));
-    format!("{padding}{left_marker}{number}{right_marker}")
-}
-
-fn undo_tree_marked_node_label_spans(
-    number: &str,
-    label_width: usize,
-    marker_role: UndoTreeLineRole,
-) -> Vec<UndoTreeLineSpan> {
-    let marker_start = label_width.saturating_sub(number.len());
-    vec![
-        UndoTreeLineSpan {
-            range: marker_start..marker_start + 1,
-            role: marker_role,
-        },
-        UndoTreeLineSpan {
-            range: marker_start + 1..marker_start + 1 + number.len(),
-            role: UndoTreeLineRole::NodeLabel,
-        },
-        UndoTreeLineSpan {
-            range: marker_start + 1 + number.len()..marker_start + 2 + number.len(),
-            role: marker_role,
-        },
-    ]
+    (line, spans)
 }
 
 fn undo_tree_graph_spans(tree: &str, offset: usize) -> Vec<UndoTreeLineSpan> {
     tree.char_indices()
         .filter_map(|(start, ch)| {
-            let role = if ch == UNDO_TREE_NODE_GLYPH {
+            let role = if ch == UNDO_TREE_CURRENT_NODE_GLYPH {
+                UndoTreeLineRole::SelectedIndicator
+            } else if ch == UNDO_TREE_NODE_GLYPH {
                 UndoTreeLineRole::Node
             } else if ch != ' ' {
                 UndoTreeLineRole::Edge
@@ -1096,11 +1026,6 @@ fn undo_tree_graph_spans(tree: &str, offset: usize) -> Vec<UndoTreeLineSpan> {
             })
         })
         .collect()
-}
-
-fn offset_undo_tree_span(mut span: UndoTreeLineSpan, offset: usize) -> UndoTreeLineSpan {
-    span.range = span.range.start + offset..span.range.end + offset;
-    span
 }
 
 fn format_undo_tree_connector_line(tree: &str) -> (String, Vec<UndoTreeLineSpan>) {
@@ -1191,14 +1116,19 @@ fn undo_tree_diff_text(
     if let Some(change) = preview_change {
         let (deleted_lines, inserted_lines) =
             diff_preview_lines(&change.before, &change.after, &change.diff);
-        text.push_str(&format!("Node: {selected_node}\n\n"));
+        let before_line = change.before.char_to_line(change.diff.start_char) + 1;
+        let after_line = change.after.char_to_line(change.diff.start_char) + 1;
+        text.push_str(&format!(
+            "Change {selected_node}\nBefore · line {before_line}\n"
+        ));
         push_preview_lines(&mut text, &deleted_lines);
         let separator_row = 2 + deleted_lines.len();
-        text.push_str("---\n");
+        text.push_str(&format!("After · line {after_line}\n"));
         push_preview_lines(&mut text, &inserted_lines);
+        text.pop();
         return (text, Some(separator_row));
     } else {
-        text.push_str("Original state\n\nNo edit is recorded for this point.\n");
+        text.push_str("Original state\n\nNo changes to preview.\n");
     }
     (text, None)
 }
@@ -1327,13 +1257,11 @@ fn undo_tree_node_for_line(
 fn relative_time_at(created_at_ms: u128, rendered_at_ms: u128) -> String {
     let elapsed_seconds = rendered_at_ms.saturating_sub(created_at_ms) / 1000;
     match elapsed_seconds {
-        0 | 1 => "(1 second ago)".to_string(),
-        2..=59 => format!("({elapsed_seconds} seconds ago)"),
-        60..=119 => "(1 minute ago)".to_string(),
-        120..=3599 => format!("({} minutes ago)", elapsed_seconds / 60),
-        3600..=7199 => "(1 hour ago)".to_string(),
-        7200..=86_399 => format!("({} hours ago)", elapsed_seconds / 3600),
-        _ => format!("({} days ago)", elapsed_seconds / 86_400),
+        0 | 1 => "now".to_string(),
+        2..=59 => format!("{elapsed_seconds}s ago"),
+        60..=3599 => format!("{}m ago", elapsed_seconds / 60),
+        3600..=86_399 => format!("{}h ago", elapsed_seconds / 3600),
+        _ => format!("{}d ago", elapsed_seconds / 86_400),
     }
 }
 
@@ -1366,8 +1294,8 @@ mod render_tests {
             rendered.display_rows,
             vec![Some(4), Some(3), None, Some(2), Some(1), Some(0)]
         );
-        assert!(lines[0].contains(">4<"), "{lines:?}");
-        assert!(lines[2].contains("├┘"), "{lines:?}");
+        assert!(lines[0].contains("4  now  current"), "{lines:?}");
+        assert!(lines[2].contains("├─┘"), "{lines:?}");
         assert!(lines.iter().all(|line| !line.contains('\\')), "{lines:?}");
         assert!(lines.iter().all(|line| !line.contains('/')), "{lines:?}");
     }
@@ -1391,17 +1319,31 @@ mod render_tests {
 
         assert!(lines[0].contains("11"), "{lines:?}");
         assert!(lines[1].contains("10"), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains(" {9} ")), "{lines:?}");
-        assert!(lines.iter().any(|line| line.contains(" >8< ")), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains("{ 9}")), "{lines:?}");
-        assert!(lines.iter().all(|line| !line.contains("> 8<")), "{lines:?}");
-
-        let timestamp_col = char_position(lines[0], '(');
         assert!(
-            lines
+            lines.iter().any(|line| line.contains("9  now  redo")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("8  now  current")),
+            "{lines:?}"
+        );
+        let timestamp_columns = rendered
+            .line_spans
+            .iter()
+            .take(4)
+            .map(|spans| {
+                spans
+                    .iter()
+                    .find(|span| span.role == UndoTreeLineRole::Timestamp)
+                    .unwrap()
+                    .range
+                    .start
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            timestamp_columns
                 .iter()
-                .take(4)
-                .all(|line| char_position(line, '(') == timestamp_col)
+                .all(|column| *column == timestamp_columns[0])
         );
     }
 
@@ -1410,7 +1352,7 @@ mod render_tests {
         assert_eq!(
             undo_tree_diff_text(0, None),
             (
-                "Original state\n\nNo edit is recorded for this point.\n".to_string(),
+                "Original state\n\nNo changes to preview.\n".to_string(),
                 None
             )
         );
@@ -1425,6 +1367,18 @@ mod render_tests {
 
         assert_eq!(deleted, vec!["word"]);
         assert_eq!(inserted, vec!["wordasdf"]);
+        let change = UndoTreePreviewChange {
+            before,
+            after,
+            diff,
+        };
+        assert_eq!(
+            undo_tree_diff_text(1, Some(&change)),
+            (
+                "Change 1\nBefore · line 1\nword\nAfter · line 1\nwordasdf".to_string(),
+                Some(3)
+            )
+        );
     }
 
     #[test]
@@ -1464,9 +1418,5 @@ mod render_tests {
             is_current,
             child_count,
         }
-    }
-
-    fn char_position(line: &str, needle: char) -> Option<usize> {
-        line.chars().position(|ch| ch == needle)
     }
 }

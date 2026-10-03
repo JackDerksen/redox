@@ -5,6 +5,10 @@ use crate::ui::{TextViewport, UiStyle, language_for_path};
 
 impl EditorState {
     pub(super) fn command_rain(&mut self) {
+        if !self.animations.enabled || self.animations.rain_fps == 0 {
+            self.set_status("rain animation is disabled");
+            return;
+        }
         if self.active_buffer_is_surface() {
             self.set_status("rain is only available in text buffers");
             return;
@@ -12,6 +16,7 @@ impl EditorState {
 
         self.rain_animation = None;
         self.rain_pending_start = true;
+        self.reset_animation_deadlines();
         self.set_status("making it rain");
     }
 

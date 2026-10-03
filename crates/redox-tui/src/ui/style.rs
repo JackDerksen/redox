@@ -256,11 +256,13 @@ pub struct StatusLinePalette {
     pub bar: TextStyle,
     pub path: TextStyle,
     pub dirty: TextStyle,
+    pub saved: TextStyle,
     pub mode_normal: TextStyle,
     pub mode_insert: TextStyle,
     pub mode_command: TextStyle,
     pub mode_visual: TextStyle,
     pub metadata: StatusModuleColors,
+    pub language_icon: TextStyle,
     pub coords: StatusModuleColors,
     pub minimap_module: StatusModuleColors,
     pub minimap: TextStyle,
@@ -269,12 +271,18 @@ pub struct StatusLinePalette {
 
 impl StatusLinePalette {
     pub fn from_theme(theme: BaseTheme) -> Self {
+        // Muted text at approximately 4:1 contrast on the default status backgrounds.
+        let bar_text = dim_foreground_color(theme.white, theme.black, 0.515);
         let module_wrapper = TextStyle::new(theme.black, theme.dark_gray);
-        let module_text = TextStyle::new(theme.black, theme.dark_gray);
+        let module_text = TextStyle::new(
+            dim_foreground_color(theme.white, theme.dark_gray, 0.466),
+            theme.dark_gray,
+        );
         Self {
-            bar: TextStyle::new(theme.light_gray, theme.black),
-            path: TextStyle::new(theme.dark_gray, theme.black),
-            dirty: TextStyle::new(theme.light_gray, theme.black),
+            bar: TextStyle::new(bar_text, theme.black),
+            path: TextStyle::new(bar_text, theme.black),
+            dirty: TextStyle::new(bar_text, Color::Transparent),
+            saved: TextStyle::new(theme.green, theme.black),
             mode_normal: TextStyle::new(theme.black, theme.purple),
             mode_insert: TextStyle::new(theme.black, theme.blue),
             mode_command: TextStyle::new(theme.black, theme.red),
@@ -283,13 +291,14 @@ impl StatusLinePalette {
                 wrapper: module_wrapper,
                 content: module_text,
             },
+            language_icon: TextStyle::new(module_text.fg, Color::Transparent),
             coords: StatusModuleColors {
                 wrapper: module_wrapper,
                 content: module_text,
             },
             minimap_module: StatusModuleColors::solid(module_wrapper),
-            minimap: TextStyle::new(theme.light_gray, Color::Transparent),
-            minimap_alt: TextStyle::new(Color::Transparent, theme.light_gray),
+            minimap: TextStyle::new(module_text.fg, Color::Transparent),
+            minimap_alt: TextStyle::new(Color::Transparent, module_text.fg),
         }
     }
 }
@@ -644,20 +653,20 @@ impl UndoTreeStyle {
             preview_height_percent: 42,
             preview_min_height: 8,
             preview_max_height: 14,
-            title: TextStyle::new(theme.blue, theme.bg).bold(),
+            title: TextStyle::new(theme.white, theme.bg).bold(),
             text: TextStyle::new(theme.white, theme.bg),
-            selected: TextStyle::new(theme.white, theme.black),
-            selected_indicator: TextStyle::new(theme.orange, theme.bg),
-            node: TextStyle::new(theme.white, theme.bg),
-            node_label: TextStyle::new(theme.light_gray, theme.bg),
+            selected: TextStyle::new(theme.white, theme.scope),
+            selected_indicator: TextStyle::new(theme.blue, theme.bg),
+            node: TextStyle::new(theme.light_gray, theme.bg),
+            node_label: TextStyle::new(theme.white, theme.bg),
             redo_marker: TextStyle::new(theme.purple, theme.bg),
-            edge: TextStyle::new(theme.light_gray, theme.bg),
-            timestamp: TextStyle::new(theme.dark_gray, theme.bg),
-            preview_title: TextStyle::new(theme.light_gray, theme.bg).bold(),
-            preview_label: TextStyle::new(theme.light_gray, theme.bg).bold(),
+            edge: TextStyle::new(theme.mid_gray, theme.bg),
+            timestamp: TextStyle::new(theme.light_gray, theme.bg),
+            preview_title: TextStyle::new(theme.white, theme.bg).bold(),
+            preview_label: TextStyle::new(theme.light_gray, theme.bg),
             preview_text: TextStyle::new(theme.white, theme.bg),
-            preview_dim: TextStyle::new(theme.dark_gray, theme.bg),
-            preview_separator: TextStyle::new(theme.dark_gray, theme.bg),
+            preview_dim: TextStyle::new(theme.light_gray, theme.bg),
+            preview_separator: TextStyle::new(theme.light_gray, theme.bg),
             preview_deleted: TextStyle::new(theme.red, theme.bg),
             preview_inserted: TextStyle::new(theme.green, theme.bg),
         }
@@ -1081,16 +1090,24 @@ fn dim_style_color(
 }
 
 impl UiStyle {
+    #[cfg(test)]
     pub fn dimmed(self) -> Self {
+        self.dimmed_by(self.dim_amount)
+    }
+
+    pub(crate) fn dimmed_by(self, amount: f32) -> Self {
+        if amount == 0.0 {
+            return self;
+        }
         let mut style = self;
         let bg = self.theme.bg;
-        let dimmed_theme = self.theme.dimmed(self.dim_amount);
+        let dimmed_theme = self.theme.dimmed(amount);
         style.theme = dimmed_theme;
-        style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, self.dim_amount);
+        style.zen_ghost = dim_foreground_color(self.zen_ghost, bg, amount);
         let dim = |pair: &mut TextStyle| {
-            pair.fg = dim_style_color(pair.fg, self.theme, dimmed_theme, bg, self.dim_amount);
+            pair.fg = dim_style_color(pair.fg, self.theme, dimmed_theme, bg, amount);
             if let Some(color) = pair.format.underline_color.as_mut() {
-                *color = dim_style_color(*color, self.theme, dimmed_theme, bg, self.dim_amount);
+                *color = dim_style_color(*color, self.theme, dimmed_theme, bg, amount);
             }
         };
         for (_, pair) in style.syntax_roles_mut() {
@@ -1164,6 +1181,7 @@ impl UiStyle {
             ("status.bar", &mut self.status_line.bar),
             ("status.path", &mut self.status_line.path),
             ("status.dirty", &mut self.status_line.dirty),
+            ("status.saved", &mut self.status_line.saved),
             ("status.mode_normal", &mut self.status_line.mode_normal),
             ("status.mode_insert", &mut self.status_line.mode_insert),
             ("status.mode_command", &mut self.status_line.mode_command),
@@ -1176,6 +1194,7 @@ impl UiStyle {
                 "status.metadata_content",
                 &mut self.status_line.metadata.content,
             ),
+            ("status.language_icon", &mut self.status_line.language_icon),
             (
                 "status.coords_wrapper",
                 &mut self.status_line.coords.wrapper,
@@ -1393,25 +1412,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_status_modules_keep_the_original_dark_palette() {
+    fn default_status_modules_keep_the_original_dark_backgrounds() {
         let style = UiStyle::default();
 
         assert_eq!(
             style.status_line.metadata.wrapper.fg,
             style.status_line.bar.bg
         );
-        assert_eq!(
-            style.status_line.metadata.content,
-            TextStyle::new(style.theme.black, style.theme.dark_gray)
-        );
+        assert_eq!(style.status_line.metadata.content.bg, style.theme.dark_gray);
         assert_eq!(
             style.status_line.coords.wrapper.fg,
             style.status_line.bar.bg
         );
-        assert_eq!(
-            style.status_line.coords.content,
-            TextStyle::new(style.theme.black, style.theme.dark_gray)
-        );
+        assert_eq!(style.status_line.coords.content.bg, style.theme.dark_gray);
     }
 
     #[test]

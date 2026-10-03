@@ -4,6 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::state::{UndoTreeLineRole, UndoTreeLineSpan};
 use crate::ui::icons::UNDO_TREE;
+use crate::ui::render::LineViewport;
 use crate::ui::style::UndoTreeStyle;
 use crate::ui::widgets::popup::clip_text_to_cells;
 
@@ -11,9 +12,14 @@ use crate::ui::widgets::popup::clip_text_to_cells;
 
 const UNDO_TREE_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 const PREVIEW_HEADER_ROWS: usize = 2;
-pub const UNDO_TREE_HEADER_ROWS: u16 = 1;
-const UNDO_TREE_TITLE: &str = "Undo Tree";
-const UNDO_TREE_TITLE_COL: u16 = 1;
+pub const UNDO_TREE_HEADER_ROWS: u16 = 2;
+const UNDO_TREE_TITLE: &str = "Undo tree";
+const UNDO_TREE_TITLE_COL: u16 = 2;
+const PREVIEW_CONTENT_COL: u16 = 4;
+
+pub(crate) fn undo_tree_preview_content_width(width: usize) -> usize {
+    width.saturating_sub(PREVIEW_CONTENT_COL as usize + 1)
+}
 
 pub fn draw_undo_tree_lines(
     window: &mut dyn Window,
@@ -53,7 +59,16 @@ fn draw_undo_tree_header(
     fill_row(window, width, 0, style.text)?;
     let title = undo_tree_title(icons_enabled);
     let title = clip_text_to_cells(&title, width.saturating_sub(UNDO_TREE_TITLE_COL) as usize);
-    window.write_str_styled(0, UNDO_TREE_TITLE_COL, &title, Style::from(style.title))
+    if width > UNDO_TREE_TITLE_COL {
+        window.write_str_styled(0, UNDO_TREE_TITLE_COL, &title, Style::from(style.title))?;
+    }
+    if window.get_size().1 > 1 {
+        fill_row(window, width, 1, style.text)?;
+        if width > 2 {
+            window.write_str_styled(1, 1, &"─".repeat(width as usize - 2), style.edge.into())?;
+        }
+    }
+    Ok(())
 }
 
 fn undo_tree_title(icons_enabled: bool) -> String {
@@ -130,6 +145,16 @@ fn draw_undo_tree_line(
         };
         col = write_grapheme(window, width, row, col, &ch.to_string(), colors)?;
     }
+    if is_selected && width > 0 {
+        window.write_str_styled(
+            row,
+            0,
+            "▎",
+            with_bg(style.selected_indicator, bg)
+                .selected(style.selected)
+                .into(),
+        )?;
+    }
     Ok(())
 }
 
@@ -144,68 +169,100 @@ fn draw_preview_line(
 ) -> Result<()> {
     let row_u16 = row as u16;
     fill_row(window, width, row_u16, style.preview_text)?;
-    if let Some(rest) = line.strip_prefix("Node: ") {
-        return write_segments(
-            window,
-            width,
-            row_u16,
-            scroll_x,
-            &[
-                ("Node: ", Style::from(style.preview_label)),
-                (rest, Style::from(style.preview_title)),
-            ],
-        );
-    }
-
-    let colors = if line == "Original state" {
-        style.preview_title
-    } else if separator_row == Some(source_row) {
-        style.preview_separator
-    } else if separator_row
+    let marker = if separator_row
         .is_some_and(|separator| source_row >= PREVIEW_HEADER_ROWS && source_row < separator)
     {
-        style.preview_deleted
+        Some(("− ", style.preview_deleted))
     } else if separator_row.is_some_and(|separator| source_row > separator) {
-        style.preview_inserted
-    } else if line == "No edit is recorded for this point." {
+        Some(("+ ", style.preview_inserted))
+    } else {
+        None
+    };
+    let colors = if source_row == 0 {
+        style.preview_title
+    } else if source_row == 1 {
+        style.preview_label
+    } else if separator_row == Some(source_row) {
+        style.preview_separator
+    } else if let Some((_, colors)) = marker {
+        colors
+    } else if line == "No changes to preview." {
         style.preview_dim
     } else {
         style.preview_text
     };
-    let text_style = Style::from(colors);
-    write_segments(window, width, row_u16, scroll_x, &[(line, text_style)])
-}
-
-fn write_segments(
-    window: &mut dyn Window,
-    width: u16,
-    row: u16,
-    scroll_x: usize,
-    segments: &[(&str, Style)],
-) -> Result<()> {
-    let mut cell = 0usize;
-    let visible_end = scroll_x.saturating_add(width as usize);
-    for (text, style) in segments {
-        for grapheme in text.graphemes(true) {
-            let start = cell;
-            cell =
-                cell.saturating_add((cell_width(grapheme, UNDO_TREE_TAB_POLICY) as usize).max(1));
-            if cell <= scroll_x {
-                continue;
-            }
-            if start >= visible_end {
-                return Ok(());
-            }
-            let column = start.saturating_sub(scroll_x) as u16;
-            if grapheme == "\t" || start < scroll_x || cell > visible_end {
-                let padding = cell.min(visible_end) - start.max(scroll_x);
-                window.write_str_styled(row, column, &" ".repeat(padding), *style)?;
+    let column = if let Some((marker, colors)) = marker {
+        write_preview_text(
+            window,
+            LineViewport {
+                row: row_u16,
+                column: 2,
+                scroll_x: 0,
+                width: width.saturating_sub(2).min(2) as usize,
+            },
+            marker,
+            colors.into(),
+        )?;
+        PREVIEW_CONTENT_COL
+    } else {
+        2
+    };
+    let clipped = write_preview_text(
+        window,
+        LineViewport {
+            row: row_u16,
+            column,
+            scroll_x: if marker.is_some() { scroll_x } else { 0 },
+            width: if marker.is_some() {
+                undo_tree_preview_content_width(width as usize)
             } else {
-                window.write_str_styled(row, column, grapheme, *style)?;
-            }
-        }
+                width.saturating_sub(column + 1) as usize
+            },
+        },
+        line,
+        colors.into(),
+    )?;
+    if clipped && width > column {
+        window.write_str_styled(row_u16, width - 1, "›", style.preview_dim.into())?;
     }
     Ok(())
+}
+
+fn write_preview_text(
+    window: &mut dyn Window,
+    viewport: LineViewport,
+    text: &str,
+    style: Style,
+) -> Result<bool> {
+    let LineViewport {
+        row,
+        column,
+        scroll_x,
+        width,
+    } = viewport;
+    let mut cell = 0usize;
+    let visible_end = scroll_x.saturating_add(width);
+    for grapheme in text.graphemes(true) {
+        let start = cell;
+        cell = cell.saturating_add((cell_width(grapheme, UNDO_TREE_TAB_POLICY) as usize).max(1));
+        if cell <= scroll_x {
+            continue;
+        }
+        if start >= visible_end {
+            return Ok(true);
+        }
+        let column = column.saturating_add(start.saturating_sub(scroll_x) as u16);
+        if grapheme == "\t" || start < scroll_x || cell > visible_end {
+            let padding = cell.min(visible_end) - start.max(scroll_x);
+            window.write_str_styled(row, column, &" ".repeat(padding), style)?;
+            if cell > visible_end {
+                return Ok(true);
+            }
+        } else {
+            window.write_str_styled(row, column, grapheme, style)?;
+        }
+    }
+    Ok(false)
 }
 
 fn write_grapheme(
@@ -239,116 +296,27 @@ fn with_bg(colors: TextStyle, bg: Color) -> TextStyle {
 mod tests {
     use super::*;
 
-    struct ColorWindow {
-        width: u16,
-        height: u16,
-        cells: Vec<Vec<Option<minui::ColorPair>>>,
-    }
-
-    impl ColorWindow {
-        fn new(width: u16, height: u16) -> Self {
-            Self {
-                width,
-                height,
-                cells: vec![vec![None; width as usize]; height as usize],
-            }
-        }
-
-        fn color_at(&self, row: u16, col: u16) -> Option<minui::ColorPair> {
-            self.cells
-                .get(row as usize)
-                .and_then(|row| row.get(col as usize))
-                .copied()
-                .flatten()
-        }
-    }
-
-    impl Window for ColorWindow {
-        fn write_str(&mut self, y: u16, x: u16, s: &str) -> Result<()> {
-            self.write_str_styled(y, x, s, (TextStyle::new(Color::Reset, Color::Reset)).into())
-        }
-
-        fn write_str_colored(
-            &mut self,
-            y: u16,
-            x: u16,
-            s: &str,
-            colors: minui::ColorPair,
-        ) -> Result<()> {
-            if y >= self.height {
-                return Ok(());
-            }
-            for (offset, _) in s.chars().enumerate() {
-                let col = x as usize + offset;
-                if col >= self.width as usize {
-                    break;
-                }
-                self.cells[y as usize][col] = Some(colors);
-            }
-            Ok(())
-        }
-
-        fn flush(&mut self) -> Result<()> {
-            Ok(())
-        }
-
-        fn set_cursor_position(&mut self, _x: u16, _y: u16) -> Result<()> {
-            Ok(())
-        }
-
-        fn show_cursor(&mut self, _show: bool) -> Result<()> {
-            Ok(())
-        }
-
-        fn get_size(&self) -> (u16, u16) {
-            (self.width, self.height)
-        }
-
-        fn clear_screen(&mut self) -> Result<()> {
-            for row in &mut self.cells {
-                row.fill(None);
-            }
-            Ok(())
-        }
-
-        fn clear_line(&mut self, y: u16) -> Result<()> {
-            if let Some(row) = self.cells.get_mut(y as usize) {
-                row.fill(None);
-            }
-            Ok(())
-        }
-
-        fn clear_area(&mut self, y1: u16, x1: u16, y2: u16, x2: u16) -> Result<()> {
-            let row_start = usize::from(y1.min(y2));
-            let row_end = usize::from(y1.max(y2)).min(self.cells.len().saturating_sub(1));
-            let col_start = usize::from(x1.min(x2));
-            let col_end = usize::from(x1.max(x2)).min(self.width.saturating_sub(1) as usize);
-            for row in row_start..=row_end {
-                for col in col_start..=col_end {
-                    self.cells[row][col] = None;
-                }
-            }
-            Ok(())
-        }
-    }
+    use crate::tests::TestWindow;
 
     #[test]
     fn narrow_preview_keeps_semantic_colours() {
         let style = UndoTreeStyle::default();
         let lines = [
-            "Node: 12".to_string(),
             "Original state".to_string(),
             String::new(),
-            "No edit is recorded for this point.".to_string(),
+            "No changes to preview.".to_string(),
         ];
-        let mut window = ColorWindow::new(4, lines.len() as u16);
+        let mut window = TestWindow::new(4, lines.len() as u16);
 
         draw_undo_tree_preview_lines(&mut window, 4, 0, style, &lines, (0, None))
             .expect("preview should render");
 
-        assert_eq!(window.color_at(0, 0), Some(style.preview_label.colors()));
-        assert_eq!(window.color_at(1, 0), Some(style.preview_title.colors()));
-        assert_eq!(window.color_at(3, 0), Some(style.preview_dim.colors()));
+        assert_eq!(
+            window.styles[0][2].colors,
+            Some(style.preview_title.colors())
+        );
+        assert_eq!(window.styles[2][2].colors, Some(style.preview_dim.colors()));
+        assert_eq!(window.row_text(0), "  O›");
     }
 
     #[test]
@@ -358,20 +326,20 @@ mod tests {
             ..UndoTreeStyle::default()
         };
         let lines = [
-            "Node: 12".to_string(),
-            String::new(),
+            "Change 12".to_string(),
+            "Before · line 1".to_string(),
             "context".to_string(),
-            "-old".to_string(),
-            "---".to_string(),
-            "+new".to_string(),
+            "old".to_string(),
+            "After · line 1".to_string(),
+            "new".to_string(),
         ];
-        let mut window = ColorWindow::new(5, lines.len() as u16);
+        let mut window = TestWindow::new(12, lines.len() as u16);
 
         assert_ne!(style.preview_deleted, style.preview_text);
         for (first_line, scroll_x) in [(0, 0), (2, 0), (4, 0), (5, 0), (2, 1)] {
             draw_undo_tree_preview_lines(
                 &mut window,
-                5,
+                12,
                 scroll_x,
                 style,
                 &lines[first_line..],
@@ -386,10 +354,22 @@ mod tests {
             ] {
                 if source_row >= first_line {
                     assert_eq!(
-                        window.color_at((source_row - first_line) as u16, 0),
+                        window.styles[source_row - first_line][2].colors,
                         Some(color.colors())
                     );
                 }
+            }
+            if first_line <= 3 {
+                assert_eq!(
+                    window.row_text((3 - first_line) as u16).chars().nth(2),
+                    Some('−')
+                );
+            }
+            if first_line <= 5 {
+                assert_eq!(
+                    window.row_text((5 - first_line) as u16).chars().nth(2),
+                    Some('+')
+                );
             }
         }
     }

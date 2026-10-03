@@ -534,6 +534,34 @@ impl SyntaxHighlighter {
         self.active_scope_cache = None;
     }
 
+    /// An existing newline can anchor the rebased edit outside the old comment.
+    /// Colour its auto-inserted prefix while the background parser catches up.
+    pub(crate) fn preserve_comment_prefix(&mut self, line: usize, end_byte: usize) {
+        let Some(cache) = self.cache.as_mut() else {
+            return;
+        };
+        let start_byte = leading_indent(&cache.source.line_string(line)).len();
+        let Some(spans) = cache.line_spans.get_mut(line) else {
+            return;
+        };
+        if start_byte >= end_byte
+            || spans.iter().any(|span| {
+                span.role == SyntaxRole::Comment
+                    && span.start_byte <= start_byte
+                    && span.end_byte >= end_byte
+            })
+        {
+            return;
+        }
+        spans.push(LineSyntaxSpan {
+            start_byte,
+            end_byte,
+            role: SyntaxRole::Comment,
+            priority: 70,
+        });
+        spans.sort_by_key(|span| (span.start_byte, span.end_byte, span.priority));
+    }
+
     #[cfg(test)]
     pub(crate) fn has_stale_cache_for(&self, language: SyntaxLanguage) -> bool {
         self.cache_stale
@@ -862,31 +890,127 @@ fn is_html_void_tag(name: &str) -> bool {
     .any(|void| name.eq_ignore_ascii_case(void))
 }
 
+pub(crate) fn comment_delimiters_for_path(
+    path: Option<&Path>,
+) -> Option<(&'static str, &'static str)> {
+    if path
+        .and_then(Path::extension)
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonc"))
+    {
+        return Some(("//", ""));
+    }
+    match language_for_path(path) {
+        Some(
+            SyntaxLanguage::C
+            | SyntaxLanguage::Cpp
+            | SyntaxLanguage::Go
+            | SyntaxLanguage::JavaScript
+            | SyntaxLanguage::Rust
+            | SyntaxLanguage::TypeScript
+            | SyntaxLanguage::Tsx,
+        ) => Some(("//", "")),
+        Some(SyntaxLanguage::Python | SyntaxLanguage::Toml | SyntaxLanguage::Yaml) => {
+            Some(("#", ""))
+        }
+        Some(SyntaxLanguage::Lua) => Some(("--", "")),
+        Some(SyntaxLanguage::Css) => Some(("/*", "*/")),
+        Some(SyntaxLanguage::Html | SyntaxLanguage::Markdown) => Some(("<!--", "-->")),
+        Some(SyntaxLanguage::Json) => None,
+        None => {
+            let path = path?;
+            let filename = path.file_name()?.to_str()?;
+            if matches!(
+                filename,
+                ".bashrc" | ".zshrc" | ".bash_profile" | ".zprofile" | ".env"
+            ) || filename.starts_with(".env.")
+            {
+                return Some(("#", ""));
+            }
+            match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+                "sh" | "bash" | "zsh" | "fish" | "rb" | "r" | "pl" | "conf" | "env" | "nu" => {
+                    Some(("#", ""))
+                }
+                "sql" => Some(("--", "")),
+                "ini" | "cfg" | "scm" | "ss" | "lisp" | "el" | "clj" | "cljs" | "cljc" => {
+                    Some((";", ""))
+                }
+                "java" | "cs" | "dart" | "swift" | "kt" | "kts" => Some(("//", "")),
+                _ => None,
+            }
+        }
+    }
+}
+
+pub(crate) struct NewlineInsert {
+    pub text: String,
+    pub cursor: Pos,
+    pub comment_prefix_bytes: usize,
+}
+
 pub(crate) fn smart_newline_insert(
     buffer: &TextBuffer,
-    language: Option<SyntaxLanguage>,
+    path: Option<&Path>,
     cursor: Pos,
     indent_size: usize,
-) -> Option<(String, Pos)> {
-    let language = smart_indent_language(language)?;
-    let source = buffer.to_string();
+) -> Option<NewlineInsert> {
     let cursor = buffer.clamp_pos(cursor);
     let line = buffer.clamp_line(cursor.line);
     let line_text = buffer.line_string(line);
     let left = line_text.chars().take(cursor.col).collect::<String>();
     let right = line_text.chars().skip(cursor.col).collect::<String>();
-    let virtual_source = if left == line_text {
-        source
+    if let Some(info) = left.trim_start().strip_prefix("```")
+        && !info.contains('`')
+        && right.trim() == "```"
+    {
+        let indent = leading_indent(&line_text);
+        return Some(NewlineInsert {
+            text: format!("\n{indent}\n{indent}"),
+            cursor: Pos::new(line + 1, indent.chars().count()),
+            comment_prefix_bytes: 0,
+        });
+    }
+    let language = language_for_path(path);
+    let source = if language.is_some() {
+        buffer.to_string()
     } else {
-        let mut source = source;
-        let line_start = source_line_start_byte(&source, line)?;
-        let cursor_byte = line_start + left.len();
-        let line_end = line_start + line_text.len();
-        source.replace_range(cursor_byte..line_end, "");
-        source
+        String::new()
     };
+    let tree = language.and_then(|language| parse_tree(&source, language));
+    let cursor_byte = buffer.char_to_byte(buffer.pos_to_char(cursor));
+    if let Some((prefix, closing)) =
+        comment_continuation(&source, tree.as_ref(), path, cursor_byte, &left)
+    {
+        let insert = if closing.is_some_and(|closing| right.trim_start().starts_with(closing)) {
+            let closing_indent = leading_indent(&left);
+            let margin = if closing == Some("*/") && !left.trim_start().starts_with('*') {
+                " "
+            } else {
+                ""
+            };
+            format!("\n{prefix}\n{closing_indent}{margin}")
+        } else {
+            format!("\n{prefix}")
+        };
+        return Some(NewlineInsert {
+            text: insert,
+            cursor: Pos::new(line + 1, prefix.chars().count()),
+            comment_prefix_bytes: prefix.len(),
+        });
+    }
+    let Some(language) = language else {
+        let indent = leading_indent(&left);
+        return Some(NewlineInsert {
+            text: format!("\n{indent}"),
+            cursor: Pos::new(line + 1, indent.chars().count()),
+            comment_prefix_bytes: 0,
+        });
+    };
+    let mut virtual_source = source;
+    let line_start = source_line_start_byte(&virtual_source, line)?;
+    // Analyse the new blank line, rather than the existing line below the cursor.
+    virtual_source.replace_range(line_start + left.len()..line_start + line_text.len(), "\n");
     let tree = parse_tree(&virtual_source, language)?;
-
     let base_indent = floored_indent(leading_indent(&line_text), indent_size);
     let inner_indent = indent_after_line(&virtual_source, &tree, language, line, indent_size)
         .unwrap_or_else(|| base_indent.clone());
@@ -902,11 +1026,15 @@ pub(crate) fn smart_newline_insert(
         };
         let insert = format!("\n{split_indent}\n{base_indent}");
         let cursor = Pos::new(line + 1, split_indent.chars().count());
-        return Some((insert, cursor));
+        return Some(NewlineInsert {
+            text: insert,
+            cursor,
+            comment_prefix_bytes: 0,
+        });
     }
 
     let mut indent =
-        desired_indent_for_line_source(&virtual_source, language, line + 1, indent_size)?;
+        desired_indent_for_line_source(&virtual_source, &tree, language, line + 1, indent_size)?;
     if right.is_empty() && line + 1 < buffer.len_lines() {
         let next_text = buffer.line_string(line + 1);
         let next_trimmed = next_text.trim_start();
@@ -918,10 +1046,101 @@ pub(crate) fn smart_newline_insert(
             indent = max_indent(&indent, &surrounding_indent);
         }
     }
-    Some((
-        format!("\n{indent}"),
-        Pos::new(line + 1, indent.chars().count()),
-    ))
+    Some(NewlineInsert {
+        text: format!("\n{indent}"),
+        cursor: Pos::new(line + 1, indent.chars().count()),
+        comment_prefix_bytes: 0,
+    })
+}
+
+fn comment_continuation(
+    source: &str,
+    tree: Option<&Tree>,
+    path: Option<&Path>,
+    cursor_byte: usize,
+    left: &str,
+) -> Option<(String, Option<&'static str>)> {
+    let (opening, closing) = comment_delimiters_for_path(path)?;
+    let indent = leading_indent(left);
+    let content = &left[indent.len()..];
+    let c_style_block = matches!(opening, "//" | "/*") && content.starts_with("/*");
+    let comment_text = if let Some(tree) = tree {
+        let byte = cursor_byte.checked_sub(1)?;
+        let is_comment = |kind: &str| {
+            matches!(
+                kind,
+                "comment" | "line_comment" | "block_comment" | "html_block"
+            )
+        };
+        let comment = ancestor_at_byte(tree, byte, is_comment);
+        let recovery_closer = if matches!(opening, "//" | "/*") && source.contains("/*") {
+            Some("*/")
+        } else if language_for_path(path) == Some(SyntaxLanguage::Lua) && source.contains("--[[") {
+            Some("]]")
+        } else if !closing.is_empty() && source.contains(opening) {
+            Some(closing)
+        } else {
+            None
+        };
+        // Complete unfinished block comments only in the source used for analysis.
+        let recovery_tree = if comment.is_none() && tree.root_node().has_error() {
+            recovery_closer.and_then(|closing| {
+                parse_tree(&format!("{source}\n{closing}"), language_for_path(path)?)
+            })
+        } else {
+            None
+        };
+        let comment =
+            comment.or_else(|| ancestor_at_byte(recovery_tree.as_ref()?, byte, is_comment))?;
+        source.get(comment.start_byte()..cursor_byte)?
+    } else {
+        // ponytail: without a grammar, only full-line prefixes; add a grammar for multiline strings.
+        if !content.starts_with(opening) && !c_style_block {
+            return None;
+        }
+        content
+    };
+    if !comment_text.starts_with(opening)
+        && !(matches!(opening, "//" | "/*") && comment_text.starts_with("/*"))
+    {
+        return None;
+    }
+    let closing = if comment_text.starts_with("/*") {
+        Some("*/")
+    } else if comment_text.starts_with("<!--") {
+        Some("-->")
+    } else if language_for_path(path) == Some(SyntaxLanguage::Lua)
+        && comment_text.starts_with("--[[")
+    {
+        Some("]]")
+    } else {
+        (!closing.is_empty()).then_some(closing)
+    };
+    if let Some(closing) = closing {
+        if comment_text.trim_end().ends_with(closing) {
+            return None;
+        }
+        let prefix = if closing == "*/" && !comment_text.contains('\n') {
+            format!("{indent} * ")
+        } else if closing == "*/" && content.starts_with('*') {
+            let padding = leading_indent(&content[1..]);
+            let padding = if padding.is_empty() { " " } else { padding };
+            format!("{indent}*{padding}")
+        } else {
+            indent.to_string()
+        };
+        return Some((prefix, Some(closing)));
+    }
+
+    let rest = comment_text.strip_prefix(opening)?;
+    let extra = rest.len()
+        - rest
+            .trim_start_matches(|character: char| opening.ends_with(character) || character == '!')
+            .len();
+    let marker = &comment_text[..opening.len() + extra];
+    let padding = leading_indent(&rest[extra..]);
+    let padding = if padding.is_empty() { " " } else { padding };
+    Some((format!("{indent}{marker}{padding}"), None))
 }
 
 pub(crate) fn smart_open_line_insert(
@@ -931,7 +1150,7 @@ pub(crate) fn smart_open_line_insert(
     above: bool,
     indent_size: usize,
 ) -> Option<(String, Pos)> {
-    let language = smart_indent_language(language)?;
+    let language = language?;
     let source = buffer.to_string();
     let line = buffer.clamp_line(line);
     let insert_pos = if above {
@@ -950,7 +1169,9 @@ pub(crate) fn smart_open_line_insert(
     let mut virtual_source = source;
     virtual_source.insert(insert_byte, '\n');
     let new_line = if above { line } else { line + 1 };
-    let indent = desired_indent_for_line_source(&virtual_source, language, new_line, indent_size)?;
+    let tree = parse_tree(&virtual_source, language)?;
+    let indent =
+        desired_indent_for_line_source(&virtual_source, &tree, language, new_line, indent_size)?;
     let insert = if above {
         format!("{indent}\n")
     } else {
@@ -966,23 +1187,42 @@ pub(crate) fn desired_indent_for_line(
     line: usize,
     indent_size: usize,
 ) -> Option<String> {
-    let language = smart_indent_language(language)?;
-    desired_indent_for_line_source(&buffer.to_string(), language, line, indent_size)
+    let language = language?;
+    let source = buffer.to_string();
+    let tree = parse_tree(&source, language)?;
+    desired_indent_for_line_source(&source, &tree, language, line, indent_size)
 }
 
 fn desired_indent_for_line_source(
     source: &str,
+    tree: &Tree,
     language: SyntaxLanguage,
     line: usize,
     indent_size: usize,
 ) -> Option<String> {
-    let tree = parse_tree(source, language)?;
     let lines = source.lines().collect::<Vec<_>>();
     let line_text = lines.get(line).copied().unwrap_or("");
     let Some(prev_line) = line.checked_sub(1) else {
         return Some(String::new());
     };
     let prev_text = lines.get(prev_line).copied().unwrap_or("");
+    if language == SyntaxLanguage::Markdown {
+        let previous_byte =
+            source_line_start_byte(source, prev_line)? + leading_indent(prev_text).len();
+        let in_code =
+            ancestor_at_byte(tree, previous_byte, |kind| kind == "fenced_code_block").is_some();
+        if !in_code && let Some(indent) = markdown_indent_after_line(prev_text) {
+            return Some(indent);
+        }
+        let mut indent = leading_indent(prev_text).to_string();
+        if in_code && opens_line(source, tree, language, prev_line) {
+            indent.extend(std::iter::repeat_n(' ', indent_size));
+        }
+        if in_code && starts_with_closing_delimiter(line_text.trim_start()) {
+            remove_one_indent_level(&mut indent, indent_size);
+        }
+        return Some(indent);
+    }
     if prev_text.trim().is_empty() {
         if line_text.trim().is_empty()
             && let Some(next_text) = lines.get(line + 1).copied()
@@ -993,15 +1233,9 @@ fn desired_indent_for_line_source(
             indent.extend(std::iter::repeat_n(' ', indent_size));
             return Some(indent);
         }
-        return Some(String::new());
+        return Some(floored_indent(leading_indent(prev_text), indent_size));
     }
-
-    if language == SyntaxLanguage::Markdown
-        && let Some(indent) = markdown_indent_after_line(prev_text)
-    {
-        return Some(indent);
-    }
-    let mut indent = indent_after_line(source, &tree, language, prev_line, indent_size)
+    let mut indent = indent_after_line(source, tree, language, prev_line, indent_size)
         .unwrap_or_else(|| floored_indent(leading_indent(prev_text), indent_size));
 
     let trimmed = line_text.trim_start();
@@ -1010,10 +1244,6 @@ fn desired_indent_for_line_source(
     }
 
     Some(indent)
-}
-
-fn smart_indent_language(language: Option<SyntaxLanguage>) -> Option<SyntaxLanguage> {
-    language
 }
 
 fn parse_tree(source: &str, language: SyntaxLanguage) -> Option<Tree> {
@@ -1138,15 +1368,25 @@ fn node_kind_at_byte(tree: &Tree, byte: usize) -> Option<&str> {
 }
 
 fn is_string_or_comment_node(tree: &Tree, byte: usize) -> bool {
+    ancestor_at_byte(tree, byte, |kind| {
+        kind.contains("string") || kind.contains("comment")
+    })
+    .is_some()
+}
+
+fn ancestor_at_byte<'tree>(
+    tree: &'tree Tree,
+    byte: usize,
+    matches: impl Fn(&str) -> bool,
+) -> Option<Node<'tree>> {
     let mut node = tree.root_node().named_descendant_for_byte_range(byte, byte);
     while let Some(current) = node {
-        let kind = current.kind();
-        if kind.contains("string") || kind.contains("comment") {
-            return true;
+        if matches(current.kind()) {
+            return Some(current);
         }
         node = current.parent();
     }
-    false
+    None
 }
 
 fn leading_indent(text: &str) -> &str {
@@ -1240,7 +1480,10 @@ fn markdown_indent_after_line(text: &str) -> Option<String> {
     }
 
     if let Some(marker_len) = markdown_list_marker_len(rest) {
-        continuation_width += marker_len;
+        continuation_width = cell_width(
+            &text[..text.len() - rest.len() + marker_len],
+            TabPolicy::Fixed(SOFT_TAB_WIDTH as u16),
+        ) as usize;
         return Some(" ".repeat(continuation_width));
     }
 
@@ -1248,32 +1491,17 @@ fn markdown_indent_after_line(text: &str) -> Option<String> {
 }
 
 fn markdown_list_marker_len(text: &str) -> Option<usize> {
-    if let Some(ch) = text.chars().next()
-        && matches!(ch, '-' | '*' | '+')
-        && text.chars().nth(1).is_some_and(char::is_whitespace)
-    {
-        return Some(2);
-    }
-
-    let mut digit_end = 0usize;
-    for (idx, ch) in text.char_indices() {
-        if ch.is_ascii_digit() {
-            digit_end = idx + ch.len_utf8();
-            continue;
+    let marker_end = if text.starts_with(['-', '*', '+']) {
+        1
+    } else {
+        let digit_end = text.bytes().take_while(u8::is_ascii_digit).count();
+        if digit_end == 0 || !text[digit_end..].starts_with(['.', ')']) {
+            return None;
         }
-        break;
-    }
-    if digit_end == 0 {
-        return None;
-    }
-
-    let mut chars = text[digit_end..].chars();
-    let delimiter = chars.next()?;
-    let space = chars.next()?;
-    matches!(delimiter, '.' | ')')
-        .then_some(())
-        .filter(|_| space.is_whitespace())?;
-    Some(digit_end + delimiter.len_utf8() + space.len_utf8())
+        digit_end + 1
+    };
+    let padding = leading_indent(&text[marker_end..]);
+    (!padding.is_empty()).then_some(marker_end + padding.len())
 }
 
 fn source_line_start_byte(source: &str, line: usize) -> Option<usize> {
@@ -1984,7 +2212,12 @@ mod tests {
     #[test]
     fn markdown_inline_code_backtick_does_not_open_indent() {
         assert_eq!(
-            super::desired_indent_for_line_source("`code`\n", SyntaxLanguage::Markdown, 1, 4),
+            super::desired_indent_for_line(
+                &TextBuffer::from_text("`code`\n"),
+                Some(SyntaxLanguage::Markdown),
+                1,
+                4,
+            ),
             Some(String::new())
         );
 

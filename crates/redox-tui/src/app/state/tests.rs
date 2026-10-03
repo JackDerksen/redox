@@ -648,10 +648,6 @@ fn wait_for_finder_index_idle(state: &mut EditorState) {
     panic!("finder index worker did not finish before deadline");
 }
 
-fn expire_status_after_timeout(state: &mut EditorState) {
-    state.expire_status_message(Instant::now() + Duration::from_secs(10));
-}
-
 fn lock_global_test_state() -> std::sync::MutexGuard<'static, ()> {
     global_test_state_lock()
         .lock()
@@ -1297,6 +1293,26 @@ fn finder_shows_pins_and_filters_files() {
                 .iter()
                 .any(|entry| entry.label.contains("src/main.rs"))
         );
+
+        state.finder_select_path(&notes_path);
+        state.apply_input(InputAction::FinderBackspace, 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        let selected = &popup.entries[popup.selected];
+        assert_eq!(popup.preview.as_ref().unwrap().title, selected.label);
+
+        wait_for_finder_index_idle(&mut state);
+        state.apply_input(InputAction::FinderChar('!'), 80, 24);
+        let popup = state.finder_popup().expect("finder popup");
+        assert_eq!(popup.result_count, 0);
+        assert!(popup.entries.iter().all(|entry| entry.is_pinned));
+        let mut window = crate::tests::TestWindow::new(100, 30);
+        let layout =
+            crate::ui::draw_finder_popup(&popup, crate::ui::UiStyle::default(), &mut window)
+                .unwrap();
+        let results = layout.frames[0];
+        let pinned_count = popup.entries.len() as u16;
+        let message_row = results.y + 1 + pinned_count + (results.height - 3 - pinned_count) / 2;
+        assert!(window.row_text(message_row).contains("<no matches>"));
     });
 }
 
@@ -2273,6 +2289,302 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
 }
 
 #[test]
+fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
+    use std::collections::BTreeMap;
+
+    let cases = [
+        (
+            InputMode::Normal,
+            "rs",
+            "  run();\nnext();\n",
+            0,
+            Some("  // run();\nnext();\n"),
+        ),
+        (
+            InputMode::Normal,
+            "css",
+            "p { color: red; }\n",
+            0,
+            Some("/* p { color: red; } */\n"),
+        ),
+        (
+            InputMode::Visual,
+            "rs",
+            "  café();\r\n\tstep();\r\n\r\noutside\r\n",
+            2,
+            Some("  // café();\r\n\t// step();\r\n\r\noutside\r\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "py",
+            "    # keep\n    run()\n",
+            1,
+            Some("    # # keep\n    # run()\n"),
+        ),
+        (
+            InputMode::VisualBlock,
+            "lua",
+            "  run()\n    next()\n",
+            1,
+            Some("  -- run()\n    -- next()\n"),
+        ),
+        (
+            InputMode::Visual,
+            "css",
+            "  p {\n    color: red;\n  }\noutside\n",
+            2,
+            Some("  /* p {\n    color: red;\n  } */\noutside\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "html",
+            "  <div>\n    text\n",
+            1,
+            Some("  <!-- <div>\n    text -->\n"),
+        ),
+        (
+            InputMode::VisualBlock,
+            "sql",
+            "SELECT value;\nFROM data;\n",
+            1,
+            Some("-- SELECT value;\n-- FROM data;\n"),
+        ),
+        (
+            InputMode::VisualLine,
+            "sh",
+            "echo hello\n",
+            0,
+            Some("# echo hello\n"),
+        ),
+        (
+            InputMode::Visual,
+            "jsonc",
+            "{\"value\": 1}\n",
+            0,
+            Some("// {\"value\": 1}\n"),
+        ),
+        (InputMode::Visual, "json", "{\"value\": 1}\n", 0, None),
+    ];
+    for (mode, extension, original, end_line, commented) in cases {
+        let path = temp_file_path("visual_comment_toggle").with_extension(extension);
+        let mut state = state_with_text(path.clone(), original);
+        let active_id = state.session.active_id();
+        state.private_register = "keep register".to_string();
+        state.input.configure(',', &BTreeMap::new()).unwrap();
+        for expected in commented.into_iter().chain(std::iter::once(original)) {
+            state.apply_input(InputAction::SetMode(mode), 80, 24);
+            state.with_active_buffer_view_mut(|_, view| {
+                view.visual_anchor = (mode != InputMode::Normal).then_some(Pos::new(end_line, 0));
+                view.cursor.cursor = Pos::zero();
+            });
+            let keys = if mode == InputMode::Normal {
+                "gcc"
+            } else {
+                "gc"
+            };
+            for key in keys.chars() {
+                let action = crate::input::map_event_with_state(
+                    &mut state.input,
+                    mode,
+                    &minui::prelude::input::Event::Character(key),
+                );
+                state.apply_input(action, 80, 24);
+            }
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                expected,
+                "{extension}"
+            );
+            assert_eq!(state.private_register, "keep register");
+            if commented.is_none() {
+                assert!(state.active_visual_selection().is_some());
+                assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+                assert_eq!(
+                    state.status_msg.as_deref(),
+                    Some("comment syntax unavailable for this file")
+                );
+                continue;
+            }
+            assert_eq!(state.mode, EditorMode::Normal);
+            assert!(state.active_visual_selection().is_none());
+            if expected != original {
+                assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+                state.apply_input(InputAction::Undo, 80, 24);
+                assert_eq!(state.session.active_buffer().to_string(), original);
+                state.apply_input(InputAction::Redo, 80, 24);
+                assert_eq!(state.session.active_buffer().to_string(), expected);
+            }
+        }
+        assert!(!state.session.active_meta().dirty);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn paired_comment_toggle_uncomments_lines_and_rejects_unsafe_ranges() {
+    for (extension, keys, original, expected) in [
+        ("css", "Vjgc", "/* a */\n/* b */\n", "a\nb\n"),
+        (
+            "css",
+            "V2jgc",
+            "\t/* café */ \r\n \r\n  /* β */\t\r\n",
+            "\tcafé \r\n \r\n  β\t\r\n",
+        ),
+        (
+            "html",
+            "Vjgc",
+            "  <!-- <p>one</p> -->\n\t<!-- <p>two</p> -->\n",
+            "  <p>one</p>\n\t<p>two</p>\n",
+        ),
+        ("css", "Vjgc", "/* a /*\nb */\n", "/* a /*\nb */\n"),
+        ("css", "Vjgc", "/* a */\nb */\n", "/* a */\nb */\n"),
+        ("css", "Vjgc", "/* a */\nb\n", "/* a */\nb\n"),
+        (
+            "css",
+            "Vjgc",
+            "a { content: \"*/\"; }\nb {}\n",
+            "a { content: \"*/\"; }\nb {}\n",
+        ),
+    ] {
+        let path = temp_file_path("paired_comment_toggle").with_extension(extension);
+        let mut state = state_with_text(path.clone(), original);
+        let active_id = state.session.active_id();
+        apply_keys(&mut state, keys);
+        assert_eq!(state.session.active_buffer().to_string(), expected);
+        if expected == original {
+            assert!(!state.session.active_meta().dirty);
+            assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
+            assert!(state.active_visual_selection().is_some());
+            assert_eq!(
+                state.status_msg.as_deref(),
+                Some("cannot toggle comments safely: selection contains comment delimiters")
+            );
+        } else {
+            assert_eq!(state.mode, EditorMode::Normal);
+            assert_eq!(undo_history_of(&state, active_id).undo_len(), 1);
+            apply_keys(&mut state, "u");
+            assert_eq!(state.session.active_buffer().to_string(), original);
+            state.apply_input(InputAction::Redo, 80, 24);
+            assert_eq!(state.session.active_buffer().to_string(), expected);
+        }
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn replay_dot_repeats_comment_toggle() {
+    for (initial_keys, repeat_keys, commented, repeated) in [
+        (
+            "Vjgc",
+            "2j0.",
+            "// one();\n// two();\nthree();\nfour();\n",
+            "// one();\n// two();\n// three();\n// four();\n",
+        ),
+        (
+            "gcc",
+            "j0.",
+            "// one();\ntwo();\nthree();\nfour();\n",
+            "// one();\n// two();\nthree();\nfour();\n",
+        ),
+    ] {
+        let path = temp_file_path("dot_comment").with_extension("rs");
+        let mut state = state_with_text(path.clone(), "one();\ntwo();\nthree();\nfour();\n");
+        apply_keys(&mut state, initial_keys);
+        assert_eq!(state.session.active_buffer().to_string(), commented);
+        apply_keys(&mut state, repeat_keys);
+        assert_eq!(state.session.active_buffer().to_string(), repeated);
+        apply_keys(&mut state, "u");
+        assert_eq!(state.session.active_buffer().to_string(), commented);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
+    use std::collections::BTreeMap;
+    let _guard = global_test_state_lock().lock().unwrap();
+    let style = crate::ui::UiStyle::default();
+    let render = |state: &mut EditorState| {
+        let highlight = state.one_shot_highlight();
+        let mut window = crate::tests::TestWindow::new(40, 8);
+        crate::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
+        crate::draw_buffer_snapshot_for_id(
+            state,
+            style,
+            state.session.active_id(),
+            crate::BufferDrawOptions {
+                width: 40,
+                height: 8,
+                has_line_numbers: false,
+                colors: style.editor_text,
+            },
+            &mut window,
+            crate::BufferHighlights {
+                visual_selection: None,
+                one_shot_highlight: highlight,
+                search_highlights: &BTreeMap::new(),
+                diagnostic_lines: &BTreeMap::new(),
+                snippet_placeholders: &BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        window
+    };
+    for (before, after, row, column) in [
+        ("abc", "abXc", 0, 2),
+        ("abc", "ac", 0, 1),
+        ("abc", "ab", 0, 2),
+        ("", "xy", 0, 0),
+        ("a\nb\nc", "a\nnew\nb\nc", 1, 0),
+        ("aé界b", "a🙂b", 0, 1),
+    ] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(before);
+        let checkpoint = state.capture_active_undo_checkpoint();
+        *state.session.active_buffer_mut() = TextBuffer::from_text(after);
+        state.record_active_undo_if_changed(checkpoint);
+        for (action, expected) in [(InputAction::Undo, before), (InputAction::Redo, after)] {
+            state.apply_input(action, 40, 8);
+            assert_eq!(state.session.active_buffer().to_string(), expected);
+            let highlight = state.one_shot_highlight.take().unwrap();
+            assert_eq!(highlight.kind, HighlightKind::UndoRedo);
+            let baseline = render(&mut state);
+            state.one_shot_highlight = Some(highlight);
+            let peak = render(&mut state);
+            let peak_colors = peak.styles[row][column].colors.unwrap();
+            let baseline_colors = baseline.styles[row][column].colors.unwrap();
+            assert_ne!(
+                peak_colors.bg, baseline_colors.bg,
+                "{before:?} -> {after:?}, {expected:?}, {:?}",
+                highlight.selection
+            );
+            assert_eq!(peak_colors.fg, baseline_colors.fg);
+            assert_eq!(peak.styles[0][30], baseline.styles[0][30]);
+            state.advance_one_shot_highlight(highlight.started_at + highlight.duration / 2);
+            let halfway = render(&mut state);
+            assert_ne!(
+                halfway.styles[row][column].colors.unwrap().bg,
+                peak_colors.bg
+            );
+            state.advance_one_shot_highlight(highlight.started_at + highlight.duration);
+            assert_eq!(render(&mut state).styles, baseline.styles);
+        }
+        state.apply_input(InputAction::Redo, 40, 8);
+        assert!(state.one_shot_highlight().is_none());
+        state.apply_input(InputAction::Undo, 40, 8);
+        state.apply_input(InputAction::Paste("!".into()), 40, 8);
+        assert!(state.one_shot_highlight().is_none());
+        for animations in ["enabled = false", "undo_redo_highlight_ms = 0"] {
+            state.configure_animations(toml::from_str(animations).unwrap());
+            state.apply_input(InputAction::Undo, 40, 8);
+            assert!(state.one_shot_highlight().is_none());
+            state.apply_input(InputAction::Redo, 40, 8);
+            assert!(state.one_shot_highlight().is_none());
+        }
+    }
+}
+
+#[test]
 fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
     let path = temp_file_path("undo_redo_basic");
     let mut state = state_with_text(path.clone(), "hello");
@@ -2488,7 +2800,7 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .expect("missing undo tree buffer")
         .to_string();
     let lines = tree_text.lines().collect::<Vec<_>>();
-    assert!(lines[0].contains(">3<"));
+    assert!(lines[0].contains("●  3"));
     assert!(lines[0].contains("●"));
     assert!(lines[1].contains("2"));
     assert!(lines[2].contains("1"));
@@ -2498,8 +2810,8 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(diff_buffer_id)
         .expect("missing undo tree diff buffer")
         .to_string();
-    assert!(diff_text.starts_with("Node: 3\n\n"));
-    assert!(diff_text.contains("---\n"));
+    assert!(diff_text.starts_with("Change 3\nBefore · line 1\n"));
+    assert!(diff_text.contains("After · line 1\n"));
 
     state.apply_input(
         InputAction::Motion {
@@ -2523,8 +2835,8 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">3<"));
-    assert!(!tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  3"));
+    assert!(!tree_text.contains("●  1"));
     let tree_pane = state
         .panes()
         .iter()
@@ -2540,7 +2852,7 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  1"));
     assert_eq!(
         state
             .undo_tree
@@ -2803,13 +3115,13 @@ fn undo_tree_selection_tracks_source_history_changes() {
         .buffer(tree_buffer_id)
         .expect("missing undo tree buffer")
         .to_string();
-    assert!(tree_text.contains(">1<"));
+    assert!(tree_text.contains("●  1"));
 
     let _ = fs::remove_file(path);
 }
 
 #[test]
-fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
+fn undo_tree_panes_resize_and_remember_width_for_the_session() {
     let path = temp_file_path("undo_tree_ui_pane");
     let mut state = state_with_text(path.clone(), "a");
     state.set_editor_area_size(100, 20);
@@ -2817,20 +3129,22 @@ fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
     run_command(&mut state, "undo-tree");
 
     let tree = state.undo_tree.as_ref().expect("missing undo tree");
+    let tree_pane_id = tree.pane_id;
+    let preview_pane_id = tree.diff_pane_id;
     let pane = state
         .panes()
         .iter()
         .find(|pane| pane.id == tree.pane_id)
         .expect("missing undo tree pane");
     assert!(!pane.options.has_line_numbers);
-    assert!(!pane.options.resizable);
+    assert!(pane.options.resizable);
     let diff_pane = state
         .panes()
         .iter()
         .find(|pane| pane.id == tree.diff_pane_id)
         .expect("missing undo tree diff pane");
     assert!(!diff_pane.options.has_line_numbers);
-    assert!(!diff_pane.options.resizable);
+    assert!(diff_pane.options.resizable);
     assert!(!diff_pane.options.accessible);
 
     let rects = state.pane_rects(100, 20);
@@ -2845,6 +3159,100 @@ fn undo_tree_uses_percentage_sized_ui_pane_without_line_numbers() {
         .find(|rect| rect.pane_id == tree.diff_pane_id)
         .expect("missing undo tree diff rect");
     assert_eq!(diff_rect.height, 8);
+
+    for key in [minui::KeyKind::Right, minui::KeyKind::Up] {
+        crate::handle_editor_event(
+            &mut state,
+            &mut None,
+            minui::Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key,
+                mods: minui::KeyModifiers::ctrl(),
+            }),
+        );
+    }
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!((tree_rect.width, tree_rect.height), (33, 12));
+    assert_eq!((preview_rect.width, preview_rect.height), (33, 7));
+
+    run_command(&mut state, "undo-tree");
+    assert!(state.undo_tree.is_none());
+    run_command(&mut state, "undo-tree");
+    let tree = state.undo_tree.as_ref().unwrap();
+    let tree_pane_id = tree.pane_id;
+    let preview_pane_id = tree.diff_pane_id;
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!(tree_rect.width, 33);
+    assert_eq!(preview_rect.width, 33);
+
+    state.configure_mouse(true, false, false, 3, 3);
+    state.set_mouse_viewport(0, 100, 21);
+    for (start_x, start_y, end_x, end_y) in
+        [(tree_rect.width, 0, 60, 0), (0, preview_rect.y - 1, 0, 6)]
+    {
+        for event in [
+            minui::Event::MouseClick {
+                x: start_x,
+                y: start_y,
+                button: minui::MouseButton::Left,
+            },
+            minui::Event::MouseDrag {
+                x: end_x,
+                y: end_y,
+                button: minui::MouseButton::Left,
+            },
+            minui::Event::MouseRelease {
+                x: end_x,
+                y: end_y,
+                button: minui::MouseButton::Left,
+            },
+        ] {
+            crate::handle_editor_event(&mut state, &mut None, event);
+        }
+    }
+    let rects = state.pane_rects(100, 20);
+    let tree_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == tree_pane_id)
+        .unwrap();
+    let preview_rect = rects
+        .iter()
+        .find(|rect| rect.pane_id == preview_pane_id)
+        .unwrap();
+    assert_eq!((tree_rect.width, tree_rect.height), (60, 6));
+    assert_eq!((preview_rect.width, preview_rect.height), (60, 13));
+    assert_eq!(state.active_pane_id(), tree_pane_id);
+
+    for (area_width, expected_width) in [(100, 60), (50, 37), (100, 60)] {
+        run_command(&mut state, "undo-tree");
+        assert!(state.undo_tree.is_none());
+        state.set_editor_area_size(area_width, 20);
+        run_command(&mut state, "undo-tree");
+        let tree = state.undo_tree.as_ref().unwrap();
+        for pane_id in [tree.pane_id, tree.diff_pane_id] {
+            let rect = state
+                .pane_rects(area_width as u16, 20)
+                .into_iter()
+                .find(|rect| rect.pane_id == pane_id)
+                .unwrap();
+            assert_eq!(rect.width, expected_width);
+        }
+    }
 
     let _ = fs::remove_file(path);
 }
@@ -2943,6 +3351,153 @@ fn pane_resizing_preserves_nested_neighbours_and_fixed_panes() {
 }
 
 #[test]
+fn pane_focus_crossfades_and_reverses_from_current_brightness() {
+    let path = temp_file_path("pane_focus_fade");
+    let mut state = state_with_text(path.clone(), "alpha");
+    state.animations.focus_fade_ms = 420;
+    let duration = Duration::from_millis(420);
+    let original = state.active_pane_id();
+    state.split_active_pane(SplitAxis::Vertical);
+    let other = state.active_pane_id();
+    let started = state.pane_focus_transition.as_ref().unwrap().started_at;
+    for (elapsed, expected) in [(Duration::ZERO, 0.0), (duration / 2, 0.5)] {
+        assert_eq!(
+            state.pane_focus_dimming(original, started + elapsed),
+            expected
+        );
+        assert_eq!(
+            state.pane_focus_dimming(other, started + elapsed),
+            1.0 - expected
+        );
+    }
+
+    state.pane_focus_transition.as_mut().unwrap().started_at = Instant::now() - duration / 2;
+    state.focus_split(SplitDirection::Left);
+    assert_eq!(state.active_pane_id(), original);
+    let transition = state.pane_focus_transition.as_ref().unwrap();
+    for &(pane, amount) in &transition.from {
+        assert!((0.4..0.6).contains(&amount));
+        assert_eq!(
+            state.pane_focus_dimming(pane, transition.started_at),
+            amount
+        );
+    }
+    let expiry = transition.started_at + duration;
+    state.take_redraw_request();
+    state.update_background(expiry);
+    assert!(state.pane_focus_transition.is_none());
+    assert!(state.take_redraw_request());
+    assert_eq!(state.pane_focus_dimming(original, expiry), 0.0);
+    assert_eq!(state.pane_focus_dimming(other, expiry), 1.0);
+    state.focus_split(SplitDirection::Left);
+    assert!(state.pane_focus_transition.is_none());
+
+    state.close_active_split();
+    assert_eq!(state.active_pane_id(), other);
+    let started = state.pane_focus_transition.as_ref().unwrap().started_at;
+    for (elapsed, expected) in [(Duration::ZERO, 1.0), (duration / 2, 0.5), (duration, 0.0)] {
+        assert_eq!(state.pane_focus_dimming(other, started + elapsed), expected);
+    }
+    state.split_active_pane(SplitAxis::Vertical);
+    state.update_background(Instant::now() + duration);
+
+    let directory = tempfile::tempdir().unwrap();
+    state.terminal = crate::terminal::tests::configured_panel(directory.path());
+    state.terminal.toggle(directory.path()).unwrap();
+    for panes in [2, 1] {
+        if panes == 1 {
+            state.close_active_split();
+            state.update_background(Instant::now() + duration);
+        }
+        let active = state.active_pane_id();
+        for focused in [true, false] {
+            state.terminal.set_focused(focused);
+            let started = Instant::now();
+            state.sync_focus(started);
+            let midpoint = started + duration / 2;
+            assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
+            assert_eq!(state.terminal_focus_dimming(midpoint), 0.5);
+            for pane in state.panes().iter().filter(|pane| pane.id != active) {
+                assert_eq!(state.pane_focus_dimming(pane.id, midpoint), 1.0);
+            }
+            let expiry = started + duration;
+            state.update_background(expiry);
+            assert_eq!(
+                state.pane_focus_dimming(active, expiry),
+                if focused { 1.0 } else { 0.0 }
+            );
+            assert_eq!(
+                state.terminal_focus_dimming(expiry),
+                if focused { 0.0 } else { 1.0 }
+            );
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    for split in [false, true] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.animations.focus_fade_ms = 420;
+        let duration = Duration::from_millis(420);
+        if split {
+            state.split_active_pane(SplitAxis::Vertical);
+            state.update_background(Instant::now() + duration);
+        }
+        let active = state.active_pane_id();
+        let started = Instant::now();
+        state.mode = EditorMode::Search;
+        state.sync_focus(started);
+        assert!(state.pane_focus_transition.is_none());
+
+        state.mode = EditorMode::Command;
+        state.sync_focus(started);
+        for (elapsed, expected) in [(Duration::ZERO, 0.0), (duration / 2, 0.5), (duration, 1.0)] {
+            let now = started + elapsed;
+            assert_eq!(state.pane_focus_dimming(active, now), expected);
+            assert_eq!(state.popup_background_dimming(now), expected);
+            assert_eq!(state.terminal_focus_dimming(now), 1.0);
+            for pane in state.panes().iter().filter(|pane| pane.id != active) {
+                assert_eq!(state.pane_focus_dimming(pane.id, now), 1.0);
+            }
+        }
+
+        let midpoint = started + duration / 2;
+        state.mode = EditorMode::Finder;
+        state.sync_focus(midpoint);
+        assert_eq!(
+            state.pane_focus_transition.as_ref().unwrap().started_at,
+            started
+        );
+
+        state.mode = EditorMode::Search;
+        state.sync_focus(midpoint);
+        assert_eq!(state.pane_focus_dimming(active, midpoint), 0.5);
+        let reopened = midpoint + duration / 2;
+        assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
+        state.mode = EditorMode::Command;
+        state.sync_focus(reopened);
+        assert_eq!(state.pane_focus_dimming(active, reopened), 0.25);
+
+        let closed = reopened + duration;
+        state.update_background(closed);
+        state.mode = EditorMode::Normal;
+        state.sync_focus(closed);
+        assert_eq!(state.pane_focus_dimming(active, closed), 1.0);
+        assert_eq!(state.pane_focus_dimming(active, closed + duration / 2), 0.5);
+        let expiry = closed + duration;
+        state.take_redraw_request();
+        state.update_background(expiry);
+        assert!(state.pane_focus_transition.is_none());
+        assert!(state.take_redraw_request());
+        assert_eq!(state.pane_focus_dimming(active, expiry), 0.0);
+        assert_eq!(state.popup_background_dimming(expiry), 0.0);
+    }
+}
+
+#[test]
 fn split_focus_skips_inaccessible_panes() {
     let path = temp_file_path("split_focus_inaccessible");
     let mut state = state_with_text(path.clone(), "alpha");
@@ -3019,6 +3574,43 @@ fn insert_mode_pairing_handles_skip_and_backspace() {
     }
 }
 #[test]
+fn closing_delimiters_blink_the_matching_opener() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    for (text, cursor, character, expected) in [
+        ("()", Pos::new(0, 1), ')', Some(Pos::zero())),
+        ("[]", Pos::new(0, 1), '\t', Some(Pos::zero())),
+        ("{\nvalue", Pos::new(1, 5), '}', Some(Pos::zero())),
+        ("\t界(foo)", Pos::new(0, 6), ')', Some(Pos::new(0, 2))),
+        ("\"text\"", Pos::new(0, 5), '"', Some(Pos::zero())),
+        ("`x`", Pos::new(0, 2), '`', Some(Pos::zero())),
+        ("orphan", Pos::new(0, 6), ')', None),
+        ("\\(", Pos::new(0, 2), ')', None),
+        ("(", Pos::new(0, 1), 'x', None),
+        ("\"", Pos::new(0, 1), '"', None),
+    ] {
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(text);
+        state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = cursor);
+        state.mode = EditorMode::Insert;
+        state.apply_input(InputAction::InsertChar(character), 80, 24);
+        assert_eq!(
+            state.active_cursor_pos(),
+            Pos::new(cursor.line, cursor.col + 1)
+        );
+        let highlight = state.one_shot_highlight();
+        assert_eq!(
+            highlight.map(|highlight| (highlight.kind, highlight.selection)),
+            expected.map(|opening| (HighlightKind::Delimiter, Selection::empty(opening))),
+            "{text:?}, {character:?}"
+        );
+        if highlight.is_some() {
+            state.apply_input(InputAction::InsertChar('x'), 80, 24);
+            assert!(state.one_shot_highlight().is_none());
+        }
+    }
+}
+
+#[test]
 fn insert_mode_soft_tabs_follow_stops_and_backspace_as_a_unit() {
     let cases = [
         (
@@ -3087,6 +3679,52 @@ fn insert_mode_typing_existing_quote_advances_cursor() {
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn triple_backticks_pair_and_open_a_code_block() {
+    for (prefix, language_name) in [("", ""), ("  ", "rust"), ("é ", "")] {
+        let path = temp_file_path("triple_backticks").with_extension("md");
+        let mut state = state_with_text(path.clone(), prefix);
+        state.with_active_buffer_view_mut(|_, view| {
+            view.cursor.cursor = Pos::new(0, prefix.chars().count());
+        });
+        state.mode = EditorMode::Insert;
+        for (expected_ticks, cursor_offset) in [("``", 1), ("``", 2), ("``````", 3)] {
+            state.apply_input(InputAction::InsertChar('`'), 80, 24);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                format!("{prefix}{expected_ticks}")
+            );
+            assert_eq!(
+                state.active_cursor_pos(),
+                Pos::new(0, prefix.chars().count() + cursor_offset)
+            );
+        }
+        if prefix.trim().is_empty() {
+            for character in language_name.chars() {
+                state.apply_input(InputAction::InsertChar(character), 80, 24);
+            }
+            state.apply_input(InputAction::Enter, 80, 24);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                format!("{prefix}```{language_name}\n{prefix}\n{prefix}```")
+            );
+            assert_eq!(state.active_cursor_pos(), Pos::new(1, prefix.len()));
+            state.with_active_buffer_view_mut(|_, view| {
+                view.cursor.cursor = Pos::new(2, prefix.len());
+            });
+        }
+        let paired = state.session.active_buffer().to_string();
+        for _ in 0..3 {
+            state.apply_input(InputAction::InsertChar('`'), 80, 24);
+        }
+        assert_eq!(state.session.active_buffer().to_string(), paired);
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), prefix);
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]
@@ -3388,15 +4026,62 @@ fn command_ls_status_survives_input_before_timeout() {
 }
 
 #[test]
-fn command_write_status_expires_after_timeout() {
+fn command_write_confirms_success_until_expiry_or_another_edit() {
     let path = temp_file_path("write_status_clears");
     let mut state = state_with_text(path.clone(), "alpha");
+    state.animations.save_confirmation_ms = 1000;
+    state.animations.save_fade_ms = 400;
+    let buffer_id = state.session.active_id();
+
+    let before_save = Instant::now();
+    run_command(&mut state, "w");
+    let now = Instant::now();
+    assert!(state.status_msg.is_none());
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_some());
+    let expiry = state.save_confirmation.unwrap().expires_at;
+    assert!(
+        (before_save + Duration::from_millis(1000)..=Instant::now() + Duration::from_millis(1000))
+            .contains(&expiry)
+    );
+    let halfway_through_fade = expiry - Duration::from_millis(200);
+    assert_eq!(
+        state.save_confirmation_opacity(buffer_id, halfway_through_fade),
+        Some(0.5)
+    );
+    state.animations.save_fade_ms = 0;
+    assert_eq!(
+        state.save_confirmation_opacity(buffer_id, halfway_through_fade),
+        Some(1.0)
+    );
+    state.take_redraw_request();
+    assert!(state.next_wake_deadline(Instant::now()).unwrap() <= expiry);
+
+    state.update_background(expiry);
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
+    assert!(state.take_redraw_request());
 
     run_command(&mut state, "w");
-    assert_eq!(state.status_msg.as_deref(), Some("written"));
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
 
-    expire_status_after_timeout(&mut state);
-    assert!(state.status_msg.is_none());
+    run_command(&mut state, "w");
+    let other_id = state.session.open_unnamed_buffer();
+    assert!(state.save_confirmation_opacity(other_id, now).is_none());
+    state.session.activate(buffer_id);
+    run_command(
+        &mut state,
+        &format!("w {}", path.parent().unwrap().display()),
+    );
+    assert!(state.save_confirmation_opacity(buffer_id, now).is_none());
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .unwrap()
+            .starts_with("write failed:")
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -3477,7 +4162,7 @@ exit 1
             fs::read_to_string(&path).expect("failed to read saved file"),
             "def main():\n    print('hi')\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 
@@ -3519,7 +4204,7 @@ EOF
             fs::read_to_string(&path).expect("failed to read saved file"),
             "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 
@@ -3569,7 +4254,7 @@ exit 1
             fs::read_to_string(&path).expect("failed to read saved file"),
             "fn main() {\n    println!(\"hi\");\n}\n"
         );
-        assert_eq!(state.status_msg.as_deref(), Some("written"));
+        assert!(state.save_confirmation.is_some());
     });
 }
 
@@ -5050,12 +5735,17 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
 
     assert_eq!(state.private_register, "alph");
     assert_eq!(state.mode, EditorMode::Normal);
-    assert_eq!(state.status_msg.as_deref(), Some("yanked"));
+    assert!(state.status_msg.is_none());
     assert_eq!(
-        state.one_shot_highlight(),
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
         Some((
             Selection::new(Pos::new(0, 0), Pos::new(0, 3)),
-            VisualModeKind::Char
+            VisualModeKind::Char,
+            Duration::ZERO,
         ))
     );
     assert!(state.take_pending_system_clipboard().is_none());
@@ -5636,7 +6326,7 @@ fn normal_mode_dd_cuts_current_line() {
 }
 
 #[test]
-fn normal_mode_yy_yanks_current_line_and_sets_flash() {
+fn normal_mode_yy_yanks_current_line_and_starts_highlight() {
     let path = temp_file_path("yy_yank_line");
     let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
     let id = state.session.active_id();
@@ -5651,31 +6341,50 @@ fn normal_mode_yy_yanks_current_line_and_sets_flash() {
 
     assert_eq!(state.private_register, "two\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
-    assert_eq!(state.status_msg.as_deref(), Some("yanked line"));
+    assert!(state.status_msg.is_none());
     assert_eq!(
-        state.one_shot_highlight(),
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
         Some((
             Selection::new(Pos::new(1, 0), Pos::new(1, 0)),
-            VisualModeKind::Line
+            VisualModeKind::Line,
+            Duration::ZERO,
         ))
     );
     let _ = fs::remove_file(path);
 }
 
 #[test]
-fn yank_flash_persists_for_two_frames() {
-    let path = temp_file_path("yy_yank_flash_duration");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n");
-
-    state.apply_input(InputAction::YankCurrentLinePrivate { count: 1 }, 80, 24);
-    assert!(state.one_shot_highlight().is_some());
-
-    state.advance_one_shot_highlight();
-    assert!(state.one_shot_highlight().is_some());
-
-    state.advance_one_shot_highlight();
-    assert!(state.one_shot_highlight().is_none());
-
+fn jump_highlight_follows_and_centers_large_motions() {
+    let path = temp_file_path("jump_highlight");
+    let mut state = state_with_text(path.clone(), &"alpha beta\n".repeat(40));
+    let viewport_height = 8;
+    for (motion, count, expected_line) in [
+        (Motion::Down, 1, None),
+        (Motion::Down, 8, Some(9)),
+        (Motion::Up, 1, None),
+        (Motion::FileEnd, 1, Some(40)),
+        (Motion::FileStart, 1, Some(0)),
+    ] {
+        state.apply_input(InputAction::Motion { motion, count }, 80, viewport_height);
+        assert_eq!(
+            state
+                .one_shot_highlight()
+                .map(|highlight| (highlight.kind, highlight.selection.cursor.line)),
+            expected_line.map(|line| (HighlightKind::Jump, line)),
+        );
+        if let Some(line) = expected_line {
+            assert_eq!(
+                state.views[&state.session.active_id()]
+                    .cursor
+                    .scroll_y_lines,
+                line.saturating_sub((viewport_height - STATUS_BAR_HEIGHT_ROWS) / 2),
+            );
+        }
+    }
     let _ = fs::remove_file(path);
 }
 
@@ -5691,23 +6400,34 @@ fn one_shot_highlight_is_scoped_to_its_buffer() {
     let expected = Some((
         Selection::new(Pos::new(0, 0), Pos::new(0, 0)),
         VisualModeKind::Line,
+        Duration::ZERO,
     ));
-    assert_eq!(state.one_shot_highlight(), expected);
+    assert_eq!(
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
+        expected
+    );
 
     run_command(&mut state, &format!("e {}", path_b.display()));
     let id_b = state.session.active_id();
     assert_ne!(id_a, id_b);
-    assert_eq!(state.one_shot_highlight(), None);
+    assert_eq!(
+        state.one_shot_highlight().map(|highlight| (
+            highlight.selection,
+            highlight.mode,
+            highlight.elapsed
+        )),
+        None
+    );
 
-    state.advance_one_shot_highlight();
+    let expiry =
+        state.one_shot_highlight.unwrap().started_at + state.one_shot_highlight.unwrap().duration;
+    state.advance_one_shot_highlight(expiry);
     run_command(&mut state, "bp");
     assert_eq!(state.session.active_id(), id_a);
-    assert_eq!(state.one_shot_highlight(), expected);
-
-    state.advance_one_shot_highlight();
-    assert!(state.one_shot_highlight().is_some());
-
-    state.advance_one_shot_highlight();
     assert!(state.one_shot_highlight().is_none());
 
     let _ = fs::remove_file(path_a);
@@ -5993,27 +6713,182 @@ fn smart_indent_floors_partial_tab_widths() {
 }
 
 #[test]
-fn markdown_list_indent_preserves_exact_continuation_width() {
-    let path = temp_file_path("smart_markdown_floor").with_extension("md");
-    let mut state = state_with_text(path.clone(), "    - item");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 10);
-    state.apply_input(InputAction::EnterInsert(InsertKind::AppendLineEnd), 80, 24);
+fn markdown_list_indent_survives_consecutive_enters_and_wrapped_lines() {
+    for (initial, expected, width) in [
+        ("    - item|", "    - item\n      |", 6),
+        (
+            "- item\n  wrapped|\n- next",
+            "- item\n  wrapped\n  |\n- next",
+            2,
+        ),
+        (
+            "- Command line: `command_line.border`, `command_line.title`,\n  `command_line.text`, `command_line.prompt`, `command_line.ghost`,  | `command_line.error`, `command_line.inactive_title`\n- Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`,",
+            "- Command line: `command_line.border`, `command_line.title`,\n  `command_line.text`, `command_line.prompt`, `command_line.ghost`,  \n  | `command_line.error`, `command_line.inactive_title`\n- Which-key: `which_key.background`, `which_key.edge`, `which_key.prefix`,",
+            2,
+        ),
+        ("-   item|", "-   item\n    |", 4),
+        ("12.  item|", "12.  item\n     |", 5),
+        ("-\titem|", "-\titem\n     |", 5),
+        ("> - item|", "> - item\n    |", 4),
+        ("- item\n  |", "- item\n  \n  |", 2),
+        ("- item\n|", "- item\n\n|", 0),
+        ("```\n- item|\n```", "```\n- item\n|\n```", 0),
+        ("```rs\nfn main() {|", "```rs\nfn main() {\n    |", 4),
+        ("`code`|", "`code`\n|", 0),
+    ] {
+        let path = temp_file_path("markdown_repeated_enter").with_extension("md");
+        let text = initial.replace('|', "");
+        let mut state = state_with_text(path.clone(), &text);
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor =
+                buffer.char_to_pos(initial.split_once('|').unwrap().0.chars().count());
+        });
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected.replace('|', ""),
+            "{initial}"
+        );
+        assert_eq!(state.active_cursor_pos().col, width, "{initial}");
 
-    state.apply_input(InputAction::Enter, 80, 24);
+        for character in "continuation".chars() {
+            state.apply_input(InputAction::InsertChar(character), 80, 24);
+        }
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.active_cursor_pos().col,
+            width,
+            "second Enter: {initial}"
+        );
+        state.apply_input(InputAction::Enter, 80, 24);
+        assert_eq!(
+            state.active_cursor_pos().col,
+            width,
+            "blank Enter: {initial}"
+        );
 
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "    - item\n      "
-    );
-    assert_eq!(state.active_cursor_pos(), Pos::new(1, 6));
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            text,
+            "undo: {initial}"
+        );
+        let _ = fs::remove_file(path);
+    }
+}
 
-    let _ = fs::remove_file(path);
+#[test]
+fn insert_enter_continues_comments_without_commenting_strings_or_code() {
+    for (extension, initial, expected) in [
+        ("rs", "    // note|", "    // note\n    // |"),
+        ("rs", "/// café|", "/// café\n/// |"),
+        ("rs", "//! docs|", "//! docs\n//! |"),
+        (
+            "rs",
+            "let value = 1; // note|",
+            "let value = 1; // note\n// |",
+        ),
+        ("rs", "// first|second", "// first\n// |second"),
+        ("py", "  # note|", "  # note\n  # |"),
+        ("toml", "# note|", "# note\n# |"),
+        ("yaml", "# note|", "# note\n# |"),
+        ("lua", "-- note|", "-- note\n-- |"),
+        ("sql", "  -- note|", "  -- note\n  -- |"),
+        ("sh", "\t# note|", "\t# note\n\t# |"),
+        ("ini", ";; note|", ";; note\n;; |"),
+        ("java", "// note|", "// note\n// |"),
+        ("go", "// note|", "// note\n// |"),
+        ("cpp", "// note|", "// note\n// |"),
+        ("js", "// note|", "// note\n// |"),
+        ("tsx", "// note|", "// note\n// |"),
+        ("sql", "--[[ note|", "--[[ note\n-- |"),
+        ("c", "/* note|", "/* note\n * |"),
+        ("rs", "/**|*/", "/**\n * |\n */"),
+        ("css", "/*\n * body|*/", "/*\n * body\n * |\n */"),
+        (
+            "css",
+            "/* note\n * more|\n */",
+            "/* note\n * more\n * |\n */",
+        ),
+        ("html", "<!-- note| -->", "<!-- note\n|\n -->"),
+        ("md", "<!-- note|-->", "<!-- note\n|\n-->"),
+        ("lua", "--[[ note| ]]", "--[[ note\n|\n ]]"),
+        ("lua", "--[[ note|", "--[[ note\n|"),
+        ("c", "/* note */|", "/* note */\n|"),
+        (
+            "rs",
+            "let text = \"// note|\";",
+            "let text = \"// note\n|\";",
+        ),
+        (
+            "rs",
+            "let text = r#\"\n// note|\n\"#;",
+            "let text = r#\"\n// note\n|\n\"#;",
+        ),
+        (
+            "py",
+            "text = \"\"\"\n# note|\n\"\"\"",
+            "text = \"\"\"\n# note\n|\n\"\"\"",
+        ),
+        ("md", "# heading|", "# heading\n|"),
+        ("txt", "  text|", "  text\n  |"),
+    ] {
+        let path = temp_file_path("comment_enter").with_extension(extension);
+        let text = initial.replace('|', "");
+        let mut state = state_with_text(path.clone(), &text);
+        state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
+        state.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor.cursor =
+                buffer.char_to_pos(initial.split_once('|').unwrap().0.chars().count());
+        });
+        state.apply_input(InputAction::Enter, 80, 24);
+        let expected_text = expected.replace('|', "");
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{extension}: {initial}"
+        );
+        assert_eq!(
+            state.active_cursor_pos(),
+            TextBuffer::from_text(&expected_text)
+                .char_to_pos(expected.split_once('|').unwrap().0.chars().count()),
+            "{extension}: {initial}",
+        );
+        for character in "continued".chars() {
+            state.apply_input(InputAction::InsertChar(character), 80, 24);
+        }
+        state.apply_input(InputAction::Enter, 80, 24);
+        let prefix = expected
+            .split_once('|')
+            .unwrap()
+            .0
+            .rsplit('\n')
+            .next()
+            .unwrap();
+        assert!(
+            state
+                .session
+                .active_buffer()
+                .line_string(state.active_cursor_pos().line)
+                .starts_with(prefix),
+            "repeat: {initial}"
+        );
+        assert_eq!(
+            state.active_cursor_pos().col,
+            prefix.chars().count(),
+            "repeat: {initial}"
+        );
+        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            text,
+            "undo: {initial}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]

@@ -124,6 +124,7 @@ impl EditorState {
                 if self.apply_undo_tree_motion(motion, count) {
                     return;
                 }
+                let previous_cursor = self.active_cursor_pos();
                 let is_explorer = self.explorer_is_active();
                 let active_id = self.session.active_id();
                 let view = self.views.entry(active_id).or_default();
@@ -146,6 +147,16 @@ impl EditorState {
                 }
                 if self.undo_tree_is_active() {
                     self.clamp_undo_tree_cursor();
+                }
+                let cursor = self.active_cursor_pos();
+                if cursor != previous_cursor
+                    && (cursor.line.abs_diff(previous_cursor.line) >= 5
+                        || matches!(
+                            motion,
+                            Motion::FileStart | Motion::FileEnd | Motion::MatchDelimiter
+                        ))
+                {
+                    self.start_jump_highlight(text_vh);
                 }
             }
 
@@ -733,17 +744,17 @@ impl EditorState {
                 }
             }
 
-            InputAction::ViewportDownCenter => {
+            action @ (InputAction::ViewportDownCenter | InputAction::ViewportUpCenter) => {
                 if self.mode == EditorMode::Normal {
+                    let previous_cursor = self.active_cursor_pos();
                     self.clear_search_highlights();
-                    self.scroll_viewport_and_center_cursor(true, text_vh);
-                }
-            }
-
-            InputAction::ViewportUpCenter => {
-                if self.mode == EditorMode::Normal {
-                    self.clear_search_highlights();
-                    self.scroll_viewport_and_center_cursor(false, text_vh);
+                    self.scroll_viewport_and_center_cursor(
+                        matches!(action, InputAction::ViewportDownCenter),
+                        text_vh,
+                    );
+                    if self.active_cursor_pos() != previous_cursor {
+                        self.start_jump_highlight(text_vh);
+                    }
                 }
             }
 
@@ -863,21 +874,24 @@ impl EditorState {
                     let before = self.capture_active_insert_coalesced_checkpoint();
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-                    let language = language_for_path(self.session.active_meta().path.as_deref());
                     let indent_size = self.active_indent_width();
                     let smart_insert = smart_newline_insert(
                         self.session.active_buffer(),
-                        language,
+                        self.session.active_meta().path.as_deref(),
                         cursor,
                         indent_size,
                     );
+                    let comment_prefix = smart_insert
+                        .as_ref()
+                        .filter(|insert| insert.comment_prefix_bytes > 0)
+                        .map(|insert| (insert.cursor.line, insert.comment_prefix_bytes));
                     let view = self.views.entry(active_id).or_default();
 
                     {
                         let buffer = self.session.active_buffer_mut();
-                        if let Some((text, cursor)) = smart_insert {
-                            let _ = buffer.insert(view.cursor.cursor, &text);
-                            view.cursor.cursor = cursor;
+                        if let Some(insert) = smart_insert {
+                            let _ = buffer.insert(view.cursor.cursor, &insert.text);
+                            view.cursor.cursor = insert.cursor;
                         } else {
                             let selection = Selection::empty(view.cursor.cursor);
                             let selection = buffer.insert_newline(selection);
@@ -888,6 +902,13 @@ impl EditorState {
                     }
 
                     self.invalidate_active_render_caches();
+                    if let Some((line, end_byte)) = comment_prefix {
+                        self.views
+                            .entry(active_id)
+                            .or_default()
+                            .syntax_highlighter
+                            .preserve_comment_prefix(line, end_byte);
+                    }
                     let _ = self.record_active_undo_if_changed(before);
                     let _ = self.session.recompute_active_dirty();
                 }
@@ -924,13 +945,13 @@ impl EditorState {
             InputAction::YankSelectionPrivate => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode);
+                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                     }
                     self.private_register = plan.text;
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
                     self.mode = EditorMode::Normal;
                     self.clear_active_visual_anchor();
-                    self.set_status("yanked");
+                    self.confirm_yank("yanked");
                 }
             }
 
@@ -1005,7 +1026,7 @@ impl EditorState {
             InputAction::YankSelectionSystem => {
                 if let Some(plan) = self.active_visual_selection_edit_plan() {
                     if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode);
+                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                     }
                     self.private_register = plan.text.clone();
                     self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
@@ -1078,6 +1099,10 @@ impl EditorState {
 
             InputAction::WrapSelection { opening, closing } => {
                 self.wrap_active_visual_selection(opening, closing, viewport_width_cells, text_vh);
+            }
+
+            InputAction::ToggleComments => {
+                self.toggle_active_comments(viewport_width_cells, text_vh);
             }
 
             InputAction::MoveVisualSelectionUp { count } => {
@@ -1253,6 +1278,7 @@ impl EditorState {
                 };
                 self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, true);
                 self.queue_auto_completion_after_insert(ch);
+                self.start_delimiter_blink();
             }
             InsertCharBehavior::MoveRight => {
                 let view = self.views.entry(active_id).or_default();
@@ -1260,6 +1286,7 @@ impl EditorState {
                 view.cursor.cursor = buffer.clamp_pos(Pos::new(cursor.line, cursor.col + 1));
                 view.cursor
                     .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+                self.start_delimiter_blink();
             }
             InsertCharBehavior::InsertPair(close) => {
                 let before = self.capture_active_insert_coalesced_checkpoint();
@@ -1298,6 +1325,33 @@ impl EditorState {
                 self.queue_auto_completion_after_insert(ch);
             }
         }
+    }
+
+    fn start_delimiter_blink(&mut self) {
+        if self.session.active_meta().kind != redox_core::BufferKind::File {
+            return;
+        }
+        let cursor = self.active_cursor_pos();
+        let Some(column) = cursor.col.checked_sub(1) else {
+            return;
+        };
+        let closing = Pos::new(cursor.line, column);
+        let buffer = self.session.active_buffer();
+        if !buffer.char_at(closing).is_some_and(is_auto_pair_closer) {
+            return;
+        }
+        let Some(opening) = buffer
+            .matching_delimiter(closing)
+            .filter(|opening| *opening < closing)
+        else {
+            return;
+        };
+        self.set_one_shot_highlight(
+            Selection::empty(opening),
+            redox_core::VisualModeKind::Char,
+            super::HighlightKind::Delimiter,
+        );
+        self.request_redraw();
     }
 
     fn scroll_viewport_and_center_cursor(&mut self, down: bool, text_vh: usize) {
@@ -1390,7 +1444,17 @@ fn classify_insert_char(buffer: &TextBuffer, cursor: Pos, ch: char) -> InsertCha
         '{' => InsertCharBehavior::InsertPair("}".into()),
         '"' | '`' => {
             if should_auto_pair_symmetric_delimiter(buffer, cursor, ch) {
-                InsertCharBehavior::InsertPair(ch.to_string())
+                if ch == '`'
+                    && cursor.col >= 2
+                    && buffer.char_before(cursor) == Some('`')
+                    && buffer.char_at(Pos::new(cursor.line, cursor.col - 2)) == Some('`')
+                    && (cursor.col == 2
+                        || buffer.char_at(Pos::new(cursor.line, cursor.col - 3)) != Some('`'))
+                {
+                    InsertCharBehavior::InsertPair("```".into())
+                } else {
+                    InsertCharBehavior::InsertPair(ch.to_string())
+                }
             } else {
                 InsertCharBehavior::Plain
             }
@@ -1612,6 +1676,7 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
         | InputAction::ToggleCase { .. }
         | InputAction::ReplaceChar(_)
         | InputAction::WrapSelection { .. }
+        | InputAction::ToggleComments
         | InputAction::MoveVisualSelectionUp { .. }
         | InputAction::MoveVisualSelectionDown { .. }
         | InputAction::IndentVisualSelection { .. }

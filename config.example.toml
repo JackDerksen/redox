@@ -1,22 +1,38 @@
-# Redox reads $REDOX_CONFIG, then $XDG_CONFIG_HOME/redox/config.toml, then
-# ~/.config/redox/config.toml. Every setting is optional.
+# Redox selects --config, $REDOX_CONFIG, or the automatic config path, in that order.
+# The automatic path is $XDG_CONFIG_HOME/redox/config.toml when XDG_CONFIG_HOME is
+# absolute and non-empty, otherwise ~/.config/redox/config.toml. Every setting is optional.
 # Run `:config reload` after saving to apply changes without restarting Redox.
 
 theme = "default"
 icons_enabled = false # Requires a Nerd Font in the terminal
 text_formatting = true # false disables all font attributes, including terminal output
-mouse = false # Enable scrolling, cursor placement, and drag selection
+mouse = true # Scrolling, cursor placement, and drag selection; false releases mouse capture
 mouse_invert_vertical = false # Reverse the terminal's vertical wheel direction
 mouse_invert_horizontal = false # Reverse the terminal's horizontal wheel direction
 mouse_scroll_step_vertical = 3 # Rows per wheel event, 1..65535
 mouse_scroll_step_horizontal = 3 # Columns per wheel event, 1..65535
 check_updates = true # Notify about GitHub releases; :check-update checks immediately
-background_dimming = 0.5 # 0.0 disables popup background dimming; 1.0 is fully dimmed
-undo_tree_history_size = 1000
+background_dimming = 0.301 # 0.0 disables dimming; 1.0 is fully dimmed
+# undo_tree_history_size = 1000 # Optional limit; unlimited when omitted
 scrolloff = 5 # Keeps this many rows visible above and below the cursor while scrolling
 color_column = 79 # Renders on top of cl=80
 line_numbers = "relative" # "absolute" shows the actual line number on every row
 leader = " "
+
+# Durations are milliseconds; 0 disables an effect. Reload with :config reload.
+[animations]
+enabled = true # false disables all animations
+yank_highlight_ms = 150
+jump_highlight_ms = 150
+undo_redo_highlight_ms = 150 # Brief tint on the changed text after undo or redo
+delimiter_blink_ms = 150
+save_confirmation_ms = 600
+save_fade_ms = 150 # Final portion of the confirmation; 0 keeps it solid until expiry
+toast_fade_ms = 150 # Final portion of timed notifications; 0 keeps them solid until expiry
+focus_fade_ms = 150 # Shared by panes, the terminal, and dimming popups
+dashboard_logo_ms = 500
+spinner_frame_ms = 100 # 0 keeps loading indicators still
+rain_fps = 60 # 0 disables :rain; otherwise 1..60 frames per second
 
 # Optional local logging history. Nothing is uploaded. Use :log "What happened" to
 # preserve a report under ~/.local/state/redox/logs/reports/.
@@ -72,7 +88,8 @@ width_percent = 65
 height_percent = 60
 
 # Other popup names: about, command_line, diagnostics, code_actions,
-# lsp_marketplace, perf, and undo_tree.
+# lsp_marketplace, and perf. undo_tree accepts width settings but currently ignores
+# them when opening; resize its panes to keep a preferred width for the session.
 
 [keybindings.normal]
 open_finder = "<leader><leader>"
@@ -83,18 +100,21 @@ toggle_diagnostics = "<leader>x"
 code_actions = "<leader>ca"
 goto_definition = "gd"
 close_split = "<ctrl-w>"
+toggle_comments = "gcc" # Current line; uses the file type's comment syntax
+repeat_last_change = "."
 
 [keybindings.insert]
 completion = "<ctrl-shift-k>"
 
 [keybindings.visual]
 yank_system = "<leader>y"
+toggle_comments = "gc" # Whole selected lines; also applies to line/block visual modes
 
 # Available actions include open_explorer, toggle_undo_tree, toggle_zen, open_finder,
 # toggle_diagnostics, code_actions, goto_definition, symbol_info, completion,
-# undo, redo, movement and insert actions, clipboard operations, splits and
-# focus, popup navigation, and surface navigation. Unknown action names are
-# rejected at startup instead of being silently ignored.
+# undo, redo, repeat_last_change, toggle_comments, movement and insert actions,
+# clipboard operations, splits and focus, popup navigation, and surface navigation.
+# Unknown action names are rejected at startup instead of being silently ignored.
 
 # Define any number of named themes, then select one with `theme` above. A
 # foreground-only colour keeps transparency or uses the editor background.
@@ -179,13 +199,15 @@ punctuation_special = "#b4d4cf"
 "git.removed" = { fg = "#d8647e", bg = "#141415" }
 "status.bar" = { fg = "#cdcdcd", bg = "#1c1c24" }
 "status.path" = { fg = "#878787", bg = "#1c1c24" }
-"status.dirty" = { fg = "#f3be7c", bg = "#1c1c24" }
+"status.dirty" = { fg = "#f3be7c", bg = "transparent" }
+"status.saved" = { fg = "#7fa563", bg = "#1c1c24" }
 "status.mode_normal" = { fg = "#141415", bg = "#9bb4bc" }
 "status.mode_insert" = { fg = "#141415", bg = "#7fa563" }
 "status.mode_command" = { fg = "#141415", bg = "#c48282" }
 "status.mode_visual" = { fg = "#141415", bg = "#bb9dbd" }
 "status.metadata_wrapper" = { fg = "#1c1c24", bg = "#252530" }
 "status.metadata_content" = { fg = "#cdcdcd", bg = "#252530" }
+"status.language_icon" = { fg = "#cdcdcd", bg = "transparent" }
 "status.coords_wrapper" = { fg = "#1c1c24", bg = "#252530" }
 "status.coords_content" = { fg = "#cdcdcd", bg = "#252530" }
 "status.minimap_wrapper" = { fg = "#1c1c24", bg = "#252530" }

@@ -82,11 +82,60 @@ enum RegisterKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OneShotHighlight {
+pub(crate) enum HighlightKind {
+    Yank,
+    Jump,
+    UndoRedo,
+    Delimiter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OneShotHighlight {
     buffer_id: BufferId,
-    selection: Selection,
-    mode: VisualModeKind,
-    remaining_frames: u8,
+    pane_id: PaneId,
+    pub selection: Selection,
+    pub mode: VisualModeKind,
+    pub kind: HighlightKind,
+    started_at: Instant,
+    pub elapsed: Duration,
+    duration: Duration,
+    version: u64,
+}
+
+impl OneShotHighlight {
+    pub(crate) fn yank_lines(self) -> Option<(usize, usize)> {
+        (self.kind == HighlightKind::Yank).then(|| self.selection.line_range())
+    }
+
+    pub(crate) fn progress(self) -> f32 {
+        crate::ui::helpers::animation_progress(self.elapsed, self.duration)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SaveConfirmation {
+    buffer_id: BufferId,
+    version: u64,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
+struct PaneFocusTransition {
+    started_at: Instant,
+    duration: Duration,
+    from: Vec<(PaneId, f32)>,
+    terminal_from: f32,
+    popup_from: f32,
+}
+
+impl PaneFocusTransition {
+    fn interpolate(&self, from: f32, target: f32, now: Instant) -> f32 {
+        let progress = crate::ui::helpers::smoothstep(crate::ui::helpers::animation_progress(
+            now.saturating_duration_since(self.started_at),
+            self.duration,
+        ));
+        from + (target - from) * progress
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +457,7 @@ pub struct EditorState {
     dashboard: Option<dashboard::DashboardState>,
     explorer: Option<ExplorerState>,
     undo_tree: Option<UndoTreeState>,
+    undo_tree_width: Option<SplitSize>,
     finder: Option<FinderState>,
     finder_index_worker: Option<FinderIndexWorker>,
     finder_index_files: Vec<finder::FinderFileCandidate>,
@@ -426,10 +476,12 @@ pub struct EditorState {
     pub status_msg: Option<String>,
     pub status_msg_line_styles: Vec<StatusMessageStyle>,
     status_msg_expires_at: Option<Instant>,
+    save_confirmation: Option<SaveConfirmation>,
     command_history: CommandHistoryState,
     substitution: substitute::SubstituteState,
     pub should_quit: bool,
     pub zen: crate::config::ZenConfig,
+    pub(crate) animations: crate::config::AnimationConfig,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
     viewport_width_cells: usize,
@@ -454,6 +506,9 @@ pub struct EditorState {
     panes: Vec<EditorPane>,
     split_root: SplitNode,
     active_pane: PaneId,
+    pane_focus_transition: Option<PaneFocusTransition>,
+    terminal_focused: bool,
+    popup_background_dimmed: bool,
     next_pane_id: usize,
     pane_use_tick: u64,
     next_external_file_check_at: Instant,
@@ -494,6 +549,7 @@ impl EditorState {
             dashboard: None,
             explorer: None,
             undo_tree: None,
+            undo_tree_width: None,
             finder: None,
             finder_index_worker: None,
             finder_index_files: Vec::new(),
@@ -512,10 +568,12 @@ impl EditorState {
             status_msg: None,
             status_msg_line_styles: Vec::new(),
             status_msg_expires_at: None,
+            save_confirmation: None,
             command_history: CommandHistoryState::default(),
             substitution: substitute::SubstituteState::default(),
             should_quit: false,
             zen: crate::config::ZenConfig::default(),
+            animations: crate::config::AnimationConfig::default(),
             rain_animation: None,
             rain_pending_start: false,
             viewport_width_cells: 80,
@@ -540,6 +598,9 @@ impl EditorState {
             panes: vec![initial_pane],
             split_root: SplitNode::Pane(PaneId(0)),
             active_pane: PaneId(0),
+            pane_focus_transition: None,
+            terminal_focused: false,
+            popup_background_dimmed: false,
             next_pane_id: 1,
             pane_use_tick: 1,
             next_external_file_check_at: Instant::now() + EXTERNAL_FILE_CHECK_INTERVAL,
@@ -558,6 +619,25 @@ impl EditorState {
         state.request_analysis(active, 0);
         state.initialise_lsp_state();
         state
+    }
+
+    pub(crate) fn configure_animations(&mut self, animations: crate::config::AnimationConfig) {
+        if self.animations == animations {
+            return;
+        }
+        self.animations = animations;
+        self.reset_animation_deadlines();
+        self.one_shot_highlight = None;
+        self.save_confirmation = None;
+        self.pane_focus_transition = None;
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.logo_started_at = None;
+        }
+        if !animations.enabled || animations.rain_fps == 0 {
+            self.rain_animation = None;
+            self.rain_pending_start = false;
+        }
+        self.request_redraw();
     }
 
     pub fn configure(
@@ -712,9 +792,88 @@ impl EditorState {
         }
     }
 
+    pub(super) fn status_message_fade_start(&self) -> Option<Instant> {
+        if self.status_msg.is_none() || self.recording_macro_register().is_some() {
+            return None;
+        }
+        let fade = self
+            .animations
+            .duration(self.animations.toast_fade_ms)
+            .min(STATUS_MESSAGE_TIMEOUT);
+        if fade.is_zero() {
+            return None;
+        }
+        self.status_msg_expires_at?.checked_sub(fade)
+    }
+
+    pub(crate) fn status_message_opacity(&self, now: Instant) -> f32 {
+        let Some((start, expiry)) = self
+            .status_message_fade_start()
+            .zip(self.status_msg_expires_at)
+        else {
+            return 1.0;
+        };
+        crate::ui::helpers::animation_progress(
+            expiry.saturating_duration_since(now),
+            expiry.duration_since(start),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn status_message_is_sticky(&self) -> bool {
         self.status_msg.is_some() && self.status_msg_expires_at.is_none()
+    }
+
+    pub(crate) fn confirm_yank(&mut self, message: &str) {
+        if self
+            .animations
+            .duration(self.animations.yank_highlight_ms)
+            .is_zero()
+        {
+            self.set_status(message);
+        } else {
+            self.clear_status();
+        }
+    }
+
+    fn confirm_active_save(&mut self) {
+        self.clear_status();
+        let duration = self
+            .animations
+            .duration(self.animations.save_confirmation_ms);
+        self.save_confirmation = (!duration.is_zero()).then(|| SaveConfirmation {
+            buffer_id: self.session.active_id(),
+            version: self
+                .views
+                .entry(self.session.active_id())
+                .or_default()
+                .analysis_version(),
+            expires_at: Instant::now() + duration,
+        });
+        self.request_redraw();
+    }
+
+    pub(crate) fn save_confirmation_opacity(
+        &self,
+        buffer_id: BufferId,
+        now: Instant,
+    ) -> Option<f32> {
+        let confirmation = self.save_confirmation?;
+        let meta = self.session.meta(buffer_id)?;
+        if confirmation.buffer_id != buffer_id
+            || meta.dirty
+            || meta.external_changed
+            || self.views.get(&buffer_id)?.analysis_version() != confirmation.version
+        {
+            return None;
+        }
+        let remaining = confirmation.expires_at.checked_duration_since(now)?;
+        let fade = self.animations.duration(
+            self.animations
+                .save_fade_ms
+                .min(self.animations.save_confirmation_ms),
+        );
+        Some(crate::ui::helpers::animation_progress(remaining, fade))
     }
 
     pub fn toggle_zen(&mut self) {
@@ -805,7 +964,9 @@ impl EditorState {
             .entry(pane.buffer_id)
             .or_default()
             .copy_pane_state_from(&pane.view);
+        self.start_pane_focus_transition(Instant::now());
         self.active_pane = pane_id;
+        self.request_redraw();
         if mark_recent {
             self.pane_use_tick = self.pane_use_tick.saturating_add(1);
             if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
@@ -872,9 +1033,9 @@ impl EditorState {
             .max_by_key(|pane| pane.last_used)
             .map(|pane| pane.id);
         if remove_pane_from_split(&mut self.split_root, closing) {
-            self.panes.retain(|pane| pane.id != closing);
             let next = next.unwrap_or_else(|| first_pane_id(&self.split_root));
             let _ = self.activate_pane(next);
+            self.panes.retain(|pane| pane.id != closing);
             self.refresh_active_split_viewport_size();
             self.log_event("split_closed", serde_json::json!({"pane": closing.0}));
         }
@@ -1012,6 +1173,77 @@ impl EditorState {
         self.active_pane
     }
 
+    pub(crate) fn pane_focus_dimming(&self, pane_id: PaneId, now: Instant) -> f32 {
+        let target = if !self.terminal_focused
+            && !self.popup_background_dimmed
+            && self.pane_draws_as_active(pane_id)
+        {
+            0.0
+        } else {
+            1.0
+        };
+        let Some(transition) = self.pane_focus_transition.as_ref() else {
+            return target;
+        };
+        let from = transition
+            .from
+            .iter()
+            .find(|(id, _)| *id == pane_id)
+            .map_or(target, |(_, amount)| *amount);
+        transition.interpolate(from, target, now)
+    }
+
+    pub(crate) fn terminal_focus_dimming(&self, now: Instant) -> f32 {
+        let target = if self.terminal_focused { 0.0 } else { 1.0 };
+        self.pane_focus_transition
+            .as_ref()
+            .map_or(target, |transition| {
+                transition.interpolate(transition.terminal_from, target, now)
+            })
+    }
+
+    fn start_pane_focus_transition(&mut self, now: Instant) {
+        let duration = self.animations.duration(self.animations.focus_fade_ms);
+        self.pane_focus_transition = (!duration.is_zero()).then(|| PaneFocusTransition {
+            started_at: now,
+            duration,
+            from: self
+                .panes
+                .iter()
+                .map(|pane| (pane.id, self.pane_focus_dimming(pane.id, now)))
+                .collect(),
+            terminal_from: self.terminal_focus_dimming(now),
+            popup_from: self.popup_background_dimming(now),
+        });
+    }
+
+    pub(crate) fn popup_background_dimming(&self, now: Instant) -> f32 {
+        let target = if self.popup_background_dimmed {
+            1.0
+        } else {
+            0.0
+        };
+        self.pane_focus_transition
+            .as_ref()
+            .map_or(target, |transition| {
+                transition.interpolate(transition.popup_from, target, now)
+            })
+    }
+
+    pub(crate) fn sync_focus(&mut self, now: Instant) {
+        let focused = self.terminal.is_focused();
+        let popup_dimmed = (self.mode.has_popup_overlay() && self.substitute_preview().is_none())
+            || self.explorer_is_active()
+            || self.about_is_active()
+            || self.which_key_popup(now).is_some();
+        if focused != self.terminal_focused || popup_dimmed != self.popup_background_dimmed {
+            self.start_pane_focus_transition(now);
+            self.terminal_focused = focused;
+            self.popup_background_dimmed = popup_dimmed;
+            self.request_redraw();
+        }
+    }
+
     pub fn panes(&self) -> &[EditorPane] {
         &self.panes
     }
@@ -1032,37 +1264,69 @@ impl EditorState {
         self.explorer_delete_confirmation_token.is_some()
     }
 
-    pub fn one_shot_highlight(&self) -> Option<(Selection, VisualModeKind)> {
+    pub fn one_shot_highlight(&self) -> Option<OneShotHighlight> {
         let highlight = self.one_shot_highlight?;
-        (highlight.buffer_id == self.session.active_id())
-            .then_some((highlight.selection, highlight.mode))
+        (highlight.buffer_id == self.session.active_id()
+            && highlight.pane_id == self.active_pane_id()
+            && (highlight.kind != HighlightKind::Jump
+                || highlight.selection.cursor.line == self.active_cursor_pos().line)
+            && self.views.get(&highlight.buffer_id)?.analysis_version() == highlight.version)
+            .then_some(highlight)
     }
 
-    pub fn advance_one_shot_highlight(&mut self) {
+    pub fn advance_one_shot_highlight(&mut self, now: Instant) {
         let Some(mut highlight) = self.one_shot_highlight.take() else {
             return;
         };
         if self.session.buffer(highlight.buffer_id).is_none() {
             return;
         }
-        if highlight.buffer_id != self.session.active_id() {
-            self.one_shot_highlight = Some(highlight);
-            return;
-        }
-
-        if highlight.remaining_frames > 1 {
-            highlight.remaining_frames -= 1;
+        highlight.elapsed = now.saturating_duration_since(highlight.started_at);
+        if highlight.elapsed < highlight.duration {
             self.one_shot_highlight = Some(highlight);
         }
     }
 
-    fn set_one_shot_highlight(&mut self, selection: Selection, mode: VisualModeKind) {
-        self.one_shot_highlight = Some(OneShotHighlight {
+    fn set_one_shot_highlight(
+        &mut self,
+        selection: Selection,
+        mode: VisualModeKind,
+        kind: HighlightKind,
+    ) {
+        let duration = self.animations.duration(match kind {
+            HighlightKind::Yank => self.animations.yank_highlight_ms,
+            HighlightKind::Jump => self.animations.jump_highlight_ms,
+            HighlightKind::UndoRedo => self.animations.undo_redo_highlight_ms,
+            HighlightKind::Delimiter => self.animations.delimiter_blink_ms,
+        });
+        self.one_shot_highlight = (!duration.is_zero()).then(|| OneShotHighlight {
             buffer_id: self.session.active_id(),
+            pane_id: self.active_pane_id(),
             selection,
             mode,
-            remaining_frames: 2,
+            kind,
+            started_at: Instant::now(),
+            elapsed: Duration::ZERO,
+            duration,
+            version: self
+                .views
+                .entry(self.session.active_id())
+                .or_default()
+                .analysis_version(),
         });
+    }
+
+    fn start_jump_highlight(&mut self, text_vh: usize) {
+        if self.mode != EditorMode::Normal || self.session.active_meta().kind != BufferKind::File {
+            return;
+        }
+        self.center_active_cursor_line(text_vh);
+        self.set_one_shot_highlight(
+            Selection::empty(self.active_cursor_pos()),
+            VisualModeKind::Line,
+            HighlightKind::Jump,
+        );
+        self.request_redraw();
     }
 
     pub fn pump_active_loading(&mut self, viewport_height_rows: usize) {
@@ -1664,18 +1928,25 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let cursor = {
+        let (cursor, changed_range) = {
             let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.undo(buffer)
+            let changed_range = view.undo_history.last_undo_record().map(|record| {
+                record.diff.start_char..record.diff.start_char + record.diff.deleted.chars().count()
+            });
+            (view.undo_history.undo(buffer), changed_range)
         };
 
         let Some(cursor) = cursor else {
+            self.one_shot_highlight = None;
             self.set_status("nothing to undo");
             return;
         };
 
         self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
+        if let Some(range) = changed_range {
+            self.highlight_undo_redo(range);
+        }
     }
 
     fn redo_active(&mut self, viewport_width_cells: usize, text_vh: usize) {
@@ -1684,18 +1955,36 @@ impl EditorState {
         }
 
         let active_id = self.session.active_id();
-        let cursor = {
+        let (cursor, changed_range) = {
             let buffer = self.session.active_buffer_mut();
             let view = self.views.entry(active_id).or_default();
-            view.undo_history.redo(buffer)
+            let cursor = view.undo_history.redo(buffer);
+            let changed_range = view.undo_history.last_undo_record().map(|record| {
+                record.diff.start_char
+                    ..record.diff.start_char + record.diff.inserted.chars().count()
+            });
+            (cursor, changed_range)
         };
 
         let Some(cursor) = cursor else {
+            self.one_shot_highlight = None;
             self.set_status("nothing to redo");
             return;
         };
 
         self.reconcile_active_after_undo_restore(cursor, viewport_width_cells, text_vh);
+        if let Some(range) = changed_range {
+            self.highlight_undo_redo(range);
+        }
+    }
+
+    fn highlight_undo_redo(&mut self, range: std::ops::Range<usize>) {
+        let buffer = self.session.active_buffer();
+        let selection = Selection::new(
+            buffer.char_to_pos(range.start),
+            buffer.char_to_pos(range.end.saturating_sub(1).max(range.start)),
+        );
+        self.set_one_shot_highlight(selection, VisualModeKind::Char, HighlightKind::UndoRedo);
     }
 
     fn reconcile_active_after_undo_restore(

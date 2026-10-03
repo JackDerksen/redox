@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use minui::Color;
@@ -26,6 +27,7 @@ pub struct Config {
     pub theme: String,
     pub icons_enabled: bool,
     pub text_formatting: bool,
+    pub animations: AnimationConfig,
     pub check_updates: bool,
     pub mouse: bool,
     pub mouse_invert_vertical: bool,
@@ -53,8 +55,9 @@ impl Default for Config {
             theme: "default".to_string(),
             icons_enabled: false,
             text_formatting: true,
+            animations: AnimationConfig::default(),
             check_updates: true,
-            mouse: false,
+            mouse: true,
             mouse_invert_vertical: false,
             mouse_invert_horizontal: false,
             mouse_scroll_step_vertical: 3,
@@ -73,6 +76,51 @@ impl Default for Config {
             bind: Vec::new(),
             themes: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnimationConfig {
+    pub enabled: bool,
+    #[serde(alias = "yank_ripple_ms")]
+    pub yank_highlight_ms: u64,
+    #[serde(alias = "jump_pulse_ms")]
+    pub jump_highlight_ms: u64,
+    #[serde(alias = "undo_redo_ms")]
+    pub undo_redo_highlight_ms: u64,
+    pub delimiter_blink_ms: u64,
+    pub save_confirmation_ms: u64,
+    pub save_fade_ms: u64,
+    pub toast_fade_ms: u64,
+    pub focus_fade_ms: u64,
+    pub dashboard_logo_ms: u64,
+    pub spinner_frame_ms: u64,
+    pub rain_fps: u16,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            yank_highlight_ms: 150,
+            jump_highlight_ms: 150,
+            undo_redo_highlight_ms: 150,
+            delimiter_blink_ms: 150,
+            save_confirmation_ms: 600,
+            save_fade_ms: 150,
+            toast_fade_ms: 150,
+            focus_fade_ms: 150,
+            dashboard_logo_ms: 500,
+            spinner_frame_ms: 100,
+            rain_fps: 60,
+        }
+    }
+}
+
+impl AnimationConfig {
+    pub fn duration(self, milliseconds: u64) -> Duration {
+        Duration::from_millis(if self.enabled { milliseconds } else { 0 })
     }
 }
 
@@ -236,6 +284,9 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if self.animations.rain_fps > 60 {
+            bail!("animations.rain_fps must be between 0 and 60");
+        }
         for (name, step) in [
             (
                 "mouse_scroll_step_vertical",
@@ -346,7 +397,10 @@ impl Config {
                 }
             }
             for (name, value) in &theme.ui {
-                if name == "diagnostic.error_range" {
+                if matches!(
+                    name.as_str(),
+                    "diagnostic.error_range" | "status.language_icon"
+                ) {
                     continue;
                 }
                 let color_target = match name.as_str() {
@@ -369,6 +423,13 @@ impl Config {
                         .apply(style.ui_style_mut(name)?, role_background)
                         .with_context(|| format!("invalid UI style {name:?}"))?;
                 }
+            }
+            style.status_line.language_icon =
+                TextStyle::new(style.status_line.metadata.content.fg, Color::Transparent);
+            if let Some(value) = theme.ui.get("status.language_icon") {
+                value
+                    .apply(&mut style.status_line.language_icon, background)
+                    .context("invalid UI style 'status.language_icon'")?;
             }
         }
         style.error_range.format.underline_color = Some(style.diagnostic_inline.error.fg);
@@ -531,6 +592,8 @@ markdown_heading = { underline = "none" }
 type_name = "#112233"
 [themes.default.ui]
 "about.title" = "#010203"
+"status.bar" = { bg = "#445566" }
+"status.dirty" = "#778899"
 "finder.directory" = { bold = false, italic = true }
 "finder.selected" = { fg = "#040506", bg = "#070809", bold = true }
 "command_line.ghost" = { italic = true }
@@ -556,6 +619,8 @@ type_name = "#112233"
         assert_eq!(style.syntax.type_name.fg, Color::rgb(17, 34, 51));
         assert!(style.about.title.format.bold);
         assert_eq!(style.about.title.bg, style.theme.bg);
+        assert_eq!(style.status_line.dirty.fg, Color::rgb(119, 136, 153));
+        assert_eq!(style.status_line.dirty.bg, Color::Transparent);
         let format = style.syntax.keyword.format;
         assert!(
             format.bold && format.italic && format.dim && format.reverse && format.strikethrough
@@ -587,6 +652,11 @@ type_name = "#112233"
             "[themes.default.syntax]\nkeyword = { underline_color = 'red' }",
             "[themes.default.ui]\n'unknown.role' = { bold = true }",
             "[themes.default.ui]\n'zen.margin' = { italic = false }",
+            "[animations]\nyank_highlight_ms = -1",
+            "[animations]\nfocus_fade_ms = 1.5",
+            "[animations]\ndashboard_logo_ms = 'fast'",
+            "[animations]\nunknown_effect_ms = 100",
+            "[animations]\nrain_fps = 61",
         ] {
             assert!(
                 toml::from_str::<Config>(source)
@@ -654,7 +724,7 @@ type_name = "#112233"
         assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
         assert!(config.check_updates);
-        assert!(!config.mouse);
+        assert!(config.mouse);
         assert!(!config.mouse_invert_vertical);
         assert!(!config.mouse_invert_horizontal);
         assert_eq!(config.mouse_scroll_step_vertical, 3);
@@ -663,7 +733,7 @@ type_name = "#112233"
             toml::from_str("mouse_invert_vertical = true\nmouse_invert_horizontal = true").unwrap();
         assert!(mouse_config.mouse_invert_vertical);
         assert!(mouse_config.mouse_invert_horizontal);
-        assert!(toml::from_str::<Config>("mouse = true").unwrap().mouse);
+        assert!(!toml::from_str::<Config>("mouse = false").unwrap().mouse);
         assert!(
             !toml::from_str::<Config>("check_updates = false")
                 .unwrap()

@@ -611,6 +611,7 @@ fn starts_change(action: &InputAction) -> bool {
             | InputAction::ToggleCase { .. }
             | InputAction::ReplaceChar(_)
             | InputAction::WrapSelection { .. }
+            | InputAction::ToggleComments
             | InputAction::MoveVisualSelectionUp { .. }
             | InputAction::MoveVisualSelectionDown { .. }
             | InputAction::IndentVisualSelection { .. }

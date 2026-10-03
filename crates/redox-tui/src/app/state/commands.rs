@@ -440,6 +440,7 @@ impl EditorState {
     }
 
     fn command_goto_line(&mut self, line_number: usize) {
+        let previous_cursor = self.active_cursor_pos();
         if !self.close_active_surfaces_for_command() {
             self.set_status("cannot return to an editor buffer");
             return;
@@ -460,6 +461,9 @@ impl EditorState {
         self.center_active_cursor_line(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
         self.clear_search_highlights();
         self.clear_status();
+        if self.active_cursor_pos() != previous_cursor {
+            self.start_jump_highlight(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
+        }
     }
 
     pub(super) fn reset_command_history_navigation(&mut self) {
@@ -637,6 +641,7 @@ impl EditorState {
     }
 
     pub(super) fn write_current_file(&mut self, path_arg: &str) -> bool {
+        self.save_confirmation = None;
         if self.explorer_is_active() {
             if !path_arg.is_empty() {
                 self.set_status("explorer writes do not accept a file name");
@@ -698,7 +703,7 @@ impl EditorState {
         let history_result = self.persist_active_undo_history();
         let lsp_result = self.notify_active_lsp_did_save();
         match (history_result, lsp_result) {
-            (Ok(()), Ok(())) => self.set_status("written"),
+            (Ok(()), Ok(())) => self.confirm_active_save(),
             (Err(error), Ok(())) => {
                 self.set_status(format!("written (undo history save failed: {error})"))
             }
