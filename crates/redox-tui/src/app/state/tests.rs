@@ -6368,6 +6368,7 @@ fn jump_highlight_follows_and_centers_large_motions() {
         (Motion::Up, 1, None),
         (Motion::FileEnd, 1, Some(40)),
         (Motion::FileStart, 1, Some(0)),
+        (Motion::LineNumber, 2, Some(1)),
     ] {
         state.apply_input(InputAction::Motion { motion, count }, 80, viewport_height);
         assert_eq!(

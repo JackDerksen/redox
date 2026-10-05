@@ -244,6 +244,30 @@ fn motions_compose_counts_and_operator_ranges() {
         apply_motion(&buffer, Pos::new(0, 99), Motion::LineEnd),
         Pos::new(0, 10)
     );
+    for (count, expected) in [
+        (1, Pos::new(0, 0)),
+        (2, Pos::new(1, 0)),
+        (usize::MAX, Pos::new(3, 0)),
+    ] {
+        assert_eq!(
+            apply_motion_n(&buffer, Pos::new(2, 8), Motion::LineNumber, count),
+            expected
+        );
+    }
+    let indented = TextBuffer::from_text("one\n \t猫\n");
+    assert_eq!(
+        apply_motion_n(&indented, Pos::zero(), Motion::LineNumber, 2),
+        Pos::new(1, 2)
+    );
+    assert_eq!(
+        apply_motion_n(
+            &TextBuffer::new(),
+            Pos::zero(),
+            Motion::LineNumber,
+            usize::MAX
+        ),
+        Pos::zero()
+    );
 }
 
 #[test]

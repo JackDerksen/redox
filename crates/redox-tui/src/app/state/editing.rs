@@ -215,6 +215,25 @@ impl EditorState {
         match target {
             OperatorTarget::Motion { motion, count } => {
                 let count = (*count).max(1);
+                if matches!(
+                    motion,
+                    Motion::FileStart | Motion::FileEnd | Motion::LineNumber
+                ) {
+                    let target = apply_motion_for_operator(buffer, cursor, *motion, count);
+                    let start_line = cursor.line.min(target.line);
+                    let end_line = cursor.line.max(target.line);
+                    let (start, end) = buffer.line_span_pos_range(start_line, end_line);
+                    return Some(OperatorTargetPlan {
+                        delete_ranges: vec![(start, end)],
+                        text: buffer.line_span_text_linewise_register(start_line, end_line),
+                        register_kind: RegisterKind::LineWise,
+                        preserve_blank_line_on_change: true,
+                        yank_highlight: Some((
+                            Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
+                            VisualModeKind::Line,
+                        )),
+                    });
+                }
                 if *motion == Motion::MatchDelimiter {
                     let target = buffer.matching_delimiter(cursor)?;
                     if target == cursor {

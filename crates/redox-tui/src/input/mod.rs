@@ -1985,10 +1985,13 @@ fn modal_char_action(
             motion: Motion::LineEnd,
             count: state.take_count_or_1(),
         },
-        'G' => InputAction::Motion {
-            motion: Motion::FileEnd,
-            count: state.take_count_or_1(),
-        },
+        'G' => {
+            let (count, count_explicit) = state.take_count();
+            InputAction::Motion {
+                motion: counted_file_motion(Motion::FileEnd, count_explicit),
+                count,
+            }
+        }
         'u' if mode == InputMode::Normal => {
             state.reset_prefixes();
             InputAction::Undo
@@ -2005,6 +2008,22 @@ fn resolve_pending_operator(
     c: char,
     pending: PendingOperator,
 ) -> Option<InputAction> {
+    if c.is_ascii_digit()
+        && (c != '0' || state.pending_count.is_some())
+        && state.pending_sequence.is_empty()
+    {
+        state.push_count_digit(c as u8 - b'0');
+        return Some(InputAction::None);
+    }
+
+    let (count, count_explicit) = state.take_count();
+    let pending = PendingOperator {
+        count: pending.count.saturating_mul(count),
+        count_explicit: pending.count_explicit || count_explicit,
+        ..pending
+    };
+    state.pending_operator = Some(pending);
+
     let action = match (pending.operator, pending.scope, c) {
         (TextObjectOperator::Delete, None, 'd') => Some(InputAction::DeleteCurrentLinePrivate {
             count: pending.count,
@@ -2101,7 +2120,7 @@ fn resolve_pending_operator(
                 Some(InputAction::OperateTarget {
                     operator: pending.operator,
                     target: OperatorTarget::Motion {
-                        motion,
+                        motion: counted_file_motion(motion, pending.count_explicit),
                         count: pending.count,
                     },
                 })
@@ -2160,6 +2179,14 @@ fn motion_from_char(c: char) -> Option<Motion> {
         '$' => Some(Motion::LineEnd),
         'G' => Some(Motion::FileEnd),
         _ => None,
+    }
+}
+
+fn counted_file_motion(motion: Motion, count_explicit: bool) -> Motion {
+    if count_explicit && matches!(motion, Motion::FileStart | Motion::FileEnd) {
+        Motion::LineNumber
+    } else {
+        motion
     }
 }
 
@@ -2682,6 +2709,7 @@ fn motion_description(motion: &Motion) -> &'static str {
         Motion::LineEnd => "End of line",
         Motion::FileStart => "Start of file",
         Motion::FileEnd => "End of file",
+        Motion::LineNumber => "Go to line",
         Motion::MatchDelimiter => "Matching delimiter",
         Motion::FindChar(_) => "Find character forwards",
         Motion::TillChar(_) => "Until character forwards",
@@ -2737,10 +2765,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
             InputAction::PasteSystemClipboard
         }
         Some(SequenceAction::FileStart) => {
-            let _ = state.take_count_or_1();
+            let (count, count_explicit) = state.take_count();
             InputAction::Motion {
-                motion: Motion::FileStart,
-                count: 1,
+                motion: counted_file_motion(Motion::FileStart, count_explicit),
+                count,
             }
         }
         Some(SequenceAction::CenterCursorLine) => {
@@ -3671,6 +3699,18 @@ mod tests {
 
     #[test]
     fn counts_apply_once_and_clear_at_sequence_boundaries() {
+        for mode in MODAL_SEQUENCE_MODES {
+            for (sequence, expected_motion, count) in [
+                ("G", Motion::FileEnd, 1),
+                ("gg", Motion::FileStart, 1),
+                ("1G", Motion::LineNumber, 1),
+                ("1gg", Motion::LineNumber, 1),
+                ("42G", Motion::LineNumber, 42),
+                ("42gg", Motion::LineNumber, 42),
+            ] {
+                assert_eq!(map_sequence(mode, sequence), motion(expected_motion, count));
+            }
+        }
         assert_eq!(
             map_sequence(InputMode::Normal, "3w"),
             motion(Motion::WordStartAfter, 3)
@@ -3723,6 +3763,30 @@ mod tests {
             (
                 "dgg",
                 motion_target(TextObjectOperator::Delete, Motion::FileStart, 1),
+            ),
+            (
+                "dG",
+                motion_target(TextObjectOperator::Delete, Motion::FileEnd, 1),
+            ),
+            (
+                "42dG",
+                motion_target(TextObjectOperator::Delete, Motion::LineNumber, 42),
+            ),
+            (
+                "d42G",
+                motion_target(TextObjectOperator::Delete, Motion::LineNumber, 42),
+            ),
+            (
+                "2d21gg",
+                motion_target(TextObjectOperator::Delete, Motion::LineNumber, 42),
+            ),
+            (
+                "y1G",
+                motion_target(TextObjectOperator::Yank, Motion::LineNumber, 1),
+            ),
+            (
+                "c42gg",
+                motion_target(TextObjectOperator::Change, Motion::LineNumber, 42),
             ),
             (
                 "d0",

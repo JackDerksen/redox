@@ -27,6 +27,10 @@ pub enum Motion {
     /// Go to last line of file (`G`). Column is clamped to that line.
     FileEnd,
 
+    /// Go to the one-based line number supplied by the count (`42G` / `42gg`).
+    /// Without a count, go to the first line. Land on its first non-whitespace character.
+    LineNumber,
+
     /// Go to start of line (`0`-ish).
     LineStart,
 
@@ -84,6 +88,8 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
             let last = buffer.len_lines().saturating_sub(1);
             buffer.clamp_pos(Pos::new(last, cursor.col))
         }
+
+        Motion::LineNumber => Pos::new(0, buffer.line_first_non_whitespace_col(0)),
 
         Motion::LineStart => Pos::new(cursor.line, 0),
 
@@ -207,6 +213,7 @@ pub fn apply_motion_for_operator(
 ///
 /// - If `count == 0`, this returns `cursor` unchanged.
 /// - Left/right motions use direct char-index arithmetic.
+/// - `LineNumber` uses the count as an absolute line number, not a repetition.
 /// - Other repeated motions are applied step by step so they can stop naturally
 ///   at document or line boundaries.
 pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: usize) -> Pos {
@@ -215,6 +222,10 @@ pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: u
     }
 
     match motion {
+        Motion::LineNumber => {
+            let line = buffer.clamp_line(count.saturating_sub(1));
+            return Pos::new(line, buffer.line_first_non_whitespace_col(line));
+        }
         Motion::Left => {
             let at = buffer.pos_to_char(cursor);
             return buffer.char_to_pos(at.saturating_sub(count));

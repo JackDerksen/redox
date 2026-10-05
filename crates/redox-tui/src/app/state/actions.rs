@@ -161,7 +161,10 @@ impl EditorState {
                     && (cursor.line.abs_diff(previous_cursor.line) >= 5
                         || matches!(
                             motion,
-                            Motion::FileStart | Motion::FileEnd | Motion::MatchDelimiter
+                            Motion::FileStart
+                                | Motion::FileEnd
+                                | Motion::LineNumber
+                                | Motion::MatchDelimiter
                         ))
                 {
                     self.start_jump_highlight(text_vh);

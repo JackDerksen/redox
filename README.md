@@ -543,6 +543,7 @@ reverse each axis independently.
 | `w` / `b` / `e` | Move by word starts and word ends. |
 | `0` / `_` / `$` | Move to line start, first non-whitespace, or line end. |
 | `gg` / `G` | Jump to the start or end of the file. |
+| `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |
 | `%` | Jump to the matching delimiter under or near the cursor. |
 | `f` / `t` / `F` / `T` | Find/till a character forward or backward on the current line. |
 | `i` / `I` | Insert before the cursor / at first non-whitespace. |
