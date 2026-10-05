@@ -86,8 +86,10 @@ pub enum InputAction {
     SnippetNext,
     SurfaceOpenSelected,
     SurfaceGoParent,
-    ViewportDownCenter,
-    ViewportUpCenter,
+    ScrollHalfPage {
+        down: bool,
+        count: Option<usize>,
+    },
     CenterCursorLine,
     WriteQuitIfDirty,
     ReplaySequence(String),
@@ -1086,8 +1088,7 @@ fn replayable_motion_action(action: &InputAction) -> bool {
     matches!(
         action,
         InputAction::Motion { .. }
-            | InputAction::ViewportDownCenter
-            | InputAction::ViewportUpCenter
+            | InputAction::ScrollHalfPage { .. }
             | InputAction::CenterCursorLine
     )
 }
@@ -2331,7 +2332,9 @@ fn custom_special_action(state: &InputState, mode: InputMode, key: &str) -> Opti
 fn finish_custom_action(state: &mut InputState, mut action: InputAction) -> InputAction {
     match &mut action {
         InputAction::Motion { count, .. } => *count = state.take_count_or_1(),
-        InputAction::RepeatLastChange { count } => *count = state.pending_count,
+        InputAction::ScrollHalfPage { count, .. } | InputAction::RepeatLastChange { count } => {
+            *count = state.pending_count
+        }
         _ => {}
     }
     state.reset_prefixes();
@@ -2581,8 +2584,14 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
         "focus_up" => InputAction::SplitFocusUp,
         "focus_right" => InputAction::SplitFocusRight,
         "centre_cursor" | "center_cursor" => InputAction::CenterCursorLine,
-        "viewport_down" => InputAction::ViewportDownCenter,
-        "viewport_up" => InputAction::ViewportUpCenter,
+        "viewport_down" => InputAction::ScrollHalfPage {
+            down: true,
+            count: None,
+        },
+        "viewport_up" => InputAction::ScrollHalfPage {
+            down: false,
+            count: None,
+        },
         "completion_next" => InputAction::CompletionMoveNext,
         "completion_previous" => InputAction::CompletionMovePrev,
         "completion_accept" => InputAction::CompletionAccept,
@@ -2659,8 +2668,8 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::SplitFocusRight => "Focus split right",
         InputAction::CenterCursorLine => "Centre cursor line",
         InputAction::WriteQuitIfDirty => "Write if modified and quit",
-        InputAction::ViewportDownCenter => "Viewport down",
-        InputAction::ViewportUpCenter => "Viewport up",
+        InputAction::ScrollHalfPage { down: true, .. } => "Half window down",
+        InputAction::ScrollHalfPage { down: false, .. } => "Half window up",
         InputAction::CompletionMoveNext => "Next completion",
         InputAction::CompletionMovePrev => "Previous completion",
         InputAction::CompletionAccept => "Accept completion",
@@ -3171,14 +3180,13 @@ fn map_key_with_state(
         return InputAction::Redo;
     }
 
-    if mode == InputMode::Normal && ctrl_key(mods, key, 'd') {
+    if ctrl_key(mods, key, 'd') || ctrl_key(mods, key, 'u') {
+        let count = state.pending_count;
         state.reset_prefixes();
-        return InputAction::ViewportDownCenter;
-    }
-
-    if mode == InputMode::Normal && ctrl_key(mods, key, 'u') {
-        state.reset_prefixes();
-        return InputAction::ViewportUpCenter;
+        return InputAction::ScrollHalfPage {
+            down: ctrl_key(mods, key, 'd'),
+            count,
+        };
     }
 
     if ctrl_shift_key(mods, key, 'p') {
@@ -3615,12 +3623,18 @@ mod tests {
             (
                 "viewport down",
                 key_event(KeyKind::Char('d'), KeyModifiers::ctrl()),
-                InputAction::ViewportDownCenter,
+                InputAction::ScrollHalfPage {
+                    down: true,
+                    count: None,
+                },
             ),
             (
                 "viewport up",
                 key_event(KeyKind::Char('u'), KeyModifiers::ctrl()),
-                InputAction::ViewportUpCenter,
+                InputAction::ScrollHalfPage {
+                    down: false,
+                    count: None,
+                },
             ),
             (
                 "repeat search forwards",

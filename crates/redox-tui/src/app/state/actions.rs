@@ -755,17 +755,39 @@ impl EditorState {
                 }
             }
 
-            action @ (InputAction::ViewportDownCenter | InputAction::ViewportUpCenter) => {
-                if self.mode == EditorMode::Normal {
-                    let previous_cursor = self.active_cursor_pos();
-                    self.clear_search_highlights();
-                    self.scroll_viewport_and_center_cursor(
-                        matches!(action, InputAction::ViewportDownCenter),
-                        text_vh,
-                    );
-                    if self.active_cursor_pos() != previous_cursor {
-                        self.start_jump_highlight(text_vh);
+            InputAction::ScrollHalfPage { down, count } => {
+                if text_vh > 0
+                    && matches!(
+                        self.mode,
+                        EditorMode::Normal
+                            | EditorMode::Visual
+                            | EditorMode::VisualLine
+                            | EditorMode::VisualBlock
+                    )
+                {
+                    let Some(pane) = self
+                        .panes
+                        .iter_mut()
+                        .find(|pane| pane.id == self.active_pane)
+                    else {
+                        return;
+                    };
+                    if let Some(count) = count {
+                        pane.half_page_rows = Some(count.clamp(1, text_vh));
                     }
+                    let rows = pane.half_page_rows.unwrap_or(text_vh / 2).clamp(1, text_vh);
+                    self.clear_search_highlights();
+                    self.with_active_buffer_view_mut(|buffer, view| {
+                        view.cursor.scroll_half_page(
+                            buffer,
+                            down,
+                            rows,
+                            viewport_width_cells,
+                            text_vh,
+                        );
+                    });
+                    self.center_active_cursor_line(text_vh);
+                    self.request_redraw();
                 }
             }
 
@@ -1363,35 +1385,6 @@ impl EditorState {
             super::HighlightKind::Delimiter,
         );
         self.request_redraw();
-    }
-
-    fn scroll_viewport_and_center_cursor(&mut self, down: bool, text_vh: usize) {
-        if text_vh == 0 {
-            return;
-        }
-
-        let active_id = self.session.active_id();
-        let view = self.views.entry(active_id).or_default();
-        let buffer = self.session.active_buffer();
-        let total_lines = buffer.len_lines().max(1);
-        let center_row = text_vh / 2;
-        let max_top = total_lines.saturating_sub(1).saturating_sub(center_row);
-        let step = text_vh;
-        let prev_top = view.cursor.scroll_y_lines;
-        let target_top = if down {
-            prev_top.saturating_add(step).min(max_top)
-        } else {
-            prev_top.saturating_sub(step)
-        };
-        view.cursor.scroll_y_lines = target_top;
-
-        let target_line = if !down && prev_top == 0 && target_top == 0 {
-            0
-        } else {
-            (target_top + center_row).min(total_lines.saturating_sub(1))
-        };
-        let target_col = view.cursor.cursor.col;
-        view.cursor.cursor = buffer.clamp_pos(Pos::new(target_line, target_col));
     }
 
     pub(super) fn center_active_cursor_line(&mut self, text_vh: usize) {

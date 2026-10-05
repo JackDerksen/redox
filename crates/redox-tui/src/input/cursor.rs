@@ -112,6 +112,31 @@ impl CursorController {
         }
     }
 
+    /// Move the cursor by a half-window scroll distance and keep it visible.
+    pub fn scroll_half_page(
+        &mut self,
+        buffer: &TextBuffer,
+        down: bool,
+        rows: usize,
+        width: usize,
+        height: usize,
+    ) {
+        if rows == 0 || height == 0 {
+            return;
+        }
+        let total_lines = buffer.len_lines().max(1);
+        let line = if down {
+            self.cursor.line.saturating_add(rows).min(total_lines - 1)
+        } else {
+            self.cursor.line.saturating_sub(rows)
+        };
+        if line == self.cursor.line {
+            return;
+        }
+        self.place_cursor(Pos::new(line, buffer.line_first_non_whitespace_col(line)));
+        self.reconcile_scroll(buffer, width, height);
+    }
+
     /// Bring an off-screen cursor back to the centre without changing its position.
     pub fn center_if_outside(&mut self, buffer: &TextBuffer, width: usize, height: usize) {
         if width == 0 || height == 0 || self.cursor_spec(buffer, width, height).visible {

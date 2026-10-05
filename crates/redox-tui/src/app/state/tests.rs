@@ -5421,72 +5421,132 @@ fn explorer_parent_entry_navigation_selects_previous_directory() {
 }
 
 #[test]
-fn viewport_down_and_up_center_cursor_in_normal_mode() {
-    let path = temp_file_path("viewport_center_scroll");
-    let text = large_text(300);
-    let mut state = state_with_text(path.clone(), &text);
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(3, 0);
+fn half_page_scroll_centers_cursor_and_remembers_counts() {
+    use minui::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
 
-    let viewport_height_rows = 8usize;
-    let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
-    let center_row = text_vh / 2;
+    for mode in [
+        EditorMode::Normal,
+        EditorMode::Visual,
+        EditorMode::VisualLine,
+        EditorMode::VisualBlock,
+    ] {
+        let path = temp_file_path("half_page_scroll");
+        let mut state = state_with_text(path.clone(), &"  line\n".repeat(100));
+        state.scrolloff_rows = 0;
+        state.mode = mode;
+        let id = state.session.active_id();
+        let view = state.views.get_mut(&id).unwrap();
+        view.cursor.place_cursor(Pos::new(3, 4));
+        view.visual_anchor = (mode != EditorMode::Normal).then_some(Pos::new(3, 4));
+        let anchor = view.visual_anchor;
 
-    state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
-    let view = state.views.get(&id).expect("missing view");
-    assert_eq!(view.cursor.scroll_y_lines, text_vh);
-    assert_eq!(view.cursor.cursor.line, text_vh + center_row);
-
-    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
-    let view = state.views.get(&id).expect("missing view");
-    assert_eq!(view.cursor.scroll_y_lines, 0);
-    assert_eq!(view.cursor.cursor.line, center_row);
-
-    // A further Ctrl+U while already at top behaves like gg.
-    state.apply_input(InputAction::ViewportUpCenter, 80, viewport_height_rows);
-    let view = state.views.get(&id).expect("missing view");
-    assert_eq!(view.cursor.scroll_y_lines, 0);
-    assert_eq!(view.cursor.cursor.line, 0);
-
-    let _ = fs::remove_file(path);
+        // Seven text rows: default half-window distance rounds down to three.
+        for (keys, line, top) in [
+            ("d", 6, 3),
+            ("u", 3, 0),
+            ("u", 0, 0),
+            ("u", 0, 0),
+            ("2d", 2, 0),
+            ("d", 4, 1),
+            ("u", 2, 0),
+            ("999d", 9, 6),
+            ("u", 2, 0),
+        ] {
+            for character in keys.chars() {
+                let event = if character.is_ascii_digit() {
+                    Event::Character(character)
+                } else {
+                    Event::KeyWithModifiers(KeyWithModifiers {
+                        key: KeyKind::Char(character),
+                        mods: KeyModifiers::ctrl(),
+                    })
+                };
+                let action = crate::input::map_event_with_state(
+                    &mut state.input,
+                    state.mode.as_input_mode(),
+                    &event,
+                );
+                state.apply_input(action, 80, 8);
+            }
+            let view = state.views.get(&id).unwrap();
+            assert_eq!(view.cursor.cursor.line, line, "{mode:?}: {keys}");
+            assert_eq!(view.cursor.scroll_y_lines, top, "{mode:?}: {keys}");
+            if line > 0 {
+                assert_eq!(view.cursor.cursor.col, 2);
+            }
+            assert_eq!(view.visual_anchor, anchor);
+            assert_eq!(state.mode, mode);
+        }
+        assert_eq!(
+            crate::input::map_event_with_state(
+                &mut state.input,
+                mode.as_input_mode(),
+                &Event::Character('j'),
+            ),
+            InputAction::Motion {
+                motion: Motion::Down,
+                count: 1
+            }
+        );
+        assert!(!state.session.active_meta().dirty);
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]
-fn viewport_down_reaches_last_line_after_repeated_presses() {
-    let path = temp_file_path("viewport_down_reaches_eof");
-    let text = large_text(120);
-    let mut state = state_with_text(path.clone(), &text);
-    let id = state.session.active_id();
-    let viewport_height_rows = 8usize;
-    let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
-    let center_row = text_vh / 2;
-    let total_lines = state.session.active_buffer().len_lines().max(1);
-    let last_line = total_lines.saturating_sub(1);
-
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    for _ in 0..(total_lines / text_vh + 4) {
-        state.apply_input(InputAction::ViewportDownCenter, 80, viewport_height_rows);
+fn half_page_scroll_stops_at_file_boundaries_and_handles_tiny_windows() {
+    for height in [1, 2, 8, 9] {
+        let path = temp_file_path("half_page_scroll_boundaries");
+        let mut state = state_with_text(path.clone(), &large_text(120));
+        state.scrolloff_rows = 0;
+        let id = state.session.active_id();
+        let text_height = height - STATUS_BAR_HEIGHT_ROWS;
+        let last_line = state.session.active_buffer().len_lines() - 1;
+        let down = InputAction::ScrollHalfPage {
+            down: true,
+            count: None,
+        };
+        let up = InputAction::ScrollHalfPage {
+            down: false,
+            count: None,
+        };
+        state.apply_input(down.clone(), 80, height);
+        assert_eq!(
+            state.active_cursor_pos().line,
+            if text_height == 0 {
+                0
+            } else {
+                (text_height / 2).max(1)
+            }
+        );
+        for _ in 0..130 {
+            state.apply_input(down.clone(), 80, height);
+        }
+        let view = state.views.get(&id).unwrap();
+        assert_eq!(
+            view.cursor.cursor.line,
+            if text_height == 0 { 0 } else { last_line }
+        );
+        assert_eq!(
+            view.cursor.scroll_y_lines,
+            if text_height == 0 {
+                0
+            } else {
+                last_line.saturating_sub(text_height / 2)
+            }
+        );
+        let position = view.cursor.cursor;
+        let top = view.cursor.scroll_y_lines;
+        state.apply_input(down, 80, height);
+        assert_eq!(state.active_cursor_pos(), position);
+        assert_eq!(state.views.get(&id).unwrap().cursor.scroll_y_lines, top);
+        for _ in 0..130 {
+            state.apply_input(up.clone(), 80, height);
+        }
+        assert_eq!(state.active_cursor_pos().line, 0);
+        assert_eq!(state.views.get(&id).unwrap().cursor.scroll_y_lines, 0);
+        let _ = fs::remove_file(path);
     }
-
-    let view = state.views.get(&id).expect("missing view");
-    assert_eq!(view.cursor.cursor.line, last_line);
-    assert_eq!(
-        view.cursor.scroll_y_lines,
-        last_line.saturating_sub(center_row)
-    );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]

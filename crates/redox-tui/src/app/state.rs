@@ -420,6 +420,7 @@ pub struct EditorPane {
     pub view: BufferViewState,
     pub last_used: u64,
     pub options: PaneOptions,
+    half_page_rows: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -535,6 +536,7 @@ impl EditorState {
             view: initial_view.clone(),
             last_used: 1,
             options: PaneOptions::editor(),
+            half_page_rows: None,
         };
         let state = Self {
             event_log: None,
@@ -1005,6 +1007,7 @@ impl EditorState {
             view: new_view,
             last_used: 0,
             options: new_pane_options,
+            half_page_rows: active.half_page_rows,
         });
         if replace_pane_with_split(&mut self.split_root, self.active_pane, axis, size, new_id) {
             let _ = self.activate_pane(new_id);
