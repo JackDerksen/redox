@@ -397,6 +397,48 @@ mod tests {
     }
 
     #[test]
+    fn external_reloads_refresh_analysis_for_every_changed_buffer() {
+        let _guard = super::super::global_test_state_lock().lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let rust_path = directory.path().join("background.rs");
+        let c_path = directory.path().join("active.c");
+        std::fs::write(&rust_path, "fn main() {}\n").unwrap();
+        std::fs::write(&c_path, "int main(void) { return 0; }\n").unwrap();
+        let mut session = EditorSession::open_initial_file(&rust_path).unwrap();
+        let rust_id = session.active_id();
+        let c_id = session.open_file(&c_path).unwrap();
+        let mut state = EditorState::new(session);
+        settle(&mut state);
+        state.ensure_buffer_analysis(rust_id);
+        settle(&mut state);
+
+        let rust_text = "fn main() { let answer = 42; }\n";
+        let c_text = "int main(void) { return 42; }\n";
+        std::fs::write(&rust_path, rust_text).unwrap();
+        std::fs::write(&c_path, c_text).unwrap();
+        state.update_background(state.next_external_file_check_at);
+        assert_eq!(state.session.active_id(), c_id);
+        assert_eq!(
+            state.session.buffer(rust_id).unwrap().to_string(),
+            rust_text
+        );
+        assert_eq!(state.session.buffer(c_id).unwrap().to_string(), c_text);
+        settle(&mut state);
+
+        for (buffer_id, language) in [
+            (c_id, crate::ui::syntax::SyntaxLanguage::C),
+            (rust_id, crate::ui::syntax::SyntaxLanguage::Rust),
+        ] {
+            let view = &state.views[&buffer_id];
+            assert!(
+                view.syntax_highlighter.has_cache_for(language),
+                "reloaded {language:?} buffer lost its syntax analysis"
+            );
+            assert!(view.delimiter_pair_cache.has_fresh_analysis());
+        }
+    }
+
+    #[test]
     fn file_checks_and_background_results_do_not_require_rendering() {
         let _guard = super::super::global_test_state_lock().lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
