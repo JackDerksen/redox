@@ -556,6 +556,7 @@ reverse each axis independently.
 | `p` / `P` | Paste after/before from the private register. |
 | `<space>p` | Paste from the system clipboard. |
 | `u` / `ctrl+r` | Undo / redo. |
+| `ZZ` | Write the current buffer if modified, then quit when all buffers are clean. Failed writes keep the editor open. |
 | `gcc` | Toggle a comment on the current line. |
 | `.` | Repeat the last edit at the cursor. A count replaces the edit's previous count. |
 | `ctrl+d` / `ctrl+u` | Scroll down/up by one viewport. |

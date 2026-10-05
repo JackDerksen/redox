@@ -89,6 +89,7 @@ pub enum InputAction {
     ViewportDownCenter,
     ViewportUpCenter,
     CenterCursorLine,
+    WriteQuitIfDirty,
     ReplaySequence(String),
     RunCommand(String),
     SplitFocusLeft,
@@ -283,6 +284,7 @@ enum SequenceAction {
     PasteSystemClipboard,
     FileStart,
     CenterCursorLine,
+    WriteQuitIfDirty,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +353,16 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
 ];
 
 const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
+    SequenceBinding {
+        sequence: "Z",
+        fallback: PrefixFallback::Consume,
+        action: None,
+    },
+    SequenceBinding {
+        sequence: "ZZ",
+        fallback: PrefixFallback::Consume,
+        action: Some(SequenceAction::WriteQuitIfDirty),
+    },
     SequenceBinding {
         sequence: "gc",
         fallback: PrefixFallback::Consume,
@@ -1174,6 +1186,7 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
         Some(SequenceAction::PasteSystemClipboard) => "Paste system clipboard",
         Some(SequenceAction::FileStart) => "Start of file",
         Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
+        Some(SequenceAction::WriteQuitIfDirty) => "Write if modified and quit",
         None if binding.sequence == "gc" => "+comment",
         None if binding.sequence.ends_with('c') => "+code",
         None => "+prefix",
@@ -2618,6 +2631,7 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::SplitFocusUp => "Focus split up",
         InputAction::SplitFocusRight => "Focus split right",
         InputAction::CenterCursorLine => "Centre cursor line",
+        InputAction::WriteQuitIfDirty => "Write if modified and quit",
         InputAction::ViewportDownCenter => "Viewport down",
         InputAction::ViewportUpCenter => "Viewport up",
         InputAction::CompletionMoveNext => "Next completion",
@@ -2732,6 +2746,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::CenterCursorLine) => {
             state.reset_prefixes();
             InputAction::CenterCursorLine
+        }
+        Some(SequenceAction::WriteQuitIfDirty) => {
+            state.reset_prefixes();
+            InputAction::WriteQuitIfDirty
         }
         None => InputAction::None,
     }
@@ -3633,6 +3651,12 @@ mod tests {
             (InputMode::Normal, "gg", motion(Motion::FileStart, 1)),
             (InputMode::Normal, " p", InputAction::PasteSystemClipboard),
             (InputMode::Normal, "zz", InputAction::CenterCursorLine),
+            (InputMode::Normal, "ZZ", InputAction::WriteQuitIfDirty),
+            (InputMode::Normal, "Z", InputAction::None),
+            (InputMode::Insert, "ZZ", InputAction::InsertChar('Z')),
+            (InputMode::Visual, "ZZ", InputAction::None),
+            (InputMode::VisualLine, "ZZ", InputAction::None),
+            (InputMode::VisualBlock, "ZZ", InputAction::None),
             (InputMode::Visual, " y", InputAction::YankSelectionSystem),
         ];
 

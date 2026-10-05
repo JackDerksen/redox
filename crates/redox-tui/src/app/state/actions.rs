@@ -103,6 +103,14 @@ impl EditorState {
             InputAction::RunCommand(command) => {
                 self.execute_configured_command(command);
             }
+            InputAction::WriteQuitIfDirty => {
+                let command = if self.session.active_meta().dirty {
+                    "wq"
+                } else {
+                    "q"
+                };
+                self.execute_configured_command(command.to_string());
+            }
             InputAction::Motion { motion, count } => {
                 if self.mode == EditorMode::Insert {
                     let handled_completion = match motion {
