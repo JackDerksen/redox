@@ -681,6 +681,9 @@ literal.
 | `/` | Search in the current buffer. |
 | `ctrl+n` / `ctrl+p` | Repeat the cached search forward/backward. |
 | `d$`, `c$`, `y$` | Apply an operator through a motion. |
+| `de`, `ce`, `ye` | Delete, change, or yank through the word's final character. |
+| `dj`, `yj`, `dk`, `yk` | Delete or yank whole lines, including the current and destination lines. |
+| `cw` | Change through the current word's end, preserving following whitespace. On whitespace, change up to the next word. |
 | `daw`, `ci"`, `yi(` | Apply operators to text objects. |
 
 Notes:

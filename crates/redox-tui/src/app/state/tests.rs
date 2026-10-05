@@ -172,7 +172,7 @@ fn replay_dot_preserves_insert_sessions_and_count_override() {
     let path = temp_file_path("dot_insert_and_count");
     let mut state = state_with_text(path.clone(), "one two three\n");
 
-    apply_keys(&mut state, "cwnew \u{1b}");
+    apply_keys(&mut state, "cwnew\u{1b}");
     assert_eq!(state.session.active_buffer().to_string(), "new two three\n");
     assert_eq!(state.mode, EditorMode::Normal);
     apply_keys(&mut state, "w.");

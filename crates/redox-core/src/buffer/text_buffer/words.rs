@@ -55,40 +55,41 @@ impl TextBuffer {
 
     /// Find the end of the current/next word-like run (`e`-style).
     pub fn word_end_after(&self, pos: Pos) -> Pos {
-        let mut c = self.pos_to_char(pos);
-        let maxc = self.len_chars();
-        if c >= maxc {
-            return self.char_to_pos(c);
+        let character_index = self.pos_to_char(pos);
+        let character_count = self.len_chars();
+        if character_index >= character_count {
+            return self.char_to_pos(character_index);
         }
 
-        let mut class = classify(self.rope.char(c));
-        if class == CharClass::Whitespace {
-            while c < maxc && classify(self.rope.char(c)) == CharClass::Whitespace {
-                c += 1;
-            }
-            if c >= maxc {
-                return self.char_to_pos(c.saturating_sub(1));
-            }
-            class = classify(self.rope.char(c));
-        } else {
-            let at_end = c + 1 >= maxc || classify(self.rope.char(c + 1)) != class;
-            if at_end {
-                c += 1;
-                while c < maxc && classify(self.rope.char(c)) == CharClass::Whitespace {
-                    c += 1;
-                }
-                if c >= maxc {
-                    return self.char_to_pos(c.saturating_sub(1));
-                }
-                class = classify(self.rope.char(c));
-            }
+        let next_index = (character_index + 1).min(character_count - 1);
+        self.word_end_at_or_after(self.char_to_pos(next_index))
+    }
+
+    /// Find a word's end, including the character under the cursor (`cw`-style).
+    pub fn word_end_at_or_after(&self, pos: Pos) -> Pos {
+        let mut character_index = self.pos_to_char(pos);
+        let character_count = self.len_chars();
+        if character_index >= character_count {
+            return self.char_to_pos(character_index);
         }
 
-        while c + 1 < maxc && classify(self.rope.char(c + 1)) == class {
-            c += 1;
+        while character_index < character_count
+            && classify(self.rope.char(character_index)) == CharClass::Whitespace
+        {
+            character_index += 1;
+        }
+        if character_index >= character_count {
+            return self.char_to_pos(character_count - 1);
         }
 
-        self.char_to_pos(c)
+        let class = classify(self.rope.char(character_index));
+        while character_index + 1 < character_count
+            && classify(self.rope.char(character_index + 1)) == class
+        {
+            character_index += 1;
+        }
+
+        self.char_to_pos(character_index)
     }
 
     /// Find the start of the next word-like run (`w`-style).

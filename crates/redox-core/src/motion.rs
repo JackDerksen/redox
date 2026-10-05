@@ -146,6 +146,20 @@ pub fn apply_motion_for_operator(
     count: usize,
 ) -> Pos {
     match motion {
+        Motion::WordEndAfter => {
+            buffer.move_right(apply_motion_n(buffer, cursor, motion, count.max(1)))
+        }
+        Motion::WordStartAfter => {
+            let last_start = apply_motion_n(buffer, cursor, motion, count.max(1) - 1);
+            let target = apply_motion(buffer, last_start, motion);
+            let line_end = buffer.line_len_chars(last_start.line);
+            // The last word in an operator range does not consume its line break.
+            if target.line > last_start.line && last_start.col < line_end {
+                Pos::new(last_start.line, line_end)
+            } else {
+                target
+            }
+        }
         Motion::FindChar(needle) => {
             let mut current = buffer.clamp_pos(cursor);
             let mut target = None;

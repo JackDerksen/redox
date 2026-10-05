@@ -1,6 +1,6 @@
 use redox_core::{
     Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
-    motion::{Motion, apply_motion_for_operator},
+    motion::{Motion, apply_motion_for_operator, apply_motion_n},
 };
 
 use super::{EditorMode, EditorState, RegisterKind};
@@ -208,7 +208,11 @@ impl EditorState {
         self.finish_active_visual_selection_edit(before, EditorMode::Insert, None);
     }
 
-    fn operator_target_plan(&self, target: &OperatorTarget) -> Option<OperatorTargetPlan> {
+    fn operator_target_plan(
+        &self,
+        operator: TextObjectOperator,
+        target: &OperatorTarget,
+    ) -> Option<OperatorTargetPlan> {
         let buffer = self.session.active_buffer();
         let cursor = self.active_cursor_pos();
 
@@ -217,9 +221,16 @@ impl EditorState {
                 let count = (*count).max(1);
                 if matches!(
                     motion,
-                    Motion::FileStart | Motion::FileEnd | Motion::LineNumber
+                    Motion::Up
+                        | Motion::Down
+                        | Motion::FileStart
+                        | Motion::FileEnd
+                        | Motion::LineNumber
                 ) {
                     let target = apply_motion_for_operator(buffer, cursor, *motion, count);
+                    if matches!(motion, Motion::Up | Motion::Down) && target.line == cursor.line {
+                        return None;
+                    }
                     let start_line = cursor.line.min(target.line);
                     let end_line = cursor.line.max(target.line);
                     let (start, end) = buffer.line_span_pos_range(start_line, end_line);
@@ -258,6 +269,20 @@ impl EditorState {
                 }
 
                 let end = match (*motion, count) {
+                    (Motion::WordStartAfter, _)
+                        if operator == TextObjectOperator::Change
+                            && buffer
+                                .char_at(cursor)
+                                .is_some_and(|character| !character.is_whitespace()) =>
+                    {
+                        let first_end = buffer.word_end_at_or_after(cursor);
+                        buffer.move_right(apply_motion_n(
+                            buffer,
+                            first_end,
+                            Motion::WordEndAfter,
+                            count - 1,
+                        ))
+                    }
                     (Motion::LineEnd, n) if n > 1 => {
                         let target_line = buffer
                             .clamp_line(cursor.line)
@@ -356,7 +381,7 @@ impl EditorState {
             return;
         }
 
-        let Some(plan) = self.operator_target_plan(target) else {
+        let Some(plan) = self.operator_target_plan(operator, target) else {
             return;
         };
 
