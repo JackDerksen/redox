@@ -1024,6 +1024,13 @@ impl EditorState {
     }
 
     pub fn close_active_split(&mut self) {
+        if let Some(tree) = self.undo_tree.clone()
+            && self.panes.len() == 3
+            && self.active_pane != tree.pane_id
+            && self.active_pane != tree.diff_pane_id
+        {
+            self.close_undo_tree_panel(tree);
+        }
         if self.panes.len() <= 1 {
             self.set_status("cannot close the last split");
             return;
@@ -1042,6 +1049,21 @@ impl EditorState {
             self.refresh_active_split_viewport_size();
             self.log_event("split_closed", serde_json::json!({"pane": closing.0}));
         }
+    }
+
+    pub(super) fn close_other_splits(&mut self) {
+        if let Some(tree) = self.undo_tree.clone() {
+            let active = self.active_pane;
+            self.close_undo_tree_panel(tree);
+            let _ = self.activate_pane(active);
+        }
+        self.sync_active_pane_view();
+        self.panes.retain(|pane| pane.id == self.active_pane);
+        self.split_root = SplitNode::Pane(self.active_pane);
+        self.pane_focus_transition = None;
+        self.refresh_active_split_viewport_size();
+        self.clear_status();
+        self.request_redraw();
     }
 
     pub fn focus_split(&mut self, direction: SplitDirection) {

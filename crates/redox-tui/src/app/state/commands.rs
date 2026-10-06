@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use redox_core::{Pos, Selection, TextBuffer};
 
-use super::{EditorMode, EditorState, calculator};
+use super::{EditorMode, EditorState, SplitAxis, calculator};
 use crate::indentation::width_for_text;
 use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
@@ -18,6 +18,40 @@ struct CommandDefinition {
 
 // Dispatch and completion share these names, including aliases and subcommands.
 const COMMANDS: &[CommandDefinition] = &[
+    CommandDefinition {
+        names: &["split", "sp"],
+        editor_context: |_, _| true,
+        run: |state, argument| state.command_split(SplitAxis::Horizontal, argument),
+    },
+    CommandDefinition {
+        names: &["vsplit", "vs", "vsp"],
+        editor_context: |_, _| true,
+        run: |state, argument| state.command_split(SplitAxis::Vertical, argument),
+    },
+    CommandDefinition {
+        names: &["close", "clo"],
+        editor_context: |_, _| false,
+        run: |state, argument| {
+            if !argument.is_empty() {
+                state.set_status("usage: close");
+            } else if state.active_buffer_is_surface() {
+                state.close_active_surface_buffer_without_quit();
+            } else {
+                state.close_active_split();
+            }
+        },
+    },
+    CommandDefinition {
+        names: &["only", "on"],
+        editor_context: |_, argument| argument.is_empty(),
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.close_other_splits();
+            } else {
+                state.set_status("usage: only");
+            }
+        },
+    },
     CommandDefinition {
         names: &["terminal", "term"],
         editor_context: |_, _| false,
@@ -242,7 +276,11 @@ impl EditorState {
         let path_argument = input
             .split_once(char::is_whitespace)
             .filter(|(command, _)| {
-                self.mode == EditorMode::Command && matches!(*command, "e" | "w" | "wq")
+                self.mode == EditorMode::Command
+                    && matches!(
+                        *command,
+                        "e" | "w" | "wq" | "split" | "sp" | "vsplit" | "vs" | "vsp"
+                    )
             });
         let Some((_, argument)) = path_argument else {
             self.command_path_completions = CommandPathCompletions::default();
@@ -532,6 +570,29 @@ impl EditorState {
             let overflow = self.command_history.entries.len() - MAX_HISTORY;
             self.command_history.entries.drain(0..overflow);
         }
+    }
+
+    fn command_split(&mut self, axis: SplitAxis, path_arg: &str) {
+        let source = self.session.active_id();
+        let target = if path_arg.is_empty() {
+            source
+        } else {
+            match self.session.open_file(PathBuf::from(path_arg)) {
+                Ok(id) => id,
+                Err(error) => {
+                    self.set_status(format!("open failed: {error}"));
+                    return;
+                }
+            }
+        };
+        let _ = self.session.activate(source);
+        self.split_active_pane(axis);
+        let _ = self.session.activate(target);
+        self.transient_origin_buffer_id = None;
+        self.transient_origin_dir = None;
+        self.ensure_buffer_analysis(target);
+        self.sync_active_pane_view();
+        self.clear_status();
     }
 
     pub(super) fn command_edit(&mut self, path_arg: &str) {

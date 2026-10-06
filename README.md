@@ -246,6 +246,10 @@ line.
 | `:wq [path]` | Write the current buffer, optionally saving under a new name, then quit when all buffers are clean. |
 | `:e <path>` | Open or switch to a file buffer. |
 | `:e!` / `:reload` | Reload the active file from disk. |
+| `:split [path]` / `:sp [path]` | Open a horizontal split, optionally showing another file. |
+| `:vsplit [path]` / `:vs [path]` / `:vsp [path]` | Open a vertical split, optionally showing another file. |
+| `:close` / `:clo` | Close the active split, keeping its buffer and unsaved edits. The last split stays open. |
+| `:only` / `:on` | Keep the active editor pane and close the other splits, keeping their buffers and unsaved edits. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
 | `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |
