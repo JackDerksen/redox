@@ -3442,7 +3442,7 @@ fn handle_editor_event_inner(
     clipboard: &mut Option<Clipboard>,
     event: Event,
 ) -> bool {
-    if state.handle_mouse_input(&event) {
+    if !state.has_substitute_confirmation() && state.handle_mouse_input(&event) {
         if let Some(key) = state.mouse.pending_key.take() {
             return handle_editor_event_inner(state, clipboard, key);
         }
@@ -4557,6 +4557,99 @@ mod tests {
             state.session.buffer(original_id).unwrap().to_string(),
             "unsaved saved\n"
         );
+    }
+
+    #[test]
+    fn substitution_confirmation_accepts_skips_cancels_and_groups_undo() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let text = "foo foo\nfoo foo\nfoo\n";
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("confirmation.txt");
+        std::fs::write(&path, text).unwrap();
+        for (command, answers, expected) in [
+            (":2,3s/foo/雪/gc", "nya", "foo foo\nfoo 雪\n雪\n"),
+            (":s/foo/雪/gc", "yna", "雪 foo\n雪 雪\n雪\n"),
+            (":s/foo/雪/gc", "yq", "雪 foo\nfoo foo\nfoo\n"),
+            (":s/foo/雪/gc", "yl", "雪 雪\nfoo foo\nfoo\n"),
+            (":s/foo/雪/gc", "y\u{1b}", "雪 foo\nfoo foo\nfoo\n"),
+            (":s/foo/雪/gc", "q", text),
+            (":s/foo/雪/gc", "nnnnn", text),
+            (":s/foo/雪/c", "a", "雪 foo\n雪 foo\n雪\n"),
+            (":s/foo//gc", "yna", " foo\n \n\n"),
+            (r":s/foo/x\ry/gc", "nya", "foo x\ny\nx\ny x\ny\nx\ny\n"),
+            (":s/foo/foo/gc", "a", text),
+            (":s/^/>/gc", "a", ">foo foo\n>foo foo\n>foo\n"),
+            (r":s/foo\nfoo/雪/gc", "a", "foo 雪 雪\n"),
+        ] {
+            let mut state = EditorState::new(EditorSession::open_initial_file(&path).unwrap());
+            state.set_viewport_size(100, 30);
+            let mut clipboard = None;
+            for character in command.chars() {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            }
+            handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+            assert!(state.has_substitute_confirmation(), "{command}");
+            assert_eq!(state.session.active_buffer().to_string(), text);
+            assert!(state.substitute_preview().unwrap().buffer.is_none());
+            assert_eq!(state.substitute_preview().unwrap().match_count(), 1);
+            handle_editor_event(&mut state, &mut clipboard, Event::Character('x'));
+            handle_editor_event(&mut state, &mut clipboard, Event::Paste("ignored".into()));
+            assert_eq!(state.command_line, &command[1..]);
+            let mut window = TestWindow::new(100, 30);
+            draw_buffer_view(
+                &mut state,
+                UiStyle::default(),
+                &mut window,
+                &mut FramePerfSample::default(),
+            )
+            .unwrap();
+            assert!((0..30).any(|row| window.row_text(row).contains("Confirm substitution")));
+            assert!((0..30).any(|row| window.row_text(row).contains("q/Esc=quit")));
+            let cursor = state.active_cursor_pos();
+            let row = cursor.line
+                - state.views[&state.session.active_id()]
+                    .cursor
+                    .scroll_y_lines;
+            let line = window.row_text(row as u16);
+            let column = line[..line.find("foo").unwrap()].chars().count() + cursor.col;
+            assert_eq!(
+                window.backgrounds[row][column],
+                Some(UiStyle::default().substitute_colors(true).bg)
+            );
+            for (index, character) in answers.chars().enumerate() {
+                let event = if character == '\u{1b}' {
+                    Event::Escape
+                } else {
+                    Event::Character(character)
+                };
+                handle_editor_event(&mut state, &mut clipboard, event);
+                if index == 0 && character == 'y' {
+                    assert_ne!(state.session.active_buffer().to_string(), text);
+                }
+            }
+            assert!(!state.has_substitute_confirmation(), "{command}: {answers}");
+            assert_eq!(state.mode, app::EditorMode::Normal);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                expected,
+                "{command}: {answers}"
+            );
+            assert_eq!(state.session.active_meta().dirty, expected != text);
+            if expected != text {
+                handle_editor_event(&mut state, &mut clipboard, Event::Character('u'));
+                assert_eq!(
+                    state.session.active_buffer().to_string(),
+                    text,
+                    "undo {answers}"
+                );
+                state.apply_input(InputAction::Redo, 100, 30);
+                assert_eq!(
+                    state.session.active_buffer().to_string(),
+                    expected,
+                    "redo {answers}"
+                );
+            }
+        }
     }
 
     #[test]

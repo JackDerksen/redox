@@ -15,6 +15,9 @@ impl EditorState {
         viewport_width_cells: usize,
         viewport_height_rows: usize,
     ) {
+        if self.handle_substitute_confirmation(&action) {
+            return;
+        }
         if matches!(
             self.mode,
             EditorMode::Command | EditorMode::Search | EditorMode::Finder

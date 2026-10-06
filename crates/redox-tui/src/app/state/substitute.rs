@@ -1,9 +1,13 @@
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use redox_core::{BufferId, BufferKind, Edit, Pos, Selection, TextBuffer, VisualModeKind};
+use redox_core::{
+    BufferId, BufferKind, Edit, Pos, Selection, TextBuffer, UndoCheckpoint, VisualModeKind,
+};
 use regex::{Captures, Regex, RegexBuilder};
 
 use super::{BufferViewState, EditorMode, EditorState, SearchMatch};
+use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::syntax::{SyntaxHighlighter, SyntaxLanguage, SyntaxParser, language_for_path};
 
@@ -14,6 +18,16 @@ pub(super) struct SubstituteState {
     scope: Option<CommandScope>,
     preview: Option<SubstitutePreview>,
     worker: Option<Receiver<SubstitutePreview>>,
+    confirmation: Option<SubstituteConfirmation>,
+}
+
+#[derive(Debug)]
+struct SubstituteConfirmation {
+    edits: VecDeque<Edit>,
+    before: UndoCheckpoint,
+    removed_chars: usize,
+    inserted_chars: usize,
+    count: usize,
 }
 
 #[derive(Debug)]
@@ -32,6 +46,7 @@ pub(crate) struct SubstitutePreview {
     edits: Vec<Edit>,
     pub error: Option<String>,
     pub replacing: bool,
+    confirm: bool,
     pub pending: bool,
     pub buffer: Option<TextBuffer>,
     pub syntax: SyntaxHighlighter,
@@ -47,6 +62,7 @@ impl SubstitutePreview {
             edits: Vec::new(),
             error: None,
             replacing: false,
+            confirm: false,
             pending: false,
             buffer: None,
             syntax: SyntaxHighlighter::default(),
@@ -93,6 +109,13 @@ struct Substitution {
     pattern: Regex,
     replacement: Option<Vec<ReplacementPart>>,
     global: bool,
+    confirm: bool,
+    range: Option<SubstituteRange>,
+}
+
+enum SubstituteRange {
+    WholeFile,
+    Lines(usize, usize),
 }
 
 enum ReplacementPart {
@@ -125,6 +148,9 @@ impl EditorState {
     }
 
     pub(super) fn refresh_substitute_preview(&mut self) {
+        if self.has_substitute_confirmation() {
+            return;
+        }
         if self.mode != EditorMode::Command {
             self.substitution = SubstituteState::default();
             return;
@@ -171,6 +197,7 @@ impl EditorState {
             match Substitution::parse(&self.command_line) {
                 Ok(substitution) => {
                     preview.replacing = substitution.replacement.is_some();
+                    preview.confirm = substitution.confirm;
                     let language = language_for_path(self.session.active_meta().path.as_deref());
                     if preview.replacing
                         && self.session.active_buffer().len_bytes() >= SUBSTITUTE_WORKER_MIN_BYTES
@@ -342,6 +369,19 @@ impl EditorState {
         }
         let mut preview = self.substitution.preview.take().unwrap();
         let count = preview.matches.len();
+        if preview.confirm && !preview.edits.is_empty() {
+            self.substitution.confirmation = Some(SubstituteConfirmation {
+                edits: std::mem::take(&mut preview.edits).into(),
+                before: self.capture_active_undo_checkpoint(),
+                removed_chars: 0,
+                inserted_chars: 0,
+                count: 0,
+            });
+            preview.buffer = None;
+            self.substitution.preview = Some(preview);
+            self.show_substitute_confirmation();
+            return true;
+        }
         if !preview.edits.is_empty() {
             let before = self.capture_active_undo_checkpoint();
             let cursor = preview.edits[0].range.start;
@@ -362,29 +402,130 @@ impl EditorState {
             self.record_active_undo_if_changed(before);
             self.session.recompute_active_dirty();
         }
-        self.push_command_history(std::mem::take(&mut preview.command));
+        self.finish_substitute_command(count);
+        true
+    }
+
+    fn finish_substitute_command(&mut self, count: usize) {
+        let command = std::mem::take(&mut self.command_line);
+        self.push_command_history(command);
         self.mode = EditorMode::Normal;
-        self.command_line.clear();
+        self.with_active_buffer_view_mut(|buffer, view| view.cursor.clamp_for_normal_mode(buffer));
         self.command_line_cursor = 0;
         self.reset_command_history_navigation();
+        self.input.reset_prefixes();
         self.substitution = SubstituteState::default();
         self.set_status(format!(
             "{count} substitution{}",
             if count == 1 { "" } else { "s" }
         ));
+    }
+
+    pub(crate) fn has_substitute_confirmation(&self) -> bool {
+        self.substitution.confirmation.is_some()
+    }
+
+    pub(crate) fn substitute_confirmation_prompt(&self) -> Option<String> {
+        let edit = self.substitution.confirmation.as_ref()?.edits.front()?;
+        Some(format!(
+            "y=yes n=no a=all l=last q/Esc=quit | Replace with {:?}",
+            edit.insert
+        ))
+    }
+
+    pub(super) fn handle_substitute_confirmation(&mut self, action: &InputAction) -> bool {
+        if !self.has_substitute_confirmation() {
+            return false;
+        }
+        let answer = match action {
+            InputAction::CommandChar(answer @ ('y' | 'n' | 'a' | 'l' | 'q')) => *answer,
+            InputAction::CommandCancel => 'q',
+            _ => return true,
+        };
+        let mut confirmation = self.substitution.confirmation.take().unwrap();
+        if matches!(answer, 'y' | 'a' | 'l') {
+            while let Some(mut edit) = confirmation.edits.pop_front() {
+                edit.range = edit.range.start - confirmation.removed_chars
+                    + confirmation.inserted_chars
+                    ..edit.range.end - confirmation.removed_chars + confirmation.inserted_chars;
+                confirmation.removed_chars += edit.range.len();
+                confirmation.inserted_chars += edit.insert.chars().count();
+                let cursor = self.session.active_buffer().char_to_pos(edit.range.start);
+                self.session.active_buffer_mut().apply_edit(edit);
+                self.views
+                    .entry(self.session.active_id())
+                    .or_default()
+                    .cursor
+                    .place_cursor(cursor);
+                confirmation.count += 1;
+                if answer != 'a' {
+                    break;
+                }
+            }
+            self.refresh_active_indentation();
+            self.invalidate_active_render_caches();
+            self.session.recompute_active_dirty();
+        } else if answer == 'n' {
+            confirmation.edits.pop_front();
+        }
+        if confirmation.edits.is_empty() || matches!(answer, 'a' | 'l' | 'q') {
+            self.record_active_undo_if_changed(confirmation.before);
+            self.finish_substitute_command(confirmation.count);
+            let (width, height) = self.viewport_size();
+            let text_height = height.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
+            self.with_active_buffer_view_mut(|buffer, view| {
+                view.cursor.reconcile_scroll(buffer, width, text_height);
+            });
+            self.center_active_cursor_line(text_height);
+        } else {
+            self.substitution.confirmation = Some(confirmation);
+            self.show_substitute_confirmation();
+        }
+        self.request_redraw();
         true
+    }
+
+    fn show_substitute_confirmation(&mut self) {
+        let confirmation = self.substitution.confirmation.as_ref().unwrap();
+        let edit = confirmation.edits.front().unwrap();
+        let buffer = self.session.active_buffer();
+        let start = buffer.char_to_pos(
+            edit.range.start - confirmation.removed_chars + confirmation.inserted_chars,
+        );
+        let end = buffer
+            .char_to_pos(edit.range.end - confirmation.removed_chars + confirmation.inserted_chars);
+        let view = self.views.entry(self.session.active_id()).or_default();
+        view.cursor.place_cursor(start);
+        let preview = self.substitution.preview.as_mut().unwrap();
+        preview.version = view.analysis_version;
+        preview.matches = vec![SearchMatch { start, end }];
+        let (_, height) = self.viewport_size();
+        self.center_active_cursor_line(height.saturating_sub(STATUS_BAR_HEIGHT_ROWS));
+        self.request_redraw();
     }
 }
 
-fn substitute_body(command: &str) -> Option<(char, &str)> {
+fn substitute_body(command: &str) -> Option<(&str, char, &str)> {
     let command = command.trim_start();
-    let command = command.strip_prefix('%').unwrap_or(command);
+    let offset = command.find('s')?;
+    let range = command[..offset].trim();
+    if !range.chars().all(|character| {
+        character.is_ascii_digit()
+            || character.is_ascii_whitespace()
+            || matches!(character, ',' | '%')
+    }) {
+        return None;
+    }
+    let command = &command[offset..];
     let body = command
         .strip_prefix("substitute")
         .or_else(|| command.strip_prefix('s'))?;
     let delimiter = body.chars().next()?;
-    (delimiter.is_ascii_punctuation() && delimiter != '\\')
-        .then_some((delimiter, &body[delimiter.len_utf8()..]))
+    (delimiter.is_ascii_punctuation() && delimiter != '\\').then_some((
+        range,
+        delimiter,
+        &body[delimiter.len_utf8()..],
+    ))
 }
 
 fn delimited_part(text: &str, delimiter: char) -> (&str, Option<&str>) {
@@ -406,7 +547,29 @@ fn delimited_part(text: &str, delimiter: char) -> (&str, Option<&str>) {
 
 impl Substitution {
     fn parse(command: &str) -> Result<Self, String> {
-        let (delimiter, body) = substitute_body(command).ok_or("usage: s/pattern/replacement/g")?;
+        let (range, delimiter, body) =
+            substitute_body(command).ok_or("usage: [range]s/pattern/replacement/g")?;
+        let range = match range {
+            "" => None,
+            "%" => Some(SubstituteRange::WholeFile),
+            _ => {
+                let (first, last) = range.split_once(',').unwrap_or((range, range));
+                let first = first
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| "invalid line range")?
+                    .max(1);
+                let last = last
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| "invalid line range")?
+                    .max(1);
+                if first > last {
+                    return Err("line range must run from first to last".into());
+                }
+                Some(SubstituteRange::Lines(first, last))
+            }
+        };
         let (pattern, tail) = delimited_part(body, delimiter);
         if pattern.is_empty() {
             return Err("enter a search pattern".into());
@@ -419,12 +582,13 @@ impl Substitution {
             None => (None, ""),
         };
         let mut global = false;
+        let mut confirm = false;
         let mut ignore_case = false;
         for flag in flags.trim().chars() {
             match flag {
                 'g' => global = true,
+                'c' => confirm = true,
                 'i' => ignore_case = true,
-                'I' => ignore_case = false,
                 _ => return Err(format!("unsupported substitute flag: {flag}")),
             }
         }
@@ -449,6 +613,8 @@ impl Substitution {
             pattern,
             replacement,
             global,
+            confirm,
+            range,
         })
     }
 
@@ -459,6 +625,20 @@ impl Substitution {
         language: Option<SyntaxLanguage>,
         preview: &mut SubstitutePreview,
     ) {
+        let selection = match self.range {
+            Some(SubstituteRange::WholeFile) => None,
+            Some(SubstituteRange::Lines(first, last)) => {
+                if last > buffer.len_lines() {
+                    preview.error = Some("line range is outside the file".into());
+                    return;
+                }
+                Some((
+                    Selection::new(Pos::new(first - 1, 0), Pos::new(last - 1, 0)),
+                    VisualModeKind::Line,
+                ))
+            }
+            None => selection,
+        };
         let scopes = match selection {
             Some((selection, VisualModeKind::Block)) => {
                 buffer.visual_blockwise_pos_ranges(selection)
@@ -500,7 +680,7 @@ impl Substitution {
                     replacement_ranges.push(start..start + length);
                     removed_chars += range.len();
                     inserted_chars += length;
-                    if replacement != matched.as_str() {
+                    if self.confirm || replacement != matched.as_str() {
                         preview.edits.push(Edit::replace(range, replacement));
                     }
                 }
@@ -700,7 +880,7 @@ mod tests {
                 "number=42 number=7",
             ),
             ("foo BAR Foo", r"s/\(foo\|bar\)/<&>/gi", "<foo> <BAR> <Foo>"),
-            ("foo FOO", "s/foo/bar/giI", "bar FOO"),
+            ("foo FOO", "s/foo/bar/g", "bar FOO"),
             ("a/b a/b", r"s/a\/b/c\/d/g", "c/d c/d"),
             ("a/b a/b", r"substitute#a/b#c/d#g", "c/d c/d"),
             ("a", r"s/a/\&\\\0 $1/", "&\\a $1"),
@@ -715,6 +895,21 @@ mod tests {
             ("foo food afoo", r"s/\<foo\>/x/g", "x food afoo"),
             ("a\nb", r"s/a\nb/joined/g", "joined"),
             ("a", r"%s/a/x\ry/g", "x\ny"),
+            (
+                "foo\nfoo foo\nfoo\nfoo\n",
+                "2,3s/foo/bar/g",
+                "foo\nbar bar\nbar\nfoo\n",
+            ),
+            ("foo\nfoo\nfoo", "2s/foo/bar/", "foo\nbar\nfoo"),
+            (
+                "foo\nfoo\nfoo",
+                " 1, 2 substitute#foo#bar#g",
+                "bar\nbar\nfoo",
+            ),
+            ("foo\nfoo", "0s/foo/bar/", "bar\nfoo"),
+            ("foo\nfoo", "2s/foo//", "foo\n"),
+            ("雪\n雪\n雪", "2,3s/雪/猫/g", "雪\n猫\n猫"),
+            ("foo", "s/missing/bar/gc", "foo"),
         ] {
             let mut state = state_with_text(text);
             state.apply_input(InputAction::RunCommand(command.into()), 80, 24);
@@ -734,6 +929,42 @@ mod tests {
                 state.session.active_buffer().to_string(),
                 text,
                 "undo {command}"
+            );
+        }
+        for command in [
+            "s/foo/bar/I",
+            "s/foo/bar/giI",
+            "3,2s/foo/bar/g",
+            "1,9s/foo/bar/g",
+            "1,,2s/foo/bar/g",
+            "999999999999999999999999s/foo/bar/g",
+        ] {
+            let mut state = state_with_text("foo\nfoo");
+            state.apply_input(InputAction::RunCommand(command.into()), 80, 24);
+            assert!(
+                state.substitute_preview().unwrap().error.is_some(),
+                "{command}"
+            );
+            assert_eq!(state.session.active_buffer().to_string(), "foo\nfoo");
+            assert!(!state.session.active_meta().dirty);
+        }
+        for (command, expected) in [
+            ("s/foo/bar/g", "bar\nfoo\nfoo"),
+            ("%s/foo/bar/g", "bar\nbar\nbar"),
+            ("2s/foo/bar/g", "foo\nbar\nfoo"),
+        ] {
+            let mut state = state_with_text("foo\nfoo\nfoo");
+            state.mode = EditorMode::VisualLine;
+            state
+                .views
+                .entry(state.session.active_id())
+                .or_default()
+                .visual_anchor = Some(Pos::zero());
+            state.apply_input(InputAction::RunCommand(command.into()), 80, 24);
+            assert_eq!(
+                state.session.active_buffer().to_string(),
+                expected,
+                "{command}"
             );
         }
     }

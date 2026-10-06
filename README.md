@@ -251,6 +251,8 @@ line.
 | `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |
 | `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
 | `:s/pattern/replacement[/g]` | Preview and apply regex replacements in the whole file, or just the visual selection. |
+| `:10,20s/pattern/replacement/g` | Substitute within an inclusive line range. A single line number is also supported; `%` explicitly selects the whole file. |
+| `:s/pattern/replacement/gc` | Confirm each replacement: `y` accepts, `n` skips, `a` accepts all remaining matches, `l` accepts and stops, and `q` or `Escape` stops. Accepted replacements form one undo step. |
 | `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
 | `:check-update` | Check GitHub for a newer stable release and show update instructions. |
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |

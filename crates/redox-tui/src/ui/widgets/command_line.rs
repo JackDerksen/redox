@@ -62,16 +62,18 @@ fn draw_command_line_popup_after(
     popup: Option<(PopupLayout, u16)>,
 ) -> minui::Result<Option<PopupMouseLayout>> {
     let substitution = state.substitute_preview();
+    let confirmation = state.substitute_confirmation_prompt();
+    let command_title = if confirmation.is_some() {
+        "Confirm substitution".to_owned()
+    } else {
+        substitution.map_or_else(
+            || COMMAND_TITLE.to_owned(),
+            |preview| format!("Substitute: {} matches", preview.match_count()),
+        )
+    };
     let (title, prompt) = match state.mode {
         EditorMode::Command => (
-            popup_title(
-                PopupKind::Command,
-                &substitution.map_or_else(
-                    || COMMAND_TITLE.to_owned(),
-                    |preview| format!("Substitute: {} matches", preview.match_count()),
-                ),
-                style.icons_enabled,
-            ),
+            popup_title(PopupKind::Command, &command_title, style.icons_enabled),
             COMMAND_PROMPT,
         ),
         EditorMode::Search => (
@@ -169,6 +171,20 @@ fn draw_command_line_popup_after(
     let input_width = inner_w
         .saturating_sub(input_col)
         .saturating_sub(u16::from(searching));
+    if let Some(confirmation) = confirmation {
+        view.write_str_styled(
+            row,
+            input_col,
+            &clip_text_to_cells(&confirmation, input_width as usize),
+            style.command_line.text.into(),
+        )?;
+        window.request_cursor(minui::window::CursorSpec {
+            x: 0,
+            y: 0,
+            visible: false,
+        });
+        return Ok(Some(mouse));
+    }
     let (clipped, cursor_offset) = command_line_view(
         &state.command_line,
         state.command_line_cursor,
