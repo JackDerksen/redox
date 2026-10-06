@@ -507,6 +507,7 @@ pub struct EditorState {
     panes: Vec<EditorPane>,
     split_root: SplitNode,
     active_pane: PaneId,
+    pane_zoomed: bool,
     pane_focus_transition: Option<PaneFocusTransition>,
     terminal_focused: bool,
     popup_background_dimmed: bool,
@@ -600,6 +601,7 @@ impl EditorState {
             panes: vec![initial_pane],
             split_root: SplitNode::Pane(PaneId(0)),
             active_pane: PaneId(0),
+            pane_zoomed: false,
             pane_focus_transition: None,
             terminal_focused: false,
             popup_background_dimmed: false,
@@ -991,6 +993,7 @@ impl EditorState {
         new_pane_options: PaneOptions,
         size: SplitSize,
     ) -> Option<PaneId> {
+        self.pane_zoomed = false;
         self.sync_active_pane_view();
         let active = self
             .panes
@@ -1046,6 +1049,7 @@ impl EditorState {
             let next = next.unwrap_or_else(|| first_pane_id(&self.split_root));
             let _ = self.activate_pane(next);
             self.panes.retain(|pane| pane.id != closing);
+            self.pane_zoomed &= self.panes.len() > 1;
             self.refresh_active_split_viewport_size();
             self.log_event("split_closed", serde_json::json!({"pane": closing.0}));
         }
@@ -1060,6 +1064,7 @@ impl EditorState {
         self.sync_active_pane_view();
         self.panes.retain(|pane| pane.id == self.active_pane);
         self.split_root = SplitNode::Pane(self.active_pane);
+        self.pane_zoomed = false;
         self.pane_focus_transition = None;
         self.refresh_active_split_viewport_size();
         self.clear_status();
@@ -1073,7 +1078,7 @@ impl EditorState {
             }
             return;
         }
-        let rects = self.pane_rects(
+        let rects = self.split_layout_rects(
             self.editor_area_width_cells as u16,
             self.editor_area_height_rows as u16,
         );
@@ -1189,9 +1194,34 @@ impl EditorState {
     }
 
     pub fn pane_rects(&self, width: u16, height: u16) -> Vec<PaneRect> {
+        if self.pane_zoomed {
+            return vec![PaneRect {
+                pane_id: self.active_pane,
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }];
+        }
+        self.split_layout_rects(width, height)
+    }
+
+    fn split_layout_rects(&self, width: u16, height: u16) -> Vec<PaneRect> {
         let mut rects = Vec::new();
         collect_pane_rects(&self.split_root, 0, 0, width, height, &mut rects);
         rects
+    }
+
+    pub fn pane_is_zoomed(&self) -> bool {
+        self.pane_zoomed
+    }
+
+    pub(super) fn toggle_pane_zoom(&mut self) {
+        self.pane_zoomed = !self.pane_zoomed && self.panes.len() > 1;
+        self.pane_focus_transition = None;
+        self.refresh_active_split_viewport_size();
+        self.clear_status();
+        self.request_redraw();
     }
 
     pub fn active_pane_id(&self) -> PaneId {

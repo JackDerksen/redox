@@ -19,6 +19,17 @@ struct CommandDefinition {
 // Dispatch and completion share these names, including aliases and subcommands.
 const COMMANDS: &[CommandDefinition] = &[
     CommandDefinition {
+        names: &["zoom"],
+        editor_context: |_, _| false,
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.toggle_pane_zoom();
+            } else {
+                state.set_status("usage: zoom");
+            }
+        },
+    },
+    CommandDefinition {
         names: &["split", "sp"],
         editor_context: |_, _| true,
         run: |state, argument| state.command_split(SplitAxis::Horizontal, argument),

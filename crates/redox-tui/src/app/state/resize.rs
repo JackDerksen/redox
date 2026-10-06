@@ -18,6 +18,11 @@ pub(super) enum ResizeTarget {
 
 impl EditorState {
     pub(crate) fn minimum_editor_height(&self) -> u16 {
+        if self.pane_zoomed {
+            return SplitNode::Pane(self.active_pane)
+                .minimum_size(SplitAxis::Horizontal)
+                .saturating_add(1);
+        }
         self.split_root
             .minimum_size(SplitAxis::Horizontal)
             .saturating_add(1)
@@ -37,7 +42,7 @@ impl EditorState {
             }
             return;
         }
-        if !self.pane_options(self.active_pane).resizable {
+        if self.pane_zoomed || !self.pane_options(self.active_pane).resizable {
             return;
         }
         let mut path = Vec::new();
@@ -78,6 +83,9 @@ impl EditorState {
     }
 
     pub(super) fn resize_target_at(&self, column: u16, row: u16) -> Option<ResizeTarget> {
+        if self.pane_zoomed {
+            return None;
+        }
         let mut path = Vec::new();
         self.split_root
             .divider_at(self.resize_area(), column, row, &mut path)?;

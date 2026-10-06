@@ -101,6 +101,7 @@ pub enum InputAction {
     SplitHorizontal,
     SplitVertical,
     CloseSplit,
+    TogglePaneZoom,
     Undo,
     Redo,
     RepeatLastChange {
@@ -2579,6 +2580,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
         "split_horizontal" => InputAction::SplitHorizontal,
         "split_vertical" => InputAction::SplitVertical,
         "close_split" => InputAction::CloseSplit,
+        "toggle_zoom" => InputAction::TogglePaneZoom,
         "focus_left" => InputAction::SplitFocusLeft,
         "focus_down" => InputAction::SplitFocusDown,
         "focus_up" => InputAction::SplitFocusUp,
@@ -2662,6 +2664,7 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::SplitHorizontal => "Split horizontally",
         InputAction::SplitVertical => "Split vertically",
         InputAction::CloseSplit => "Close split",
+        InputAction::TogglePaneZoom => "Toggle pane zoom",
         InputAction::SplitFocusLeft => "Focus split left",
         InputAction::SplitFocusDown => "Focus split down",
         InputAction::SplitFocusUp => "Focus split up",
@@ -3409,6 +3412,7 @@ fn split_key_action(mods: KeyModifiers, key: KeyKind) -> Option<InputAction> {
         KeyKind::Char('-') => Some(InputAction::SplitHorizontal),
         KeyKind::Char('\\') => Some(InputAction::SplitVertical),
         KeyKind::Char('x') => Some(InputAction::CloseSplit),
+        KeyKind::Char('z') => Some(InputAction::TogglePaneZoom),
         _ => None,
     }
 }

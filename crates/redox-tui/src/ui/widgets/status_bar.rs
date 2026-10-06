@@ -6,7 +6,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
-use crate::ui::icons::{DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, ZEN, filetype_icon};
+use crate::ui::icons::{
+    DIAGNOSTIC_FALLBACKS, DIAGNOSTIC_ICONS, GIT_BRANCH, ZEN, ZOOM, filetype_icon,
+};
 use crate::ui::style::{StatusModuleColors, dim_foreground_color};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -502,6 +504,10 @@ pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorSta
                 _ => format!("{} bytes", load.bytes_loaded),
             };
             name.push_str(&format!(" [loading {progress}]"));
+        }
+        if state.pane_is_zoomed() {
+            name.push(' ');
+            name.push_str(if style.icons_enabled { ZOOM } else { "[zoom]" });
         }
         format!(" {name} ")
     };

@@ -250,6 +250,7 @@ line.
 | `:vsplit [path]` / `:vs [path]` / `:vsp [path]` | Open a vertical split, optionally showing another file. |
 | `:close` / `:clo` | Close the active split, keeping its buffer and unsaved edits. The last split stays open. |
 | `:only` / `:on` | Keep the active editor pane and close the other splits, keeping their buffers and unsaved edits. |
+| `:zoom` | Toggle maximising the active pane while preserving the other panes and their layout. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
 | `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |
@@ -580,6 +581,7 @@ reverse each axis independently.
 | `ctrl+left` / `ctrl+right` | Shrink / grow the current pane's width by one column. |
 | `ctrl+down` / `ctrl+up` | Shrink / grow the current pane's height by one row. |
 | `ctrl+x` | Close the active split. |
+| `ctrl+z` | Toggle zoom for the active pane. While zoomed, `ctrl+h/j/k/l` switches to the neighbouring pane using the original layout. |
 
 Inactive editor panes show their filename centred in a muted strip along the top.
 With mouse input enabled, drag a split line to resize its neighbouring panes.

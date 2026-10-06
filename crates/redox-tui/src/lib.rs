@@ -6080,6 +6080,113 @@ markdown_emphasis = { italic = false, strikethrough = true }
     }
 
     #[test]
+    fn pane_zoom_preserves_layout_and_navigates_hidden_neighbours() {
+        use app::state::SplitAxis;
+        use redox_core::Pos;
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        state.set_editor_area_size(100, 29);
+        let left_top = state.active_pane_id();
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&"left-top\n".repeat(40));
+        state.session.active_meta_mut().display_name = "left-top.txt".into();
+        for (axis, name) in [
+            (SplitAxis::Vertical, "right-top"),
+            (SplitAxis::Horizontal, "right-bottom"),
+        ] {
+            state.split_active_pane(axis);
+            state.session.open_unnamed_buffer();
+            *state.session.active_buffer_mut() =
+                TextBuffer::from_text(&format!("{name}\n").repeat(40));
+            state.session.active_meta_mut().display_name = format!("{name}.txt");
+            state.session.set_active_dirty(true);
+            state.sync_active_pane_view();
+        }
+        let right_bottom = state.active_pane_id();
+        let right_top = state.panes()[1].id;
+        state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = Pos::new(4, 2));
+        state.sync_active_pane_view();
+        let original_layout: Vec<_> = state
+            .pane_rects(100, 29)
+            .into_iter()
+            .map(|rect| (rect.pane_id, rect.x, rect.y, rect.width, rect.height))
+            .collect();
+        let mut clipboard = None;
+        let control = |key| {
+            Event::KeyWithModifiers(minui::KeyWithModifiers {
+                key,
+                mods: minui::KeyModifiers::ctrl(),
+            })
+        };
+
+        state.apply_input(InputAction::RunCommand("zoom".into()), 100, 30);
+        assert!(state.pane_is_zoomed());
+        assert_eq!(state.viewport_size(), (100, 30));
+        let mut perf = FramePerfSample::default();
+        for (key, expected_pane, name) in [
+            ('k', right_top, "right-top"),
+            ('h', left_top, "left-top"),
+            ('l', right_top, "right-top"),
+            ('j', right_bottom, "right-bottom"),
+        ] {
+            handle_editor_event(&mut state, &mut clipboard, control(KeyKind::Char(key)));
+            assert_eq!(
+                state.active_pane_id(),
+                expected_pane,
+                "key={key}; layout={original_layout:?}"
+            );
+            assert!(state.pane_is_zoomed());
+            assert_eq!(state.panes().len(), 3);
+            let rects = state.pane_rects(100, 29);
+            assert_eq!(rects.len(), 1);
+            assert_eq!(
+                (rects[0].x, rects[0].y, rects[0].width, rects[0].height),
+                (0, 0, 100, 29)
+            );
+            for icons_enabled in [false, true] {
+                let style = UiStyle {
+                    icons_enabled,
+                    ..UiStyle::default()
+                };
+                let mut window = TestWindow::new(100, 30);
+                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                assert!(window.row_text(1).contains(name));
+                let marker = if icons_enabled {
+                    ui::icons::ZOOM
+                } else {
+                    "[zoom]"
+                };
+                assert!(
+                    window
+                        .row_text(29)
+                        .contains(&format!("{name}.txt {marker}"))
+                );
+                assert!(window.cursor.unwrap().visible);
+            }
+        }
+        assert_eq!(state.active_cursor_pos(), Pos::new(4, 2));
+        handle_editor_event(&mut state, &mut clipboard, control(KeyKind::Right));
+        handle_editor_event(&mut state, &mut clipboard, control(KeyKind::Char('z')));
+        assert!(!state.pane_is_zoomed());
+        let restored: Vec<_> = state
+            .pane_rects(100, 29)
+            .into_iter()
+            .map(|rect| (rect.pane_id, rect.x, rect.y, rect.width, rect.height))
+            .collect();
+        assert_eq!(restored, original_layout);
+        assert!(state.session.any_dirty());
+        assert_eq!(state.active_cursor_pos(), Pos::new(4, 2));
+
+        handle_editor_event(&mut state, &mut clipboard, control(KeyKind::Char('z')));
+        assert!(state.pane_is_zoomed());
+        state.apply_input(InputAction::RunCommand("only".into()), 100, 30);
+        assert!(!state.pane_is_zoomed());
+        assert_eq!(state.panes().len(), 1);
+        handle_editor_event(&mut state, &mut clipboard, control(KeyKind::Char('z')));
+        assert!(!state.pane_is_zoomed());
+        assert_eq!(state.session.summaries().len(), 3);
+    }
+
+    #[test]
     fn inactive_pane_filenames_overlay_the_top_row_without_shifting_text() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         for (axis, focus_back) in [

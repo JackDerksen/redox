@@ -808,6 +808,7 @@ impl EditorState {
             InputAction::SplitHorizontal => self.split_active_pane(SplitAxis::Horizontal),
             InputAction::SplitVertical => self.split_active_pane(SplitAxis::Vertical),
             InputAction::CloseSplit => self.close_active_split(),
+            InputAction::TogglePaneZoom => self.toggle_pane_zoom(),
 
             InputAction::Undo => {
                 if self.mode == EditorMode::Normal {
