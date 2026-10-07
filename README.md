@@ -263,6 +263,9 @@ line.
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
+| `:b <name/number>` / `:buffer <name/number>` | Show an existing buffer in the current pane using its ID from `:ls`, filename, full path, or unique partial name. Switching preserves unsaved edits. |
+| `:bd [name/number]` / `:bdelete [name/number]` | Delete the current or specified buffer from the session and close its panes. The last pane switches to another buffer or a blank buffer. Files on disk are kept; unsaved buffers require `:bd!` to discard changes. |
+| `:enew` / `:ene` | Open a new unnamed buffer in the current pane, keeping the previous buffer and its unsaved edits. |
 | `:ls` | List one row per buffer: `>` marks the current buffer, `[1,2]` lists its panes, `[hidden]` marks a hidden buffer, `+` marks unsaved edits, and `!` marks changes on disk. A fullscreen icon (or `^`) marks the zoomed pane; the other panes are minimised. File-type icons appear when icons are enabled. |
 | `:macros` | List the current session's macro registers and recorded key sequences. |
 | `:ex` / `:explorer` | Toggle the file explorer. |

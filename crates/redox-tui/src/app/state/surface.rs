@@ -121,7 +121,13 @@ impl EditorState {
     }
 
     pub(super) fn close_inactive_empty_unnamed_startup_buffer(&mut self, id: BufferId) -> bool {
-        if self.session.active_id() == id || !self.is_empty_unnamed_startup_buffer(id) {
+        if self.session.active_id() == id
+            || !self.is_empty_unnamed_startup_buffer(id)
+            || self
+                .panes
+                .iter()
+                .any(|pane| pane.id != self.active_pane && pane.buffer_id == id)
+        {
             return false;
         }
 

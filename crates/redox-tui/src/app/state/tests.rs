@@ -3850,6 +3850,116 @@ fn command_w_writes_active_buffer_only() {
 }
 
 #[test]
+fn buffer_commands_resolve_names_and_preserve_hidden_edits() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first/notes α.md");
+    let second = directory.path().join("second/notes α.md");
+    fs::create_dir_all(first.parent().unwrap()).unwrap();
+    fs::create_dir_all(second.parent().unwrap()).unwrap();
+    let mut state = state_with_text(first.clone(), "alpha\nsecond\n");
+    let source = state.session.active_id();
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = Pos::new(1, 2));
+    fs::write(&second, "bravo").unwrap();
+    run_command(&mut state, &format!("e {}", second.display()));
+    let target = state.session.active_id();
+    for argument in ["notes α.md", "notes", "999999", "missing"] {
+        run_command(&mut state, &format!("b {argument}"));
+        assert!(state.status_msg.is_some(), "{argument}");
+        assert_eq!(state.session.active_id(), target);
+    }
+    for argument in [
+        source.get().to_string(),
+        format!("#{}", source.get()),
+        first.display().to_string(),
+        "first/notes".into(),
+    ] {
+        run_command(&mut state, &format!("buffer {argument}"));
+        assert_eq!(state.session.active_id(), source);
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
+    }
+    enter_command_mode(&mut state);
+    for character in "b notes".chars() {
+        state.apply_input(InputAction::CommandChar(character), 80, 24);
+    }
+    assert_eq!(state.command_completion_suffix(), Some(" α.md"));
+    state.apply_input(InputAction::CommandCancel, 80, 24);
+
+    run_command(&mut state, "enew extra");
+    assert_eq!(state.session.active_id(), source);
+    run_command(&mut state, "enew");
+    let unnamed = state.session.active_id();
+    assert_ne!(unnamed, source);
+    assert!(state.session.active_buffer().is_empty());
+    assert!(state.session.active_meta().path.is_none());
+    assert_eq!(state.active_cursor_pos(), Pos::zero());
+    assert!(state.session.meta(source).unwrap().dirty);
+    assert_eq!(
+        state.session.buffer(source).unwrap().to_string(),
+        "!alpha\nsecond\n"
+    );
+    run_command(&mut state, "split");
+    run_command(&mut state, &format!("e {}", second.display()));
+    assert!(state.session.buffer(unnamed).is_some());
+    assert!(state.panes.iter().any(|pane| pane.buffer_id == unnamed));
+    run_command(&mut state, &format!("bd {}", source.get()));
+    assert!(state.status_msg.as_ref().unwrap().contains("unsaved"));
+    assert!(state.session.buffer(source).is_some());
+    run_command(&mut state, &format!("bdelete! {}", source.get()));
+    assert!(state.session.buffer(source).is_none());
+    assert_eq!(state.session.active_id(), target);
+    assert_eq!(fs::read_to_string(first).unwrap(), "alpha\nsecond\n");
+}
+
+#[test]
+fn buffer_deletion_closes_shared_panes_and_keeps_a_valid_last_pane() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("alpha.txt");
+    let second = directory.path().join("bravo.txt");
+    let mut state = state_with_text(first.clone(), "alpha");
+    fs::write(&second, "bravo").unwrap();
+    let source = state.session.active_id();
+    run_command(&mut state, "split");
+    run_command(&mut state, &format!("e {}", second.display()));
+    let target = state.session.active_id();
+    run_command(&mut state, "vsplit");
+    run_command(&mut state, "zoom");
+    run_command(&mut state, "bd");
+    assert!(state.session.buffer(target).is_none());
+    assert_eq!(state.panes.len(), 1);
+    assert_eq!(state.session.active_id(), source);
+    assert!(!state.pane_is_zoomed());
+    assert!(
+        state
+            .panes
+            .iter()
+            .all(|pane| state.session.buffer(pane.buffer_id).is_some())
+    );
+    assert_eq!(fs::read_to_string(&second).unwrap(), "bravo");
+
+    state.command_toggle_undo_tree();
+    run_command(&mut state, &format!("bdel {}", source.get()));
+    assert!(state.undo_tree.is_none());
+    assert!(state.session.buffer(source).is_none());
+    assert_eq!(state.panes.len(), 1);
+    assert_eq!(state.session.summaries().len(), 1);
+    assert!(state.session.active_buffer().is_empty());
+    assert_eq!(state.panes[0].buffer_id, state.session.active_id());
+    assert!(!state.should_quit);
+
+    run_command(&mut state, "about");
+    run_command(&mut state, "bd");
+    assert!(state.about.is_none());
+    assert_eq!(state.panes.len(), 1);
+    run_command(&mut state, "bd");
+    assert_eq!(state.session.summaries().len(), 1);
+    assert_eq!(state.panes[0].buffer_id, state.session.active_id());
+    assert!(!state.should_quit);
+}
+
+#[test]
 fn command_ls_populates_multiline_status_summary() {
     let _guard = global_test_state_lock().lock().unwrap();
     let directory = tempfile::tempdir().unwrap();

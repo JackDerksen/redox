@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use redox_core::{BufferKind, Pos, Selection, TextBuffer};
+use redox_core::{BufferId, BufferKind, Pos, Selection, TextBuffer};
 
 use super::{EditorMode, EditorState, SplitAxis, calculator};
 use crate::indentation::width_for_text;
@@ -82,6 +82,34 @@ const COMMANDS: &[CommandDefinition] = &[
         names: &["about"],
         editor_context: |_, _| false,
         run: |state, _| state.command_open_about(),
+    },
+    CommandDefinition {
+        names: &["b", "bu", "buf", "buffer"],
+        editor_context: |_, _| true,
+        run: |state, argument| state.command_buffer(argument),
+    },
+    CommandDefinition {
+        names: &["bd", "bdel", "bdelete"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_delete_buffer(argument, false),
+    },
+    CommandDefinition {
+        names: &["bd!", "bdel!", "bdelete!"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_delete_buffer(argument, true),
+    },
+    CommandDefinition {
+        names: &["enew", "ene"],
+        editor_context: |_, argument| argument.is_empty(),
+        run: |state, argument| {
+            if argument.is_empty() {
+                state.sync_active_pane_view();
+                let id = state.session.open_unnamed_buffer();
+                state.finish_buffer_switch(id);
+            } else {
+                state.set_status("usage: enew");
+            }
+        },
     },
     CommandDefinition {
         names: &["bn", "bnext"],
@@ -277,14 +305,57 @@ enum SaveFormatter {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct CommandPathCompletions {
+pub(super) struct CommandArgumentCompletions {
     prefix: String,
     candidates: Vec<String>,
 }
 
 impl EditorState {
-    pub(super) fn refresh_command_path_completions(&mut self) {
+    pub(super) fn refresh_command_argument_completions(&mut self) {
         let input = self.command_line.trim_start();
+        if self.mode == EditorMode::Command
+            && let Some((command, argument)) = input.split_once(char::is_whitespace)
+            && matches!(
+                command,
+                "b" | "bu"
+                    | "buf"
+                    | "buffer"
+                    | "bd"
+                    | "bdel"
+                    | "bdelete"
+                    | "bd!"
+                    | "bdel!"
+                    | "bdelete!"
+            )
+        {
+            let prefix = input[..input.len() - argument.trim_start().len()].to_string();
+            let mut candidates = Vec::new();
+            for summary in self
+                .session
+                .summaries()
+                .into_iter()
+                .filter(|summary| summary.kind == BufferKind::File)
+            {
+                for name in [
+                    summary.display_name,
+                    summary.id.get().to_string(),
+                    summary
+                        .path
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ] {
+                    if !name.is_empty() && !name.contains(char::is_control) {
+                        candidates.push(format!("{prefix}{name}"));
+                    }
+                }
+            }
+            candidates.sort();
+            candidates.dedup();
+            self.command_argument_completions = CommandArgumentCompletions { prefix, candidates };
+            return;
+        }
         let path_argument = input
             .split_once(char::is_whitespace)
             .filter(|(command, _)| {
@@ -295,7 +366,7 @@ impl EditorState {
                     )
             });
         let Some((_, argument)) = path_argument else {
-            self.command_path_completions = CommandPathCompletions::default();
+            self.command_argument_completions = CommandArgumentCompletions::default();
             return;
         };
         let argument = argument.trim_start();
@@ -304,7 +375,7 @@ impl EditorState {
             .map_or(0, |index| index + 1);
         let directory = &argument[..directory_end];
         let prefix = &input[..input.len() - argument.len() + directory_end];
-        if self.command_path_completions.prefix == prefix {
+        if self.command_argument_completions.prefix == prefix {
             return;
         }
         let mut candidates = Vec::new();
@@ -324,7 +395,7 @@ impl EditorState {
             }
         }
         candidates.sort();
-        self.command_path_completions = CommandPathCompletions {
+        self.command_argument_completions = CommandArgumentCompletions {
             prefix: prefix.to_owned(),
             candidates,
         };
@@ -359,7 +430,7 @@ impl EditorState {
                     .map(String::as_str),
             )
             .chain(
-                self.command_path_completions
+                self.command_argument_completions
                     .candidates
                     .iter()
                     .map(String::as_str)
@@ -655,6 +726,157 @@ impl EditorState {
         }
     }
 
+    fn resolve_buffer(&self, argument: &str) -> Result<BufferId, String> {
+        if argument.is_empty() {
+            return Ok(self.session.active_id());
+        }
+        let buffers: Vec<_> = self
+            .session
+            .summaries()
+            .into_iter()
+            .filter(|summary| summary.kind == BufferKind::File)
+            .collect();
+        let number = argument.strip_prefix('#').unwrap_or(argument);
+        if number.bytes().all(|byte| byte.is_ascii_digit()) && !number.is_empty() {
+            let buffer_number = number.parse::<u64>().ok();
+            return buffers
+                .iter()
+                .find(|summary| buffer_number == Some(summary.id.get()))
+                .map(|summary| summary.id)
+                .ok_or_else(|| format!("buffer not found: {argument}"));
+        }
+        let mut matches: Vec<_> = buffers
+            .iter()
+            .filter(|summary| {
+                summary.display_name == argument
+                    || summary.path.as_deref().is_some_and(|path| {
+                        path.to_string_lossy() == argument
+                            || path.file_name().is_some_and(|name| name == argument)
+                    })
+            })
+            .collect();
+        if matches.is_empty() {
+            matches = buffers
+                .iter()
+                .filter(|summary| {
+                    summary.display_name.contains(argument)
+                        || summary
+                            .path
+                            .as_deref()
+                            .is_some_and(|path| path.to_string_lossy().contains(argument))
+                })
+                .collect();
+        }
+        match matches.as_slice() {
+            [summary] => Ok(summary.id),
+            [] => Err(format!("buffer not found: {argument}")),
+            _ => Err(format!(
+                "ambiguous buffer name: {argument}; use a path or number from :ls"
+            )),
+        }
+    }
+
+    fn finish_buffer_switch(&mut self, id: BufferId) {
+        self.transient_origin_buffer_id = None;
+        self.transient_origin_dir = None;
+        if self
+            .dashboard
+            .as_ref()
+            .is_some_and(|dashboard| dashboard.buffer_id == id)
+        {
+            self.dashboard = None;
+        }
+        self.ensure_buffer_analysis(id);
+        self.sync_active_pane_view();
+        self.clear_status();
+        self.request_redraw();
+    }
+
+    fn command_buffer(&mut self, argument: &str) {
+        match self.resolve_buffer(argument) {
+            Ok(id) => {
+                self.sync_active_pane_view();
+                let _ = self.session.activate(id);
+                self.finish_buffer_switch(id);
+            }
+            Err(error) => self.set_status(error),
+        }
+    }
+
+    fn command_delete_buffer(&mut self, argument: &str, force: bool) {
+        let id = match self.resolve_buffer(argument) {
+            Ok(id) => id,
+            Err(error) => {
+                self.set_status(error);
+                return;
+            }
+        };
+        if self.session.meta(id).is_some_and(|meta| meta.dirty) && !force {
+            self.set_status("buffer has unsaved changes; write it or use :bd! to discard them");
+            return;
+        }
+        if argument.is_empty() && self.active_buffer_is_surface() {
+            self.close_active_surface_buffer_without_quit();
+            return;
+        }
+        if !self.close_active_surfaces_for_command() {
+            self.set_status("cannot return to an editor buffer");
+            return;
+        }
+        let focused = self.active_pane;
+        if self
+            .undo_tree
+            .as_ref()
+            .is_some_and(|tree| tree.source_buffer_id == id)
+            && let Some(tree) = self.undo_tree.clone()
+        {
+            self.close_undo_tree_panel(tree);
+        }
+        if self
+            .dashboard
+            .as_ref()
+            .is_some_and(|dashboard| dashboard.buffer_id == id)
+        {
+            self.dashboard = None;
+        }
+        self.sync_active_pane_view();
+        while let Some(pane) = self
+            .panes
+            .iter()
+            .find(|pane| pane.buffer_id == id)
+            .map(|pane| pane.id)
+        {
+            let _ = self.activate_pane(pane);
+            if self.panes.len() == 1 {
+                let replacement = self
+                    .session
+                    .summaries()
+                    .into_iter()
+                    .find(|summary| summary.kind == BufferKind::File && summary.id != id)
+                    .map(|summary| summary.id);
+                let replacement = match replacement {
+                    Some(replacement) => {
+                        let _ = self.session.activate(replacement);
+                        replacement
+                    }
+                    None => self.session.open_unnamed_buffer(),
+                };
+                self.finish_buffer_switch(replacement);
+                break;
+            }
+            self.close_active_split();
+        }
+        let _ = self.activate_pane(focused);
+        if self.session.close_buffer(id) {
+            self.close_lsp_document(id);
+            self.views.remove(&id);
+            self.undo_history_load_attempted.remove(&id);
+            self.finish_buffer_switch(self.session.active_id());
+        } else {
+            self.set_status("cannot delete buffer");
+        }
+    }
+
     pub(super) fn command_buffer_cycle_next(&mut self) {
         let count = self.session.summaries().len();
         if count <= 1 {
@@ -662,12 +884,9 @@ impl EditorState {
             return;
         }
 
+        self.sync_active_pane_view();
         if let Some(id) = self.session.switch_next_mru() {
-            self.transient_origin_buffer_id = None;
-            self.transient_origin_dir = None;
-            let _ = self.views.entry(id).or_default();
-            self.ensure_buffer_analysis(id);
-            self.clear_status();
+            self.finish_buffer_switch(id);
         }
     }
 
@@ -678,12 +897,9 @@ impl EditorState {
             return;
         }
 
+        self.sync_active_pane_view();
         if let Some(id) = self.session.switch_prev_mru() {
-            self.transient_origin_buffer_id = None;
-            self.transient_origin_dir = None;
-            let _ = self.views.entry(id).or_default();
-            self.ensure_buffer_analysis(id);
-            self.clear_status();
+            self.finish_buffer_switch(id);
         }
     }
 

@@ -1709,7 +1709,7 @@ impl EditorState {
             .collect();
     }
 
-    fn close_lsp_document(&mut self, buffer_id: BufferId) {
+    pub(super) fn close_lsp_document(&mut self, buffer_id: BufferId) {
         let Some(document) = self.lsp.documents.remove(&buffer_id) else {
             return;
         };
