@@ -3851,25 +3851,112 @@ fn command_w_writes_active_buffer_only() {
 
 #[test]
 fn command_ls_populates_multiline_status_summary() {
-    let path_a = temp_file_path("ls_a");
-    let path_b = temp_file_path("ls_b");
-    let mut state = state_with_text(path_a.clone(), "alpha");
-    fs::write(&path_b, "bravo").expect("failed to write test file");
-
+    let _guard = global_test_state_lock().lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path_a = directory.path().join("alpha.rs");
+    let path_b = directory.path().join("bravo.md");
+    let mut state = state_with_text(path_a, "alpha");
+    let source = state.session.active_id();
+    state.session.active_meta_mut().display_name = "alpha.rs".into();
+    fs::write(&path_b, "bravo").unwrap();
     state.apply_input(InputAction::Paste("!".to_string()), 80, 24);
-    run_command(&mut state, &format!("e {}", path_b.display()));
+    run_command(&mut state, "split");
     run_command(&mut state, "ls");
+    assert!(state.status_msg.as_ref().unwrap().contains("[1,2] +"));
 
-    let msg = state.status_msg.as_deref().expect("missing ls status");
-    assert!(msg.contains("%"));
-    assert!(msg.contains("+"));
-    assert!(msg.contains('\n'));
-    for summary in state.session.summaries() {
-        assert!(msg.contains(&summary.display_name));
+    run_command(&mut state, &format!("e {}", path_b.display()));
+    let target = state.session.active_id();
+    state.session.active_meta_mut().display_name = "bravo.md".into();
+    run_command(
+        &mut state,
+        &format!("e {}", directory.path().join("new.txt").display()),
+    );
+    let hidden = state.session.active_id();
+    state.session.active_meta_mut().display_name = "new.txt".into();
+    assert!(state.session.activate(target));
+    state.session.active_meta_mut().external_changed = true;
+    run_command(&mut state, "ls");
+    let message = state.status_msg.as_deref().unwrap();
+    assert!(message.starts_with("Buffers (3)\n"));
+    for (buffer, details) in [
+        (source, "[1] +"),
+        (target, "[2] !"),
+        (hidden, "[hidden] new file"),
+    ] {
+        let name = &state.session.meta(buffer).unwrap().display_name;
+        assert!(message.contains(&format!("#{} {name} {details}", buffer.get())));
     }
+    assert!(message.contains(&format!("> #{} ", target.get())));
+    assert_eq!(message.lines().count(), 4);
+    assert!(state.status_msg_line_styles.is_empty());
 
-    let _ = fs::remove_file(path_a);
-    let _ = fs::remove_file(path_b);
+    run_command(&mut state, "vsplit");
+    run_command(&mut state, "zoom");
+    let pane_ids: Vec<_> = state
+        .panes
+        .iter()
+        .map(|pane| (pane.id, pane.buffer_id))
+        .collect();
+    for icons_enabled in [false, true] {
+        state.icons_enabled = icons_enabled;
+        run_command(&mut state, "ls");
+        let message = state.status_msg.as_deref().unwrap();
+        let marker = if icons_enabled {
+            crate::ui::icons::ZOOM
+        } else {
+            "^"
+        };
+        assert!(message.contains("[1] +"));
+        assert!(message.contains(&format!("[2,3{marker}] !")));
+        assert!(message.contains("[hidden] new file"));
+        assert!(message.contains(&format!("> #{} ", target.get())));
+        assert_eq!(message.lines().count(), 4);
+        for summary in state.session.summaries() {
+            let icon = if icons_enabled {
+                format!(
+                    "{} ",
+                    crate::ui::icons::file_icon(summary.path.as_deref().unwrap())
+                )
+            } else {
+                String::new()
+            };
+            assert!(message.contains(&format!(
+                "#{} {icon}{}",
+                summary.id.get(),
+                summary.display_name
+            )));
+        }
+        assert_eq!(state.session.active_id(), target);
+        assert_eq!(
+            state
+                .panes
+                .iter()
+                .map(|pane| (pane.id, pane.buffer_id))
+                .collect::<Vec<_>>(),
+            pane_ids
+        );
+        assert_eq!(state.session.buffer(source).unwrap().to_string(), "!alpha");
+        let mut window = crate::tests::TestWindow::new(80, 24);
+        let style = crate::ui::UiStyle {
+            icons_enabled,
+            ..crate::ui::UiStyle::default()
+        };
+        let layout = crate::ui::draw_status_toast(&state, style, &mut window)
+            .unwrap()
+            .unwrap();
+        assert_eq!(layout.inner_h, 4, "one heading and one row per buffer");
+        let rendered = (0..24)
+            .map(|row| window.row_text(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("bravo.md"));
+        assert!(rendered.contains(&format!("[2,3{marker}] !")));
+    }
+    run_command(&mut state, "about");
+    let panel = state.session.active_id();
+    run_command(&mut state, "ls");
+    assert!(state.status_msg.as_ref().unwrap().contains("[panel]"));
+    assert!(state.panes.iter().all(|pane| pane.buffer_id != panel));
 }
 
 #[test]

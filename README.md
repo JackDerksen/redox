@@ -263,7 +263,7 @@ line.
 | `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
 | `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
 | `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
-| `:ls` | Show a compact summary of open buffers. |
+| `:ls` | List one row per buffer: `>` marks the current buffer, `[1,2]` lists its panes, `[hidden]` marks a hidden buffer, `+` marks unsaved edits, and `!` marks changes on disk. A fullscreen icon (or `^`) marks the zoomed pane; the other panes are minimised. File-type icons appear when icons are enabled. |
 | `:macros` | List the current session's macro registers and recorded key sequences. |
 | `:ex` / `:explorer` | Toggle the file explorer. |
 | `:about` | Toggle the about popup. |

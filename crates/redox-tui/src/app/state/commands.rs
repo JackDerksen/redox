@@ -1,12 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use redox_core::{Pos, Selection, TextBuffer};
+use redox_core::{BufferKind, Pos, Selection, TextBuffer};
 
 use super::{EditorMode, EditorState, SplitAxis, calculator};
 use crate::indentation::width_for_text;
 use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
+use crate::ui::icons;
 use crate::ui::language_for_path;
 use crate::ui::syntax::{SyntaxLanguage, smart_open_line_insert};
 
@@ -687,29 +688,68 @@ impl EditorState {
     }
 
     pub(super) fn command_list_buffers(&mut self) {
+        self.sync_active_pane_view();
         let summaries = self.session.summaries();
         if summaries.is_empty() {
             self.set_status("no buffers");
             return;
         }
 
-        let mut message = String::new();
-        for (idx, summary) in summaries.iter().enumerate() {
-            if idx > 0 {
-                message.push('\n');
+        let mut lines = vec![format!("Buffers ({})", summaries.len())];
+        for summary in summaries {
+            let file_icon = if self.icons_enabled {
+                format!(
+                    "{} ",
+                    icons::file_icon(
+                        summary
+                            .path
+                            .as_deref()
+                            .unwrap_or_else(|| Path::new(&summary.display_name))
+                    )
+                )
+            } else {
+                String::new()
+            };
+            let panes: Vec<_> = self
+                .panes
+                .iter()
+                .filter(|pane| pane.buffer_id == summary.id)
+                .map(|pane| {
+                    let zoom = if !self.pane_zoomed || pane.id != self.active_pane {
+                        ""
+                    } else if self.icons_enabled {
+                        icons::ZOOM
+                    } else {
+                        "^"
+                    };
+                    format!("{}{zoom}", pane.id.0.saturating_add(1))
+                })
+                .collect();
+            let mut details = if !panes.is_empty() {
+                format!("[{}]", panes.join(","))
+            } else if summary.kind == BufferKind::Ui {
+                "[panel]".to_string()
+            } else {
+                "[hidden]".to_string()
+            };
+            for (enabled, label) in [
+                (summary.dirty, "+"),
+                (summary.is_new_file, "new file"),
+                (summary.external_changed, "!"),
+            ] {
+                if enabled {
+                    details.push(' ');
+                    details.push_str(label);
+                }
             }
-            let active = if summary.is_active { '%' } else { '-' };
-            let dirty = if summary.dirty { '+' } else { '-' };
-            let new_file = if summary.is_new_file { 'n' } else { '-' };
-            let external = if summary.external_changed { '!' } else { '-' };
-            message.push_str(&format!(
-                "[{active}{dirty}{new_file}{external}]{}:{}",
+            lines.push(format!(
+                "{} #{} {file_icon}{} {details}",
+                if summary.is_active { ">" } else { " " },
                 summary.id.get(),
                 summary.display_name
             ));
         }
-
-        self.set_status(message);
+        self.set_status(lines.join("\n"));
     }
 
     pub(super) fn write_current_file(&mut self, path_arg: &str) -> bool {

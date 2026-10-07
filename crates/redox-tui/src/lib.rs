@@ -3638,6 +3638,7 @@ fn reload_runtime_config(
         }
         state.configure_logging(candidate.logging)?;
         state.configure_animations(candidate.animations);
+        state.icons_enabled = candidate.icons_enabled;
         *active_config = candidate;
         *style = candidate_style;
         *active_theme = candidate_theme;
@@ -3730,6 +3731,7 @@ pub fn run() -> anyhow::Result<()> {
     let logging_result = state.configure_logging(config.logging);
     state.zen = config.zen;
     state.configure_animations(config.animations);
+    state.icons_enabled = config.icons_enabled;
     state.configure(
         input,
         config.undo_tree_history_size,
@@ -6752,6 +6754,7 @@ background = "#010203"
         assert_eq!(state.zen.width_percent, 70);
         assert!(!state.zen.hide_gutter);
         assert!(style.icons_enabled);
+        assert!(state.icons_enabled);
         assert!(!style.text_formatting);
         assert_eq!(state.animations.jump_highlight_ms, 275);
         assert_eq!(state.animations.undo_redo_highlight_ms, 200);
