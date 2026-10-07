@@ -6,10 +6,11 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use anyhow::Context;
-use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use minui::{Color, ColorPair, Event, KeyKind, KeybindAction, Style, TerminalWindow, Window};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
+use crate::input::InputState;
 use crate::ui::UiStyle;
 use crate::ui::style::dim_foreground_color;
 
@@ -314,6 +315,7 @@ impl TerminalPanel {
     pub(crate) fn read_input(
         &self,
         window: &mut TerminalWindow,
+        input_state: &mut InputState,
         timeout: Option<Duration>,
     ) -> minui::Result<Option<Event>> {
         if let Some(timeout) = timeout
@@ -322,7 +324,10 @@ impl TerminalPanel {
             return Ok(None);
         }
         let input = match event::read()? {
-            event::Event::Key(key) if key.kind != KeyEventKind::Release => {
+            event::Event::Key(key) => {
+                let Some(key) = input_state.prepare_key_event(key) else {
+                    return Ok(Some(Event::Unknown));
+                };
                 if key.modifiers == KeyModifiers::CONTROL
                     && matches!(key.code, KeyCode::Char('`' | ' ' | '\0'))
                 {
@@ -371,6 +376,10 @@ impl TerminalPanel {
             event::Event::Resize(width, height) => {
                 window.handle_resize(width, height);
                 Event::Resize { width, height }
+            }
+            event::Event::FocusLost => {
+                input_state.clear_held_modifiers();
+                Event::Unknown
             }
             _ => Event::Unknown,
         };

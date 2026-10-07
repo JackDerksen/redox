@@ -254,6 +254,7 @@ line.
 | `:close` / `:clo` | Close the active split, keeping its buffer and unsaved edits. The last split stays open. |
 | `:only` / `:on` | Keep the active editor pane and close the other splits, keeping their buffers and unsaved edits. |
 | `:zoom` | Toggle maximising the active pane while preserving the other panes and their layout. |
+| `:whichkey [prefix]` / `:which-key [prefix]` | Show key hints immediately. With no prefix, show common motions and key groups; try `ctrl`, `ctrl-shift`, `g`, `d`, or `<leader>` for specific hints. `Esc` dismisses the popup. |
 | `:config` | Open the active configuration file, creating its parent directory when needed. |
 | `:config reload` | Reload configuration, themes, and keybindings without restarting. |
 | `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |

@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
 use minui::KeybindAction;
 use minui::prelude::input::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
 use redox_core::{DelimiterKind, TextObjectKind, TextObjectScope, TextObjectSpec, motion::Motion};
@@ -504,6 +505,9 @@ pub struct InputState {
     pending_replace: bool,
     pending_macro_register: Option<PendingMacroRegister>,
     which_key_started_at: Option<Instant>,
+    held_modifier_keys: Vec<ModifierKeyCode>,
+    which_key_modifiers: Option<KeyModifiers>,
+    which_key_forced: bool,
     leader: char,
     custom_bindings: Vec<CustomBinding>,
 }
@@ -546,6 +550,9 @@ impl Default for InputState {
             pending_replace: false,
             pending_macro_register: None,
             which_key_started_at: None,
+            held_modifier_keys: Vec::new(),
+            which_key_modifiers: None,
+            which_key_forced: false,
             leader: ' ',
             custom_bindings: Vec::new(),
         }
@@ -826,7 +833,7 @@ impl InputState {
             })
     }
 
-    fn leader(&self) -> char {
+    pub(crate) fn leader(&self) -> char {
         self.leader
     }
 
@@ -838,6 +845,112 @@ impl InputState {
         self.pending_replace = false;
         self.pending_macro_register = None;
         self.which_key_started_at = None;
+        self.which_key_modifiers = None;
+        self.which_key_forced = false;
+    }
+
+    pub(crate) fn update_modifier_key(&mut self, key: ModifierKeyCode, kind: KeyEventKind) {
+        if kind == KeyEventKind::Release {
+            self.held_modifier_keys.retain(|held| *held != key);
+        } else if !self.held_modifier_keys.contains(&key) {
+            self.held_modifier_keys.push(key);
+        }
+        let mut modifiers = KeyModifiers::none();
+        for held in &self.held_modifier_keys {
+            match held {
+                ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl => {
+                    modifiers.ctrl = true
+                }
+                ModifierKeyCode::LeftAlt | ModifierKeyCode::RightAlt => modifiers.alt = true,
+                ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => modifiers.shift = true,
+                ModifierKeyCode::LeftSuper | ModifierKeyCode::RightSuper => {
+                    modifiers.super_key = true
+                }
+                _ => {}
+            }
+        }
+        let next = (!unmodified(modifiers)).then_some(modifiers);
+        if next != self.which_key_modifiers {
+            self.which_key_modifiers = next;
+            self.which_key_forced = false;
+            self.which_key_started_at = next.map(|_| Instant::now());
+            if next.is_none() && self.pending_input().is_some() {
+                self.which_key_started_at = Some(Instant::now());
+            }
+        }
+    }
+
+    pub(crate) fn clear_held_modifiers(&mut self) {
+        self.held_modifier_keys.clear();
+        self.reset_prefixes();
+    }
+
+    pub(crate) fn prepare_key_event(&mut self, mut key: KeyEvent) -> Option<KeyEvent> {
+        if let KeyCode::Modifier(modifier) = key.code {
+            self.update_modifier_key(modifier, key.kind);
+            return None;
+        }
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
+        // Crossterm removes Shift when decoding Kitty's translated character.
+        // Retain the physical modifier for Ctrl+Shift bindings and terminal input.
+        if matches!(key.code, KeyCode::Char(_))
+            && self.held_modifier_keys.iter().any(|modifier| {
+                matches!(
+                    modifier,
+                    ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift
+                )
+            })
+        {
+            key.modifiers.insert(crossterm::event::KeyModifiers::SHIFT);
+        }
+        Some(key)
+    }
+
+    pub(crate) fn which_key_is_forced(&self) -> bool {
+        self.which_key_forced
+    }
+
+    pub(crate) fn show_which_key(&mut self, mode: InputMode, prefix: &str) -> anyhow::Result<()> {
+        let mut candidate = self.clone();
+        candidate.reset_prefixes();
+        let normalized = prefix.to_ascii_lowercase().replace('+', "-");
+        let mut modifiers = KeyModifiers::none();
+        let modifier_prefix = !normalized.is_empty()
+            && normalized.split('-').all(|part| {
+                match part {
+                    "ctrl" => modifiers.ctrl = true,
+                    "alt" => modifiers.alt = true,
+                    "shift" => modifiers.shift = true,
+                    _ => return false,
+                }
+                true
+            });
+        if modifier_prefix {
+            candidate.which_key_modifiers = Some(modifiers);
+        } else if !prefix.is_empty() {
+            for character in prefix.replace("<leader>", &self.leader.to_string()).chars() {
+                if map_event_with_state(&mut candidate, mode, &Event::Character(character))
+                    != InputAction::None
+                {
+                    anyhow::bail!("not a key prefix: {prefix}");
+                }
+            }
+            if candidate.pending_input().is_none() {
+                anyhow::bail!("not a key prefix: {prefix}");
+            }
+        }
+        candidate.which_key_forced = true;
+        candidate.which_key_started_at = Some(Instant::now());
+        if candidate
+            .which_key_contents(mode)
+            .is_none_or(|(_, entries)| entries.is_empty())
+        {
+            anyhow::bail!("no bindings for {prefix}");
+        }
+        *self = candidate;
+        Ok(())
     }
 
     fn pending_input(&self) -> Option<PendingInput> {
@@ -860,7 +973,7 @@ impl InputState {
 
     fn update_which_key_timer(&mut self, previous: Option<PendingInput>) {
         let current = self.pending_input();
-        if current.is_none() {
+        if current.is_none() && self.which_key_modifiers.is_none() && !self.which_key_forced {
             self.which_key_started_at = None;
         } else if self.which_key_started_at.is_none()
             || !previous
@@ -1010,7 +1123,7 @@ impl InputState {
         delay: Duration,
     ) -> Option<WhichKeyPopup> {
         let started_at = self.which_key_started_at?;
-        if now.saturating_duration_since(started_at) < delay {
+        if !self.which_key_forced && now.saturating_duration_since(started_at) < delay {
             return None;
         }
 
@@ -1019,6 +1132,14 @@ impl InputState {
     }
 
     fn which_key_contents(&self, mode: InputMode) -> Option<(String, Vec<WhichKeyEntry>)> {
+        if let Some(modifiers) = self.which_key_modifiers {
+            let prefix = special_key_token(KeyKind::Char(' '), modifiers)?;
+            let prefix = prefix.trim_start_matches('<').trim_end_matches("space>");
+            return Some((
+                prefix.trim_end_matches('-').to_string(),
+                modifier_entries(self, mode, modifiers),
+            ));
+        }
         if let Some(pending) = self.pending_macro_register {
             let entries = match pending {
                 PendingMacroRegister::Record => vec![
@@ -1073,8 +1194,161 @@ impl InputState {
             ));
         }
 
-        self.pending_count
-            .map(|count| (count.to_string(), count_entries(mode)))
+        if let Some(count) = self.pending_count {
+            Some((count.to_string(), count_entries(mode)))
+        } else if self.which_key_forced {
+            let mut entries: BTreeMap<_, _> = count_entries(mode)
+                .into_iter()
+                .map(|entry| (entry.key, entry.description))
+                .collect();
+            entries.insert("?".to_string(), "Show key hints".to_string());
+            entries.extend(
+                sequence_entries(self, mode, "")
+                    .into_iter()
+                    .map(|entry| (entry.key, entry.description)),
+            );
+            Some((
+                "Keys".to_string(),
+                entries
+                    .into_iter()
+                    .map(|(key, description)| which_key_entry(key, description))
+                    .collect(),
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+fn modifier_entries(
+    state: &InputState,
+    mode: InputMode,
+    modifiers: KeyModifiers,
+) -> Vec<WhichKeyEntry> {
+    let mut probe = state.clone();
+    probe.reset_prefixes();
+    let keys = (' '..='~')
+        .map(|character| {
+            KeyKind::Char(if shift_only(modifiers) {
+                character.to_ascii_uppercase()
+            } else {
+                character
+            })
+        })
+        .chain([
+            KeyKind::Tab,
+            KeyKind::Enter,
+            KeyKind::Escape,
+            KeyKind::Backspace,
+            KeyKind::Delete,
+            KeyKind::Left,
+            KeyKind::Right,
+            KeyKind::Up,
+            KeyKind::Down,
+        ])
+        .chain((1..=12).map(KeyKind::Function));
+    let mut entries = BTreeMap::new();
+    for key in keys {
+        let token = special_key_token(key, modifiers).expect("supported modifiers");
+        let action = map_key_with_state(
+            &mut probe,
+            mode,
+            false,
+            KeyWithModifiers {
+                key,
+                mods: modifiers,
+            },
+        );
+        probe.reset_prefixes();
+        if action != InputAction::None {
+            let description = custom_bindings_for_mode(&state.custom_bindings, mode)
+                .find(|binding| binding.key == CustomKey::Special(token.clone()))
+                .map(|binding| binding.description.as_str())
+                .unwrap_or_else(|| input_action_description(&action));
+            entries.insert(token, description.to_string());
+        }
+    }
+    for binding in custom_bindings_for_mode(&state.custom_bindings, mode) {
+        if let CustomKey::Special(token) = &binding.key
+            && let Some(Event::KeyWithModifiers(key)) = which_key_event(token, state.leader)
+            && key.mods == modifiers
+        {
+            entries
+                .entry(token.clone())
+                .or_insert_with(|| binding.description.clone());
+        }
+    }
+    if ctrl_only(modifiers) {
+        for (key, description) in [
+            ("left", "Resize split left"),
+            ("right", "Resize split right"),
+            ("up", "Resize split up"),
+            ("down", "Resize split down"),
+        ] {
+            entries.insert(format!("<ctrl-{key}>"), description.to_string());
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(key, description)| which_key_entry(key, description))
+        .collect()
+}
+
+pub(crate) fn which_key_event(label: &str, leader: char) -> Option<Event> {
+    if label == "<leader>" {
+        return Some(Event::Character(leader));
+    }
+    let inner = label
+        .strip_prefix('<')
+        .and_then(|label| label.strip_suffix('>'))
+        .unwrap_or(label);
+    let mut key_name = inner;
+    let mut modifiers = KeyModifiers::none();
+    for (prefix, enabled) in [
+        ("ctrl-", &mut modifiers.ctrl),
+        ("alt-", &mut modifiers.alt),
+        ("shift-", &mut modifiers.shift),
+    ] {
+        if let Some(remainder) = key_name.strip_prefix(prefix) {
+            *enabled = true;
+            key_name = remainder;
+        }
+    }
+    let key = match key_name {
+        "Space" | "space" => KeyKind::Char(' '),
+        "Esc" | "escape" => KeyKind::Escape,
+        "Enter" | "enter" => KeyKind::Enter,
+        "Tab" | "tab" => KeyKind::Tab,
+        "backspace" => KeyKind::Backspace,
+        "delete" => KeyKind::Delete,
+        "left" => KeyKind::Left,
+        "right" => KeyKind::Right,
+        "up" => KeyKind::Up,
+        "down" => KeyKind::Down,
+        _ if key_name.starts_with('f') && key_name.len() > 1 => {
+            KeyKind::Function(key_name[1..].parse().ok()?)
+        }
+        _ => {
+            let mut characters = key_name.chars();
+            let character = characters.next()?;
+            if characters.next().is_some() {
+                return None;
+            }
+            KeyKind::Char(if shift_only(modifiers) {
+                character.to_ascii_uppercase()
+            } else {
+                character
+            })
+        }
+    };
+    let event = Event::KeyWithModifiers(KeyWithModifiers {
+        key,
+        mods: modifiers,
+    });
+    if unmodified(modifiers) {
+        event.as_legacy_key_event()
+    } else {
+        Some(event)
     }
 }
 
@@ -1349,7 +1623,11 @@ pub fn map_event_with_context(
     confirm_explorer_delete: bool,
     event: &Event,
 ) -> InputAction {
-    if modal_sequence_mode(mode) && state.pending_input().is_some() {
+    if modal_sequence_mode(mode)
+        && (state.pending_input().is_some()
+            || state.which_key_forced
+            || state.which_key_modifiers.is_some())
+    {
         if pending_escape_event(event) {
             state.reset_prefixes();
             return InputAction::None;
@@ -1684,6 +1962,13 @@ fn modal_char_action(
     }
 
     match c {
+        '?' => {
+            state.reset_prefixes();
+            state
+                .show_which_key(mode, "")
+                .expect("modal modes have key hints");
+            InputAction::None
+        }
         '.' if mode == InputMode::Normal => {
             let count = state.pending_count;
             state.reset_prefixes();
@@ -2669,6 +2954,8 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::SplitFocusDown => "Focus split down",
         InputAction::SplitFocusUp => "Focus split up",
         InputAction::SplitFocusRight => "Focus split right",
+        InputAction::OpenPinnedSlot { .. } => "Open pinned file",
+        InputAction::QuickPinCurrentFile => "Pin current file",
         InputAction::CenterCursorLine => "Centre cursor line",
         InputAction::WriteQuitIfDirty => "Write if modified and quit",
         InputAction::ScrollHalfPage { down: true, .. } => "Half window down",
@@ -2686,6 +2973,7 @@ fn input_action_description(action: &InputAction) -> &'static str {
         InputAction::SetMode(InputMode::Visual) => "Visual mode",
         InputAction::SetMode(InputMode::VisualLine) => "Visual line mode",
         InputAction::SetMode(InputMode::VisualBlock) => "Visual block mode",
+        InputAction::SetMode(InputMode::Normal) => "Normal mode",
         InputAction::PinSelectorMoveNext => "Next pin",
         InputAction::PinSelectorMovePrev => "Previous pin",
         InputAction::PinSelectorOpenSelected => "Open pin",
@@ -4357,7 +4645,127 @@ mod tests {
     }
 
     #[test]
+    fn modifier_hints_follow_holds_modes_and_custom_bindings() {
+        let mut state = InputState::new();
+        state
+            .configure(
+                ' ',
+                &BTreeMap::from([(
+                    "normal".to_string(),
+                    BTreeMap::from([("undo".to_string(), "<ctrl-z>".to_string())]),
+                )]),
+            )
+            .unwrap();
+        state.update_modifier_key(ModifierKeyCode::LeftControl, KeyEventKind::Press);
+        let deadline = state.which_key_deadline(DEFAULT_WHICH_KEY_DELAY).unwrap();
+        assert!(
+            state
+                .which_key_popup(
+                    InputMode::Normal,
+                    deadline - Duration::from_millis(1),
+                    DEFAULT_WHICH_KEY_DELAY
+                )
+                .is_none()
+        );
+        let popup = state
+            .which_key_popup(InputMode::Normal, deadline, DEFAULT_WHICH_KEY_DELAY)
+            .unwrap();
+        assert_eq!(popup.prefix, "ctrl");
+        for (key, description) in [
+            ("<ctrl-z>", "Undo"),
+            ("<ctrl-d>", "Half window down"),
+            ("<ctrl-h>", "Focus split left"),
+            ("<ctrl-left>", "Resize split left"),
+        ] {
+            assert!(
+                popup
+                    .entries
+                    .iter()
+                    .any(|entry| entry.key == key && entry.description == description)
+            );
+        }
+        state.update_modifier_key(ModifierKeyCode::RightControl, KeyEventKind::Press);
+        state.update_modifier_key(ModifierKeyCode::LeftControl, KeyEventKind::Release);
+        assert!(
+            state
+                .which_key_popup(InputMode::Normal, deadline, DEFAULT_WHICH_KEY_DELAY)
+                .is_some()
+        );
+        state.update_modifier_key(ModifierKeyCode::LeftShift, KeyEventKind::Press);
+        let popup = state
+            .which_key_popup(
+                InputMode::Normal,
+                deadline + DEFAULT_WHICH_KEY_DELAY,
+                DEFAULT_WHICH_KEY_DELAY,
+            )
+            .unwrap();
+        assert_eq!(popup.prefix, "ctrl-shift");
+        assert!(
+            popup
+                .entries
+                .iter()
+                .any(|entry| entry.key == "<ctrl-shift-p>"
+                    && entry.description == "Pin current file")
+        );
+        assert!(!popup.entries.iter().any(|entry| entry.key == "<ctrl-d>"));
+        state.update_modifier_key(ModifierKeyCode::RightControl, KeyEventKind::Release);
+        state.update_modifier_key(ModifierKeyCode::LeftShift, KeyEventKind::Release);
+        assert!(
+            state
+                .which_key_popup(InputMode::Normal, deadline, DEFAULT_WHICH_KEY_DELAY)
+                .is_none()
+        );
+
+        state
+            .show_which_key(InputMode::Insert, "ctrl-shift")
+            .unwrap();
+        let popup = state
+            .which_key_popup(InputMode::Insert, Instant::now(), DEFAULT_WHICH_KEY_DELAY)
+            .unwrap();
+        assert!(
+            popup
+                .entries
+                .iter()
+                .any(|entry| entry.key == "<ctrl-shift-k>" && entry.description == "Completion")
+        );
+        let event = which_key_event("<ctrl-z>", state.leader()).unwrap();
+        assert_eq!(
+            map_event_with_state(&mut state, InputMode::Normal, &event),
+            InputAction::Undo
+        );
+        assert!(
+            state
+                .which_key_popup(InputMode::Normal, deadline, DEFAULT_WHICH_KEY_DELAY)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn which_key_entries_follow_the_active_mode() {
+        assert_eq!(
+            map_event(InputMode::Insert, &Event::Character('?')),
+            InputAction::InsertChar('?')
+        );
+        let mut replacement = InputState::new();
+        map_event_with_state(&mut replacement, InputMode::Normal, &Event::Character('r'));
+        assert_eq!(
+            map_event_with_state(&mut replacement, InputMode::Normal, &Event::Character('?')),
+            InputAction::ReplaceChar('?')
+        );
+        let mut custom = InputState::new();
+        custom
+            .configure(
+                ' ',
+                &BTreeMap::from([(
+                    "normal".to_string(),
+                    BTreeMap::from([("undo".to_string(), "?".to_string())]),
+                )]),
+            )
+            .unwrap();
+        assert_eq!(
+            map_event_with_state(&mut custom, InputMode::Normal, &Event::Character('?')),
+            InputAction::Undo
+        );
         let mut state = InputState::new();
         let _ = map_event_with_state(&mut state, InputMode::Visual, &Event::Character(' '));
         let popup = state

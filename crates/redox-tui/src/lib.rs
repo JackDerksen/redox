@@ -3689,18 +3689,84 @@ fn apply_runtime_colorscheme(
     }
 }
 
+struct KeyboardReporting;
+
+impl KeyboardReporting {
+    fn enable() -> std::io::Result<Self> {
+        use crossterm::event::{
+            EnableFocusChange, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        };
+        crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            ),
+            EnableFocusChange
+        )?;
+        Ok(Self)
+    }
+}
+
+impl Drop for KeyboardReporting {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableFocusChange,
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
+    }
+}
+
+fn decode_editor_input(
+    state: &mut EditorState,
+    keyboard: &KeyboardHandler,
+    event: crossterm::event::Event,
+) -> Event {
+    match event {
+        crossterm::event::Event::Key(key) => {
+            if let Some(key) = state.input.prepare_key_event(key) {
+                keyboard.process_key_event(key)
+            } else {
+                state.request_redraw();
+                Event::Unknown
+            }
+        }
+        crossterm::event::Event::FocusLost => {
+            state.input.clear_held_modifiers();
+            state.request_redraw();
+            Event::Unknown
+        }
+        crossterm::event::Event::Paste(text) => Event::Paste(text),
+        crossterm::event::Event::Resize(width, height) => Event::Resize { width, height },
+        _ => Event::Unknown,
+    }
+}
+
 fn read_editor_input(
-    state: &EditorState,
+    state: &mut EditorState,
     window: &mut TerminalWindow,
     timeout: Option<Duration>,
 ) -> minui::Result<Option<Event>> {
     if state.terminal.is_focused() {
-        state.terminal.read_input(window, timeout)
+        state.terminal.read_input(window, &mut state.input, timeout)
     } else {
-        match timeout {
-            Some(timeout) => window.poll_input_timeout(timeout),
-            None => window.wait_for_input().map(Some),
+        if let Some(timeout) = timeout
+            && !crossterm::event::poll(timeout)?
+        {
+            return Ok(None);
         }
+        let event = crossterm::event::read()?;
+        let event = match event {
+            crossterm::event::Event::Mouse(mouse) => window.mouse_mut().process_mouse_event(mouse),
+            event => decode_editor_input(state, window.keyboard_mut(), event),
+        };
+        if let Event::Resize { width, height } = event {
+            window.handle_resize(width, height);
+        }
+        Ok(Some(event))
     }
 }
 
@@ -3751,6 +3817,7 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let mut window = TerminalWindow::new()?;
+    let keyboard_reporting = KeyboardReporting::enable()?;
     window.mouse_mut().set_movement_tracking(false);
     window.mouse_mut().set_scroll_axis_filtering(false);
     // MinUI reports left as positive; Redox uses positive deltas for down/right.
@@ -3797,7 +3864,7 @@ pub fn run() -> anyhow::Result<()> {
             if mouse_frame_pending || input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
                 break;
             }
-            match read_editor_input(&state, &mut window, Some(Duration::ZERO))? {
+            match read_editor_input(&mut state, &mut window, Some(Duration::ZERO))? {
                 Some(Event::Unknown) => continue,
                 Some(event) => {
                     event_count += 1;
@@ -3871,14 +3938,15 @@ pub fn run() -> anyhow::Result<()> {
 
         pending_wake_event = match state.next_wake_deadline(Instant::now()) {
             Some(deadline) => read_editor_input(
-                &state,
+                &mut state,
                 &mut window,
                 Some(deadline.saturating_duration_since(Instant::now())),
             )?,
-            None => read_editor_input(&state, &mut window, None)?,
+            None => read_editor_input(&mut state, &mut window, None)?,
         }
         .filter(|event| !matches!(event, Event::Unknown));
     }
+    drop(keyboard_reporting);
     drop(window);
     state.log_event("session_end", serde_json::Value::Null);
     state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;

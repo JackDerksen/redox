@@ -13,7 +13,7 @@ const HEADER_ROWS: usize = 1;
 const MAX_COLUMNS: usize = 3;
 const MIN_COLUMN_WIDTH: usize = 28;
 const MAX_BODY_ROWS: usize = 9;
-const KEY_WIDTH: usize = 10;
+const KEY_WIDTH: usize = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WhichKeyLayout {

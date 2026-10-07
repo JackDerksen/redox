@@ -20,6 +20,20 @@ struct CommandDefinition {
 // Dispatch and completion share these names, including aliases and subcommands.
 const COMMANDS: &[CommandDefinition] = &[
     CommandDefinition {
+        names: &["whichkey", "which-key"],
+        editor_context: |_, _| true,
+        run: |state, argument| {
+            match state
+                .input
+                .show_which_key(state.mode.as_input_mode(), argument)
+            {
+                Ok(()) => state.clear_status(),
+                Err(error) => state.set_status(error.to_string()),
+            }
+            state.request_redraw();
+        },
+    },
+    CommandDefinition {
         names: &["zoom"],
         editor_context: |_, _| false,
         run: |state, argument| {

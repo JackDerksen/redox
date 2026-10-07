@@ -675,10 +675,11 @@ impl EditorState {
     }
 
     pub fn which_key_popup(&self, now: Instant) -> Option<WhichKeyPopup> {
-        if !self.which_key_enabled
+        if (!self.which_key_enabled && !self.input.which_key_is_forced())
             || !matches!(
                 self.mode,
                 EditorMode::Normal
+                    | EditorMode::Insert
                     | EditorMode::Visual
                     | EditorMode::VisualLine
                     | EditorMode::VisualBlock
@@ -688,6 +689,7 @@ impl EditorState {
             || self.dashboard_selection().is_some()
             || self.rain_animation.is_some()
             || self.perf_visible
+            || self.terminal.is_focused()
         {
             return None;
         }

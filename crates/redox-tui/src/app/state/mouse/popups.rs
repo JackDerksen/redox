@@ -126,19 +126,7 @@ impl EditorState {
                 );
             }
             (MousePopup::WhichKey, MouseTarget::Key(key)) => {
-                self.mouse.pending_key = match key.as_str() {
-                    "Space" | "<Space>" => Some(minui::Event::Character(' ')),
-                    "Esc" | "<Esc>" => Some(minui::Event::Escape),
-                    "Enter" | "<Enter>" => Some(minui::Event::Enter),
-                    "Tab" | "<Tab>" => Some(minui::Event::Tab),
-                    _ => {
-                        let mut characters = key.chars();
-                        characters
-                            .next()
-                            .filter(|_| characters.next().is_none())
-                            .map(minui::Event::Character)
-                    }
-                };
+                self.mouse.pending_key = crate::input::which_key_event(key, self.input.leader());
             }
             (MousePopup::Diagnostics, MouseTarget::DiagnosticAction { index, identity }) => {
                 if self.select_mouse_diagnostic_action(*index, identity) && activate {
