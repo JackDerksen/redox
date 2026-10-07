@@ -244,6 +244,9 @@ line.
 | `:q` / `:quit` | Quit when all buffers are clean, or close the active surface buffer. |
 | `:q!` | Force quit. |
 | `:wq [path]` | Write the current buffer, optionally saving under a new name, then quit when all buffers are clean. |
+| `:wa` / `:wall` | Write every modified file buffer, including hidden buffers, using the usual formatting and save checks. Unnamed buffers need `:w <path>` first. |
+| `:qa` / `:qall` | Quit the editor and all its panes when all buffers are clean. Use `:qa!` / `:qall!` to discard unsaved changes. |
+| `:wqa` / `:wqall` | Write every modified file buffer, then quit when all buffers are clean. Failed writes or pending explorer edits keep the editor open. |
 | `:e <path>` | Open or switch to a file buffer. |
 | `:e!` / `:reload` | Reload the active file from disk. |
 | `:split [path]` / `:sp [path]` | Open a horizontal split, optionally showing another file. |

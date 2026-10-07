@@ -3850,6 +3850,122 @@ fn command_w_writes_active_buffer_only() {
 }
 
 #[test]
+fn write_all_saves_visible_and_hidden_buffers_without_changing_layout() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.txt");
+    let second = directory.path().join("second.txt");
+    let mut state = state_with_text(first.clone(), "first   \n");
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    fs::write(&second, "second   \n").unwrap();
+    run_command(&mut state, &format!("vsplit {}", second.display()));
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    run_command(&mut state, "enew");
+    run_command(&mut state, "zoom");
+    run_command(&mut state, "about");
+    let active = state.session.active_id();
+    let pane = state.active_pane;
+    let layout: Vec<_> = state
+        .panes
+        .iter()
+        .map(|pane| (pane.id, pane.buffer_id, pane.view.cursor.cursor))
+        .collect();
+    let order: Vec<_> = state
+        .session
+        .summaries()
+        .iter()
+        .map(|buffer| buffer.id)
+        .collect();
+
+    run_command(&mut state, "qa");
+    assert!(!state.should_quit);
+    assert!(state.status_msg.as_deref().unwrap().contains("use :qa!"));
+    assert!(state.about.is_some());
+    run_command(&mut state, "wa unexpected.txt");
+    assert_eq!(state.status_msg.as_deref(), Some("usage: wa"));
+    assert_eq!(fs::read_to_string(&first).unwrap(), "first   \n");
+
+    run_command(&mut state, "wall");
+    assert_eq!(fs::read_to_string(&first).unwrap(), "!first\n");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "!second\n");
+    assert!(!state.session.any_dirty());
+    assert!(!state.should_quit);
+    assert_eq!(state.status_msg.as_deref(), Some("written 2 buffers"));
+    assert_eq!(state.session.active_id(), active);
+    assert_eq!(state.active_pane, pane);
+    assert!(state.pane_zoomed);
+    assert_eq!(
+        state
+            .panes
+            .iter()
+            .map(|pane| (pane.id, pane.buffer_id, pane.view.cursor.cursor))
+            .collect::<Vec<_>>(),
+        layout
+    );
+    assert_eq!(
+        state
+            .session
+            .summaries()
+            .iter()
+            .map(|buffer| buffer.id)
+            .collect::<Vec<_>>(),
+        order
+    );
+    run_command(&mut state, "wa");
+    assert_eq!(
+        state.status_msg.as_deref(),
+        Some("no modified file buffers")
+    );
+    run_command(&mut state, "qall");
+    assert!(state.should_quit);
+    assert!(state.about.is_some());
+}
+
+#[test]
+fn write_and_quit_all_keeps_failed_buffers_open_and_saves_the_others() {
+    let _guard = global_test_state_lock().lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.txt");
+    let conflict = directory.path().join("conflict.txt");
+    let mut state = state_with_text(first.clone(), "first\n");
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    fs::write(&conflict, "conflict\n").unwrap();
+    run_command(&mut state, &format!("e {}", conflict.display()));
+    let conflicting_buffer = state.session.active_id();
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    state.session.active_meta_mut().external_changed = true;
+    fs::write(&conflict, "external\n").unwrap();
+    run_command(&mut state, "enew");
+    let unnamed = state.session.active_id();
+    state.apply_input(InputAction::Paste("unsaved".into()), 80, 24);
+
+    run_command(&mut state, "wqa");
+    assert!(!state.should_quit);
+    assert_eq!(state.session.active_id(), unnamed);
+    assert_eq!(state.panes[0].buffer_id, unnamed);
+    assert!(state.session.active_meta().dirty);
+    assert!(state.session.meta(conflicting_buffer).unwrap().dirty);
+    assert_eq!(fs::read_to_string(&conflict).unwrap(), "external\n");
+    assert_eq!(fs::read_to_string(&first).unwrap(), "!first\n");
+    let message = state.status_msg.as_deref().unwrap();
+    assert!(message.contains("no file name"));
+    assert!(message.contains("conflict.txt"));
+    assert!(message.contains("file changed on disk"));
+
+    run_command(&mut state, "qall!");
+    assert!(state.should_quit);
+    state.should_quit = false;
+    run_command(&mut state, "bd!");
+    run_command(&mut state, &format!("b {}", conflicting_buffer.get()));
+    run_command(&mut state, "e!");
+    state.apply_input(InputAction::Paste("!".into()), 80, 24);
+    run_command(&mut state, "wqall");
+    assert!(state.should_quit);
+    assert!(!state.session.any_dirty());
+    assert_eq!(fs::read_to_string(&conflict).unwrap(), "e!xternal\n");
+}
+
+#[test]
 fn buffer_commands_resolve_names_and_preserve_hidden_edits() {
     let _guard = global_test_state_lock().lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -4704,6 +4820,20 @@ fn explorer_preserves_unsaved_directory_draft_across_navigation() {
         .cursor
         .cursor = Pos::new(child_line, 0);
     state.apply_input(InputAction::SurfaceOpenSelected, 80, 24);
+    assert!(!state.session.any_dirty());
+    for command in ["qa", "wqa"] {
+        run_command(&mut state, command);
+        assert!(!state.should_quit);
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .unwrap()
+                .contains("unsaved changes")
+        );
+        assert_eq!(state.session.active_id(), explorer_id);
+        assert!(!dir.join("root_new.txt").exists());
+    }
     state.surface_go_parent();
 
     assert!(

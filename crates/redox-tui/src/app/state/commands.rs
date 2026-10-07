@@ -230,7 +230,7 @@ const COMMANDS: &[CommandDefinition] = &[
                 } else {
                     state.set_status("cannot close the last buffer");
                 }
-            } else if state.session.any_dirty() {
+            } else if state.has_unsaved_changes() {
                 state.set_status(state.unsaved_changes_quit_message());
             } else {
                 state.should_quit = true;
@@ -241,6 +241,16 @@ const COMMANDS: &[CommandDefinition] = &[
         names: &["q!"],
         editor_context: |_, _| false,
         run: |state, _| state.should_quit = true,
+    },
+    CommandDefinition {
+        names: &["qa", "qall"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_quit_all(argument, false),
+    },
+    CommandDefinition {
+        names: &["qa!", "qall!"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_quit_all(argument, true),
     },
     CommandDefinition {
         names: &["rain"],
@@ -269,13 +279,23 @@ const COMMANDS: &[CommandDefinition] = &[
         editor_context: |state, _| state.active_buffer_is_surface() && !state.explorer_is_active(),
         run: |state, argument| {
             if state.write_current_file(argument) {
-                if state.session.any_dirty() {
+                if state.has_unsaved_changes() {
                     state.set_status(state.unsaved_changes_message());
                 } else {
                     state.should_quit = true;
                 }
             }
         },
+    },
+    CommandDefinition {
+        names: &["wa", "wall"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_write_all(argument, false),
+    },
+    CommandDefinition {
+        names: &["wqa", "wqall"],
+        editor_context: |_, _| false,
+        run: |state, argument| state.command_write_all(argument, true),
     },
 ];
 
@@ -968,6 +988,69 @@ impl EditorState {
         self.set_status(lines.join("\n"));
     }
 
+    fn command_quit_all(&mut self, argument: &str, force: bool) {
+        if !argument.is_empty() {
+            self.set_status(if force { "usage: qa!" } else { "usage: qa" });
+        } else if !force && self.has_unsaved_changes() {
+            self.set_status(format!(
+                "{} (use :qa! to quit)",
+                self.unsaved_changes_message()
+            ));
+        } else {
+            self.should_quit = true;
+        }
+    }
+
+    fn command_write_all(&mut self, argument: &str, quit: bool) {
+        if !argument.is_empty() {
+            self.set_status(if quit { "usage: wqa" } else { "usage: wa" });
+            return;
+        }
+
+        self.sync_active_pane_view();
+        let original_active = self.session.active_id();
+        let summaries = self.session.summaries();
+        let mut written = 0;
+        let mut all_saved = true;
+        let mut messages = Vec::new();
+        for summary in summaries
+            .iter()
+            .filter(|summary| summary.kind == BufferKind::File && summary.dirty)
+        {
+            self.session.activate(summary.id);
+            if self.write_current_file("") {
+                written += 1;
+            } else {
+                all_saved = false;
+            }
+            if let Some(message) = self.status_msg.as_deref() {
+                messages.push(format!("{}: {message}", summary.display_name));
+            }
+        }
+
+        // Temporary activation during saving must preserve the user's buffer order.
+        for summary in summaries.iter().rev() {
+            self.session.activate(summary.id);
+        }
+        self.session.activate(original_active);
+        self.sync_active_pane_view();
+
+        if quit && all_saved && !self.has_unsaved_changes() {
+            self.should_quit = true;
+        } else if quit && messages.is_empty() && self.has_unsaved_changes() {
+            messages.push(self.unsaved_changes_message());
+        }
+        if messages.is_empty() {
+            self.set_status(match written {
+                0 => "no modified file buffers".to_string(),
+                1 => "written 1 buffer".to_string(),
+                _ => format!("written {written} buffers"),
+            });
+        } else {
+            self.set_status(messages.join("\n"));
+        }
+    }
+
     pub(super) fn write_current_file(&mut self, path_arg: &str) -> bool {
         self.save_confirmation = None;
         if self.explorer_is_active() {
@@ -1176,12 +1259,21 @@ impl EditorState {
         let _ = self.session.recompute_active_dirty();
     }
 
+    fn has_unsaved_changes(&self) -> bool {
+        self.session.any_dirty() || self.explorer_has_unsaved_changes()
+    }
+
     pub(super) fn unsaved_changes_message(&self) -> String {
+        let dirty_explorer = self
+            .explorer
+            .as_ref()
+            .filter(|_| self.explorer_has_unsaved_changes())
+            .map(|explorer| explorer.buffer_id);
         let dirty: Vec<redox_core::BufferSummary> = self
             .session
             .summaries()
             .into_iter()
-            .filter(|summary| summary.dirty)
+            .filter(|summary| summary.dirty || Some(summary.id) == dirty_explorer)
             .collect();
 
         if dirty.is_empty() {
