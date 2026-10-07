@@ -46,6 +46,11 @@ impl TextBuffer {
         self.word_end_after_impl(pos, true)
     }
 
+    /// Find the end of the previous whitespace-separated WORD (`gE`).
+    pub fn big_word_end_before(&self, pos: Pos) -> Pos {
+        self.word_end_before_impl(pos, true)
+    }
+
     /// Find a WORD's end, including the character under the cursor (`cW`).
     pub fn big_word_end_at_or_after(&self, pos: Pos) -> Pos {
         self.word_end_at_or_after_impl(pos, true)
@@ -85,6 +90,30 @@ impl TextBuffer {
     /// Find the end of the current/next word-like run (`e`-style).
     pub fn word_end_after(&self, pos: Pos) -> Pos {
         self.word_end_after_impl(pos, false)
+    }
+
+    /// Find the end of the previous word-like run (`ge`).
+    pub fn word_end_before(&self, pos: Pos) -> Pos {
+        self.word_end_before_impl(pos, false)
+    }
+
+    fn word_end_before_impl(&self, pos: Pos, big_word: bool) -> Pos {
+        let mut character_index = self.pos_to_char(pos);
+        if character_index < self.len_chars() {
+            let class = classify(self.rope.char(character_index), big_word);
+            while character_index > 0
+                && class != CharClass::Whitespace
+                && classify(self.rope.char(character_index - 1), big_word) == class
+            {
+                character_index -= 1;
+            }
+        }
+        while character_index > 0
+            && classify(self.rope.char(character_index - 1), big_word) == CharClass::Whitespace
+        {
+            character_index -= 1;
+        }
+        self.char_to_pos(character_index.saturating_sub(1))
     }
 
     fn word_end_after_impl(&self, pos: Pos, big_word: bool) -> Pos {

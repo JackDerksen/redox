@@ -286,7 +286,7 @@ enum SequenceAction {
     WrapSelection { opening: char, closing: char },
     ToggleComments,
     PasteSystemClipboard,
-    FileStart,
+    Motion(Motion),
     CenterCursorLine,
     WriteQuitIfDirty,
 }
@@ -347,7 +347,17 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
     SequenceBinding {
         sequence: "gg",
         fallback: PrefixFallback::RetryCurrent,
-        action: Some(SequenceAction::FileStart),
+        action: Some(SequenceAction::Motion(Motion::FileStart)),
+    },
+    SequenceBinding {
+        sequence: "ge",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::Motion(Motion::WordEndBefore)),
+    },
+    SequenceBinding {
+        sequence: "gE",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::Motion(Motion::BigWordEndBefore)),
     },
     SequenceBinding {
         sequence: "gd",
@@ -1203,7 +1213,16 @@ impl InputState {
             } else if self.pending_sequence.is_empty() {
                 operator_entries(operator.operator)
             } else {
-                vec![which_key_entry("g", "Start of file")]
+                COMMON_SEQUENCE_BINDINGS
+                    .iter()
+                    .filter_map(|binding| {
+                        let Some(SequenceAction::Motion(motion)) = binding.action else {
+                            return None;
+                        };
+                        let suffix = binding.sequence.strip_prefix(&self.pending_sequence)?;
+                        Some(which_key_entry(suffix, motion_description(&motion)))
+                    })
+                    .collect()
             };
             return Some((prefix, entries));
         }
@@ -1481,7 +1500,7 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
         Some(SequenceAction::WrapSelection { .. }) => "Wrap selection",
         Some(SequenceAction::ToggleComments) => "Toggle comments",
         Some(SequenceAction::PasteSystemClipboard) => "Paste system clipboard",
-        Some(SequenceAction::FileStart) => "Start of file",
+        Some(SequenceAction::Motion(motion)) => motion_description(&motion),
         Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
         Some(SequenceAction::WriteQuitIfDirty) => "Write if modified and quit",
         None if binding.sequence == "gc" => "+comment",
@@ -2535,16 +2554,23 @@ fn counted_file_motion(motion: Motion, count_explicit: bool) -> Motion {
 }
 
 fn motion_from_sequence(sequence: &str) -> Option<Motion> {
-    match sequence {
-        "gg" => Some(Motion::FileStart),
-        _ => None,
-    }
+    COMMON_SEQUENCE_BINDINGS.iter().find_map(|binding| {
+        if binding.sequence == sequence
+            && let Some(SequenceAction::Motion(motion)) = binding.action
+        {
+            Some(motion)
+        } else {
+            None
+        }
+    })
 }
 
 fn motion_sequence_has_children(candidate: &str) -> bool {
-    ["gg"]
-        .into_iter()
-        .any(|sequence| sequence.starts_with(candidate) && sequence.len() > candidate.len())
+    COMMON_SEQUENCE_BINDINGS.iter().any(|binding| {
+        matches!(binding.action, Some(SequenceAction::Motion(_)))
+            && binding.sequence.starts_with(candidate)
+            && binding.sequence.len() > candidate.len()
+    })
 }
 
 fn resolve_pending_search_motion(
@@ -3062,9 +3088,11 @@ fn motion_description(motion: &Motion) -> &'static str {
         Motion::WordStartAfter => "Next word",
         Motion::WordStartBefore => "Previous word",
         Motion::WordEndAfter => "End of word",
+        Motion::WordEndBefore => "Previous word end",
         Motion::BigWordStartAfter => "Next WORD",
         Motion::BigWordStartBefore => "Previous WORD",
         Motion::BigWordEndAfter => "End of WORD",
+        Motion::BigWordEndBefore => "Previous WORD end",
         Motion::LineStart => "Start of line",
         Motion::LineFirstNonWhitespace => "First non-blank",
         Motion::LineEnd => "End of line",
@@ -3125,10 +3153,10 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
             state.reset_prefixes();
             InputAction::PasteSystemClipboard
         }
-        Some(SequenceAction::FileStart) => {
+        Some(SequenceAction::Motion(motion)) => {
             let (count, count_explicit) = state.take_count();
             InputAction::Motion {
-                motion: counted_file_motion(Motion::FileStart, count_explicit),
+                motion: counted_file_motion(motion, count_explicit),
                 count,
             }
         }
@@ -4074,6 +4102,10 @@ mod tests {
                 ("1gg", Motion::LineNumber, 1),
                 ("42G", Motion::LineNumber, 42),
                 ("42gg", Motion::LineNumber, 42),
+                ("ge", Motion::WordEndBefore, 1),
+                ("gE", Motion::BigWordEndBefore, 1),
+                ("3ge", Motion::WordEndBefore, 3),
+                ("2gE", Motion::BigWordEndBefore, 2),
             ] {
                 assert_eq!(map_sequence(mode, sequence), motion(expected_motion, count));
             }

@@ -245,8 +245,15 @@ impl EditorState {
                         )),
                     });
                 }
-                if *motion == Motion::MatchDelimiter {
-                    let target = buffer.matching_delimiter(cursor)?;
+                if matches!(
+                    motion,
+                    Motion::MatchDelimiter | Motion::WordEndBefore | Motion::BigWordEndBefore
+                ) {
+                    let target = if *motion == Motion::MatchDelimiter {
+                        buffer.matching_delimiter(cursor)?
+                    } else {
+                        apply_motion_n(buffer, cursor, *motion, count)
+                    };
                     if target == cursor {
                         return None;
                     }

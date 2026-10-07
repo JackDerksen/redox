@@ -49,6 +49,9 @@ pub enum Motion {
     /// Move to end of next word (`e`-ish).
     WordEndAfter,
 
+    /// Move backward to the end of the previous word (`ge`).
+    WordEndBefore,
+
     /// Move to the start of the previous whitespace-separated WORD (`B`).
     BigWordStartBefore,
 
@@ -57,6 +60,9 @@ pub enum Motion {
 
     /// Move to the end of the current/next whitespace-separated WORD (`E`).
     BigWordEndAfter,
+
+    /// Move backward to the end of the previous whitespace-separated WORD (`gE`).
+    BigWordEndBefore,
 
     /// Move onto the next matching character on the current line (`f`-ish).
     FindChar(char),
@@ -125,11 +131,15 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
 
         Motion::WordEndAfter => buffer.word_end_after(cursor),
 
+        Motion::WordEndBefore => buffer.word_end_before(cursor),
+
         Motion::BigWordStartBefore => buffer.big_word_start_before(cursor),
 
         Motion::BigWordStartAfter => buffer.big_word_start_after(cursor),
 
         Motion::BigWordEndAfter => buffer.big_word_end_after(cursor),
+
+        Motion::BigWordEndBefore => buffer.big_word_end_before(cursor),
 
         Motion::FindChar(_)
         | Motion::TillChar(_)
