@@ -269,19 +269,21 @@ impl EditorState {
                 }
 
                 let end = match (*motion, count) {
-                    (Motion::WordStartAfter, _)
+                    (Motion::WordStartAfter | Motion::BigWordStartAfter, _)
                         if operator == TextObjectOperator::Change
                             && buffer
                                 .char_at(cursor)
                                 .is_some_and(|character| !character.is_whitespace()) =>
                     {
-                        let first_end = buffer.word_end_at_or_after(cursor);
-                        buffer.move_right(apply_motion_n(
-                            buffer,
-                            first_end,
-                            Motion::WordEndAfter,
-                            count - 1,
-                        ))
+                        let (first_end, end_motion) = if *motion == Motion::BigWordStartAfter {
+                            (
+                                buffer.big_word_end_at_or_after(cursor),
+                                Motion::BigWordEndAfter,
+                            )
+                        } else {
+                            (buffer.word_end_at_or_after(cursor), Motion::WordEndAfter)
+                        };
+                        buffer.move_right(apply_motion_n(buffer, first_end, end_motion, count - 1))
                     }
                     (Motion::LineEnd, n) if n > 1 => {
                         let target_line = buffer

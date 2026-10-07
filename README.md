@@ -555,6 +555,7 @@ reverse each axis independently.
 | `h` / `j` / `k` / `l` | Move left / down / up / right. |
 | Arrow keys | Basic directional motion. |
 | `w` / `b` / `e` | Move by word starts and word ends. |
+| `W` / `B` / `E` | Move by whitespace-separated WORD starts and ends; punctuation stays within the WORD. |
 | `0` / `_` / `$` | Move to line start, first non-whitespace, or line end. |
 | `gg` / `G` | Jump to the start or end of the file. |
 | `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |
@@ -700,6 +701,7 @@ literal.
 | `de`, `ce`, `ye` | Delete, change, or yank through the word's final character. |
 | `dj`, `yj`, `dk`, `yk` | Delete or yank whole lines, including the current and destination lines. |
 | `cw` | Change through the current word's end, preserving following whitespace. On whitespace, change up to the next word. |
+| `cW` | Change through the current WORD's end, preserving following whitespace. On whitespace, change up to the next WORD. |
 | `daw`, `ci"`, `yi(` | Apply operators to text objects. |
 
 Notes:
