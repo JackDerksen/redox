@@ -61,6 +61,12 @@ pub enum Motion {
     /// Move just after the previous matching character on the current line (`T`-ish).
     TillCharBefore(char),
 
+    /// Repeat `t`, skipping an adjacent match left by the previous motion.
+    RepeatTillChar(char),
+
+    /// Repeat `T`, skipping an adjacent match left by the previous motion.
+    RepeatTillCharBefore(char),
+
     /// Jump to the delimiter paired with the delimiter under the cursor (`%`-ish).
     MatchDelimiter,
 }
@@ -110,29 +116,12 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
 
         Motion::WordEndAfter => buffer.word_end_after(cursor),
 
-        Motion::FindChar(needle) => buffer
-            .find_char_after_on_line(cursor, needle)
-            .unwrap_or(cursor),
-
-        Motion::TillChar(needle) => buffer
-            .find_char_after_on_line(cursor, needle)
-            .map(|target| {
-                if target.col > 0 {
-                    Pos::new(target.line, target.col - 1)
-                } else {
-                    target
-                }
-            })
-            .unwrap_or(cursor),
-
-        Motion::FindCharBefore(needle) => buffer
-            .find_char_before_on_line(cursor, needle)
-            .unwrap_or(cursor),
-
-        Motion::TillCharBefore(needle) => buffer
-            .find_char_before_on_line(cursor, needle)
-            .map(|target| Pos::new(target.line, target.col.saturating_add(1)))
-            .unwrap_or(cursor),
+        Motion::FindChar(_)
+        | Motion::TillChar(_)
+        | Motion::FindCharBefore(_)
+        | Motion::TillCharBefore(_)
+        | Motion::RepeatTillChar(_)
+        | Motion::RepeatTillCharBefore(_) => apply_motion_n(buffer, cursor, motion, 1),
 
         Motion::MatchDelimiter => buffer.matching_delimiter(cursor).unwrap_or(cursor),
     }
@@ -160,56 +149,22 @@ pub fn apply_motion_for_operator(
                 target
             }
         }
-        Motion::FindChar(needle) => {
-            let mut current = buffer.clamp_pos(cursor);
-            let mut target = None;
-            for _ in 0..count.max(1) {
-                let Some(found) = buffer.find_char_after_on_line(current, needle) else {
-                    return cursor;
-                };
-                target = Some(found);
-                current = found;
-            }
-            target
-                .map(|found| buffer.move_right(found))
+        Motion::FindChar(_)
+        | Motion::TillChar(_)
+        | Motion::FindCharBefore(_)
+        | Motion::TillCharBefore(_)
+        | Motion::RepeatTillChar(_)
+        | Motion::RepeatTillCharBefore(_) => {
+            char_search_target(buffer, cursor, motion, count.max(1))
+                .map(|target| match motion {
+                    Motion::FindChar(_)
+                    | Motion::TillCharBefore(_)
+                    | Motion::RepeatTillCharBefore(_) => {
+                        Pos::new(target.line, target.col.saturating_add(1))
+                    }
+                    _ => target,
+                })
                 .unwrap_or(cursor)
-        }
-        Motion::TillChar(needle) => {
-            let mut current = buffer.clamp_pos(cursor);
-            let mut target = None;
-            for _ in 0..count.max(1) {
-                let Some(found) = buffer.find_char_after_on_line(current, needle) else {
-                    return cursor;
-                };
-                target = Some(found);
-                current = found;
-            }
-            target.unwrap_or(cursor)
-        }
-        Motion::FindCharBefore(needle) => {
-            let mut current = buffer.clamp_pos(cursor);
-            let mut target = None;
-            for _ in 0..count.max(1) {
-                let Some(found) = buffer.find_char_before_on_line(current, needle) else {
-                    return cursor;
-                };
-                target = Some(found);
-                current = found;
-            }
-            target.unwrap_or(cursor)
-        }
-        Motion::TillCharBefore(needle) => {
-            let mut current = buffer.clamp_pos(cursor);
-            let mut target = None;
-            for _ in 0..count.max(1) {
-                let Some(found) = buffer.find_char_before_on_line(current, needle) else {
-                    return cursor;
-                };
-                let after_found = Pos::new(found.line, found.col.saturating_add(1));
-                target = Some(after_found);
-                current = found;
-            }
-            target.unwrap_or(cursor)
         }
         Motion::MatchDelimiter => {
             let target = apply_motion(buffer, cursor, motion);
@@ -228,6 +183,7 @@ pub fn apply_motion_for_operator(
 /// - If `count == 0`, this returns `cursor` unchanged.
 /// - Left/right motions use direct char-index arithmetic.
 /// - `LineNumber` uses the count as an absolute line number, not a repetition.
+/// - Character searches target the counted occurrence or leave the cursor unchanged.
 /// - Other repeated motions are applied step by step so they can stop naturally
 ///   at document or line boundaries.
 pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: usize) -> Pos {
@@ -236,6 +192,24 @@ pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: u
     }
 
     match motion {
+        Motion::FindChar(_)
+        | Motion::TillChar(_)
+        | Motion::FindCharBefore(_)
+        | Motion::TillCharBefore(_)
+        | Motion::RepeatTillChar(_)
+        | Motion::RepeatTillCharBefore(_) => {
+            return char_search_target(buffer, cursor, motion, count)
+                .map(|target| match motion {
+                    Motion::TillChar(_) | Motion::RepeatTillChar(_) => {
+                        Pos::new(target.line, target.col.saturating_sub(1))
+                    }
+                    Motion::TillCharBefore(_) | Motion::RepeatTillCharBefore(_) => {
+                        Pos::new(target.line, target.col.saturating_add(1))
+                    }
+                    _ => target,
+                })
+                .unwrap_or_else(|| buffer.clamp_pos(cursor));
+        }
         Motion::LineNumber => {
             let line = buffer.clamp_line(count.saturating_sub(1));
             return Pos::new(line, buffer.line_first_non_whitespace_col(line));
@@ -265,6 +239,39 @@ pub fn apply_motion_n(buffer: &TextBuffer, cursor: Pos, motion: Motion, count: u
         cur = next;
     }
     cur
+}
+
+/// Find the character targeted by a counted character search, before its landing offset.
+/// Returns `None` for other motions or when the requested occurrence does not exist.
+pub fn char_search_target(
+    buffer: &TextBuffer,
+    cursor: Pos,
+    motion: Motion,
+    count: usize,
+) -> Option<Pos> {
+    let (needle, backward) = match motion {
+        Motion::FindChar(needle) | Motion::TillChar(needle) | Motion::RepeatTillChar(needle) => {
+            (needle, false)
+        }
+        Motion::FindCharBefore(needle)
+        | Motion::TillCharBefore(needle)
+        | Motion::RepeatTillCharBefore(needle) => (needle, true),
+        _ => return None,
+    };
+    let mut current = buffer.clamp_pos(cursor);
+    match (motion, count) {
+        (Motion::RepeatTillChar(_), 1) => current.col = current.col.saturating_add(1),
+        (Motion::RepeatTillCharBefore(_), 1) => current.col = current.col.saturating_sub(1),
+        _ => {}
+    }
+    for _ in 0..count {
+        current = if backward {
+            buffer.find_char_before_on_line(current, needle)?
+        } else {
+            buffer.find_char_after_on_line(current, needle)?
+        };
+    }
+    (count > 0).then_some(current)
 }
 
 /// Convenience helpers for motions that take a count.

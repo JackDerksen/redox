@@ -502,6 +502,7 @@ pub struct InputState {
     pending_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
     pending_search_motion: Option<PendingSearchMotion>,
+    last_search_motion: Option<Motion>,
     pending_replace: bool,
     pending_macro_register: Option<PendingMacroRegister>,
     which_key_started_at: Option<Instant>,
@@ -547,6 +548,7 @@ impl Default for InputState {
             pending_count: None,
             pending_operator: None,
             pending_search_motion: None,
+            last_search_motion: None,
             pending_replace: false,
             pending_macro_register: None,
             which_key_started_at: None,
@@ -779,7 +781,7 @@ impl InputState {
     }
 
     pub fn expand_replay_sequence(
-        &self,
+        &mut self,
         mode: InputMode,
         sequence: &str,
     ) -> anyhow::Result<Vec<InputAction>> {
@@ -787,7 +789,7 @@ impl InputState {
     }
 
     fn expand_replay_sequence_inner(
-        &self,
+        &mut self,
         mode: InputMode,
         sequence: &str,
         stack: &mut Vec<String>,
@@ -806,7 +808,7 @@ impl InputState {
             match action {
                 InputAction::None => {}
                 InputAction::ReplaySequence(nested) => {
-                    actions.extend(self.expand_replay_sequence_inner(mode, &nested, stack)?);
+                    actions.extend(parser.expand_replay_sequence_inner(mode, &nested, stack)?);
                 }
                 action if replayable_motion_action(&action) => actions.push(action),
                 action => anyhow::bail!(
@@ -821,6 +823,7 @@ impl InputState {
         if actions.is_empty() {
             anyhow::bail!("custom binding sequence {sequence:?} does not perform a motion");
         }
+        self.last_search_motion = parser.last_search_motion;
         Ok(actions)
     }
 
@@ -1038,6 +1041,24 @@ impl InputState {
             count_explicit,
             kind,
         });
+    }
+
+    fn repeat_search_motion(&self, reverse: bool) -> Option<Motion> {
+        Some(match (self.last_search_motion?, reverse) {
+            (Motion::FindChar(character), false) | (Motion::FindCharBefore(character), true) => {
+                Motion::FindChar(character)
+            }
+            (Motion::FindCharBefore(character), false) | (Motion::FindChar(character), true) => {
+                Motion::FindCharBefore(character)
+            }
+            (Motion::TillChar(character), false) | (Motion::TillCharBefore(character), true) => {
+                Motion::RepeatTillChar(character)
+            }
+            (Motion::TillCharBefore(character), false) | (Motion::TillChar(character), true) => {
+                Motion::RepeatTillCharBefore(character)
+            }
+            _ => return None,
+        })
     }
 
     fn begin_operator(&mut self, operator: TextObjectOperator, scope: Option<TextObjectScope>) {
@@ -1495,6 +1516,8 @@ fn operator_entries(operator: TextObjectOperator) -> Vec<WhichKeyEntry> {
         which_key_entry("t", "Until character forwards"),
         which_key_entry("F", "Find character backwards"),
         which_key_entry("T", "Until character backwards"),
+        which_key_entry(";", "Repeat character search"),
+        which_key_entry(",", "Reverse character search"),
         which_key_entry("i", "+inside text object"),
         which_key_entry("a", "+around text object"),
     ]);
@@ -1541,6 +1564,8 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
         ("t", "Until character forwards"),
         ("F", "Find character backwards"),
         ("T", "Until character backwards"),
+        (";", "Repeat character search"),
+        (",", "Reverse character search"),
     ]
     .into_iter()
     .map(|(key, description)| which_key_entry(key, description))
@@ -2232,6 +2257,14 @@ fn modal_char_action(
             state.push_sequence_char(c);
             InputAction::None
         }
+        ';' | ',' => {
+            let motion = state.repeat_search_motion(c == ',');
+            let count = state.take_count_or_1();
+            motion.map_or(InputAction::None, |motion| InputAction::Motion {
+                motion,
+                count,
+            })
+        }
         'h' => InputAction::Motion {
             motion: Motion::Left,
             count: state.take_count_or_1(),
@@ -2434,6 +2467,9 @@ fn resolve_pending_operator(
 }
 
 fn operator_motion_from_input(state: &mut InputState, c: char) -> Option<Motion> {
+    if state.pending_sequence.is_empty() && matches!(c, ';' | ',') {
+        return state.repeat_search_motion(c == ',');
+    }
     if !state.pending_sequence.is_empty() {
         let mut candidate = state.pending_sequence.clone();
         candidate.push(c);
@@ -2502,6 +2538,7 @@ fn resolve_pending_search_motion(
         SearchMotionKind::FindBefore => Motion::FindCharBefore(c),
         SearchMotionKind::TillBefore => Motion::TillCharBefore(c),
     };
+    state.last_search_motion = Some(motion);
 
     if let Some(operator) = pending.operator {
         InputAction::OperateTarget {
@@ -3012,9 +3049,9 @@ fn motion_description(motion: &Motion) -> &'static str {
         Motion::LineNumber => "Go to line",
         Motion::MatchDelimiter => "Matching delimiter",
         Motion::FindChar(_) => "Find character forwards",
-        Motion::TillChar(_) => "Until character forwards",
+        Motion::TillChar(_) | Motion::RepeatTillChar(_) => "Until character forwards",
         Motion::FindCharBefore(_) => "Find character backwards",
-        Motion::TillCharBefore(_) => "Until character backwards",
+        Motion::TillCharBefore(_) | Motion::RepeatTillCharBefore(_) => "Until character backwards",
     }
 }
 

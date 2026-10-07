@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use redox_core::Pos;
-use redox_core::motion::{Motion, apply_motion_n};
+use redox_core::motion::{Motion, apply_motion_n, char_search_target};
 
 use super::{
     EditorMode, EditorState, SearchLanding, SearchLineHighlights, SearchMatch, SearchOrigin,
@@ -66,7 +66,7 @@ impl EditorState {
         let (matches, error) = self.search_matches(&query);
         let buffer = self.session.active_buffer();
         let landing = apply_motion_n(buffer, cursor, motion, count.max(1));
-        let active_match = motion_search_target_start(buffer, cursor, motion, count.max(1))
+        let active_match = char_search_target(buffer, cursor, motion, count.max(1))
             .and_then(|target_start| {
                 matches
                     .iter()
@@ -378,7 +378,7 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
             regex: false,
             landing: SearchLanding::On,
         }),
-        Motion::TillChar(ch) => Some(SearchQuery {
+        Motion::TillChar(ch) | Motion::RepeatTillChar(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
             landing: SearchLanding::Before,
@@ -388,59 +388,13 @@ fn search_query_from_motion(motion: Motion) -> Option<SearchQuery> {
             regex: false,
             landing: SearchLanding::On,
         }),
-        Motion::TillCharBefore(ch) => Some(SearchQuery {
+        Motion::TillCharBefore(ch) | Motion::RepeatTillCharBefore(ch) => Some(SearchQuery {
             term: ch.to_string(),
             regex: false,
             landing: SearchLanding::After,
         }),
         _ => None,
     }
-}
-
-fn motion_search_target_start(
-    buffer: &redox_core::TextBuffer,
-    cursor: Pos,
-    motion: Motion,
-    count: usize,
-) -> Option<Pos> {
-    let count = count.max(1);
-    let mut current = buffer.clamp_pos(cursor);
-    let mut target = None;
-
-    match motion {
-        Motion::FindChar(needle) => {
-            for _ in 0..count {
-                let found = buffer.find_char_after_on_line(current, needle)?;
-                target = Some(found);
-                current = found;
-            }
-        }
-        Motion::TillChar(needle) => {
-            for _ in 0..count {
-                let found = buffer.find_char_after_on_line(current, needle)?;
-                target = Some(found);
-                let next = if found.col > 0 {
-                    Pos::new(found.line, found.col - 1)
-                } else {
-                    found
-                };
-                if next == current {
-                    break;
-                }
-                current = next;
-            }
-        }
-        Motion::FindCharBefore(needle) | Motion::TillCharBefore(needle) => {
-            for _ in 0..count {
-                let found = buffer.find_char_before_on_line(current, needle)?;
-                target = Some(found);
-                current = found;
-            }
-        }
-        _ => return None,
-    }
-
-    target
 }
 
 impl EditorState {

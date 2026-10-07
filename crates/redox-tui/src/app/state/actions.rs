@@ -1651,6 +1651,8 @@ fn is_char_search_motion(motion: Motion) -> bool {
             | Motion::TillChar(_)
             | Motion::FindCharBefore(_)
             | Motion::TillCharBefore(_)
+            | Motion::RepeatTillChar(_)
+            | Motion::RepeatTillCharBefore(_)
     )
 }
 

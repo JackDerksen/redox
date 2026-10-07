@@ -1633,6 +1633,114 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
 }
 
 #[test]
+fn character_search_repeats_preserve_direction_counts_and_mode() {
+    let path = temp_file_path("character_search_repeats");
+    for mode in [
+        EditorMode::Normal,
+        EditorMode::Visual,
+        EditorMode::VisualLine,
+        EditorMode::VisualBlock,
+    ] {
+        for (start_column, keys, expected_column) in [
+            (0, ";", 0),
+            (0, ",", 0),
+            (0, "3;", 0),
+            (0, "fé;", 3),
+            (0, "fé;;,;", 5),
+            (0, "fé;;,,;", 3),
+            (0, "fé2;", 5),
+            (0, "2fé;", 5),
+            (0, "fé99;", 1),
+            (0, "fél;", 3),
+            (0, "féfz;", 1),
+            (0, "fé;;Fé;", 1),
+            (0, "té;", 2),
+            (0, "té;;,;", 4),
+            (0, "té2;", 2),
+            (0, "2té;", 4),
+            (0, "té4;", 6),
+            (9, "Fé;", 5),
+            (9, "Fé2;", 3),
+            (9, "Fé;;,;", 3),
+            (9, "Té;", 6),
+            (9, "Té2;", 6),
+            (9, "Té;;,;", 4),
+        ] {
+            let mut state = state_with_text(path.clone(), "aébécédéeé\né");
+            let buffer_id = state.session.active_id();
+            state.views.get_mut(&buffer_id).unwrap().cursor.cursor = Pos::new(0, start_column);
+            state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+            apply_keys(&mut state, keys);
+            assert_eq!(
+                state.active_cursor_pos(),
+                Pos::new(0, expected_column),
+                "{mode:?}: {keys}"
+            );
+            assert_eq!(state.mode, mode, "{keys}");
+        }
+    }
+
+    let mut state = state_with_text(path.clone(), "aébécédéeé\né");
+    apply_keys(&mut state, "féf\u{1b};");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    state.apply_input(InputAction::SearchChar('b'), 80, 24);
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    apply_keys(&mut state, ";");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+    apply_keys(&mut state, "j;");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+
+    let mut state = state_with_text(path.clone(), "aébécédéeé\né");
+    state.apply_input(InputAction::ReplaySequence("fé".to_string()), 80, 24);
+    apply_keys(&mut state, ";");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn character_search_repeats_support_operators_and_dot() {
+    let path = temp_file_path("character_search_repeat_operators");
+    for (start_column, keys, expected_text, expected_register, expected_column, expected_mode) in [
+        (0, "féd;", "acédéeé\né", "ébé", 1, EditorMode::Normal),
+        (0, "téd;", "écédéeé\né", "aéb", 0, EditorMode::Normal),
+        (0, "téy;", "aébécédéeé\né", "aéb", 0, EditorMode::Normal),
+        (
+            0,
+            "té2y2;",
+            "aébécédéeé\né",
+            "aébécéd",
+            0,
+            EditorMode::Normal,
+        ),
+        (9, "Téy;", "aébécédéeé\né", "dé", 8, EditorMode::Normal),
+        (0, "yfé;", "aébécédéeé\né", "aé", 1, EditorMode::Normal),
+        (0, "téc;", "écédéeé\né", "aéb", 0, EditorMode::Insert),
+        (0, "fé2d2;", "a\né", "ébécédéeé", 0, EditorMode::Normal),
+        (0, "féd;.", "adéeé\né", "cé", 1, EditorMode::Normal),
+        (9, "Féd,", "aébécéd\né", "éeé", 6, EditorMode::Normal),
+    ] {
+        let mut state = state_with_text(path.clone(), "aébécédéeé\né");
+        let buffer_id = state.session.active_id();
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = Pos::new(0, start_column);
+        apply_keys(&mut state, keys);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{keys}"
+        );
+        assert_eq!(state.private_register, expected_register, "{keys}");
+        assert_eq!(
+            state.active_cursor_pos(),
+            Pos::new(0, expected_column),
+            "{keys}"
+        );
+        assert_eq!(state.mode, expected_mode, "{keys}");
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn operator_find_and_till_char_apply_expected_ranges() {
     let path = temp_file_path("operator_find_till");
     let mut state = state_with_text(path.clone(), "abc def ghi\n");

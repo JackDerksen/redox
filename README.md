@@ -560,6 +560,7 @@ reverse each axis independently.
 | `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |
 | `%` | Jump to the matching delimiter under or near the cursor. |
 | `f` / `t` / `F` / `T` | Find/till a character forward or backward on the current line. |
+| `;` / `,` | Repeat the last character search in the same/opposite direction. Supports counts and operators. |
 | `i` / `I` | Insert before the cursor / at first non-whitespace. |
 | `a` / `A` | Insert after the cursor / at line end. |
 | `o` / `O` | Open a line below / above. |
