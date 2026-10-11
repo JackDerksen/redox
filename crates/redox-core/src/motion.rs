@@ -64,6 +64,12 @@ pub enum Motion {
     /// Move backward to the end of the previous whitespace-separated WORD (`gE`).
     BigWordEndBefore,
 
+    /// Move backward by a paragraph (`{`).
+    ParagraphBefore,
+
+    /// Move forward by a paragraph (`}`).
+    ParagraphAfter,
+
     /// Move onto the next matching character on the current line (`f`-ish).
     FindChar(char),
 
@@ -141,6 +147,10 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
 
         Motion::BigWordEndBefore => buffer.big_word_end_before(cursor),
 
+        Motion::ParagraphBefore => buffer.paragraph_before(cursor),
+
+        Motion::ParagraphAfter => buffer.paragraph_after(cursor),
+
         Motion::FindChar(_)
         | Motion::TillChar(_)
         | Motion::FindCharBefore(_)
@@ -160,6 +170,19 @@ pub fn apply_motion_for_operator(
     count: usize,
 ) -> Pos {
     match motion {
+        Motion::ParagraphAfter => {
+            let target = apply_motion_n(buffer, cursor, motion, count.max(1));
+            if target.line > cursor.line
+                && target.col == 0
+                && cursor.col > buffer.line_first_non_whitespace_col(cursor.line)
+            {
+                // A characterwise exclusive range leaves the final line break intact.
+                let line = target.line - 1;
+                Pos::new(line, buffer.line_len_chars(line))
+            } else {
+                target
+            }
+        }
         Motion::WordEndAfter | Motion::BigWordEndAfter => {
             buffer.move_right(apply_motion_n(buffer, cursor, motion, count.max(1)))
         }

@@ -557,6 +557,7 @@ reverse each axis independently.
 | `w` / `b` / `e` | Move by word starts and word ends. |
 | `W` / `B` / `E` | Move by whitespace-separated WORD starts and ends; punctuation stays within the WORD. |
 | `ge` / `gE` | Move backward to a word/WORD's end. Supports counts and operators. |
+| `{` / `}` | Move backward/forward by paragraph, using empty or whitespace-only lines as separators. Supports counts and operators. |
 | `0` / `_` / `$` | Move to line start, first non-whitespace, or line end. |
 | `gg` / `G` | Jump to the start or end of the file. |
 | `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |

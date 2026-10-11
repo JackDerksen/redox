@@ -226,24 +226,35 @@ impl EditorState {
                         | Motion::FileStart
                         | Motion::FileEnd
                         | Motion::LineNumber
+                        | Motion::ParagraphBefore
+                        | Motion::ParagraphAfter
                 ) {
                     let target = apply_motion_for_operator(buffer, cursor, *motion, count);
                     if matches!(motion, Motion::Up | Motion::Down) && target.line == cursor.line {
                         return None;
                     }
-                    let start_line = cursor.line.min(target.line);
-                    let end_line = cursor.line.max(target.line);
-                    let (start, end) = buffer.line_span_pos_range(start_line, end_line);
-                    return Some(OperatorTargetPlan {
-                        delete_ranges: vec![(start, end)],
-                        text: buffer.line_span_text_linewise_register(start_line, end_line),
-                        register_kind: RegisterKind::LineWise,
-                        preserve_blank_line_on_change: true,
-                        yank_highlight: Some((
-                            Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
-                            VisualModeKind::Line,
-                        )),
-                    });
+                    let paragraph_motion =
+                        matches!(motion, Motion::ParagraphBefore | Motion::ParagraphAfter);
+                    let (start, end) = Selection::new(cursor, target).ordered();
+                    if !paragraph_motion
+                        || (start.line < end.line
+                            && end.col == 0
+                            && start.col <= buffer.line_first_non_whitespace_col(start.line))
+                    {
+                        let start_line = start.line;
+                        let end_line = end.line - usize::from(paragraph_motion);
+                        let (start, end) = buffer.line_span_pos_range(start_line, end_line);
+                        return Some(OperatorTargetPlan {
+                            delete_ranges: vec![(start, end)],
+                            text: buffer.line_span_text_linewise_register(start_line, end_line),
+                            register_kind: RegisterKind::LineWise,
+                            preserve_blank_line_on_change: true,
+                            yank_highlight: Some((
+                                Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
+                                VisualModeKind::Line,
+                            )),
+                        });
+                    }
                 }
                 if matches!(
                     motion,

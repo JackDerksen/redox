@@ -1633,6 +1633,214 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
 }
 
 #[test]
+fn paragraph_motions_skip_separator_runs_and_support_counts_and_visual_modes() {
+    let path = temp_file_path("paragraph_motions");
+    for mode in [
+        EditorMode::Normal,
+        EditorMode::Visual,
+        EditorMode::VisualLine,
+        EditorMode::VisualBlock,
+    ] {
+        for (start, keys, expected) in [
+            (Pos::zero(), "}", Pos::new(2, 0)),
+            (Pos::new(1, 1), "}", Pos::new(2, 0)),
+            (Pos::new(2, 0), "}", Pos::new(6, 0)),
+            (Pos::new(3, 1), "}", Pos::new(6, 0)),
+            (Pos::zero(), "2}", Pos::new(6, 0)),
+            (Pos::new(4, 1), "{", Pos::new(3, 0)),
+            (Pos::new(5, 1), "{", Pos::new(3, 0)),
+            (Pos::new(3, 1), "{", Pos::zero()),
+            (Pos::new(7, 1), "2{", Pos::new(3, 0)),
+            (Pos::new(7, 1), "99{", Pos::zero()),
+            (Pos::new(0, 1), "{", Pos::zero()),
+            (Pos::zero(), "{", Pos::zero()),
+        ] {
+            let mut state = state_with_text(path.clone(), "one\ntwo\n\n \t\nthree\nfour\n\n猫yz");
+            let buffer_id = state.session.active_id();
+            state.views.get_mut(&buffer_id).unwrap().cursor.cursor = start;
+            state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+            apply_keys(&mut state, keys);
+            assert_eq!(
+                state.active_cursor_pos(),
+                expected,
+                "{mode:?}: {start:?}, {keys}"
+            );
+            assert_eq!(state.mode, mode, "{keys}");
+        }
+    }
+    for (text, keys, expected) in [
+        ("", "}{", Pos::zero()),
+        ("猫yz", "99}", Pos::new(0, 2)),
+        ("one\n \t", "}", Pos::new(1, 0)),
+        ("one\n \t", "2}", Pos::new(1, 1)),
+        ("\n\n", "}", Pos::new(2, 0)),
+        ("\n\none\n\nlast", "}", Pos::new(3, 0)),
+        ("one\n\ntwo\n", "99}", Pos::new(3, 0)),
+    ] {
+        let mut state = state_with_text(path.clone(), text);
+        apply_keys(&mut state, keys);
+        assert_eq!(state.active_cursor_pos(), expected, "{text:?}: {keys}");
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
+    let path = temp_file_path("paragraph_operators");
+    let text = "one\ntwo\n\n\nthree\nfour\n\nfive";
+    for (start, keys, expected_text, expected_register, register_kind, expected_mode) in [
+        (
+            Pos::zero(),
+            "d}",
+            "\n\nthree\nfour\n\nfive",
+            "one\ntwo\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(0, 1),
+            "d}",
+            "o\n\n\nthree\nfour\n\nfive",
+            "ne\ntwo",
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(1, 1),
+            "d}",
+            "one\nt\n\n\nthree\nfour\n\nfive",
+            "wo",
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(4, 0),
+            "d{",
+            "one\ntwo\n\nthree\nfour\n\nfive",
+            "\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(4, 1),
+            "d{",
+            "one\ntwo\n\nhree\nfour\n\nfive",
+            "\nt",
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(7, 0),
+            "d}",
+            "one\ntwo\n\n\nthree\nfour\n\n",
+            "five",
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "2d}",
+            "\nfive",
+            "one\ntwo\n\n\nthree\nfour\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "d2}",
+            "\nfive",
+            "one\ntwo\n\n\nthree\nfour\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "2d2}",
+            "",
+            text,
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "y}",
+            text,
+            "one\ntwo\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(4, 0),
+            "y{",
+            text,
+            "\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "c}",
+            "\n\n\nthree\nfour\n\nfive",
+            "one\ntwo\n",
+            RegisterKind::LineWise,
+            EditorMode::Insert,
+        ),
+        (
+            Pos::zero(),
+            "d}.",
+            "\nfive",
+            "\n\nthree\nfour\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::zero(),
+            "d{",
+            text,
+            "",
+            RegisterKind::CharWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(4, 0),
+            "dip",
+            "one\ntwo\n\n\n\nfive",
+            "three\nfour\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+        (
+            Pos::new(4, 0),
+            "dap",
+            "one\ntwo\n\n\nfive",
+            "three\nfour\n\n",
+            RegisterKind::LineWise,
+            EditorMode::Normal,
+        ),
+    ] {
+        let mut state = state_with_text(path.clone(), text);
+        let buffer_id = state.session.active_id();
+        state.views.get_mut(&buffer_id).unwrap().cursor.cursor = start;
+        apply_keys(&mut state, keys);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected_text,
+            "{keys}: {start:?}"
+        );
+        assert_eq!(
+            state.private_register, expected_register,
+            "{keys}: {start:?}"
+        );
+        assert_eq!(
+            state.private_register_kind, register_kind,
+            "{keys}: {start:?}"
+        );
+        assert_eq!(state.mode, expected_mode, "{keys}: {start:?}");
+    }
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn character_search_repeats_preserve_direction_counts_and_mode() {
     let path = temp_file_path("character_search_repeats");
     for mode in [

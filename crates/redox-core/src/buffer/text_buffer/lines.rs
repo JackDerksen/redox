@@ -1,10 +1,48 @@
-//! Clamped line access. Line content excludes its trailing newline.
+//! Clamped line access and paragraph navigation. Line content excludes its trailing newline.
 
 use std::cmp::min;
 
-use crate::buffer::{TextBuffer, TextSlice};
+use crate::buffer::{Pos, TextBuffer, TextSlice};
 
 impl TextBuffer {
+    /// Whether a line contains only whitespace, including an empty line.
+    pub(super) fn line_is_blank(&self, line: usize) -> bool {
+        self.line_slice(line)
+            .chars()
+            .all(|character| character.is_whitespace())
+    }
+
+    /// Move backward to a paragraph separator, or the start of the buffer (`{`).
+    pub fn paragraph_before(&self, pos: Pos) -> Pos {
+        let mut line = self.clamp_line(pos.line);
+        while line > 0 && self.line_is_blank(line) {
+            line -= 1;
+        }
+        while line > 0 && !self.line_is_blank(line) {
+            line -= 1;
+        }
+        Pos::new(line, 0)
+    }
+
+    /// Move forward to a paragraph separator, or the end of the buffer (`}`).
+    pub fn paragraph_after(&self, pos: Pos) -> Pos {
+        let mut line = self.clamp_line(pos.line);
+        let last_line = self.len_lines().saturating_sub(1);
+        let started_blank = self.line_is_blank(line);
+        while line < last_line && self.line_is_blank(line) {
+            line += 1;
+        }
+        while line < last_line && !self.line_is_blank(line) {
+            line += 1;
+        }
+        let column = if line == last_line && (started_blank || !self.line_is_blank(line)) {
+            self.line_len_chars(line)
+        } else {
+            0
+        };
+        Pos::new(line, column)
+    }
+
     /// Return the logical line count. Even an empty buffer has one line.
     #[inline]
     pub fn len_lines(&self) -> usize {

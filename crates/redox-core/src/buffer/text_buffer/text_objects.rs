@@ -450,12 +450,6 @@ impl TextBuffer {
         char_idx
     }
 
-    fn line_is_blank(&self, line_idx: usize) -> bool {
-        self.line_slice(line_idx)
-            .chars()
-            .all(|ch| ch.is_whitespace())
-    }
-
     fn char_is_escaped(&self, char_idx: usize) -> bool {
         let mut backslashes = 0;
         let mut idx = char_idx;
