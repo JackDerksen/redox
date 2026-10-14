@@ -114,7 +114,17 @@ impl EditorState {
                 };
                 self.execute_configured_command(command.to_string());
             }
+            InputAction::SetMark(name) => {
+                let position = self.active_cursor_pos();
+                self.session.active_buffer_mut().set_mark(name, position);
+            }
             InputAction::Motion { motion, count } => {
+                if let Motion::MarkLine(name) | Motion::MarkExact(name) = motion
+                    && self.session.active_buffer().mark(name).is_none()
+                {
+                    self.set_status(format!("Mark {name} is not set"));
+                    return;
+                }
                 if self.mode == EditorMode::Insert {
                     let handled_completion = match motion {
                         Motion::Down => self.completion_move(count as isize),
@@ -168,6 +178,8 @@ impl EditorState {
                                 | Motion::FileEnd
                                 | Motion::LineNumber
                                 | Motion::MatchDelimiter
+                                | Motion::MarkLine(_)
+                                | Motion::MarkExact(_)
                         ))
                 {
                     self.start_jump_highlight(text_vh);

@@ -9,9 +9,17 @@ use std::ops::Range;
 ///
 /// Positions and ranges use Unicode scalar-value indices. Terminal cell widths,
 /// grapheme boundaries, cursors, and viewport state belong to the frontend.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct TextBuffer {
     pub(super) rope: Rope,
+    pub(super) marks: [Option<usize>; 26],
+}
+
+impl PartialEq for TextBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        // Marks are navigation state, so they do not affect text diffs or dirty state.
+        self.rope == other.rope
+    }
 }
 
 /// A borrowed, non-allocating view into a [`TextBuffer`].
@@ -77,19 +85,26 @@ impl Default for TextBuffer {
 impl TextBuffer {
     #[inline]
     pub fn new() -> Self {
-        Self { rope: Rope::new() }
+        Self {
+            rope: Rope::new(),
+            marks: [None; 26],
+        }
     }
 
     #[inline]
     pub fn from_text(s: &str) -> Self {
         Self {
             rope: Rope::from_str(s),
+            marks: [None; 26],
         }
     }
 
     /// Read a UTF-8 buffer from a byte stream. Invalid UTF-8 is rejected.
     pub fn from_reader(reader: impl Read) -> std::io::Result<Self> {
-        Rope::from_reader(reader).map(|rope| Self { rope })
+        Rope::from_reader(reader).map(|rope| Self {
+            rope,
+            marks: [None; 26],
+        })
     }
 
     /// Load a UTF-8 file. Invalid UTF-8 is rejected for now.
@@ -167,7 +182,7 @@ impl TextBuffer {
 
     pub(crate) fn append(&mut self, text: &str) {
         if !text.is_empty() {
-            self.rope.insert(self.len_chars(), text);
+            self.insert(self.char_to_pos(self.len_chars()), text);
         }
     }
 
@@ -207,6 +222,7 @@ impl From<String> for TextBuffer {
     fn from(text: String) -> Self {
         Self {
             rope: Rope::from(text),
+            marks: [None; 26],
         }
     }
 }

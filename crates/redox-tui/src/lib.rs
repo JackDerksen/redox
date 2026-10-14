@@ -572,7 +572,7 @@ fn draw_editor_view(
             window,
             background_style,
             (gutter.gutter_w, text_h),
-            u16::from(gutter.show_git_marker_column),
+            u16::from(gutter.show_marker_column),
             animation.first_line()..gutter.total_lines,
             active_cursor_line,
             None,
@@ -584,7 +584,7 @@ fn draw_editor_view(
             text_h,
             GUTTER_CONTENT_PADDING,
             animation.first_line(),
-            state.active_git_diff(),
+            (state.active_git_diff(), Some(state.session.active_buffer())),
         )?;
         animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
 
@@ -666,7 +666,7 @@ fn draw_editor_view(
         window,
         background_style,
         (gutter.gutter_w, text_h),
-        u16::from(gutter.show_git_marker_column),
+        u16::from(gutter.show_marker_column),
         snapshot.first_line()..gutter.total_lines,
         active_cursor_line,
         visual_selection
@@ -680,7 +680,7 @@ fn draw_editor_view(
         text_h,
         GUTTER_CONTENT_PADDING,
         snapshot.first_line(),
-        state.active_git_diff(),
+        (state.active_git_diff(), Some(state.session.active_buffer())),
     )?;
 
     let focus_scope = state.zen.enabled && state.zen.focus_scope;
@@ -990,7 +990,10 @@ fn draw_gutter_padding(
     text_h: u16,
     padding_w: u16,
     first_line: usize,
-    git_diff: Option<&app::GitDiffSnapshot>,
+    (git_diff, buffer): (
+        Option<&app::GitDiffSnapshot>,
+        Option<&redox_core::TextBuffer>,
+    ),
 ) -> minui::Result<()> {
     if gutter_w == 0 || text_h == 0 {
         return Ok(());
@@ -1004,7 +1007,13 @@ fn draw_gutter_padding(
             window.write_str_styled(row, gutter_w, &pad, color.into())?;
         }
         let line_idx = first_line.saturating_add(row as usize);
-        if let Some(marker) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
+        if let Some((name, _)) = buffer.and_then(|buffer| {
+            buffer
+                .marks()
+                .find(|(_, position)| position.line == line_idx)
+        }) {
+            window.write_str_styled(row, 0, &name.to_string(), style.gutter_mark.into())?;
+        } else if let Some(marker) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
             let marker_style = if marker.staged {
                 staged_style
             } else {
@@ -1026,8 +1035,11 @@ fn diagnostic_icon(severity: app::DiagnosticSeverity) -> &'static str {
     }
 }
 
-fn git_marker_column_visible(git_diff: Option<&app::GitDiffSnapshot>) -> bool {
-    git_diff.is_some_and(|diff| !diff.stats.is_empty())
+fn marker_column_visible(
+    buffer: &redox_core::TextBuffer,
+    git_diff: Option<&app::GitDiffSnapshot>,
+) -> bool {
+    buffer.marks().next().is_some() || git_diff.is_some_and(|diff| !diff.stats.is_empty())
 }
 
 fn line_number_gutter_width(total_lines: usize, marker_width: u16) -> u16 {
@@ -1674,7 +1686,7 @@ struct PaneGutterLayout {
     content_x: u16,
     gutter_w: u16,
     total_lines: usize,
-    show_git_marker_column: bool,
+    show_marker_column: bool,
 }
 
 fn pane_gutter_layout(state: &EditorState, pane_id: PaneId) -> PaneGutterLayout {
@@ -1684,17 +1696,18 @@ fn pane_gutter_layout(state: &EditorState, pane_id: PaneId) -> PaneGutterLayout 
             content_x: 0,
             gutter_w: 0,
             total_lines: state.session.active_buffer().len_lines().max(1),
-            show_git_marker_column: false,
+            show_marker_column: false,
         };
     }
     let total_lines = state.session.active_buffer().len_lines().max(1);
-    let show_git_marker_column = git_marker_column_visible(state.active_git_diff());
-    let gutter_w = line_number_gutter_width(total_lines, u16::from(show_git_marker_column));
+    let show_marker_column =
+        marker_column_visible(state.session.active_buffer(), state.active_git_diff());
+    let gutter_w = line_number_gutter_width(total_lines, u16::from(show_marker_column));
     PaneGutterLayout {
         content_x: gutter_w.saturating_add(GUTTER_CONTENT_PADDING),
         gutter_w,
         total_lines,
-        show_git_marker_column,
+        show_marker_column,
     }
 }
 
@@ -1773,7 +1786,7 @@ fn draw_active_split_rain_pane(
     let gutter = pane_gutter_layout(state, state.active_pane_id());
     let PaneGutterLayout {
         total_lines,
-        show_git_marker_column,
+        show_marker_column,
         gutter_w,
         content_x,
     } = gutter;
@@ -1786,7 +1799,7 @@ fn draw_active_split_rain_pane(
         window,
         style,
         (gutter_w, height),
-        u16::from(show_git_marker_column),
+        u16::from(show_marker_column),
         animation.first_line()..total_lines,
         active_cursor_line,
         None,
@@ -1798,7 +1811,7 @@ fn draw_active_split_rain_pane(
         height,
         GUTTER_CONTENT_PADDING,
         animation.first_line(),
-        state.active_git_diff(),
+        (state.active_git_diff(), Some(state.session.active_buffer())),
     )?;
     animation.draw(
         window,
@@ -1847,7 +1860,11 @@ fn draw_buffer_snapshot_for_id(
         .is_none()
         .then(|| state.git_diff_for_buffer(buffer_id).cloned())
         .flatten();
-    let show_git_marker_column = has_line_numbers && git_marker_column_visible(git_diff.as_ref());
+    let show_marker_column = has_line_numbers
+        && state
+            .session
+            .buffer(buffer_id)
+            .is_some_and(|buffer| marker_column_visible(buffer, git_diff.as_ref()));
     let syntax_language = undo_tree_role
         .is_none()
         .then(|| {
@@ -1902,7 +1919,7 @@ fn draw_buffer_snapshot_for_id(
 
         let total_lines = buffer.len_lines().max(1);
         let gutter_w = if has_line_numbers {
-            line_number_gutter_width(total_lines, u16::from(show_git_marker_column))
+            line_number_gutter_width(total_lines, u16::from(show_marker_column))
         } else {
             0
         };
@@ -2000,7 +2017,7 @@ fn draw_buffer_snapshot_for_id(
                 window,
                 style,
                 (gutter_w, height),
-                u16::from(show_git_marker_column),
+                u16::from(show_marker_column),
                 snapshot.first_line()..total_lines,
                 cursor.line,
                 visual_selection
@@ -2015,7 +2032,10 @@ fn draw_buffer_snapshot_for_id(
                 height,
                 GUTTER_CONTENT_PADDING,
                 snapshot.first_line(),
-                git_diff.as_ref().filter(|_| preview.is_none()),
+                (
+                    git_diff.as_ref().filter(|_| preview.is_none()),
+                    preview.is_none().then_some(buffer),
+                ),
             )?;
         }
 

@@ -271,6 +271,7 @@ line.
 | `:bd [name/number]` / `:bdelete [name/number]` | Delete the current or specified buffer from the session and close its panes. The last pane switches to another buffer or a blank buffer. Files on disk are kept; unsaved buffers require `:bd!` to discard changes. |
 | `:enew` / `:ene` | Open a new unnamed buffer in the current pane, keeping the previous buffer and its unsaved edits. |
 | `:ls` | List one row per buffer: `>` marks the current buffer, `[1,2]` lists its panes, `[hidden]` marks a hidden buffer, `+` marks unsaved edits, and `!` marks changes on disk. A fullscreen icon (or `^`) marks the zoomed pane; the other panes are minimised. File-type icons appear when icons are enabled. |
+| `:delm {marks}` / `:delmarks {marks}` | Delete the current buffer's named marks, given as letters and ranges, e.g. `:delm a c-e`. `:delm!` deletes all of them. |
 | `:macros` | List the current session's macro registers and recorded key sequences. |
 | `:ex` / `:explorer` | Toggle the file explorer. |
 | `:about` | Toggle the about popup. |
@@ -558,6 +559,8 @@ reverse each axis independently.
 | `W` / `B` / `E` | Move by whitespace-separated WORD starts and ends; punctuation stays within the WORD. |
 | `ge` / `gE` | Move backward to a word/WORD's end. Supports counts and operators. |
 | `{` / `}` | Move backward/forward by paragraph, using empty or whitespace-only lines as separators. Supports counts and operators. |
+| `m[a-z]` | Set a buffer-local mark at the cursor. |
+| `'[a-z]` / `` `[a-z] `` | Jump to the marked line's first non-whitespace character / exact position. Supports visual selections and operators. |
 | `0` / `_` / `$` | Move to line start, first non-whitespace, or line end. |
 | `gg` / `G` | Jump to the start or end of the file. |
 | `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |
@@ -581,6 +584,12 @@ reverse each axis independently.
 | `ctrl+d` / `ctrl+u` | Move down/up by half a window and centre the cursor. |
 | `zz` | Centre the cursor line in the viewport. |
 | `~` | Toggle character case, or the whole visual selection. |
+
+Marks follow edits and undo within the open buffer. Mark letters share the leftmost
+gutter column with git symbols and take precedence on marked lines. When several
+marks share a line, the alphabetically first is shown. Marks are kept for the
+current session and are cleared when a buffer is reloaded or closed, or with
+`:delmarks`.
 
 ### Splits
 

@@ -467,7 +467,8 @@ impl EditorState {
         {
             crate::line_number_gutter_width(
                 buffer.len_lines(),
-                u16::from(crate::git_marker_column_visible(
+                u16::from(crate::marker_column_visible(
+                    buffer,
                     self.git_diff_for_buffer(buffer_id),
                 )),
             )

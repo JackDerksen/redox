@@ -718,7 +718,7 @@ it.
   single colour.
 - Editor and pane text: `editor.text`, `editor.snippet`, `pane.title`
 - Gutter: `gutter.line_number`, `gutter.current_line_number` (also used for
-  lines covered by a visual selection)
+  lines covered by a visual selection), `gutter.mark`
 - Search: `search.match`, `search.current`
 - Additional popup headings: `popup.section_title`
 - Completion: `completion.ghost`, `completion.keyword`,

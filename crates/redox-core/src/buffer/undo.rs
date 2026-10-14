@@ -169,6 +169,8 @@ pub struct UndoRecord {
     pub after_cursor: Pos,
     coalesced: bool,
     replaces_previous_coalesced_record: bool,
+    #[serde(skip)]
+    mark_positions: Vec<(char, Pos, Pos)>,
 }
 
 impl UndoRecord {
@@ -179,12 +181,43 @@ impl UndoRecord {
     ) -> Option<Self> {
         let diff = TextDiff::between(&before.buffer, after_buffer)?;
         Some(Self {
+            mark_positions: before
+                .buffer
+                .marks()
+                .filter_map(|(name, position)| {
+                    after_buffer.mark(name).map(|after| (name, position, after))
+                })
+                .collect(),
             diff,
             before_cursor: before.cursor,
             after_cursor,
             coalesced: before.coalesced,
             replaces_previous_coalesced_record: before.replaces_previous_coalesced_record,
         })
+    }
+
+    fn apply(&self, buffer: &mut TextBuffer, reverse: bool) {
+        // Restore existing anchors exactly, while letting marks set later follow the edit.
+        let marks = self
+            .mark_positions
+            .iter()
+            .filter_map(|&(name, before, after)| {
+                let (expected, restored) = if reverse {
+                    (after, before)
+                } else {
+                    (before, after)
+                };
+                (buffer.mark(name) == Some(expected)).then_some((name, restored))
+            })
+            .collect::<Vec<_>>();
+        buffer.apply_edit(if reverse {
+            self.diff.reverse_edit()
+        } else {
+            self.diff.forward_edit()
+        });
+        for (name, position) in marks {
+            buffer.set_mark(name, position);
+        }
     }
 }
 
@@ -353,6 +386,9 @@ impl UndoHistory {
         if let Some(existing_node) =
             self.find_equivalent_child(base_node, &base_buffer, after_buffer)
         {
+            if let Some(existing) = self.nodes[existing_node].record.as_mut() {
+                existing.mark_positions = record.mark_positions;
+            }
             self.current = existing_node;
             self.clear_coalesce();
             return true;
@@ -401,7 +437,7 @@ impl UndoHistory {
         let parent = node.parent?;
         let record = node.record.as_ref()?;
         let cursor = record.before_cursor;
-        let _ = buffer.apply_edit(record.diff.reverse_edit());
+        record.apply(buffer, true);
         self.current = parent;
         self.clear_coalesce();
         Some(cursor)
@@ -493,7 +529,7 @@ impl UndoHistory {
         while node_id != lca {
             let node = self.nodes.get(node_id)?;
             let record = node.record.as_ref()?;
-            let _ = buffer.apply_edit(record.diff.reverse_edit());
+            record.apply(buffer, true);
             node_id = node.parent?;
         }
 
@@ -505,7 +541,7 @@ impl UndoHistory {
         }
         for id in path.iter().rev().copied() {
             let record = self.nodes.get(id)?.record.as_ref()?;
-            let _ = buffer.apply_edit(record.diff.forward_edit());
+            record.apply(buffer, false);
         }
         Some(())
     }

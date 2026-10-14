@@ -219,6 +219,9 @@ impl EditorState {
         match target {
             OperatorTarget::Motion { motion, count } => {
                 let count = (*count).max(1);
+                if let Motion::MarkLine(name) | Motion::MarkExact(name) = motion {
+                    buffer.mark(*name)?;
+                }
                 if matches!(
                     motion,
                     Motion::Up
@@ -226,6 +229,8 @@ impl EditorState {
                         | Motion::FileStart
                         | Motion::FileEnd
                         | Motion::LineNumber
+                        | Motion::MarkLine(_)
+                        | Motion::MarkExact(_)
                         | Motion::ParagraphBefore
                         | Motion::ParagraphAfter
                 ) {
@@ -233,16 +238,18 @@ impl EditorState {
                     if matches!(motion, Motion::Up | Motion::Down) && target.line == cursor.line {
                         return None;
                     }
-                    let paragraph_motion =
-                        matches!(motion, Motion::ParagraphBefore | Motion::ParagraphAfter);
+                    let exclusive_line_boundary = matches!(
+                        motion,
+                        Motion::ParagraphBefore | Motion::ParagraphAfter | Motion::MarkExact(_)
+                    );
                     let (start, end) = Selection::new(cursor, target).ordered();
-                    if !paragraph_motion
+                    if !exclusive_line_boundary
                         || (start.line < end.line
                             && end.col == 0
                             && start.col <= buffer.line_first_non_whitespace_col(start.line))
                     {
                         let start_line = start.line;
-                        let end_line = end.line - usize::from(paragraph_motion);
+                        let end_line = end.line - usize::from(exclusive_line_boundary);
                         let (start, end) = buffer.line_span_pos_range(start_line, end_line);
                         return Some(OperatorTargetPlan {
                             delete_ranges: vec![(start, end)],

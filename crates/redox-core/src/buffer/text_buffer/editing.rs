@@ -10,10 +10,7 @@ impl TextBuffer {
     /// This is a primitive operation for higher-level editing commands.
     pub fn insert(&mut self, pos: Pos, text: &str) -> Pos {
         let at = self.pos_to_char(pos);
-        self.rope.insert(at, text);
-
-        let inserted_chars = text.chars().count();
-        self.char_to_pos(at + inserted_chars)
+        self.replace_char_range(at, at, text)
     }
 
     /// Delete a range between two positions (order-independent).
@@ -23,11 +20,7 @@ impl TextBuffer {
         let start = self.pos_to_char(crate::buffer::util::min_pos(self, a, b));
         let end = self.pos_to_char(crate::buffer::util::max_pos(self, a, b));
 
-        if start < end {
-            self.rope.remove(start..end);
-        }
-
-        self.char_to_pos(start)
+        self.replace_char_range(start, end, "")
     }
 
     /// Delete the selection (if any). Returns `(new_cursor, did_delete)`.
@@ -59,8 +52,7 @@ impl TextBuffer {
         }
 
         let start = at - 1;
-        self.rope.remove(start..at);
-        let new_cursor = self.char_to_pos(start);
+        let new_cursor = self.replace_char_range(start, at, "");
         Selection::empty(new_cursor)
     }
 
@@ -83,8 +75,7 @@ impl TextBuffer {
             return Selection::empty(cursor);
         }
 
-        self.rope.remove(at..at + 1);
-        let new_cursor = self.char_to_pos(at);
+        let new_cursor = self.replace_char_range(at, at + 1, "");
         Selection::empty(new_cursor)
     }
 
@@ -162,17 +153,25 @@ impl TextBuffer {
             (end, start)
         };
 
+        self.replace_char_range(start, end, &edit.insert)
+    }
+
+    fn replace_char_range(&mut self, start: usize, end: usize, text: &str) -> Pos {
+        let inserted_chars = text.chars().count();
+        for offset in self.marks.iter_mut().flatten() {
+            if *offset >= end {
+                *offset = *offset - (end - start) + inserted_chars;
+            } else if *offset >= start {
+                *offset = start;
+            }
+        }
         if start < end {
             self.rope.remove(start..end);
         }
-
-        if !edit.insert.is_empty() {
-            self.rope.insert(start, &edit.insert);
-            let inserted_chars = edit.insert.chars().count();
-            self.char_to_pos(start + inserted_chars)
-        } else {
-            self.char_to_pos(start)
+        if !text.is_empty() {
+            self.rope.insert(start, text);
         }
+        self.char_to_pos(start + inserted_chars)
     }
 
     /// Apply multiple edits sequentially and return a transaction-style summary.
@@ -312,19 +311,42 @@ impl TextBuffer {
 
         let first = start - 1;
         let last = end;
+        self.rotate_line_range(first, last, false);
+
+        Some((start - 1, end - 1))
+    }
+
+    fn rotate_line_range(&mut self, first: usize, last: usize, down: bool) {
         let mut entries = self.collect_line_entries(first, last);
-        entries.rotate_left(1);
+        if down {
+            entries.rotate_right(1);
+        } else {
+            entries.rotate_left(1);
+        }
         let mut replacement = entries.join("\n");
         if last + 1 < self.len_lines() {
             replacement.push('\n');
         }
-
         let replace_start = self.line_to_char(first);
         let replace_end = self.line_full_end_char(last);
-        self.rope.remove(replace_start..replace_end);
-        self.rope.insert(replace_start, &replacement);
-
-        Some((start - 1, end - 1))
+        let marks = self.marks().collect::<Vec<_>>();
+        self.replace_char_range(replace_start, replace_end, &replacement);
+        for (name, mut position) in marks {
+            if (first..=last).contains(&position.line) {
+                position.line = if down {
+                    if position.line == last {
+                        first
+                    } else {
+                        position.line + 1
+                    }
+                } else if position.line == first {
+                    last
+                } else {
+                    position.line - 1
+                };
+                self.set_mark(name, position);
+            }
+        }
     }
 
     /// Move a contiguous line range up by up to `count` lines.
@@ -370,17 +392,7 @@ impl TextBuffer {
 
         let first = start;
         let last = end + 1;
-        let mut entries = self.collect_line_entries(first, last);
-        entries.rotate_right(1);
-        let mut replacement = entries.join("\n");
-        if last + 1 < self.len_lines() {
-            replacement.push('\n');
-        }
-
-        let replace_start = self.line_to_char(first);
-        let replace_end = self.line_full_end_char(last);
-        self.rope.remove(replace_start..replace_end);
-        self.rope.insert(replace_start, &replacement);
+        self.rotate_line_range(first, last, true);
 
         Some((start + 1, end + 1))
     }

@@ -90,6 +90,12 @@ pub enum Motion {
 
     /// Jump to the delimiter paired with the delimiter under the cursor (`%`-ish).
     MatchDelimiter,
+
+    /// Jump to a buffer-local mark's first non-whitespace character (`'a`).
+    MarkLine(char),
+
+    /// Jump to a buffer-local mark's exact position (backtick + name).
+    MarkExact(char),
 }
 
 /// Apply a single `Motion` to a given cursor position.
@@ -159,6 +165,15 @@ pub fn apply_motion(buffer: &TextBuffer, cursor: Pos, motion: Motion) -> Pos {
         | Motion::RepeatTillCharBefore(_) => apply_motion_n(buffer, cursor, motion, 1),
 
         Motion::MatchDelimiter => buffer.matching_delimiter(cursor).unwrap_or(cursor),
+
+        Motion::MarkLine(name) => buffer.mark(name).map_or(cursor, |position| {
+            Pos::new(
+                position.line,
+                buffer.line_first_non_whitespace_col(position.line),
+            )
+        }),
+
+        Motion::MarkExact(name) => buffer.mark(name).unwrap_or(cursor),
     }
 }
 
@@ -170,7 +185,7 @@ pub fn apply_motion_for_operator(
     count: usize,
 ) -> Pos {
     match motion {
-        Motion::ParagraphAfter => {
+        Motion::ParagraphAfter | Motion::MarkExact(_) => {
             let target = apply_motion_n(buffer, cursor, motion, count.max(1));
             if target.line > cursor.line
                 && target.col == 0

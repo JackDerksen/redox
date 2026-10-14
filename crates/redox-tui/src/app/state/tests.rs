@@ -7739,3 +7739,117 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
 
     let _ = fs::remove_file(path);
 }
+
+#[test]
+fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
+    let path = temp_file_path("marks");
+    let original = "first\n  猫abc\nlast\n";
+    let mut state = state_with_text(path.clone(), original);
+    let buffer_id = state.session.active_id();
+    apply_keys(&mut state, "jllma");
+    assert_eq!(
+        state.session.active_buffer().mark('a'),
+        Some(Pos::new(1, 2))
+    );
+    assert!(!state.session.active_meta().dirty);
+    assert_eq!(undo_history_of(&state, buffer_id).undo_len(), 0);
+    apply_keys(&mut state, "lmagg'a");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
+    apply_keys(&mut state, "gg`a");
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+    for mode in [
+        EditorMode::Visual,
+        EditorMode::VisualLine,
+        EditorMode::VisualBlock,
+    ] {
+        state.mode = EditorMode::Normal;
+        apply_keys(&mut state, "gg");
+        state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+        let anchor = state.views[&buffer_id].visual_anchor;
+        apply_keys(&mut state, "`a");
+        assert_eq!(state.mode, mode);
+        assert_eq!(state.active_cursor_pos(), Pos::new(1, 3));
+        assert_eq!(state.views[&buffer_id].visual_anchor, anchor);
+    }
+    state.mode = EditorMode::Normal;
+    apply_keys(&mut state, "gg0m\u{1b}l");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    apply_keys(&mut state, "m1");
+    assert!(state.session.active_buffer().mark('b').is_none());
+    apply_keys(&mut state, "'b");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|status| status.contains("not set"))
+    );
+    apply_keys(&mut state, "gg0fi'agg0;ma");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    let other_id = state.session.open_unnamed_buffer();
+    assert!(state.session.active_buffer().mark('a').is_none());
+    state.session.activate(buffer_id);
+    assert_eq!(
+        state.session.active_buffer().mark('a'),
+        Some(Pos::new(0, 1))
+    );
+    assert_ne!(buffer_id, other_id);
+    for (keys, expected, kind) in [
+        ("gg0d'a", "last\n", RegisterKind::LineWise),
+        ("gg0d`a", "abc\nlast\n", RegisterKind::CharWise),
+        ("gg0d'b", original, RegisterKind::CharWise),
+    ] {
+        let mut state = state_with_text(path.clone(), original);
+        apply_keys(&mut state, "jlllma");
+        apply_keys(&mut state, keys);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected,
+            "{keys}"
+        );
+        assert_eq!(state.private_register_kind, kind, "{keys}");
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn delmarks_clears_letters_ranges_and_all_marks() {
+    let path = temp_file_path("delmarks");
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let set_marks = |state: &mut EditorState| {
+        for name in ['a', 'b', 'c', 'd', 'x'] {
+            state
+                .session
+                .active_buffer_mut()
+                .set_mark(name, Pos::zero());
+        }
+    };
+    let names = |state: &EditorState| {
+        state
+            .session
+            .active_buffer()
+            .marks()
+            .map(|(name, _)| name)
+            .collect::<String>()
+    };
+    set_marks(&mut state);
+    run_command(&mut state, "delmarks a c-d");
+    assert_eq!(names(&state), "bx");
+    run_command(&mut state, "delm x");
+    assert_eq!(names(&state), "b");
+    for invalid in ["delmarks", "delmarks d-a", "delmarks A", "delmarks a-"] {
+        run_command(&mut state, invalid);
+        assert_eq!(names(&state), "b", "{invalid}");
+        assert!(
+            state
+                .status_msg
+                .as_deref()
+                .is_some_and(|status| status.contains("usage")),
+            "{invalid}"
+        );
+    }
+    set_marks(&mut state);
+    run_command(&mut state, "delmarks!");
+    assert_eq!(names(&state), "");
+    assert!(!state.session.active_meta().dirty);
+}

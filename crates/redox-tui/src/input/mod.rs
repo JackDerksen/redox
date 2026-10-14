@@ -144,6 +144,7 @@ pub enum InputAction {
         count: usize,
     },
     ReplaceChar(char),
+    SetMark(char),
     WrapSelection {
         opening: char,
         closing: char,
@@ -511,7 +512,7 @@ pub struct InputState {
     pending_sequence: String,
     pending_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
-    pending_search_motion: Option<PendingSearchMotion>,
+    pending_character_motion: Option<PendingCharacterMotion>,
     last_search_motion: Option<Motion>,
     pending_replace: bool,
     pending_macro_register: Option<PendingMacroRegister>,
@@ -557,7 +558,7 @@ impl Default for InputState {
             pending_sequence: String::new(),
             pending_count: None,
             pending_operator: None,
-            pending_search_motion: None,
+            pending_character_motion: None,
             last_search_motion: None,
             pending_replace: false,
             pending_macro_register: None,
@@ -580,19 +581,22 @@ struct PendingOperator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingSearchMotion {
+struct PendingCharacterMotion {
     operator: Option<PendingOperator>,
     count: usize,
     count_explicit: bool,
-    kind: SearchMotionKind,
+    kind: CharacterMotionKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchMotionKind {
+enum CharacterMotionKind {
     Find,
     Till,
     FindBefore,
     TillBefore,
+    SetMark,
+    MarkLine,
+    MarkExact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,7 +618,7 @@ struct PendingInput {
     sequence: String,
     count: Option<usize>,
     operator: Option<PendingOperator>,
-    search_motion: Option<PendingSearchMotion>,
+    search_motion: Option<PendingCharacterMotion>,
     replace: bool,
     macro_register: Option<PendingMacroRegister>,
 }
@@ -625,7 +629,7 @@ impl PendingInput {
             return macro_register_prefix(pending);
         }
         if let Some(search) = self.search_motion {
-            return search_motion_prefix(search);
+            return character_motion_prefix(search);
         }
         if self.replace {
             return "r".to_string();
@@ -854,7 +858,7 @@ impl InputState {
         self.pending_sequence.clear();
         self.pending_count = None;
         self.pending_operator = None;
-        self.pending_search_motion = None;
+        self.pending_character_motion = None;
         self.pending_replace = false;
         self.pending_macro_register = None;
         self.which_key_started_at = None;
@@ -971,7 +975,7 @@ impl InputState {
             sequence: self.pending_sequence.clone(),
             count: self.pending_count,
             operator: self.pending_operator,
-            search_motion: self.pending_search_motion,
+            search_motion: self.pending_character_motion,
             replace: self.pending_replace,
             macro_register: self.pending_macro_register,
         };
@@ -1030,14 +1034,14 @@ impl InputState {
         self.pending_sequence.clear();
         self.pending_count = None;
         self.pending_operator = None;
-        self.pending_search_motion = None;
+        self.pending_character_motion = None;
         self.pending_replace = true;
     }
 
-    fn begin_search_motion(
+    fn begin_character_motion(
         &mut self,
         operator: Option<PendingOperator>,
-        kind: SearchMotionKind,
+        kind: CharacterMotionKind,
         count: usize,
         count_explicit: bool,
     ) {
@@ -1045,7 +1049,7 @@ impl InputState {
         self.pending_count = None;
         self.pending_operator = None;
         self.pending_replace = false;
-        self.pending_search_motion = Some(PendingSearchMotion {
+        self.pending_character_motion = Some(PendingCharacterMotion {
             operator,
             count: count.max(1),
             count_explicit,
@@ -1090,7 +1094,7 @@ impl InputState {
             self.clear_which_key_timer_if_complete();
             return true;
         }
-        if let Some(search) = self.pending_search_motion.take() {
+        if let Some(search) = self.pending_character_motion.take() {
             if let Some(operator) = search.operator {
                 self.pending_operator = Some(operator);
             } else if search.count_explicit {
@@ -1186,16 +1190,31 @@ impl InputState {
             };
             return Some((macro_register_prefix(pending), entries));
         }
-        if let Some(search) = self.pending_search_motion {
+        if let Some(search) = self.pending_character_motion {
             let description = match search.kind {
-                SearchMotionKind::Find => "Find character forwards",
-                SearchMotionKind::Till => "Until character forwards",
-                SearchMotionKind::FindBefore => "Find character backwards",
-                SearchMotionKind::TillBefore => "Until character backwards",
+                CharacterMotionKind::Find => "Find character forwards",
+                CharacterMotionKind::Till => "Until character forwards",
+                CharacterMotionKind::FindBefore => "Find character backwards",
+                CharacterMotionKind::TillBefore => "Until character backwards",
+                CharacterMotionKind::SetMark => "Set mark",
+                CharacterMotionKind::MarkLine => "Jump to marked line",
+                CharacterMotionKind::MarkExact => "Jump to exact mark",
             };
             return Some((
-                search_motion_prefix(search),
-                vec![which_key_entry("<char>", description)],
+                character_motion_prefix(search),
+                vec![which_key_entry(
+                    if matches!(
+                        search.kind,
+                        CharacterMotionKind::SetMark
+                            | CharacterMotionKind::MarkLine
+                            | CharacterMotionKind::MarkExact
+                    ) {
+                        "a-z"
+                    } else {
+                        "<char>"
+                    },
+                    description,
+                )],
             ));
         }
 
@@ -1535,6 +1554,8 @@ fn operator_entries(operator: TextObjectOperator) -> Vec<WhichKeyEntry> {
         which_key_entry("}", "Next paragraph"),
         which_key_entry("G", "End of file"),
         which_key_entry("g", "+go to"),
+        which_key_entry("'", "Jump to marked line"),
+        which_key_entry("`", "Jump to exact mark"),
         which_key_entry("%", "Matching delimiter"),
         which_key_entry("f", "Find character forwards"),
         which_key_entry("t", "Until character forwards"),
@@ -1588,6 +1609,9 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
         ("$", "End of line"),
         ("G", "End of file"),
         ("g", "+go to"),
+        ("m", "Set mark"),
+        ("'", "Jump to marked line"),
+        ("`", "Jump to exact mark"),
         ("%", "Matching delimiter"),
         ("f", "Find character forwards"),
         ("t", "Until character forwards"),
@@ -1626,16 +1650,19 @@ fn operator_prefix(operator: PendingOperator, sequence: &str) -> String {
     prefix
 }
 
-fn search_motion_prefix(search: PendingSearchMotion) -> String {
+fn character_motion_prefix(search: PendingCharacterMotion) -> String {
     let mut prefix = search
         .operator
         .map(|operator| operator_prefix(operator, ""))
         .unwrap_or_else(|| count_prefix(search.count, search.count_explicit));
     prefix.push(match search.kind {
-        SearchMotionKind::Find => 'f',
-        SearchMotionKind::Till => 't',
-        SearchMotionKind::FindBefore => 'F',
-        SearchMotionKind::TillBefore => 'T',
+        CharacterMotionKind::Find => 'f',
+        CharacterMotionKind::Till => 't',
+        CharacterMotionKind::FindBefore => 'F',
+        CharacterMotionKind::TillBefore => 'T',
+        CharacterMotionKind::SetMark => 'm',
+        CharacterMotionKind::MarkLine => '\'',
+        CharacterMotionKind::MarkExact => '`',
     });
     prefix
 }
@@ -1978,8 +2005,8 @@ fn modal_char_action(
         return InputAction::ReplaceChar(c);
     }
 
-    if let Some(pending_search_motion) = state.pending_search_motion {
-        return resolve_pending_search_motion(state, c, pending_search_motion);
+    if let Some(pending_character_motion) = state.pending_character_motion {
+        return resolve_pending_character_motion(state, c, pending_character_motion);
     }
 
     if let Some(operator) = state.pending_operator
@@ -2016,6 +2043,16 @@ fn modal_char_action(
     }
 
     match c {
+        'm' | '\'' | '`' => {
+            let kind = match c {
+                'm' => CharacterMotionKind::SetMark,
+                '\'' => CharacterMotionKind::MarkLine,
+                _ => CharacterMotionKind::MarkExact,
+            };
+            let (count, explicit) = state.take_count();
+            state.begin_character_motion(None, kind, count, explicit);
+            InputAction::None
+        }
         '?' => {
             state.reset_prefixes();
             state
@@ -2158,7 +2195,7 @@ fn modal_char_action(
         ) =>
         {
             let (count, count_explicit) = state.take_count();
-            state.begin_search_motion(None, SearchMotionKind::Find, count, count_explicit);
+            state.begin_character_motion(None, CharacterMotionKind::Find, count, count_explicit);
             InputAction::None
         }
         't' if matches!(
@@ -2167,7 +2204,7 @@ fn modal_char_action(
         ) =>
         {
             let (count, count_explicit) = state.take_count();
-            state.begin_search_motion(None, SearchMotionKind::Till, count, count_explicit);
+            state.begin_character_motion(None, CharacterMotionKind::Till, count, count_explicit);
             InputAction::None
         }
         'F' if matches!(
@@ -2176,7 +2213,12 @@ fn modal_char_action(
         ) =>
         {
             let (count, count_explicit) = state.take_count();
-            state.begin_search_motion(None, SearchMotionKind::FindBefore, count, count_explicit);
+            state.begin_character_motion(
+                None,
+                CharacterMotionKind::FindBefore,
+                count,
+                count_explicit,
+            );
             InputAction::None
         }
         'T' if matches!(
@@ -2185,7 +2227,12 @@ fn modal_char_action(
         ) =>
         {
             let (count, count_explicit) = state.take_count();
-            state.begin_search_motion(None, SearchMotionKind::TillBefore, count, count_explicit);
+            state.begin_character_motion(
+                None,
+                CharacterMotionKind::TillBefore,
+                count,
+                count_explicit,
+            );
             InputAction::None
         }
         'r' if matches!(
@@ -2424,37 +2471,50 @@ fn resolve_pending_operator(
                 count: pending.count,
             },
         }),
-        (_, None, 'f') => {
-            state.begin_search_motion(
+        (_, None, '\'' | '`') => {
+            state.begin_character_motion(
                 Some(pending),
-                SearchMotionKind::Find,
+                if c == '\'' {
+                    CharacterMotionKind::MarkLine
+                } else {
+                    CharacterMotionKind::MarkExact
+                },
+                pending.count,
+                pending.count_explicit,
+            );
+            Some(InputAction::None)
+        }
+        (_, None, 'f') => {
+            state.begin_character_motion(
+                Some(pending),
+                CharacterMotionKind::Find,
                 pending.count,
                 pending.count_explicit,
             );
             Some(InputAction::None)
         }
         (_, None, 't') => {
-            state.begin_search_motion(
+            state.begin_character_motion(
                 Some(pending),
-                SearchMotionKind::Till,
+                CharacterMotionKind::Till,
                 pending.count,
                 pending.count_explicit,
             );
             Some(InputAction::None)
         }
         (_, None, 'F') => {
-            state.begin_search_motion(
+            state.begin_character_motion(
                 Some(pending),
-                SearchMotionKind::FindBefore,
+                CharacterMotionKind::FindBefore,
                 pending.count,
                 pending.count_explicit,
             );
             Some(InputAction::None)
         }
         (_, None, 'T') => {
-            state.begin_search_motion(
+            state.begin_character_motion(
                 Some(pending),
-                SearchMotionKind::TillBefore,
+                CharacterMotionKind::TillBefore,
                 pending.count,
                 pending.count_explicit,
             );
@@ -2587,19 +2647,40 @@ fn motion_sequence_has_children(candidate: &str) -> bool {
     })
 }
 
-fn resolve_pending_search_motion(
+fn resolve_pending_character_motion(
     state: &mut InputState,
     c: char,
-    pending: PendingSearchMotion,
+    pending: PendingCharacterMotion,
 ) -> InputAction {
-    state.pending_search_motion = None;
+    state.pending_character_motion = None;
+    if matches!(
+        pending.kind,
+        CharacterMotionKind::SetMark
+            | CharacterMotionKind::MarkLine
+            | CharacterMotionKind::MarkExact
+    ) && !c.is_ascii_lowercase()
+    {
+        state.reset_prefixes();
+        return InputAction::None;
+    }
     let motion = match pending.kind {
-        SearchMotionKind::Find => Motion::FindChar(c),
-        SearchMotionKind::Till => Motion::TillChar(c),
-        SearchMotionKind::FindBefore => Motion::FindCharBefore(c),
-        SearchMotionKind::TillBefore => Motion::TillCharBefore(c),
+        CharacterMotionKind::SetMark => return InputAction::SetMark(c),
+        CharacterMotionKind::MarkLine => Motion::MarkLine(c),
+        CharacterMotionKind::MarkExact => Motion::MarkExact(c),
+        CharacterMotionKind::Find => Motion::FindChar(c),
+        CharacterMotionKind::Till => Motion::TillChar(c),
+        CharacterMotionKind::FindBefore => Motion::FindCharBefore(c),
+        CharacterMotionKind::TillBefore => Motion::TillCharBefore(c),
     };
-    state.last_search_motion = Some(motion);
+    if matches!(
+        pending.kind,
+        CharacterMotionKind::Find
+            | CharacterMotionKind::Till
+            | CharacterMotionKind::FindBefore
+            | CharacterMotionKind::TillBefore
+    ) {
+        state.last_search_motion = Some(motion);
+    }
 
     if let Some(operator) = pending.operator {
         InputAction::OperateTarget {
@@ -3015,6 +3096,7 @@ fn configured_action(name: &str) -> anyhow::Result<(InputAction, &'static str)> 
 
 fn input_action_description(action: &InputAction) -> &'static str {
     match action {
+        InputAction::SetMark(_) => "Set mark",
         InputAction::ToggleComments => "Toggle comments",
         InputAction::OpenExplorer => "Open explorer",
         InputAction::ToggleUndoTree => "Toggle undo tree",
@@ -3116,6 +3198,8 @@ fn motion_description(motion: &Motion) -> &'static str {
         Motion::FileEnd => "End of file",
         Motion::LineNumber => "Go to line",
         Motion::MatchDelimiter => "Matching delimiter",
+        Motion::MarkLine(_) => "Jump to marked line",
+        Motion::MarkExact(_) => "Jump to exact mark",
         Motion::FindChar(_) => "Find character forwards",
         Motion::TillChar(_) | Motion::RepeatTillChar(_) => "Until character forwards",
         Motion::FindCharBefore(_) => "Find character backwards",
@@ -3515,7 +3599,7 @@ fn map_key_with_state(
         return action;
     }
 
-    if let Some(pending_search_motion) = state.pending_search_motion {
+    if let Some(pending_character_motion) = state.pending_character_motion {
         match key {
             KeyKind::Escape => {
                 state.reset_prefixes();
@@ -3529,12 +3613,12 @@ fn map_key_with_state(
                 };
             }
             KeyKind::Tab => {
-                state.pending_search_motion = None;
-                return resolve_pending_search_motion(state, '\t', pending_search_motion);
+                state.pending_character_motion = None;
+                return resolve_pending_character_motion(state, '\t', pending_character_motion);
             }
             KeyKind::Char(c) => {
-                state.pending_search_motion = None;
-                return resolve_pending_search_motion(state, c, pending_search_motion);
+                state.pending_character_motion = None;
+                return resolve_pending_character_motion(state, c, pending_character_motion);
             }
             _ => {
                 state.reset_prefixes();

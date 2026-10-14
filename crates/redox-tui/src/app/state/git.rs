@@ -1067,13 +1067,42 @@ mod tests {
             };
             let dimmed = style.dimmed();
             let mut window = crate::tests::TestWindow::new(20, 8);
-            crate::draw_gutter_padding(&mut window, style, 3, 8, 1, 0, Some(&snapshot)).unwrap();
+            crate::draw_gutter_padding(&mut window, style, 3, 8, 1, 0, (Some(&snapshot), None))
+                .unwrap();
             for marker in &snapshot.markers {
                 let expected = if marker.staged { dimmed } else { style };
                 let (glyph, marker_style) = expected.git.gutter_marker(marker.kind);
                 assert!(window.row_text(marker.line as u16).starts_with(glyph));
                 assert_eq!(window.styles[marker.line][0], marker_style.into());
             }
+        }
+        let mut buffer = redox_core::TextBuffer::from_text(current_text);
+        let marked_line = snapshot.markers[0].line;
+        buffer.set_mark('a', redox_core::Pos::new(marked_line, 0));
+        let style = crate::ui::UiStyle::default();
+        let mut window = crate::tests::TestWindow::new(20, 8);
+        crate::draw_gutter_padding(
+            &mut window,
+            style,
+            3,
+            8,
+            1,
+            marked_line,
+            (Some(&snapshot), Some(&buffer)),
+        )
+        .unwrap();
+        assert!(window.row_text(0).starts_with('a'));
+        for marker in snapshot
+            .markers
+            .iter()
+            .filter(|marker| marker.line > marked_line)
+        {
+            let (glyph, _) = style.git.gutter_marker(marker.kind);
+            assert!(
+                window
+                    .row_text((marker.line - marked_line) as u16)
+                    .starts_with(glyph)
+            );
         }
         assert!(!snapshot.index_changed());
         git(&["reset", "-q", "HEAD", "--", "example.txt"]);

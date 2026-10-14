@@ -295,6 +295,7 @@ punctuation_special = "#b4d4cf"
 "pane.title" = { fg = "#cdcdcd", bg = "#1c1c24", bold = true }
 "gutter.line_number" = "#606079"
 "gutter.current_line_number" = "#cdcdcd"
+"gutter.mark" = "#f3be7c"
 "completion.ghost" = "#606079"
 "completion.keyword" = "#878787"
 "completion.match_highlight" = "#cdcdcd"

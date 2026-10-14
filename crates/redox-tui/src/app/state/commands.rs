@@ -173,6 +173,26 @@ const COMMANDS: &[CommandDefinition] = &[
         run: |state, argument| state.command_edit(argument),
     },
     CommandDefinition {
+        names: &["delm", "delmarks"],
+        editor_context: |_, _| true,
+        run: |state, argument| state.command_delete_marks(argument),
+    },
+    CommandDefinition {
+        names: &["delm!", "delmarks!"],
+        editor_context: |_, _| true,
+        run: |state, argument| {
+            if argument.is_empty() {
+                let buffer = state.session.active_buffer_mut();
+                for name in 'a'..='z' {
+                    buffer.delete_mark(name);
+                }
+                state.clear_status();
+            } else {
+                state.set_status("usage: delmarks!");
+            }
+        },
+    },
+    CommandDefinition {
         names: &["dashboard"],
         editor_context: |_, _| false,
         run: |state, _| state.open_dashboard(),
@@ -328,6 +348,25 @@ fn resolve_command(command: &str, argument: &str) -> Option<&'static CommandDefi
         // Prefer a fixed subcommand to its command's argument fallback.
         .max_by_key(|(name, _)| name.len())
         .map(|(_, definition)| definition)
+}
+
+fn parse_mark_names(argument: &str) -> Option<Vec<char>> {
+    let mut chars = argument.chars().filter(|ch| !ch.is_whitespace()).peekable();
+    let mut names = Vec::new();
+    while let Some(start) = chars.next() {
+        if !start.is_ascii_lowercase() {
+            return None;
+        }
+        let end = if chars.next_if_eq(&'-').is_some() {
+            chars
+                .next()
+                .filter(|end| end.is_ascii_lowercase() && *end >= start)?
+        } else {
+            start
+        };
+        names.extend(start..=end);
+    }
+    (!names.is_empty()).then_some(names)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -592,6 +631,19 @@ impl EditorState {
             return;
         }
         (definition.run)(self, arg);
+    }
+
+    /// Delete named marks given as letters and ranges, as in `:delmarks a c-e`.
+    fn command_delete_marks(&mut self, argument: &str) {
+        let Some(names) = parse_mark_names(argument) else {
+            self.set_status("usage: delmarks {a-z and ranges like b-d} | delmarks!");
+            return;
+        };
+        let buffer = self.session.active_buffer_mut();
+        for name in names {
+            buffer.delete_mark(name);
+        }
+        self.clear_status();
     }
 
     fn command_goto_line(&mut self, line_number: usize) {

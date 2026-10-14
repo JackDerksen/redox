@@ -11,6 +11,7 @@
 mod core;
 mod editing;
 mod lines;
+mod marks;
 mod positions;
 mod search;
 mod selection;
