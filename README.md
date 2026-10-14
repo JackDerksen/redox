@@ -586,6 +586,9 @@ reverse each axis independently.
 | `ctrl+d` / `ctrl+u` | Move down/up by half a window and centre the cursor. |
 | `zz` | Centre the cursor line in the viewport. |
 | `~` | Toggle character case, or the whole visual selection. |
+| `gu{motion}` / `gU{motion}` | Lowercase/uppercase the text a motion or text object covers, e.g. `gUiw`, `gu$`. |
+| `guu` / `gUU` | Lowercase/uppercase the current line (`gugu` / `gUgU` also work). A count changes that many lines. |
+| `gv` | Reselect the previous visual selection. The saved selection follows later edits. |
 
 Marks follow edits and undo within the open buffer. Mark letters share the leftmost
 gutter column with git symbols and take precedence on marked lines. When several
@@ -677,6 +680,10 @@ a limit.
 | `r` | Replace the active selection. |
 | `<space>y` | Yank the selection to the system clipboard. |
 | `tab` / `shift+tab` | Indent / outdent the selection. |
+| `u` / `U` | Lowercase / uppercase the selection. |
+| `o` | Move the cursor to the other end of the selection. |
+| `gv` | Swap the current selection with the previous one. |
+| `gn` / `gN` | Extend the selection to the end of the next match / start of the previous match. |
 | `J` / `K` | Move selected lines down/up. |
 | `gc` | Toggle comments on the selected lines using the file type's comment syntax. |
 | `<leader>[` / `<leader>]` | Wrap the selection in `[...]`. |
@@ -710,6 +717,8 @@ literal.
 | ---- | --------- |
 | `/` | Search in the current buffer. |
 | `ctrl+n` / `ctrl+p` | Repeat the cached search forward/backward. |
+| `gn` / `gN` | Select the match under the cursor, or the next/previous one, wrapping around the buffer. |
+| `cgn` / `dgn` / `gUgn` | Apply an operator to that match. `.` repeats it on the next match, so `cgn` + `.` replaces matches one at a time. |
 | `d$`, `c$`, `y$` | Apply an operator through a motion. |
 | `de`, `ce`, `ye` | Delete, change, or yank through the word's final character. |
 | `dj`, `yj`, `dk`, `yk` | Delete or yank whole lines, including the current and destination lines. |

@@ -2,6 +2,11 @@
 
 use crate::{Pos, TextBuffer};
 
+const NAMED_MARKS: usize = 26;
+const VISUAL_ANCHOR: usize = NAMED_MARKS;
+const VISUAL_CURSOR: usize = NAMED_MARKS + 1;
+pub(super) const MARK_SLOTS: usize = NAMED_MARKS + 2;
+
 impl TextBuffer {
     /// Set a lowercase named mark at a clamped position. Return whether the name is valid.
     pub fn set_mark(&mut self, name: char, position: Pos) -> bool {
@@ -23,6 +28,33 @@ impl TextBuffer {
     /// Clear a lowercase named mark. Return whether it was set.
     pub fn delete_mark(&mut self, name: char) -> bool {
         name.is_ascii_lowercase() && self.marks[name as usize - 'a' as usize].take().is_some()
+    }
+
+    /// Remember the last visual selection so it follows later edits like named marks.
+    pub fn set_last_visual_selection(&mut self, anchor: Pos, cursor: Pos) {
+        self.marks[VISUAL_ANCHOR] = Some(self.pos_to_char(anchor));
+        self.marks[VISUAL_CURSOR] = Some(self.pos_to_char(cursor));
+    }
+
+    /// Look up the last visual selection as `(anchor, cursor)`.
+    pub fn last_visual_selection(&self) -> Option<(Pos, Pos)> {
+        Some((
+            self.char_to_pos(self.marks[VISUAL_ANCHOR]?),
+            self.char_to_pos(self.marks[VISUAL_CURSOR]?),
+        ))
+    }
+
+    /// Every set mark slot, including the last visual selection, as positions.
+    pub(super) fn mark_slot_positions(&self) -> Vec<(usize, Pos)> {
+        self.marks
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, offset)| offset.map(|offset| (slot, self.char_to_pos(offset))))
+            .collect()
+    }
+
+    pub(super) fn set_mark_slot(&mut self, slot: usize, position: Pos) {
+        self.marks[slot] = Some(self.pos_to_char(position));
     }
 
     /// Iterate over set marks in alphabetical order.
@@ -82,5 +114,23 @@ mod tests {
             buffer.marks().map(|(name, _)| name).collect::<String>(),
             "z"
         );
+    }
+
+    #[test]
+    fn last_visual_selection_follows_edits_and_line_moves() {
+        let mut buffer = TextBuffer::from_text("one\ntwo\nthree");
+        assert_eq!(buffer.last_visual_selection(), None);
+        buffer.set_last_visual_selection(Pos::new(1, 2), Pos::new(2, 1));
+        buffer.insert(Pos::zero(), "zero\n");
+        assert_eq!(
+            buffer.last_visual_selection(),
+            Some((Pos::new(2, 2), Pos::new(3, 1)))
+        );
+        buffer.move_line_range_up_once(2, 2);
+        assert_eq!(
+            buffer.last_visual_selection(),
+            Some((Pos::new(1, 2), Pos::new(3, 1)))
+        );
+        assert_eq!(buffer.marks().count(), 0);
     }
 }

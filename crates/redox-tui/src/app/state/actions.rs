@@ -1047,21 +1047,44 @@ impl EditorState {
                 }
             }
 
-            InputAction::IndentCurrentLines { count }
-            | InputAction::OutdentCurrentLines { count } => {
+            InputAction::OperateCurrentLines { operator, count } => {
                 if self.mode == EditorMode::Normal {
-                    let start_line = self.active_cursor_pos().line;
-                    let end_line = start_line
-                        .saturating_add(count.max(1) - 1)
-                        .min(self.session.active_buffer().len_lines().saturating_sub(1));
-                    self.shift_line_span(
-                        start_line,
-                        end_line,
-                        matches!(action, InputAction::OutdentCurrentLines { .. }),
+                    self.operate_current_lines(
+                        operator,
+                        count.max(1),
                         viewport_width_cells,
                         text_vh,
                     );
                 }
+            }
+
+            InputAction::ChangeSelectionCase { upper } => {
+                if matches!(
+                    self.mode,
+                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+                ) {
+                    self.change_case_active_visual_selection(
+                        if upper {
+                            super::editing::CaseChange::Upper
+                        } else {
+                            super::editing::CaseChange::Lower
+                        },
+                        viewport_width_cells,
+                        text_vh,
+                    );
+                }
+            }
+
+            InputAction::RestoreVisualSelection => {
+                self.restore_visual_selection(viewport_width_cells, text_vh);
+            }
+
+            InputAction::SwapVisualSelectionEnds => {
+                self.swap_visual_selection_ends(viewport_width_cells, text_vh);
+            }
+
+            InputAction::SelectSearchMatch { forward } => {
+                self.select_search_match(forward, viewport_width_cells, text_vh);
             }
 
             InputAction::YankCurrentLinePrivate { count } => {
@@ -1706,8 +1729,11 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
         | InputAction::DeleteCurrentLinePrivate { .. }
         | InputAction::YankCurrentLinePrivate { .. }
         | InputAction::ChangeCurrentLinePrivate { .. }
-        | InputAction::IndentCurrentLines { .. }
-        | InputAction::OutdentCurrentLines { .. }
+        | InputAction::OperateCurrentLines { .. }
+        | InputAction::ChangeSelectionCase { .. }
+        | InputAction::RestoreVisualSelection
+        | InputAction::SwapVisualSelectionEnds
+        | InputAction::SelectSearchMatch { .. }
         | InputAction::YankSelectionSystem
         | InputAction::PasteSystemClipboard
         | InputAction::PasteSystemClipboardText(_)

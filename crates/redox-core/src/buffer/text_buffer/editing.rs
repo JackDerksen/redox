@@ -329,9 +329,9 @@ impl TextBuffer {
         }
         let replace_start = self.line_to_char(first);
         let replace_end = self.line_full_end_char(last);
-        let marks = self.marks().collect::<Vec<_>>();
+        let marks = self.mark_slot_positions();
         self.replace_char_range(replace_start, replace_end, &replacement);
-        for (name, mut position) in marks {
+        for (slot, mut position) in marks {
             if (first..=last).contains(&position.line) {
                 position.line = if down {
                     if position.line == last {
@@ -344,7 +344,7 @@ impl TextBuffer {
                 } else {
                     position.line - 1
                 };
-                self.set_mark(name, position);
+                self.set_mark_slot(slot, position);
             }
         }
     }

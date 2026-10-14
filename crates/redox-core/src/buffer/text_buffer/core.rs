@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::ops::Range;
 
+use super::marks::MARK_SLOTS;
+
 /// Redox's UTF-8 text store.
 ///
 /// Positions and ranges use Unicode scalar-value indices. Terminal cell widths,
@@ -12,7 +14,8 @@ use std::ops::Range;
 #[derive(Debug, Clone)]
 pub struct TextBuffer {
     pub(super) rope: Rope,
-    pub(super) marks: [Option<usize>; 26],
+    /// Named marks `a`-`z`, then the last visual selection's anchor and cursor.
+    pub(super) marks: [Option<usize>; MARK_SLOTS],
 }
 
 impl PartialEq for TextBuffer {
@@ -87,7 +90,7 @@ impl TextBuffer {
     pub fn new() -> Self {
         Self {
             rope: Rope::new(),
-            marks: [None; 26],
+            marks: [None; MARK_SLOTS],
         }
     }
 
@@ -95,7 +98,7 @@ impl TextBuffer {
     pub fn from_text(s: &str) -> Self {
         Self {
             rope: Rope::from_str(s),
-            marks: [None; 26],
+            marks: [None; MARK_SLOTS],
         }
     }
 
@@ -103,7 +106,7 @@ impl TextBuffer {
     pub fn from_reader(reader: impl Read) -> std::io::Result<Self> {
         Rope::from_reader(reader).map(|rope| Self {
             rope,
-            marks: [None; 26],
+            marks: [None; MARK_SLOTS],
         })
     }
 
@@ -222,7 +225,7 @@ impl From<String> for TextBuffer {
     fn from(text: String) -> Self {
         Self {
             rope: Rope::from(text),
-            marks: [None; 26],
+            marks: [None; MARK_SLOTS],
         }
     }
 }

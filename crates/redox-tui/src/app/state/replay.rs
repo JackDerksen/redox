@@ -145,7 +145,7 @@ impl EditorState {
     pub fn apply_input(&mut self, action: InputAction, width: usize, height: usize) {
         self.log_action(&action);
         if self.replay.dispatching {
-            self.apply_input_inner(action, width, height);
+            self.apply_input_remembering_visual(action, width, height);
             return;
         }
 
@@ -280,7 +280,7 @@ impl EditorState {
         }
         self.replay.resolved_insert = None;
         self.replay.dispatching = true;
-        self.apply_input_inner(action, width, height);
+        self.apply_input_remembering_visual(action, width, height);
         self.replay.dispatching = false;
         let recorded_action = self.replay.resolved_insert.take().unwrap_or_else(|| {
             if let Some((before, cursor)) = resolved_snapshot {
@@ -599,13 +599,15 @@ fn starts_change(action: &InputAction) -> bool {
             | InputAction::DeleteSelectionNoYank
             | InputAction::DeleteCurrentLinePrivate { .. }
             | InputAction::ChangeCurrentLinePrivate { .. }
-            | InputAction::IndentCurrentLines { .. }
-            | InputAction::OutdentCurrentLines { .. }
+            | InputAction::OperateCurrentLines { .. }
+            | InputAction::ChangeSelectionCase { .. }
             | InputAction::OperateTarget {
                 operator: TextObjectOperator::Delete
                     | TextObjectOperator::Change
                     | TextObjectOperator::Indent
-                    | TextObjectOperator::Outdent,
+                    | TextObjectOperator::Outdent
+                    | TextObjectOperator::Lowercase
+                    | TextObjectOperator::Uppercase,
                 ..
             }
             | InputAction::Paste(_)
@@ -628,8 +630,7 @@ fn replace_change_count(action: &mut InputAction, replacement: usize) -> bool {
     let count = match action {
         InputAction::DeleteCurrentLinePrivate { count }
         | InputAction::ChangeCurrentLinePrivate { count }
-        | InputAction::IndentCurrentLines { count }
-        | InputAction::OutdentCurrentLines { count }
+        | InputAction::OperateCurrentLines { count, .. }
         | InputAction::ToggleCase { count }
         | InputAction::MoveVisualSelectionUp { count }
         | InputAction::MoveVisualSelectionDown { count }
@@ -638,6 +639,7 @@ fn replace_change_count(action: &mut InputAction, replacement: usize) -> bool {
         InputAction::OperateTarget { target, .. } => match target {
             OperatorTarget::Motion { count, .. } => count,
             OperatorTarget::TextObject(spec) => &mut spec.count,
+            OperatorTarget::SearchMatch { .. } => return false,
         },
         _ => return false,
     };

@@ -134,11 +134,17 @@ pub enum InputAction {
     ChangeCurrentLinePrivate {
         count: usize,
     },
-    IndentCurrentLines {
+    OperateCurrentLines {
+        operator: TextObjectOperator,
         count: usize,
     },
-    OutdentCurrentLines {
-        count: usize,
+    ChangeSelectionCase {
+        upper: bool,
+    },
+    RestoreVisualSelection,
+    SwapVisualSelectionEnds,
+    SelectSearchMatch {
+        forward: bool,
     },
     YankSelectionSystem,
     PasteSystemClipboard,
@@ -250,6 +256,7 @@ pub enum InputAction {
 pub enum OperatorTarget {
     Motion { motion: Motion, count: usize },
     TextObject(TextObjectSpec),
+    SearchMatch { forward: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +267,8 @@ pub enum TextObjectOperator {
     Yank,
     Indent,
     Outdent,
+    Lowercase,
+    Uppercase,
 }
 
 pub const DEFAULT_WHICH_KEY_DELAY: Duration = Duration::from_secs(3);
@@ -298,6 +307,9 @@ enum SequenceAction {
     Motion(Motion),
     CenterCursorLine,
     WriteQuitIfDirty,
+    BeginOperator(TextObjectOperator),
+    SelectSearchMatch { forward: bool },
+    RestoreVisualSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +385,21 @@ const COMMON_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         fallback: PrefixFallback::RetryCurrent,
         action: Some(SequenceAction::GotoDefinition),
     },
+    SequenceBinding {
+        sequence: "gn",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::SelectSearchMatch { forward: true }),
+    },
+    SequenceBinding {
+        sequence: "gN",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::SelectSearchMatch { forward: false }),
+    },
+    SequenceBinding {
+        sequence: "gv",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::RestoreVisualSelection),
+    },
 ];
 
 const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
@@ -385,6 +412,16 @@ const NORMAL_SEQUENCE_BINDINGS: &[SequenceBinding] = &[
         sequence: "ZZ",
         fallback: PrefixFallback::Consume,
         action: Some(SequenceAction::WriteQuitIfDirty),
+    },
+    SequenceBinding {
+        sequence: "gu",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::BeginOperator(TextObjectOperator::Lowercase)),
+    },
+    SequenceBinding {
+        sequence: "gU",
+        fallback: PrefixFallback::RetryCurrent,
+        action: Some(SequenceAction::BeginOperator(TextObjectOperator::Uppercase)),
     },
     SequenceBinding {
         sequence: "gc",
@@ -1530,6 +1567,14 @@ fn sequence_action_description(binding: &SequenceBinding) -> &'static str {
         Some(SequenceAction::Motion(motion)) => motion_description(&motion),
         Some(SequenceAction::CenterCursorLine) => "Centre cursor line",
         Some(SequenceAction::WriteQuitIfDirty) => "Write if modified and quit",
+        Some(SequenceAction::BeginOperator(TextObjectOperator::Lowercase)) => "+lowercase",
+        Some(SequenceAction::BeginOperator(TextObjectOperator::Uppercase)) => "+uppercase",
+        Some(SequenceAction::BeginOperator(_)) => "+operator",
+        Some(SequenceAction::SelectSearchMatch { forward: true }) => "Select next search match",
+        Some(SequenceAction::SelectSearchMatch { forward: false }) => {
+            "Select previous search match"
+        }
+        Some(SequenceAction::RestoreVisualSelection) => "Restore previous selection",
         None if binding.sequence == "gc" => "+comment",
         None if binding.sequence.ends_with('c') => "+code",
         None => "+prefix",
@@ -1544,8 +1589,14 @@ fn operator_entries(operator: TextObjectOperator) -> Vec<WhichKeyEntry> {
         TextObjectOperator::Select => "Select current line",
         TextObjectOperator::Indent => "Indent current line",
         TextObjectOperator::Outdent => "Outdent current line",
+        TextObjectOperator::Lowercase => "Lowercase current line",
+        TextObjectOperator::Uppercase => "Uppercase current line",
     };
-    let mut entries = vec![which_key_entry(operator_key(operator), repeat_description)];
+    let line_key = operator_keys(operator)
+        .chars()
+        .last()
+        .expect("operator keys");
+    let mut entries = vec![which_key_entry(line_key, repeat_description)];
     entries.extend([
         which_key_entry("0", "Start of line"),
         which_key_entry("_", "First non-blank"),
@@ -1650,7 +1701,7 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
 fn operator_prefix(operator: PendingOperator, sequence: &str) -> String {
     let mut prefix = count_prefix(operator.count, operator.count_explicit);
     if operator.operator != TextObjectOperator::Select {
-        prefix.push(operator_key(operator.operator));
+        prefix.push_str(operator_keys(operator.operator));
     }
     if let Some(scope) = operator.scope {
         prefix.push(match scope {
@@ -1687,14 +1738,17 @@ fn count_prefix(count: usize, explicit: bool) -> String {
     }
 }
 
-fn operator_key(operator: TextObjectOperator) -> char {
+/// Keys that start an operator. Repeating the last key applies it to whole lines.
+fn operator_keys(operator: TextObjectOperator) -> &'static str {
     match operator {
-        TextObjectOperator::Delete => 'd',
-        TextObjectOperator::Change => 'c',
-        TextObjectOperator::Yank => 'y',
-        TextObjectOperator::Select => 'v',
-        TextObjectOperator::Indent => '>',
-        TextObjectOperator::Outdent => '<',
+        TextObjectOperator::Delete => "d",
+        TextObjectOperator::Change => "c",
+        TextObjectOperator::Yank => "y",
+        TextObjectOperator::Select => "v",
+        TextObjectOperator::Indent => ">",
+        TextObjectOperator::Outdent => "<",
+        TextObjectOperator::Lowercase => "gu",
+        TextObjectOperator::Uppercase => "gU",
     }
 }
 
@@ -2273,6 +2327,23 @@ fn modal_char_action(
             state.reset_prefixes();
             InputAction::PastePrivateRegisterBefore
         }
+        'o' if matches!(
+            mode,
+            InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+        ) =>
+        {
+            state.reset_prefixes();
+            InputAction::SwapVisualSelectionEnds
+        }
+        'u' | 'U'
+            if matches!(
+                mode,
+                InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+            ) =>
+        {
+            state.reset_prefixes();
+            InputAction::ChangeSelectionCase { upper: c == 'U' }
+        }
         'J' if matches!(
             mode,
             InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -2472,12 +2543,29 @@ fn resolve_pending_operator(
         (TextObjectOperator::Change, None, 'c') => Some(InputAction::ChangeCurrentLinePrivate {
             count: pending.count,
         }),
-        (TextObjectOperator::Indent, None, '>') => Some(InputAction::IndentCurrentLines {
-            count: pending.count,
-        }),
-        (TextObjectOperator::Outdent, None, '<') => Some(InputAction::OutdentCurrentLines {
-            count: pending.count,
-        }),
+        (TextObjectOperator::Indent, None, '>') | (TextObjectOperator::Outdent, None, '<') => {
+            Some(InputAction::OperateCurrentLines {
+                operator: pending.operator,
+                count: pending.count,
+            })
+        }
+        // `guu` and `gugu` both repeat the operator, so accept a pending `g` too.
+        (TextObjectOperator::Lowercase, None, 'u') | (TextObjectOperator::Uppercase, None, 'U')
+            if matches!(state.pending_sequence.as_str(), "" | "g") =>
+        {
+            state.clear_sequence();
+            Some(InputAction::OperateCurrentLines {
+                operator: pending.operator,
+                count: pending.count,
+            })
+        }
+        (operator, None, 'n' | 'N') if state.pending_sequence == "g" => {
+            state.clear_sequence();
+            Some(InputAction::OperateTarget {
+                operator,
+                target: OperatorTarget::SearchMatch { forward: c == 'n' },
+            })
+        }
         (operator, None, '0') => Some(InputAction::OperateTarget {
             operator,
             target: OperatorTarget::Motion {
@@ -3295,6 +3383,18 @@ fn sequence_binding_action(state: &mut InputState, binding: &SequenceBinding) ->
         Some(SequenceAction::WriteQuitIfDirty) => {
             state.reset_prefixes();
             InputAction::WriteQuitIfDirty
+        }
+        Some(SequenceAction::BeginOperator(operator)) => {
+            state.begin_operator(operator, None);
+            InputAction::None
+        }
+        Some(SequenceAction::SelectSearchMatch { forward }) => {
+            state.reset_prefixes();
+            InputAction::SelectSearchMatch { forward }
+        }
+        Some(SequenceAction::RestoreVisualSelection) => {
+            state.reset_prefixes();
+            InputAction::RestoreVisualSelection
         }
         None => InputAction::None,
     }

@@ -17,17 +17,24 @@ struct OperatorTargetPlan {
 }
 
 impl OperatorTargetPlan {
+    /// Backward motions store their ranges cursor-first, so order them here.
+    fn start(&self) -> Option<Pos> {
+        self.delete_ranges.iter().map(|&(a, b)| a.min(b)).min()
+    }
+
     /// Lines touched by the target. A charwise range ending at a later line's
     /// start excludes that line, matching Vim's exclusive-motion rule.
     fn line_range(&self) -> (usize, usize) {
         if let Some((selection, VisualModeKind::Line)) = self.yank_highlight {
             return selection.line_range();
         }
-        let start = self
+        let start = self.start().unwrap_or_else(Pos::zero);
+        let end = self
             .delete_ranges
-            .first()
-            .map_or(Pos::zero(), |range| range.0);
-        let end = self.delete_ranges.last().map_or(start, |range| range.1);
+            .iter()
+            .map(|&(a, b)| a.max(b))
+            .max()
+            .unwrap_or(start);
         let end_line = if end.line > start.line && end.col == 0 {
             end.line - 1
         } else {
@@ -365,6 +372,22 @@ impl EditorState {
                     },
                 })
             }
+            OperatorTarget::SearchMatch { forward } => {
+                let (start, end) = self.search_match_for_gn(cursor, *forward)?;
+                (start != end).then(|| OperatorTargetPlan {
+                    delete_ranges: vec![(start, end)],
+                    text: buffer.slice_pos_range(start, end),
+                    register_kind: RegisterKind::CharWise,
+                    preserve_blank_line_on_change: false,
+                    yank_highlight: Some((
+                        Selection::new(
+                            start,
+                            super::search::inclusive_match_end(buffer, start, end),
+                        ),
+                        VisualModeKind::Char,
+                    )),
+                })
+            }
             OperatorTarget::TextObject(spec) => {
                 let plan = buffer.text_object_edit_plan(cursor, *spec)?;
                 let yank_highlight = buffer.text_object_selection(cursor, *spec);
@@ -429,7 +452,13 @@ impl EditorState {
             return;
         }
 
+        if matches!(target, OperatorTarget::SearchMatch { .. }) {
+            self.ensure_search_state_current();
+        }
         let Some(plan) = self.operator_target_plan(operator, target) else {
+            if matches!(target, OperatorTarget::SearchMatch { .. }) {
+                self.set_status("pattern not found");
+            }
             return;
         };
 
@@ -460,6 +489,32 @@ impl EditorState {
                     self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
                 }
                 self.confirm_yank("yanked");
+            }
+            TextObjectOperator::Lowercase | TextObjectOperator::Uppercase => {
+                let before = self.capture_active_undo_checkpoint();
+                let cursor = self.active_cursor_pos();
+                let start = plan.start().unwrap_or(cursor);
+                // Linewise targets keep the column, like Vim's `gUU` and `gUj`.
+                let new_cursor = match plan.register_kind {
+                    RegisterKind::LineWise if start.line == cursor.line => cursor,
+                    RegisterKind::LineWise => Pos::new(
+                        start.line,
+                        self.session
+                            .active_buffer()
+                            .line_first_non_whitespace_col(start.line),
+                    ),
+                    RegisterKind::CharWise => start,
+                };
+                let case = if operator == TextObjectOperator::Uppercase {
+                    CaseChange::Upper
+                } else {
+                    CaseChange::Lower
+                };
+                self.replace_ranges_with_case(&plan.delete_ranges, case, new_cursor);
+                self.reconcile_active_cursor(viewport_width_cells, text_vh);
+                self.invalidate_active_render_caches();
+                let _ = self.record_active_undo_if_changed(before);
+                let _ = self.session.recompute_active_dirty();
             }
             TextObjectOperator::Indent | TextObjectOperator::Outdent => {
                 let (start_line, end_line) = plan.line_range();
@@ -702,7 +757,11 @@ impl EditorState {
                 self.toggle_case_under_cursor(count, viewport_width_cells, text_vh);
             }
             EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
-                self.toggle_case_active_visual_selection(viewport_width_cells, text_vh);
+                self.change_case_active_visual_selection(
+                    CaseChange::Toggle,
+                    viewport_width_cells,
+                    text_vh,
+                );
             }
             EditorMode::Insert
             | EditorMode::Command
@@ -769,7 +828,12 @@ impl EditorState {
         }
     }
 
-    fn toggle_case_active_visual_selection(&mut self, viewport_width_cells: usize, text_vh: usize) {
+    pub(super) fn change_case_active_visual_selection(
+        &mut self,
+        case: CaseChange,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
@@ -777,40 +841,189 @@ impl EditorState {
         let Some(plan) = self.active_visual_selection_edit_plan() else {
             return;
         };
-        if plan.delete_ranges.is_empty() {
+        let Some(&(new_cursor, _)) = plan.delete_ranges.first() else {
             return;
-        }
+        };
 
         let before = self.capture_active_undo_checkpoint();
+        self.replace_ranges_with_case(&plan.delete_ranges, case, new_cursor);
+        self.reconcile_active_cursor(viewport_width_cells, text_vh);
+        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    }
+
+    /// Rewrite each range in the requested case and leave the cursor at `cursor`.
+    fn replace_ranges_with_case(&mut self, ranges: &[(Pos, Pos)], case: CaseChange, cursor: Pos) {
         let replacements = {
             let buffer = self.session.active_buffer();
-            plan.delete_ranges
+            ranges
                 .iter()
-                .copied()
-                .map(|(start, end)| {
+                .map(|&(start, end)| {
                     let source = buffer.slice_pos_range(start, end);
-                    let text = toggle_case_text_for_range(&source);
-                    (start, end, text)
+                    (start, end, change_case_text(&source, case))
                 })
                 .collect::<Vec<_>>()
         };
-        let new_cursor = replacements
-            .first()
-            .map(|(start, _, _)| *start)
-            .unwrap_or_else(Pos::zero);
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        {
-            let buffer = self.session.active_buffer_mut();
-            for (start, end, text) in replacements.iter().rev() {
-                let _ = buffer.replace_selection(Selection::new(*start, *end), text);
-            }
-            view.cursor.cursor = new_cursor;
-            view.cursor
-                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        let buffer = self.session.active_buffer_mut();
+        for (start, end, text) in replacements.iter().rev() {
+            let _ = buffer.replace_selection(Selection::new(*start, *end), text);
         }
+        view.cursor.cursor = buffer.clamp_pos(cursor);
+    }
 
-        self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+    fn reconcile_active_cursor(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        view.cursor.reconcile_after_edit(
+            self.session.active_buffer(),
+            viewport_width_cells,
+            text_vh,
+        );
+    }
+
+    /// Apply a linewise operator to `count` lines from the cursor, as `>>` or `guu` do.
+    pub(super) fn operate_current_lines(
+        &mut self,
+        operator: TextObjectOperator,
+        count: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        let cursor = self.active_cursor_pos();
+        let buffer = self.session.active_buffer();
+        let start_line = cursor.line;
+        let end_line = start_line
+            .saturating_add(count.saturating_sub(1))
+            .min(buffer.len_lines().saturating_sub(1));
+        let case = match operator {
+            TextObjectOperator::Indent | TextObjectOperator::Outdent => {
+                self.shift_line_span(
+                    start_line,
+                    end_line,
+                    operator == TextObjectOperator::Outdent,
+                    viewport_width_cells,
+                    text_vh,
+                );
+                return;
+            }
+            TextObjectOperator::Lowercase => CaseChange::Lower,
+            TextObjectOperator::Uppercase => CaseChange::Upper,
+            TextObjectOperator::Delete
+            | TextObjectOperator::Change
+            | TextObjectOperator::Yank
+            | TextObjectOperator::Select => return,
+        };
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let end_col = self.session.active_buffer().line_len_chars(end_line);
+        let range = (Pos::new(start_line, 0), Pos::new(end_line, end_col));
+        let before = self.capture_active_undo_checkpoint();
+        self.replace_ranges_with_case(&[range], case, cursor);
+        self.reconcile_active_cursor(viewport_width_cells, text_vh);
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
+    /// Dispatch an action, remembering the selection whenever it ends visual mode for `gv`.
+    pub(super) fn apply_input_remembering_visual(
+        &mut self,
+        action: crate::input::InputAction,
+        width: usize,
+        height: usize,
+    ) {
+        let active_id = self.session.active_id();
+        let visual = self.active_visual_selection();
+        self.apply_input_inner(action, width, height);
+        if let Some((selection, mode)) = visual
+            && (self.session.active_id() != active_id || self.active_visual_selection().is_none())
+        {
+            self.remember_visual_selection(active_id, selection, mode);
+        }
+    }
+
+    fn remember_visual_selection(
+        &mut self,
+        buffer_id: redox_core::BufferId,
+        selection: Selection,
+        mode: VisualModeKind,
+    ) {
+        if let Some(buffer) = self.session.buffer_mut(buffer_id) {
+            buffer.set_last_visual_selection(selection.anchor, selection.cursor);
+            self.views.entry(buffer_id).or_default().last_visual_mode = Some(mode);
+        }
+    }
+
+    /// `gv`: reselect the previous selection. In visual mode, swap it with the current one.
+    pub(super) fn restore_visual_selection(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        let active_id = self.session.active_id();
+        let previous = self.session.active_buffer().last_visual_selection().zip(
+            self.views
+                .get(&active_id)
+                .and_then(|view| view.last_visual_mode),
+        );
+        let Some(((anchor, cursor), mode)) = previous else {
+            self.set_status("no previous selection");
+            return;
+        };
+        if !matches!(
+            self.mode,
+            EditorMode::Normal
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
+        ) {
+            return;
+        }
+        if let Some((selection, current_mode)) = self.active_visual_selection() {
+            self.remember_visual_selection(active_id, selection, current_mode);
+        }
+        self.enter_visual_selection(
+            Selection::new(anchor, cursor),
+            mode,
+            viewport_width_cells,
+            text_vh,
+        );
+    }
+
+    pub(super) fn enter_visual_selection(
+        &mut self,
+        selection: Selection,
+        mode: VisualModeKind,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.visual_anchor = Some(buffer.clamp_pos(selection.anchor));
+        view.cursor.cursor = buffer.clamp_pos(selection.cursor);
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        self.mode = match mode {
+            VisualModeKind::Char => EditorMode::Visual,
+            VisualModeKind::Line => EditorMode::VisualLine,
+            VisualModeKind::Block => EditorMode::VisualBlock,
+        };
+        self.clear_status();
+    }
+
+    /// Visual `o`: move the cursor to the other end of the selection.
+    pub(super) fn swap_visual_selection_ends(
+        &mut self,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if let Some((selection, mode)) = self.active_visual_selection() {
+            self.enter_visual_selection(
+                Selection::new(selection.cursor, selection.anchor),
+                mode,
+                viewport_width_cells,
+                text_vh,
+            );
+        }
     }
 
     pub(super) fn wrap_active_visual_selection(
@@ -1448,10 +1661,17 @@ fn toggled_case_text(ch: char) -> String {
     }
 }
 
-fn toggle_case_text_for_range(source: &str) -> String {
-    let mut toggled = String::new();
-    for ch in source.chars() {
-        toggled.push_str(&toggled_case_text(ch));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaseChange {
+    Toggle,
+    Lower,
+    Upper,
+}
+
+fn change_case_text(source: &str, case: CaseChange) -> String {
+    match case {
+        CaseChange::Toggle => source.chars().map(toggled_case_text).collect(),
+        CaseChange::Lower => source.to_lowercase(),
+        CaseChange::Upper => source.to_uppercase(),
     }
-    toggled
 }

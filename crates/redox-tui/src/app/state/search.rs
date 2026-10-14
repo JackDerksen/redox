@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use redox_core::Pos;
 use redox_core::motion::{Motion, apply_motion_n, char_search_target};
+use redox_core::{Pos, Selection, VisualModeKind};
 
 use super::{
     EditorMode, EditorState, SearchLanding, SearchLineHighlights, SearchMatch, SearchOrigin,
@@ -307,7 +307,7 @@ impl EditorState {
         }
     }
 
-    fn ensure_search_state_current(&mut self) {
+    pub(super) fn ensure_search_state_current(&mut self) {
         let Some(search) = self.search_state.as_ref() else {
             return;
         };
@@ -363,6 +363,126 @@ impl EditorState {
         view.cursor
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         self.center_active_cursor_line(text_vh);
+    }
+}
+
+impl EditorState {
+    /// The match `gn`/`gN` acts on: the one under the cursor, else the next one in
+    /// that direction, wrapping around the buffer. Returns its exclusive range.
+    pub(super) fn search_match_for_gn(&self, cursor: Pos, forward: bool) -> Option<(Pos, Pos)> {
+        let buffer = self.session.active_buffer();
+        let matches = self.current_search_match_offsets()?;
+        let cursor = buffer.pos_to_char(cursor);
+        let containing = matches
+            .iter()
+            .find(|&&(start, end)| start <= cursor && (cursor < end || start == end));
+        let chosen = containing.or_else(|| {
+            if forward {
+                matches
+                    .iter()
+                    .find(|(start, _)| *start > cursor)
+                    .or(matches.first())
+            } else {
+                matches
+                    .iter()
+                    .rev()
+                    .find(|(start, _)| *start < cursor)
+                    .or(matches.last())
+            }
+        })?;
+        Some((buffer.char_to_pos(chosen.0), buffer.char_to_pos(chosen.1)))
+    }
+
+    /// Visual `gn`/`gN`: the match past the selection's cursor end, wrapping around.
+    fn search_match_extending_selection(&self, cursor: Pos, forward: bool) -> Option<(Pos, Pos)> {
+        let buffer = self.session.active_buffer();
+        let matches = self.current_search_match_offsets()?;
+        let cursor = buffer.pos_to_char(cursor);
+        let chosen = if forward {
+            matches
+                .iter()
+                .find(|(start, end)| end.saturating_sub(1).max(*start) > cursor)
+                .or(matches.first())
+        } else {
+            matches
+                .iter()
+                .rev()
+                .find(|(start, _)| *start < cursor)
+                .or(matches.last())
+        }?;
+        Some((buffer.char_to_pos(chosen.0), buffer.char_to_pos(chosen.1)))
+    }
+
+    fn current_search_match_offsets(&self) -> Option<Vec<(usize, usize)>> {
+        let search = self
+            .search_state
+            .as_ref()
+            .filter(|search| search.buffer_id == self.session.active_id())?;
+        let buffer = self.session.active_buffer();
+        let matches = search
+            .matches
+            .iter()
+            .map(|matched| {
+                (
+                    buffer.pos_to_char(matched.start),
+                    buffer.pos_to_char(matched.end),
+                )
+            })
+            .collect::<Vec<_>>();
+        (!matches.is_empty()).then_some(matches)
+    }
+
+    /// `gn`/`gN`: select a search match, or extend the current selection to one.
+    pub(super) fn select_search_match(
+        &mut self,
+        forward: bool,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !matches!(
+            self.mode,
+            EditorMode::Normal
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
+        ) {
+            return;
+        }
+        self.ensure_search_state_current();
+        let cursor = self.active_cursor_pos();
+        let visual = self.active_visual_selection();
+        let found = if visual.is_some() {
+            self.search_match_extending_selection(cursor, forward)
+        } else {
+            self.search_match_for_gn(cursor, forward)
+        };
+        let Some((start, end)) = found else {
+            self.set_status("pattern not found");
+            return;
+        };
+        let buffer = self.session.active_buffer();
+        let last = inclusive_match_end(buffer, start, end);
+        let selection = match (visual, forward) {
+            (Some((selection, _)), true) => Selection::new(selection.anchor, last),
+            (Some((selection, _)), false) => Selection::new(selection.anchor, start),
+            (None, true) => Selection::new(start, last),
+            (None, false) => Selection::new(last, start),
+        };
+        let mode = visual.map_or(VisualModeKind::Char, |(_, mode)| mode);
+        if let Some(search) = self.search_state.as_mut() {
+            search.visible = true;
+        }
+        self.enter_visual_selection(selection, mode, viewport_width_cells, text_vh);
+    }
+}
+
+/// The last character of a match, for visual selections that include their end.
+pub(super) fn inclusive_match_end(buffer: &redox_core::TextBuffer, start: Pos, end: Pos) -> Pos {
+    let end = buffer.pos_to_char(end);
+    if end > buffer.pos_to_char(start) {
+        buffer.char_to_pos(end - 1)
+    } else {
+        start
     }
 }
 

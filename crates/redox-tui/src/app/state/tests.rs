@@ -7741,6 +7741,175 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
 }
 
 #[test]
+fn case_operators_change_motions_text_objects_lines_and_selections() {
+    let path = temp_file_path("case_operators");
+    let original = "hello World\nsecond Line\n";
+    for (keys, expected, cursor) in [
+        ("wgUiw", "hello WORLD\nsecond Line\n", Pos::new(0, 6)),
+        ("$gub", "hello world\nsecond Line\n", Pos::new(0, 6)),
+        ("lgUe", "hELLO World\nsecond Line\n", Pos::new(0, 1)),
+        ("lgUU", "HELLO WORLD\nsecond Line\n", Pos::new(0, 1)),
+        ("gUgU", "HELLO WORLD\nsecond Line\n", Pos::new(0, 0)),
+        ("guu", "hello world\nsecond Line\n", Pos::new(0, 0)),
+        ("2gUU", "HELLO WORLD\nSECOND LINE\n", Pos::new(0, 0)),
+        ("jlgUk", "HELLO WORLD\nSECOND LINE\n", Pos::new(0, 0)),
+        ("gUiwj.", "HELLO World\nSECOND Line\n", Pos::new(1, 0)),
+        ("vlU", "HEllo World\nsecond Line\n", Pos::new(0, 0)),
+        ("wveu", "hello world\nsecond Line\n", Pos::new(0, 6)),
+        ("Vju", "hello world\nsecond line\n", Pos::new(0, 0)),
+    ] {
+        let mut state = state_with_text(path.clone(), original);
+        apply_keys(&mut state, keys);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected,
+            "{keys}"
+        );
+        assert_eq!(state.active_cursor_pos(), cursor, "{keys}");
+        assert_eq!(state.mode, EditorMode::Normal, "{keys}");
+    }
+
+    let mut state = state_with_text(path.clone(), original);
+    apply_keys(&mut state, "gUiwu");
+    assert_eq!(state.session.active_buffer().to_string(), original);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn gv_restores_the_previous_selection_and_o_swaps_its_ends() {
+    let path = temp_file_path("restore_selection");
+    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let selection = |state: &EditorState| state.active_visual_selection();
+
+    apply_keys(&mut state, "gv");
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|status| status.contains("no previous selection"))
+    );
+
+    apply_keys(&mut state, "lvjl\u{1b}gg");
+    assert_eq!(state.mode, EditorMode::Normal);
+    apply_keys(&mut state, "gv");
+    assert_eq!(
+        selection(&state),
+        Some((
+            Selection::new(Pos::new(0, 1), Pos::new(1, 2)),
+            VisualModeKind::Char
+        ))
+    );
+    apply_keys(&mut state, "o");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
+    apply_keys(&mut state, "o\u{1b}");
+
+    // The saved selection follows edits made above it.
+    apply_keys(&mut state, "ggOzero\u{1b}gv");
+    assert_eq!(
+        selection(&state),
+        Some((
+            Selection::new(Pos::new(1, 1), Pos::new(2, 2)),
+            VisualModeKind::Char
+        ))
+    );
+
+    // In visual mode, gv swaps the current and previous selections.
+    apply_keys(&mut state, "\u{1b}GkVk");
+    let line_selection = selection(&state);
+    apply_keys(&mut state, "gv");
+    assert_eq!(state.mode, EditorMode::Visual);
+    apply_keys(&mut state, "gv");
+    assert_eq!(selection(&state), line_selection);
+
+    // A shifted selection can be reselected after leaving visual mode.
+    apply_keys(&mut state, "\u{1b}Vj\t\u{1b}gv");
+    assert_eq!(state.mode, EditorMode::VisualLine);
+    assert_eq!(
+        selection(&state).map(|(selection, _)| selection.line_range()),
+        Some((2, 3))
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn gn_selects_and_operates_on_search_matches_with_dot_repeat() {
+    let path = temp_file_path("search_match_operator");
+    let original = "foo bar foo baz foo\n";
+    let search = |state: &mut EditorState, term: &str| {
+        state.apply_input(InputAction::EnterSearch, 80, 24);
+        for character in term.chars() {
+            state.apply_input(InputAction::SearchChar(character), 80, 24);
+        }
+        state.apply_input(InputAction::SearchEnter, 80, 24);
+        apply_keys(state, "0");
+    };
+
+    let mut state = state_with_text(path.clone(), original);
+    apply_keys(&mut state, "gn");
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert!(
+        state
+            .status_msg
+            .as_deref()
+            .is_some_and(|status| status.contains("pattern not found"))
+    );
+
+    search(&mut state, "foo");
+    apply_keys(&mut state, "gn");
+    assert_eq!(
+        state.active_visual_selection(),
+        Some((
+            Selection::new(Pos::new(0, 0), Pos::new(0, 2)),
+            VisualModeKind::Char
+        ))
+    );
+    apply_keys(&mut state, "gn");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 10));
+    apply_keys(&mut state, "\u{1b}$gN");
+    assert_eq!(
+        state.active_visual_selection(),
+        Some((
+            Selection::new(Pos::new(0, 18), Pos::new(0, 16)),
+            VisualModeKind::Char
+        ))
+    );
+
+    let mut state = state_with_text(path.clone(), original);
+    search(&mut state, "foo");
+    apply_keys(&mut state, "cgnqux\u{1b}");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "qux bar foo baz foo\n"
+    );
+    apply_keys(&mut state, ".");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "qux bar qux baz foo\n"
+    );
+    apply_keys(&mut state, ".");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "qux bar qux baz qux\n"
+    );
+    assert_eq!(state.mode, EditorMode::Normal);
+
+    let mut state = state_with_text(path.clone(), original);
+    search(&mut state, "foo");
+    apply_keys(&mut state, "wdgn");
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "foo bar  baz foo\n"
+    );
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 8));
+    apply_keys(&mut state, "$dgN");
+    assert_eq!(state.session.active_buffer().to_string(), "foo bar  baz \n");
+    apply_keys(&mut state, "0gUgn");
+    assert_eq!(state.session.active_buffer().to_string(), "FOO bar  baz \n");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
     let path = temp_file_path("marks");
     let original = "first\n  猫abc\nlast\n";
