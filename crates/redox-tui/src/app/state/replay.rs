@@ -599,8 +599,13 @@ fn starts_change(action: &InputAction) -> bool {
             | InputAction::DeleteSelectionNoYank
             | InputAction::DeleteCurrentLinePrivate { .. }
             | InputAction::ChangeCurrentLinePrivate { .. }
+            | InputAction::IndentCurrentLines { .. }
+            | InputAction::OutdentCurrentLines { .. }
             | InputAction::OperateTarget {
-                operator: TextObjectOperator::Delete | TextObjectOperator::Change,
+                operator: TextObjectOperator::Delete
+                    | TextObjectOperator::Change
+                    | TextObjectOperator::Indent
+                    | TextObjectOperator::Outdent,
                 ..
             }
             | InputAction::Paste(_)
@@ -623,6 +628,8 @@ fn replace_change_count(action: &mut InputAction, replacement: usize) -> bool {
     let count = match action {
         InputAction::DeleteCurrentLinePrivate { count }
         | InputAction::ChangeCurrentLinePrivate { count }
+        | InputAction::IndentCurrentLines { count }
+        | InputAction::OutdentCurrentLines { count }
         | InputAction::ToggleCase { count }
         | InputAction::MoveVisualSelectionUp { count }
         | InputAction::MoveVisualSelectionDown { count }

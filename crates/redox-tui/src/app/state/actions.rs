@@ -1047,6 +1047,23 @@ impl EditorState {
                 }
             }
 
+            InputAction::IndentCurrentLines { count }
+            | InputAction::OutdentCurrentLines { count } => {
+                if self.mode == EditorMode::Normal {
+                    let start_line = self.active_cursor_pos().line;
+                    let end_line = start_line
+                        .saturating_add(count.max(1) - 1)
+                        .min(self.session.active_buffer().len_lines().saturating_sub(1));
+                    self.shift_line_span(
+                        start_line,
+                        end_line,
+                        matches!(action, InputAction::OutdentCurrentLines { .. }),
+                        viewport_width_cells,
+                        text_vh,
+                    );
+                }
+            }
+
             InputAction::YankCurrentLinePrivate { count } => {
                 if self.mode == EditorMode::Normal {
                     self.yank_current_line_to_private_register(count.max(1));
@@ -1689,6 +1706,8 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
         | InputAction::DeleteCurrentLinePrivate { .. }
         | InputAction::YankCurrentLinePrivate { .. }
         | InputAction::ChangeCurrentLinePrivate { .. }
+        | InputAction::IndentCurrentLines { .. }
+        | InputAction::OutdentCurrentLines { .. }
         | InputAction::YankSelectionSystem
         | InputAction::PasteSystemClipboard
         | InputAction::PasteSystemClipboardText(_)

@@ -16,6 +16,27 @@ struct OperatorTargetPlan {
     yank_highlight: Option<(Selection, VisualModeKind)>,
 }
 
+impl OperatorTargetPlan {
+    /// Lines touched by the target. A charwise range ending at a later line's
+    /// start excludes that line, matching Vim's exclusive-motion rule.
+    fn line_range(&self) -> (usize, usize) {
+        if let Some((selection, VisualModeKind::Line)) = self.yank_highlight {
+            return selection.line_range();
+        }
+        let start = self
+            .delete_ranges
+            .first()
+            .map_or(Pos::zero(), |range| range.0);
+        let end = self.delete_ranges.last().map_or(start, |range| range.1);
+        let end_line = if end.line > start.line && end.col == 0 {
+            end.line - 1
+        } else {
+            end.line
+        };
+        (start.line, end_line)
+    }
+}
+
 impl EditorState {
     pub(super) fn join_line_below(&mut self, viewport_width_cells: usize, text_vh: usize) {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
@@ -440,8 +461,56 @@ impl EditorState {
                 }
                 self.confirm_yank("yanked");
             }
+            TextObjectOperator::Indent | TextObjectOperator::Outdent => {
+                let (start_line, end_line) = plan.line_range();
+                self.shift_line_span(
+                    start_line,
+                    end_line,
+                    operator == TextObjectOperator::Outdent,
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
             TextObjectOperator::Select => {}
         }
+    }
+
+    /// Shift whole lines by one indent level and leave the cursor on the first
+    /// line's first non-blank character, as Vim's `>` and `<` operators do.
+    pub(super) fn shift_line_span(
+        &mut self,
+        start_line: usize,
+        end_line: usize,
+        outdent: bool,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let before = self.capture_active_undo_checkpoint();
+        let indent_width = self.active_indent_width();
+        let buffer = self.session.active_buffer_mut();
+        if outdent {
+            buffer.outdent_line_span(start_line, end_line, 1, indent_width);
+        } else {
+            // Like Vim, leave empty lines alone instead of adding trailing whitespace.
+            let indent = " ".repeat(indent_width);
+            for line in start_line..=end_line {
+                if buffer.line_len_chars(line) > 0 {
+                    buffer.indent_line_span(line, line, 1, &indent);
+                }
+            }
+        }
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        view.cursor.cursor = Pos::new(start_line, buffer.line_first_non_whitespace_col(start_line));
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
     }
 
     pub(super) fn active_visual_line_range(&self) -> Option<(usize, usize)> {

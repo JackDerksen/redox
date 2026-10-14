@@ -574,6 +574,8 @@ reverse each axis independently.
 | `x` | Delete the character under the cursor without touching the private register. |
 | `r` | Replace the character under the cursor. |
 | `dd` / `cc` / `yy` | Delete, change, or yank the current line. |
+| `>>` / `<<` | Indent/outdent the current line by one level. A count shifts that many lines. |
+| `>{motion}` / `<{motion}` | Indent/outdent every line the motion or text object covers, e.g. `>ip`, `>j`, `<'a`. Empty lines are left alone. |
 | `D` | Delete from the cursor to the end of the line. |
 | `p` / `P` | Paste after/before from the private register. |
 | `<space>p` | Paste from the system clipboard. |

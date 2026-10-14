@@ -134,6 +134,12 @@ pub enum InputAction {
     ChangeCurrentLinePrivate {
         count: usize,
     },
+    IndentCurrentLines {
+        count: usize,
+    },
+    OutdentCurrentLines {
+        count: usize,
+    },
     YankSelectionSystem,
     PasteSystemClipboard,
     PasteSystemClipboardText(String),
@@ -252,6 +258,8 @@ pub enum TextObjectOperator {
     Change,
     Select,
     Yank,
+    Indent,
+    Outdent,
 }
 
 pub const DEFAULT_WHICH_KEY_DELAY: Duration = Duration::from_secs(3);
@@ -1534,6 +1542,8 @@ fn operator_entries(operator: TextObjectOperator) -> Vec<WhichKeyEntry> {
         TextObjectOperator::Change => "Change current line",
         TextObjectOperator::Yank => "Yank current line",
         TextObjectOperator::Select => "Select current line",
+        TextObjectOperator::Indent => "Indent current line",
+        TextObjectOperator::Outdent => "Outdent current line",
     };
     let mut entries = vec![which_key_entry(operator_key(operator), repeat_description)];
     entries.extend([
@@ -1628,6 +1638,8 @@ fn count_entries(mode: InputMode) -> Vec<WhichKeyEntry> {
             which_key_entry("d", "+delete"),
             which_key_entry("c", "+change"),
             which_key_entry("y", "+yank"),
+            which_key_entry(">", "+indent"),
+            which_key_entry("<", "+outdent"),
             which_key_entry(".", "Repeat last change"),
             which_key_entry("@", "Play macro"),
         ]);
@@ -1681,6 +1693,8 @@ fn operator_key(operator: TextObjectOperator) -> char {
         TextObjectOperator::Change => 'c',
         TextObjectOperator::Yank => 'y',
         TextObjectOperator::Select => 'v',
+        TextObjectOperator::Indent => '>',
+        TextObjectOperator::Outdent => '<',
     }
 }
 
@@ -2168,6 +2182,14 @@ fn modal_char_action(
             state.begin_operator(TextObjectOperator::Change, None);
             InputAction::None
         }
+        '>' if mode == InputMode::Normal => {
+            state.begin_operator(TextObjectOperator::Indent, None);
+            InputAction::None
+        }
+        '<' if mode == InputMode::Normal => {
+            state.begin_operator(TextObjectOperator::Outdent, None);
+            InputAction::None
+        }
         'x' if matches!(
             mode,
             InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
@@ -2448,6 +2470,12 @@ fn resolve_pending_operator(
             count: pending.count,
         }),
         (TextObjectOperator::Change, None, 'c') => Some(InputAction::ChangeCurrentLinePrivate {
+            count: pending.count,
+        }),
+        (TextObjectOperator::Indent, None, '>') => Some(InputAction::IndentCurrentLines {
+            count: pending.count,
+        }),
+        (TextObjectOperator::Outdent, None, '<') => Some(InputAction::OutdentCurrentLines {
             count: pending.count,
         }),
         (operator, None, '0') => Some(InputAction::OperateTarget {
