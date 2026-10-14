@@ -9,7 +9,7 @@ mod util;
 pub use edit::{Edit, EditBatchSummary};
 pub use pos::{Pos, Selection};
 pub use text_buffer::{
-    DelimiterKind, TextBuffer, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,
-    TextSlice, VisualModeKind, VisualSelectionEditPlan,
+    DelimiterKind, SelectionIncrement, TextBuffer, TextObjectEditPlan, TextObjectKind,
+    TextObjectScope, TextObjectSpec, TextSlice, VisualModeKind, VisualSelectionEditPlan,
 };
 pub use undo::{TextDiff, UndoCheckpoint, UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry};

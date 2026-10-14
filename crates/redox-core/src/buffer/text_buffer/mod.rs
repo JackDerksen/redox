@@ -12,6 +12,7 @@ mod core;
 mod editing;
 mod lines;
 mod marks;
+mod numbers;
 mod positions;
 mod search;
 mod selection;
@@ -20,6 +21,7 @@ mod text_objects;
 mod words;
 
 pub use core::{TextBuffer, TextSlice};
+pub use numbers::SelectionIncrement;
 pub use selection::{VisualModeKind, VisualSelectionEditPlan};
 pub use text_objects::{
     DelimiterKind, TextObjectEditPlan, TextObjectKind, TextObjectScope, TextObjectSpec,

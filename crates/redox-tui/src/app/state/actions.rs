@@ -1075,6 +1075,20 @@ impl EditorState {
                 }
             }
 
+            InputAction::IncrementNumbers {
+                count,
+                decrement,
+                progressive,
+            } => {
+                self.increment_numbers(
+                    count,
+                    decrement,
+                    progressive,
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
+
             InputAction::RestoreVisualSelection => {
                 self.restore_visual_selection(viewport_width_cells, text_vh);
             }
@@ -1731,6 +1745,7 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
         | InputAction::ChangeCurrentLinePrivate { .. }
         | InputAction::OperateCurrentLines { .. }
         | InputAction::ChangeSelectionCase { .. }
+        | InputAction::IncrementNumbers { .. }
         | InputAction::RestoreVisualSelection
         | InputAction::SwapVisualSelectionEnds
         | InputAction::SelectSearchMatch { .. }

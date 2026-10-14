@@ -156,7 +156,7 @@ impl TextBuffer {
         self.replace_char_range(start, end, &edit.insert)
     }
 
-    fn replace_char_range(&mut self, start: usize, end: usize, text: &str) -> Pos {
+    pub(super) fn replace_char_range(&mut self, start: usize, end: usize, text: &str) -> Pos {
         let inserted_chars = text.chars().count();
         for offset in self.marks.iter_mut().flatten() {
             if *offset >= end {

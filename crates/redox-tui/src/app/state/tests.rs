@@ -7910,6 +7910,78 @@ fn gn_selects_and_operates_on_search_matches_with_dot_repeat() {
 }
 
 #[test]
+fn number_increments_work_at_the_cursor_and_on_selections() {
+    use minui::{Event, KeyKind, KeyModifiers, KeyWithModifiers};
+
+    let path = temp_file_path("number_increments");
+    let press = |state: &mut EditorState, c: char, mods: KeyModifiers| {
+        let event = Event::KeyWithModifiers(KeyWithModifiers {
+            key: KeyKind::Char(c),
+            mods,
+        });
+        let action = crate::input::map_event_with_state(
+            &mut state.input,
+            state.mode.as_input_mode(),
+            &event,
+        );
+        state.apply_input(action, 80, 24);
+    };
+    let alt = KeyModifiers {
+        alt: true,
+        ..KeyModifiers::none()
+    };
+    let text = |state: &EditorState| state.session.active_buffer().to_string();
+
+    let mut state = state_with_text(path.clone(), "x = 41;\n");
+    press(&mut state, 'a', alt);
+    assert_eq!(text(&state), "x = 42;\n");
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 5));
+    apply_keys(&mut state, "0");
+    apply_keys(&mut state, "3");
+    press(&mut state, 'x', alt);
+    assert_eq!(text(&state), "x = 39;\n");
+    apply_keys(&mut state, ".");
+    assert_eq!(text(&state), "x = 36;\n");
+    press(&mut state, 'a', KeyModifiers::ctrl());
+    assert_eq!(text(&state), "x = 37;\n");
+    apply_keys(&mut state, "u");
+    assert_eq!(text(&state), "x = 36;\n");
+    assert_eq!(
+        crate::input::map_event_with_state(
+            &mut state.input,
+            InputMode::Normal,
+            &Event::KeyWithModifiers(KeyWithModifiers {
+                key: KeyKind::Char('x'),
+                mods: KeyModifiers::ctrl(),
+            }),
+        ),
+        InputAction::CloseSplit
+    );
+
+    let ones = "1\n1\n1\n1\n1\n1\n";
+    let mut state = state_with_text(path.clone(), ones);
+    apply_keys(&mut state, "V5j");
+    press(&mut state, 'a', alt);
+    assert_eq!(text(&state), "1\n2\n3\n4\n5\n6\n");
+    assert_eq!(state.mode, EditorMode::Normal);
+    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
+    apply_keys(&mut state, "gv");
+    press(&mut state, 'a', alt);
+    assert_eq!(text(&state), "2\n3\n4\n5\n6\n7\n");
+    apply_keys(&mut state, "u");
+    assert_eq!(text(&state), "1\n2\n3\n4\n5\n6\n");
+    apply_keys(&mut state, "uggV5jg");
+    press(&mut state, 'a', alt);
+    assert_eq!(text(&state), "2\n3\n4\n5\n6\n7\n");
+
+    let mut state = state_with_text(path.clone(), "let xs = [0, 0, 0];\n");
+    apply_keys(&mut state, "f[vf]");
+    press(&mut state, 'a', alt);
+    assert_eq!(text(&state), "let xs = [0, 1, 2];\n");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
     let path = temp_file_path("marks");
     let original = "first\n  猫abc\nlast\n";

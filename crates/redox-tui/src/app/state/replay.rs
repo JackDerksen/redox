@@ -601,6 +601,7 @@ fn starts_change(action: &InputAction) -> bool {
             | InputAction::ChangeCurrentLinePrivate { .. }
             | InputAction::OperateCurrentLines { .. }
             | InputAction::ChangeSelectionCase { .. }
+            | InputAction::IncrementNumbers { .. }
             | InputAction::OperateTarget {
                 operator: TextObjectOperator::Delete
                     | TextObjectOperator::Change
@@ -631,6 +632,7 @@ fn replace_change_count(action: &mut InputAction, replacement: usize) -> bool {
         InputAction::DeleteCurrentLinePrivate { count }
         | InputAction::ChangeCurrentLinePrivate { count }
         | InputAction::OperateCurrentLines { count, .. }
+        | InputAction::IncrementNumbers { count, .. }
         | InputAction::ToggleCase { count }
         | InputAction::MoveVisualSelectionUp { count }
         | InputAction::MoveVisualSelectionDown { count }

@@ -1,5 +1,5 @@
 use redox_core::{
-    Pos, Selection, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
+    Pos, Selection, SelectionIncrement, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
     motion::{Motion, apply_motion_for_operator, apply_motion_n},
 };
 
@@ -880,6 +880,62 @@ impl EditorState {
             viewport_width_cells,
             text_vh,
         );
+    }
+
+    /// `ctrl+a`-style increments: the number at the cursor in normal mode, or the
+    /// selection's numbers (with smart sequences) in visual modes.
+    pub(super) fn increment_numbers(
+        &mut self,
+        count: usize,
+        decrement: bool,
+        progressive: bool,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
+        if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        let magnitude = count.max(1) as i128;
+        let delta = if decrement { -magnitude } else { magnitude };
+        let before = self.capture_active_undo_checkpoint();
+        if let Some((selection, mode)) = self.active_visual_selection() {
+            let kind = if progressive {
+                SelectionIncrement::Progressive
+            } else {
+                SelectionIncrement::Smart
+            };
+            // Like Vim, leave the cursor at the start of the selection.
+            let (start, _) = selection.ordered();
+            let start = match mode {
+                VisualModeKind::Char => start,
+                VisualModeKind::Line => Pos::new(start.line, 0),
+                VisualModeKind::Block => {
+                    Pos::new(start.line, selection.anchor.col.min(selection.cursor.col))
+                }
+            };
+            let buffer = self.session.active_buffer_mut();
+            buffer.increment_numbers_in_selection(selection, mode, delta, kind);
+            let start = buffer.clamp_pos(start);
+            let active_id = self.session.active_id();
+            self.views.entry(active_id).or_default().cursor.cursor = start;
+            self.reconcile_active_cursor(viewport_width_cells, text_vh);
+            self.finish_active_visual_selection_edit(before, EditorMode::Normal, None);
+        } else if self.mode == EditorMode::Normal {
+            let cursor = self.active_cursor_pos();
+            let Some(landed) = self
+                .session
+                .active_buffer_mut()
+                .increment_number_at(cursor, delta)
+            else {
+                return;
+            };
+            let active_id = self.session.active_id();
+            self.views.entry(active_id).or_default().cursor.cursor = landed;
+            self.reconcile_active_cursor(viewport_width_cells, text_vh);
+            self.invalidate_active_render_caches();
+            let _ = self.record_active_undo_if_changed(before);
+            let _ = self.session.recompute_active_dirty();
+        }
     }
 
     /// Apply a linewise operator to `count` lines from the cursor, as `>>` or `guu` do.

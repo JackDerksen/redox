@@ -141,6 +141,11 @@ pub enum InputAction {
     ChangeSelectionCase {
         upper: bool,
     },
+    IncrementNumbers {
+        count: usize,
+        decrement: bool,
+        progressive: bool,
+    },
     RestoreVisualSelection,
     SwapVisualSelectionEnds,
     SelectSearchMatch {
@@ -3822,6 +3827,21 @@ fn map_key_with_state(
 
     if matches!(
         mode,
+        InputMode::Normal | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+    ) && let Some(decrement) = increment_key(mods, key)
+    {
+        let progressive = state.pending_sequence == "g";
+        let count = state.take_count_or_1();
+        state.reset_prefixes();
+        return InputAction::IncrementNumbers {
+            count,
+            decrement,
+            progressive,
+        };
+    }
+
+    if matches!(
+        mode,
         InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
     ) && ctrl_key(mods, key, 'c')
     {
@@ -3998,6 +4018,26 @@ fn shifted_char_key(key: KeyKind, c: char) -> bool {
 
 fn ctrl_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {
     ctrl_only(mods) && key == KeyKind::Char(c)
+}
+
+fn alt_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {
+    mods == KeyModifiers {
+        ctrl: false,
+        shift: false,
+        alt: true,
+        super_key: false,
+    } && key == KeyKind::Char(c)
+}
+
+/// `alt+a` / `ctrl+a` increment and `alt+x` decrements; `ctrl+x` closes splits.
+fn increment_key(mods: KeyModifiers, key: KeyKind) -> Option<bool> {
+    if alt_key(mods, key, 'a') || ctrl_key(mods, key, 'a') {
+        Some(false)
+    } else if alt_key(mods, key, 'x') {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 fn ctrl_shift_key(mods: KeyModifiers, key: KeyKind, c: char) -> bool {

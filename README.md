@@ -589,6 +589,7 @@ reverse each axis independently.
 | `gu{motion}` / `gU{motion}` | Lowercase/uppercase the text a motion or text object covers, e.g. `gUiw`, `gu$`. |
 | `guu` / `gUU` | Lowercase/uppercase the current line (`gugu` / `gUgU` also work). A count changes that many lines. |
 | `gv` | Reselect the previous visual selection. The saved selection follows later edits. |
+| `alt+a` / `alt+x` | Increment / decrement the number under or after the cursor. Counts, negatives, leading zeros, hex (`0x`) and binary (`0b`) work. `ctrl+a` also increments; `ctrl+x` stays on closing splits. |
 
 Marks follow edits and undo within the open buffer. Mark letters share the leftmost
 gutter column with git symbols and take precedence on marked lines. When several
@@ -684,6 +685,8 @@ a limit.
 | `o` | Move the cursor to the other end of the selection. |
 | `gv` | Swap the current selection with the previous one. |
 | `gn` / `gN` | Extend the selection to the end of the next match / start of the previous match. |
+| `alt+a` / `alt+x` | Increment / decrement the selected numbers. A column of equal numbers becomes a sequence, so `1 1 1` lines become `1 2 3`, and `[0, 0, 0]` becomes `[0, 1, 2]`. Other numbers change by one step (or the count). |
+| `g alt+a` / `g alt+x` | Vim's progressive increment: the nth number in each column changes by n steps. |
 | `J` / `K` | Move selected lines down/up. |
 | `gc` | Toggle comments on the selected lines using the file type's comment syntax. |
 | `<leader>[` / `<leader>]` | Wrap the selection in `[...]`. |
@@ -696,6 +699,12 @@ The leader defaults to `Space`. Wrapping returns to normal mode and can be
 undone in one step. Visual line mode wraps the selected lines together, before
 the final newline. Visual block mode wraps each selected row separately,
 skipping rows with no selected text.
+
+Selection increments group numbers into columns: the first number on each
+selected line forms one column, the second number another, and so on. A
+single-line selection treats all of its numbers as one column. Digits inside
+identifiers (`v1`) and after a decimal point are left alone. On macOS, the
+terminal must send Option as Alt (Meta) for the `alt` bindings to arrive.
 
 ### Search and text objects
 
