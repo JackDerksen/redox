@@ -10,6 +10,7 @@ pub(crate) fn detect_buffer_width(buffer: &TextBuffer) -> Option<usize> {
     detect((0..buffer.len_lines().min(SAMPLE_LINES)).map(|line| buffer.line_slice(line).chars()))
 }
 
+#[cfg(test)]
 pub(crate) fn width_for_text(text: &str) -> usize {
     detect(text.lines().take(SAMPLE_LINES).map(str::chars)).unwrap_or(DEFAULT_WIDTH)
 }

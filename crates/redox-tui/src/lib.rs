@@ -3659,6 +3659,7 @@ fn reload_runtime_config(
         state.configure_logging(candidate.logging)?;
         state.configure_animations(candidate.animations);
         state.icons_enabled = candidate.icons_enabled;
+        state.save = candidate.save;
         *active_config = candidate;
         *style = candidate_style;
         *active_theme = candidate_theme;
@@ -3818,6 +3819,7 @@ pub fn run() -> anyhow::Result<()> {
     state.zen = config.zen;
     state.configure_animations(config.animations);
     state.icons_enabled = config.icons_enabled;
+    state.save = config.save;
     state.configure(
         input,
         config.undo_tree_history_size,

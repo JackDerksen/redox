@@ -4796,7 +4796,7 @@ exit 1
 }
 
 #[test]
-fn command_write_formats_go_with_gofmt_and_converts_tabs_to_soft_tabs() {
+fn command_write_formats_go_with_gofmt_and_keeps_its_tabs() {
     with_isolated_launch_env("write_formats_go", |root| {
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
@@ -4825,16 +4825,80 @@ EOF
 
         with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
 
-        assert_eq!(
-            state.session.active_buffer().to_string(),
-            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
-        );
+        // gofmt's canonical output is tab-indented; converting it would fail `gofmt -l`.
+        let gofmt_output = "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n";
+        assert_eq!(state.session.active_buffer().to_string(), gofmt_output);
         assert_eq!(
             fs::read_to_string(&path).expect("failed to read saved file"),
-            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+            gofmt_output
         );
         assert!(state.save_confirmation.is_some());
     });
+}
+
+#[test]
+fn command_write_keeps_whitespace_where_formats_depend_on_it() {
+    for (name, text) in [
+        ("Makefile", "all:\n\tcc main.c  \n"),
+        ("rules.mk", "all:\n\tcc main.c\n"),
+        ("notes.md", "first line  \nsecond line\n"),
+        ("table.tsv", "a\tb\t\n\tc\t\n"),
+        ("fix.patch", "@@ -1,2 +1,2 @@\n \n-\told\n+\tnew\n"),
+    ] {
+        let directory = temp_file_path("write_keeps").with_extension("");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(name);
+        let mut state = state_with_text(path.clone(), text);
+
+        run_command(&mut state, "w");
+
+        let expected = match name {
+            // Makefiles keep tabs but are still trimmed.
+            "Makefile" => "all:\n\tcc main.c\n",
+            _ => text,
+        };
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected,
+            "{name}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected, "{name}");
+        let _ = fs::remove_dir_all(directory);
+    }
+}
+
+#[test]
+fn command_write_save_passes_can_be_disabled() {
+    let path = temp_file_path("write_passes_disabled");
+    let text = "\tindented  \n";
+    let mut state = state_with_text(path.clone(), text);
+    state.save = crate::config::SaveConfig {
+        trim_trailing_whitespace: false,
+        expand_tabs: false,
+    };
+
+    run_command(&mut state, "w");
+
+    assert_eq!(state.session.active_buffer().to_string(), text);
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_save_passes_keep_marks_on_their_lines() {
+    let path = temp_file_path("write_passes_marks");
+    let mut state = state_with_text(path.clone(), "one  \n\ttwo\nthree\t\nfour\n");
+    let buffer = state.session.active_buffer_mut();
+    buffer.set_mark('a', Pos::new(1, 2));
+    buffer.set_mark('b', Pos::new(3, 1));
+
+    run_command(&mut state, "w");
+
+    let buffer = state.session.active_buffer();
+    assert_eq!(buffer.to_string(), "one\n    two\nthree\nfour\n");
+    assert_eq!(buffer.mark('a'), Some(Pos::new(1, 5)));
+    assert_eq!(buffer.mark('b'), Some(Pos::new(3, 1)));
+    let _ = fs::remove_file(path);
 }
 
 #[test]

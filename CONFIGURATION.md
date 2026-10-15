@@ -429,6 +429,29 @@ Override the zen colours per theme:
 "zen.ghost" = "#606079"
 ```
 
+## Saving
+
+After a write, Redox runs the language formatter when one is installed
+(`cargo fmt`, `gofmt`, `ruff`, or `clang-format`), then applies two whitespace
+passes and saves again if anything changed.
+
+```toml
+[save]
+trim_trailing_whitespace = true
+expand_tabs = true
+```
+
+| Option | Default | Behaviour |
+| --- | --- | --- |
+| `trim_trailing_whitespace` | `true` | Remove spaces and tabs at the end of every line. |
+| `expand_tabs` | `true` | Convert tabs in leading indentation to spaces, using the file's detected indentation width. |
+
+Each pass is skipped for files whose whitespace carries meaning. Tabs are kept in
+Go files (gofmt requires them) and Makefiles (`Makefile`, `makefile`,
+`GNUmakefile`, `*.mk`, `*.mak`). Trailing whitespace is kept in Markdown, where
+two trailing spaces mark a line break. Neither pass touches `*.tsv`, `*.diff`, or
+`*.patch` files. Both passes edit lines in place, so marks stay where they were.
+
 ## Popup sizes
 
 Use `[popups.<name>]` to override the dimensions listed below. Percentage values

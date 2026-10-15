@@ -43,6 +43,7 @@ pub struct Config {
     pub leader: String,
     pub which_key: WhichKeyConfig,
     pub zen: ZenConfig,
+    pub save: SaveConfig,
     pub popups: BTreeMap<String, PopupSize>,
     pub keybindings: BTreeMap<String, BTreeMap<String, String>>,
     pub bind: Vec<BindConfig>,
@@ -71,6 +72,7 @@ impl Default for Config {
             leader: " ".to_string(),
             which_key: WhichKeyConfig::default(),
             zen: ZenConfig::default(),
+            save: SaveConfig::default(),
             popups: BTreeMap::new(),
             keybindings: BTreeMap::new(),
             bind: Vec::new(),
@@ -166,6 +168,24 @@ impl Default for ZenConfig {
             hide_diagnostics: true,
             minimal_statusline: true,
             show_toast: true,
+        }
+    }
+}
+
+/// Whitespace passes applied after each save. Formats whose whitespace carries
+/// meaning (Go and Makefile tabs, Markdown hard breaks, TSV, patches) are skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SaveConfig {
+    pub trim_trailing_whitespace: bool,
+    pub expand_tabs: bool,
+}
+
+impl Default for SaveConfig {
+    fn default() -> Self {
+        Self {
+            trim_trailing_whitespace: true,
+            expand_tabs: true,
         }
     }
 }

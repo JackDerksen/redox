@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use redox_core::{BufferId, BufferKind, Pos, Selection, TextBuffer};
+use redox_core::{BufferId, BufferKind, Pos, Selection, TextBuffer, TextDiff};
 
 use super::{EditorMode, EditorState, SplitAxis, calculator};
-use crate::indentation::width_for_text;
 use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::icons;
@@ -1200,8 +1199,7 @@ impl EditorState {
         text_vh: usize,
     ) -> Result<bool, String> {
         let path = self.session.active_meta().path.clone();
-        let buffer_text = self.session.active_buffer().to_string();
-        let mut formatted = buffer_text.clone();
+        let mut changed = false;
 
         if let Some(path) = path.as_deref()
             && let Some(language) = language_for_path(Some(path))
@@ -1217,18 +1215,19 @@ impl EditorState {
                 }
                 return Err(error);
             }
-            formatted = std::fs::read_to_string(path)
+            let formatted = std::fs::read_to_string(path)
                 .map_err(|error| format!("failed to read formatter output: {error}"))?;
             self.session.refresh_active_disk_stamp();
+            changed |= replace_text_preserving_marks(self.session.active_buffer_mut(), &formatted);
         }
 
-        let normalized = apply_save_format_passes(&formatted);
-
-        if formatted == buffer_text && normalized == buffer_text {
+        let passes = SavePasses::for_path(path.as_deref(), self.save);
+        changed |= apply_save_format_passes(self.session.active_buffer_mut(), passes);
+        if !changed {
             return Ok(false);
         }
 
-        self.replace_active_buffer_text(&normalized, viewport_width_cells, text_vh);
+        self.reconcile_active_after_buffer_rewrite(viewport_width_cells, text_vh);
         self.sync_active_lsp_before_save();
         self.session
             .save_active()
@@ -1243,24 +1242,19 @@ impl EditorState {
         text_vh: usize,
     ) -> Result<(), std::io::Error> {
         let text = std::fs::read_to_string(path)?;
-        self.replace_active_buffer_text(&text, viewport_width_cells, text_vh);
+        replace_text_preserving_marks(self.session.active_buffer_mut(), &text);
+        self.reconcile_active_after_buffer_rewrite(viewport_width_cells, text_vh);
         self.session.mark_active_clean();
         let active_id = self.session.active_id();
         self.clear_buffer_undo_history(active_id);
         Ok(())
     }
 
-    fn replace_active_buffer_text(
+    fn reconcile_active_after_buffer_rewrite(
         &mut self,
-        text: &str,
         viewport_width_cells: usize,
         text_vh: usize,
     ) {
-        {
-            let buffer = self.session.active_buffer_mut();
-            *buffer = TextBuffer::from_text(text);
-        }
-
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
         let buffer = self.session.active_buffer();
@@ -1467,52 +1461,86 @@ fn executable_on_path(executable: &str) -> bool {
     std::env::split_paths(&paths).any(|dir| dir.join(executable).exists())
 }
 
-fn apply_save_format_passes(text: &str) -> String {
-    trim_trailing_whitespace_text(&expand_hard_tabs(text, width_for_text(text)))
+/// Which whitespace passes a save may apply to a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SavePasses {
+    expand_tabs: bool,
+    trim_trailing_whitespace: bool,
 }
 
-fn expand_hard_tabs(text: &str, tab_width: usize) -> String {
-    let mut expanded = String::with_capacity(text.len());
-    let mut col = 0usize;
-    let mut in_indent = true;
+impl SavePasses {
+    /// Skip passes where the whitespace itself carries meaning: gofmt and Make
+    /// require tabs, Markdown uses trailing spaces as hard breaks, a trailing tab in
+    /// TSV is an empty column, and patch context lines may consist of whitespace.
+    fn for_path(path: Option<&Path>, config: crate::config::SaveConfig) -> Self {
+        let file_name = path
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let extension = path
+            .and_then(Path::extension)
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let language = language_for_path(path);
+        let data_format = matches!(extension.as_str(), "tsv" | "diff" | "patch");
+        let tabs_significant = data_format
+            || language == Some(SyntaxLanguage::Go)
+            || matches!(file_name, "Makefile" | "makefile" | "GNUmakefile")
+            || matches!(extension.as_str(), "mk" | "mak");
+        let trailing_whitespace_significant =
+            data_format || language == Some(SyntaxLanguage::Markdown);
+        Self {
+            expand_tabs: config.expand_tabs && !tabs_significant,
+            trim_trailing_whitespace: config.trim_trailing_whitespace
+                && !trailing_whitespace_significant,
+        }
+    }
+}
 
-    for ch in text.chars() {
-        match ch {
-            '\t' if in_indent => {
-                let spaces = tab_width - (col % tab_width);
-                expanded.extend(std::iter::repeat_n(' ', spaces));
-                col += spaces;
-            }
-            '\n' => {
-                expanded.push('\n');
-                col = 0;
-                in_indent = true;
-            }
-            ' ' if in_indent => {
-                expanded.push(ch);
-                col += 1;
-            }
-            _ => {
-                expanded.push(ch);
-                in_indent = false;
+/// Apply whitespace passes as per-line edits so marks stay on their lines.
+fn apply_save_format_passes(buffer: &mut TextBuffer, passes: SavePasses) -> bool {
+    let mut changed = false;
+    if passes.expand_tabs {
+        let tab_width = crate::indentation::detect_buffer_width(buffer)
+            .unwrap_or(crate::indentation::DEFAULT_WIDTH);
+        for line in 0..buffer.len_lines() {
+            let indent: String = buffer
+                .line_slice(line)
+                .chars()
+                .take_while(|character| matches!(character, ' ' | '\t'))
+                .collect();
+            if indent.contains('\t') {
+                let expanded = expand_indent_tabs(&indent, tab_width);
+                changed |= buffer.replace_line_indent(line, &expanded).is_some();
             }
         }
     }
+    if passes.trim_trailing_whitespace {
+        changed |= buffer.trim_trailing_whitespace();
+    }
+    changed
+}
 
+fn expand_indent_tabs(indent: &str, tab_width: usize) -> String {
+    let mut expanded = String::with_capacity(indent.len());
+    for character in indent.chars() {
+        if character == '\t' {
+            let spaces = tab_width - (expanded.len() % tab_width);
+            expanded.extend(std::iter::repeat_n(' ', spaces));
+        } else {
+            expanded.push(character);
+        }
+    }
     expanded
 }
 
-fn trim_trailing_whitespace_text(text: &str) -> String {
-    let mut trimmed = String::with_capacity(text.len());
-
-    for line in text.split_inclusive('\n') {
-        let Some(content) = line.strip_suffix('\n') else {
-            trimmed.push_str(line.trim_end_matches([' ', '\t']));
-            continue;
-        };
-        trimmed.push_str(content.trim_end_matches([' ', '\t']));
-        trimmed.push('\n');
-    }
-
-    trimmed
+/// Replace a buffer's text with one edit spanning only the changed region, so marks
+/// outside it keep their positions.
+fn replace_text_preserving_marks(buffer: &mut TextBuffer, text: &str) -> bool {
+    let Some(diff) = TextDiff::between(buffer, &TextBuffer::from_text(text)) else {
+        return false;
+    };
+    buffer.apply_edit(diff.forward_edit());
+    true
 }
