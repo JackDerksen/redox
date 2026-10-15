@@ -4,12 +4,13 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use ignore::WalkBuilder;
 use redox_core::{
-    FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges, path_match_score,
+    FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges, fuzzy_path_match,
 };
 
 use super::actions::{backspace_at_cursor, insert_at_cursor, move_cursor_left, move_cursor_right};
@@ -21,9 +22,10 @@ const PREVIEW_MAX_BYTES: usize = 32 * 1024;
 const FINDER_INDEX_BATCH_SIZE: usize = 128;
 const MAX_FINDER_INDEX_BATCHES_PER_POLL: usize = 8;
 
+/// Shares the finder's entries and preview, so building one each frame is cheap.
 #[derive(Debug, Clone)]
 pub struct FinderPopup {
-    pub entries: Vec<FinderPopupEntry>,
+    pub entries: Arc<[Arc<FinderPopupEntry>]>,
     pub query: String,
     pub query_cursor: usize,
     pub selected: usize,
@@ -31,7 +33,7 @@ pub struct FinderPopup {
     pub result_count: usize,
     pub total_count: usize,
     pub indexing: bool,
-    pub preview: Option<FinderPreview>,
+    pub preview: Option<Arc<FinderPreview>>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,9 +72,13 @@ pub(super) struct FinderState {
     launch_dir: PathBuf,
     query: String,
     query_cursor: usize,
+    /// Sorted by path bytes, without duplicates.
     all_files: Vec<FinderFileCandidate>,
+    /// Matches for `results_query`, best last.
     file_results: Vec<FinderFileResult>,
-    combined_entries: Vec<FinderCombinedEntry>,
+    /// The query `file_results` reflects; `None` when they need rebuilding.
+    results_query: Option<String>,
+    combined_entries: Arc<[Arc<FinderPopupEntry>]>,
     selected: usize,
     file_window_start: Option<usize>,
     anchor_selection_to_bottom: bool,
@@ -92,18 +98,8 @@ pub(super) struct FinderFileCandidate {
 
 #[derive(Debug, Clone)]
 struct FinderFileResult {
-    path: PathBuf,
-    label: String,
-    highlights: Vec<Range<usize>>,
+    entry: Arc<FinderPopupEntry>,
     score: PathMatchScore,
-}
-
-#[derive(Debug, Clone)]
-struct FinderCombinedEntry {
-    path: PathBuf,
-    label: String,
-    highlights: Vec<Range<usize>>,
-    kind: FinderCombinedKind,
 }
 
 #[derive(Debug, Clone)]
@@ -112,16 +108,10 @@ struct PinnedFileEntry {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FinderCombinedKind {
-    Pinned { slot: usize },
-    File,
-}
-
 #[derive(Debug, Clone)]
 struct FinderPreviewCache {
     path: PathBuf,
-    preview: FinderPreview,
+    preview: Arc<FinderPreview>,
 }
 
 enum FinderIndexMessage {
@@ -145,17 +135,19 @@ pub(super) struct PinnedFilesState {
 impl FinderState {
     fn new(
         launch_dir: PathBuf,
-        all_files: Vec<FinderFileCandidate>,
+        mut all_files: Vec<FinderFileCandidate>,
         pinned_files: &[PinnedFileEntry],
     ) -> Self {
         let initial_selected = all_files.len().saturating_sub(1);
+        sort_candidates(&mut all_files);
         let mut state = Self {
             launch_dir,
             query: String::new(),
             query_cursor: 0,
             all_files,
             file_results: Vec::new(),
-            combined_entries: Vec::new(),
+            results_query: None,
+            combined_entries: Arc::new([]),
             selected: initial_selected,
             file_window_start: None,
             anchor_selection_to_bottom: true,
@@ -167,20 +159,7 @@ impl FinderState {
 
     fn popup(&self, indexing: bool) -> FinderPopup {
         FinderPopup {
-            entries: self
-                .combined_entries
-                .iter()
-                .map(|entry| FinderPopupEntry {
-                    path: entry.path.clone(),
-                    label: entry.label.clone(),
-                    highlights: entry.highlights.clone(),
-                    is_pinned: matches!(entry.kind, FinderCombinedKind::Pinned { .. }),
-                    hotkey: match entry.kind {
-                        FinderCombinedKind::Pinned { slot } => Some(format!("Ctrl+{}", slot + 1)),
-                        FinderCombinedKind::File => None,
-                    },
-                })
-                .collect(),
+            entries: Arc::clone(&self.combined_entries),
             query: self.query.clone(),
             query_cursor: self.query_cursor,
             selected: self.selected,
@@ -188,7 +167,10 @@ impl FinderState {
             result_count: self.file_results.len(),
             total_count: self.all_files.len(),
             indexing,
-            preview: self.preview.as_ref().map(|preview| preview.preview.clone()),
+            preview: self
+                .preview
+                .as_ref()
+                .map(|preview| Arc::clone(&preview.preview)),
         }
     }
 
@@ -201,7 +183,7 @@ impl FinderState {
     fn selected_entry_is_pinned(&self) -> bool {
         self.combined_entries
             .get(self.selected)
-            .is_some_and(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+            .is_some_and(|entry| entry.is_pinned)
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -230,14 +212,29 @@ impl FinderState {
     }
 
     fn refresh_results(&mut self, pinned_files: &[PinnedFileEntry], preferred_path: Option<&Path>) {
-        let query = FuzzyQuery::new(&self.query);
-        self.file_results = self
-            .all_files
-            .iter()
-            .filter_map(|candidate| filter_file_result(candidate, &query))
-            .collect();
-        self.file_results.sort_by(compare_file_results);
-        self.file_results.reverse();
+        if self.results_query.as_deref() != Some(self.query.as_str()) {
+            let query = FuzzyQuery::new(&self.query);
+            // Typing usually narrows the query, so only earlier matches can match.
+            let narrowed = self
+                .results_query
+                .as_deref()
+                .is_some_and(|previous| query.refines(&FuzzyQuery::new(previous)));
+            self.file_results = if narrowed {
+                std::mem::take(&mut self.file_results)
+                    .into_iter()
+                    .filter_map(|result| {
+                        file_result(&result.entry.path, &result.entry.label, &query)
+                    })
+                    .collect()
+            } else {
+                self.all_files
+                    .iter()
+                    .filter_map(|candidate| file_result(&candidate.path, &candidate.label, &query))
+                    .collect()
+            };
+            sort_file_results(&mut self.file_results);
+            self.results_query = Some(self.query.clone());
+        }
 
         self.rebuild_combined_entries(pinned_files, preferred_path);
         self.refresh_preview();
@@ -245,18 +242,33 @@ impl FinderState {
 
     fn add_file_candidates(
         &mut self,
-        candidates: Vec<FinderFileCandidate>,
+        mut candidates: Vec<FinderFileCandidate>,
         pinned_files: &[PinnedFileEntry],
     ) {
+        sort_candidates(&mut candidates);
+        candidates.retain(|candidate| {
+            self.all_files
+                .binary_search_by(|existing| {
+                    existing.path.as_os_str().cmp(candidate.path.as_os_str())
+                })
+                .is_err()
+        });
         if candidates.is_empty() {
             return;
         }
 
+        // Score only the new files and merge them into the sorted results.
+        if let Some(results_query) = &self.results_query {
+            let query = FuzzyQuery::new(results_query);
+            self.file_results.extend(
+                candidates
+                    .iter()
+                    .filter_map(|candidate| file_result(&candidate.path, &candidate.label, &query)),
+            );
+            sort_file_results(&mut self.file_results);
+        }
         self.all_files.extend(candidates);
-        self.all_files
-            .sort_by(|left, right| left.path.cmp(&right.path));
-        self.all_files
-            .dedup_by(|left, right| left.path == right.path);
+        sort_candidates(&mut self.all_files);
         self.refresh_results(pinned_files, None);
     }
 
@@ -265,9 +277,9 @@ impl FinderState {
         mut candidates: Vec<FinderFileCandidate>,
         pinned_files: &[PinnedFileEntry],
     ) {
-        candidates.sort_by(|left, right| left.path.cmp(&right.path));
-        candidates.dedup_by(|left, right| left.path == right.path);
+        sort_candidates(&mut candidates);
         self.all_files = candidates;
+        self.results_query = None;
         self.refresh_results(pinned_files, None);
     }
 
@@ -280,38 +292,34 @@ impl FinderState {
             .map(Path::to_path_buf)
             .or_else(|| self.selected_path().map(Path::to_path_buf));
 
-        self.combined_entries.clear();
+        let mut combined_entries = Vec::with_capacity(pinned_files.len() + self.file_results.len());
         let query = FuzzyQuery::new(&self.query);
         for pinned_file in pinned_files {
-            let slot = pinned_file.slot;
             let path = &pinned_file.path;
             let label = display_path_for_popup(path, &self.launch_dir);
             let highlights = fuzzy_match_ranges(&label, &query)
                 .map(|matched| matched.highlights)
                 .unwrap_or_default();
-            self.combined_entries.push(FinderCombinedEntry {
+            combined_entries.push(Arc::new(FinderPopupEntry {
                 path: path.clone(),
                 label,
                 highlights,
-                kind: FinderCombinedKind::Pinned { slot },
-            });
+                is_pinned: true,
+                hotkey: Some(format!("Ctrl+{}", pinned_file.slot + 1)),
+            }));
         }
 
         let pinned_paths = pinned_files
             .iter()
             .map(|pinned| pinned.path.as_path())
             .collect::<HashSet<_>>();
-        self.combined_entries.extend(
+        combined_entries.extend(
             self.file_results
                 .iter()
-                .filter(|result| !pinned_paths.contains(result.path.as_path()))
-                .map(|result| FinderCombinedEntry {
-                    path: result.path.clone(),
-                    label: result.label.clone(),
-                    highlights: result.highlights.clone(),
-                    kind: FinderCombinedKind::File,
-                }),
+                .filter(|result| !pinned_paths.contains(result.entry.path.as_path()))
+                .map(|result| Arc::clone(&result.entry)),
         );
+        self.combined_entries = combined_entries.into();
 
         if self.combined_entries.is_empty() {
             self.selected = 0;
@@ -346,7 +354,7 @@ impl FinderState {
 
         self.combined_entries
             .iter()
-            .rposition(|entry| matches!(entry.kind, FinderCombinedKind::File))
+            .rposition(|entry| !entry.is_pinned)
             .unwrap_or_else(|| self.combined_entries.len().saturating_sub(1))
     }
 
@@ -366,7 +374,7 @@ impl FinderState {
 
         self.preview = Some(FinderPreviewCache {
             path: path.clone(),
-            preview: load_preview(&path, &self.launch_dir),
+            preview: Arc::new(load_preview(&path, &self.launch_dir)),
         });
     }
 }
@@ -784,7 +792,7 @@ impl EditorState {
         let pinned_count = finder
             .combined_entries
             .iter()
-            .take_while(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+            .take_while(|entry| entry.is_pinned)
             .count();
         let layout = self
             .mouse
@@ -796,9 +804,10 @@ impl EditorState {
         let mut count = 0;
         for (_, target) in &layout.clicks {
             if let MouseTarget::FinderEntry(path) = target
-                && let Some(index) = finder.combined_entries.iter().position(|entry| {
-                    matches!(entry.kind, FinderCombinedKind::File) && entry.path == *path
-                })
+                && let Some(index) = finder
+                    .combined_entries
+                    .iter()
+                    .position(|entry| !entry.is_pinned && entry.path == *path)
             {
                 first_index = first_index.min(index);
                 count += 1;
@@ -820,7 +829,7 @@ impl EditorState {
         let pinned_count = finder
             .combined_entries
             .iter()
-            .take_while(|entry| matches!(entry.kind, FinderCombinedKind::Pinned { .. }))
+            .take_while(|entry| entry.is_pinned)
             .count();
         let file_count = finder.combined_entries.len().saturating_sub(pinned_count);
         let start = start
@@ -858,7 +867,7 @@ impl EditorState {
         else {
             return;
         };
-        let preview = &mut preview.preview;
+        let preview = Arc::make_mut(&mut preview.preview);
         let max_scroll_y = preview.lines.len().saturating_sub(height);
         preview.scroll_y = preview
             .scroll_y
@@ -1170,23 +1179,37 @@ fn pinned_files_storage_path() -> PathBuf {
     crate::storage::pinned_files_path()
 }
 
-fn filter_file_result(
-    candidate: &FinderFileCandidate,
-    query: &FuzzyQuery,
-) -> Option<FinderFileResult> {
-    let matched = fuzzy_match_ranges(&candidate.label, query)?;
-    let score = path_match_score(&candidate.label, &matched, query);
-
+fn file_result(path: &Path, label: &str, query: &FuzzyQuery) -> Option<FinderFileResult> {
+    let (matched, score) = fuzzy_path_match(label, query)?;
     Some(FinderFileResult {
-        path: candidate.path.clone(),
+        entry: Arc::new(FinderPopupEntry {
+            path: path.to_path_buf(),
+            label: label.to_owned(),
+            highlights: matched.highlights,
+            is_pinned: false,
+            hotkey: None,
+        }),
         score,
-        label: candidate.label.clone(),
-        highlights: matched.highlights,
     })
 }
 
+/// Best match last. The path tiebreak makes the order independent of how
+/// results were gathered.
+fn sort_file_results(results: &mut [FinderFileResult]) {
+    results.sort_by(|left, right| compare_file_results(right, left));
+}
+
 fn compare_file_results(left: &FinderFileResult, right: &FinderFileResult) -> Ordering {
-    compare_path_match_scores(&left.score, &right.score).then(left.label.cmp(&right.label))
+    compare_path_match_scores(&left.score, &right.score)
+        .then_with(|| left.entry.label.cmp(&right.entry.label))
+        .then_with(|| left.entry.path.cmp(&right.entry.path))
+}
+
+/// Order only matters for finding duplicates, so compare raw path bytes,
+/// which is much cheaper than comparing `Path`s component by component.
+fn sort_candidates(candidates: &mut Vec<FinderFileCandidate>) {
+    candidates.sort_by(|left, right| left.path.as_os_str().cmp(right.path.as_os_str()));
+    candidates.dedup_by(|left, right| left.path.as_os_str() == right.path.as_os_str());
 }
 
 fn display_path_for_popup(path: &Path, launch_dir: &Path) -> String {
@@ -1231,5 +1254,77 @@ fn load_preview(path: &Path, launch_dir: &Path) -> FinderPreview {
         syntax_spans,
         scroll_x: 0,
         scroll_y: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{FinderFileCandidate, FinderState, insert_at_cursor};
+
+    fn candidates(labels: &[&str]) -> Vec<FinderFileCandidate> {
+        labels
+            .iter()
+            .map(|label| FinderFileCandidate {
+                path: PathBuf::from("/root").join(label),
+                label: (*label).to_string(),
+            })
+            .collect()
+    }
+
+    fn entries(finder: &FinderState) -> Vec<(PathBuf, Vec<std::ops::Range<usize>>)> {
+        finder
+            .combined_entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.highlights.clone()))
+            .collect()
+    }
+
+    fn fresh(labels: &[&str], query: &str) -> FinderState {
+        let mut finder = FinderState::new(PathBuf::from("/root"), candidates(labels), &[]);
+        finder.query = query.to_string();
+        finder.refresh_results_to_bottom(&[]);
+        finder
+    }
+
+    #[test]
+    fn incremental_results_match_a_fresh_search() {
+        let labels = [
+            "src/main.rs",
+            "src/state/finder.rs",
+            "src/state/search.rs",
+            "crates/core/src/fuzzy.rs",
+            "README.md",
+            "docs/ΑΣ.md",
+            "docs/ασβ.md",
+            "tests/finder_test.rs",
+            "src/fin/der.rs",
+        ];
+        let mut finder = FinderState::new(PathBuf::from("/root"), candidates(&labels[..3]), &[]);
+        for (text, cursor) in [("f", None), ("i", None), ("n", None), ("s", Some(1))] {
+            if let Some(cursor) = cursor {
+                finder.query_cursor = cursor;
+            }
+            insert_at_cursor(&mut finder.query, &mut finder.query_cursor, text);
+            finder.refresh_results_to_bottom(&[]);
+            finder.add_file_candidates(candidates(&labels[2..6]), &[]);
+            assert_eq!(
+                entries(&finder),
+                entries(&fresh(&labels[..6], &finder.query))
+            );
+        }
+        finder.add_file_candidates(candidates(&labels), &[]);
+        assert_eq!(entries(&finder), entries(&fresh(&labels, &finder.query)));
+
+        for query in ["fi rs", "fi", "ΑΣ", "ΑΣΒ", ""] {
+            finder.query = query.to_string();
+            finder.refresh_results_to_bottom(&[]);
+            assert_eq!(
+                entries(&finder),
+                entries(&fresh(&labels, query)),
+                "{query:?}"
+            );
+        }
     }
 }

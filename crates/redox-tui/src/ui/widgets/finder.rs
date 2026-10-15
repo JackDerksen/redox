@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn finder_footer_reserves_counter_padding_and_scroll_indicator() {
         let mut popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "main".to_string(),
             query_cursor: 4,
             selected: 0,
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn finder_empty_states_preserve_frames_and_center_messages() {
         let mut popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "missing".into(),
             query_cursor: 7,
             selected: 0,
@@ -1012,13 +1012,16 @@ mod tests {
                 );
                 assert_eq!(empty.frames.len(), if width >= 130 { 3 } else { 2 });
 
-                popup.preview = Some(FinderPreview {
-                    title: "main.rs".into(),
-                    lines: vec!["fn main() {}".into()],
-                    syntax_spans: Vec::new(),
-                    scroll_x: 0,
-                    scroll_y: 0,
-                });
+                popup.preview = Some(
+                    FinderPreview {
+                        title: "main.rs".into(),
+                        lines: vec!["fn main() {}".into()],
+                        syntax_spans: Vec::new(),
+                        scroll_x: 0,
+                        scroll_y: 0,
+                    }
+                    .into(),
+                );
                 let populated = draw_finder_popup(&popup, style, &mut window).unwrap();
                 assert_eq!(populated.frames, empty.frames);
                 popup.preview = None;
@@ -1044,7 +1047,7 @@ mod tests {
     #[test]
     fn finder_footer_does_not_reserve_width_when_it_cannot_fit() {
         let popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "abcdef".to_string(),
             query_cursor: 6,
             selected: 0,
