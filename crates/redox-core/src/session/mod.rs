@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use anyhow::{Context as _, Result, bail};
 
 use self::loading::IncrementalFileLoader;
-use crate::TextBuffer;
+use crate::{TextBuffer, TextDiff};
 
 const INITIAL_LOAD_BYTES: usize = 64 * 1024;
 const FULL_LOAD_CHUNK_BYTES: usize = 64 * 1024;
@@ -144,6 +144,9 @@ pub struct ExternalFileChange {
     pub path: Option<PathBuf>,
     /// How the session handled the change.
     pub kind: ExternalFileChangeKind,
+    /// For [`ExternalFileChangeKind::Reloaded`], the contents replaced by the reload,
+    /// so frontends can record it as an undoable change.
+    pub previous_buffer: Option<TextBuffer>,
 }
 
 /// How an external file change was reconciled.
@@ -925,6 +928,7 @@ impl EditorSession {
                         display_name,
                         path: Some(path),
                         kind: ExternalFileChangeKind::Failed,
+                        previous_buffer: None,
                     });
                     continue;
                 }
@@ -937,6 +941,7 @@ impl EditorSession {
                             display_name,
                             path: Some(path),
                             kind: ExternalFileChangeKind::Deleted,
+                            previous_buffer: None,
                         });
                     }
                     continue;
@@ -952,9 +957,10 @@ impl EditorSession {
                             display_name,
                             path: Some(path),
                             kind: ExternalFileChangeKind::Conflict,
+                            previous_buffer: None,
                         });
                     } else if let Ok(buffer) = TextBuffer::from_file(&path) {
-                        rec.buffer = buffer;
+                        let previous = replace_buffer_contents(&mut rec.buffer, buffer);
                         let (fingerprint, normalized_len_chars) =
                             normalized_content_fingerprint(&rec.buffer);
                         rec.clean_fingerprint = fingerprint;
@@ -966,6 +972,7 @@ impl EditorSession {
                             display_name,
                             path: Some(path),
                             kind: ExternalFileChangeKind::Reloaded,
+                            previous_buffer: Some(previous),
                         });
                     }
                     continue;
@@ -984,6 +991,7 @@ impl EditorSession {
                         display_name,
                         path: Some(path),
                         kind: ExternalFileChangeKind::Conflict,
+                        previous_buffer: None,
                     });
                 }
                 continue;
@@ -991,7 +999,7 @@ impl EditorSession {
 
             match TextBuffer::from_file(&path) {
                 Ok(buffer) => {
-                    rec.buffer = buffer;
+                    let previous = replace_buffer_contents(&mut rec.buffer, buffer);
                     let (fingerprint, normalized_len_chars) =
                         normalized_content_fingerprint(&rec.buffer);
                     rec.clean_fingerprint = fingerprint;
@@ -1005,6 +1013,7 @@ impl EditorSession {
                         display_name,
                         path: Some(path),
                         kind: ExternalFileChangeKind::Reloaded,
+                        previous_buffer: Some(previous),
                     });
                 }
                 Err(_) => {
@@ -1014,6 +1023,7 @@ impl EditorSession {
                         display_name,
                         path: Some(path),
                         kind: ExternalFileChangeKind::Failed,
+                        previous_buffer: None,
                     });
                 }
             }
@@ -1195,6 +1205,16 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
         rec.clean_fingerprint = fingerprint;
         rec.clean_normalized_len_chars = normalized_len_chars;
     }
+}
+
+/// Replace `buffer` with `replacement` through one edit spanning only the changed text,
+/// so marks outside it stay put. Return the previous contents.
+fn replace_buffer_contents(buffer: &mut TextBuffer, replacement: TextBuffer) -> TextBuffer {
+    let previous = buffer.clone();
+    if let Some(diff) = TextDiff::between(buffer, &replacement) {
+        buffer.apply_edit(diff.forward_edit());
+    }
+    previous
 }
 
 fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {

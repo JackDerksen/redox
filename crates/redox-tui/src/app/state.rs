@@ -1475,7 +1475,7 @@ impl EditorState {
             match change.kind {
                 ExternalFileChangeKind::Reloaded => {
                     reloaded = reloaded.saturating_add(1);
-                    self.clear_buffer_undo_history(change.id);
+                    self.record_external_reload(change.id, change.previous_buffer);
                     self.reset_buffer_render_caches(change.id);
                     if let Err(error) = self.notify_lsp_did_save(change.id) {
                         diagnostics_error = Some(error);
@@ -1508,6 +1508,30 @@ impl EditorState {
             self.set_status("reloaded from disk");
         } else {
             self.set_status(format!("reloaded {reloaded} files from disk"));
+        }
+    }
+
+    /// Record a reload from disk as one undoable change, so `git checkout` or an
+    /// external formatter never costs the buffer its history.
+    fn record_external_reload(&mut self, buffer_id: BufferId, previous: Option<TextBuffer>) {
+        let Some(previous) = previous else {
+            self.clear_buffer_undo_history(buffer_id);
+            return;
+        };
+        let Some(current) = self.session.buffer(buffer_id).cloned() else {
+            return;
+        };
+        let view = self.views.entry(buffer_id).or_default();
+        view.pending_insert_undo = None;
+        view.undo_history.clear_coalesce();
+        view.undo_history.set_max_records(self.undo_history_size);
+        let cursor = view.cursor.cursor;
+        let checkpoint = view.undo_history.checkpoint(previous, cursor);
+        if view
+            .undo_history
+            .record_if_changed(checkpoint, &current, current.clamp_pos(cursor))
+        {
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
     }
 

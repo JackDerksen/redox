@@ -3010,6 +3010,45 @@ fn reload_from_disk_clears_stale_undo_history() {
 }
 
 #[test]
+fn external_reload_is_an_undoable_change_that_keeps_history_and_marks() {
+    let path = temp_file_path("external_reload_undo");
+    let mut state = state_with_text(path.clone(), "first\nsecond\n");
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    run_command(&mut state, "w");
+    state
+        .session
+        .active_buffer_mut()
+        .set_mark('m', Pos::new(1, 3));
+
+    // Another program (git checkout, a formatter) rewrites the clean file.
+    fs::write(&path, "Afirst\nsecond\nthird\n").expect("failed to update test file");
+    state.update_background(state.next_external_file_check_at);
+
+    let buffer = state.session.active_buffer();
+    assert_eq!(buffer.to_string(), "Afirst\nsecond\nthird\n");
+    assert_eq!(buffer.mark('m'), Some(Pos::new(1, 3)));
+    assert!(!state.session.active_meta().dirty);
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "Afirst\nsecond\n"
+    );
+    assert!(state.session.active_meta().dirty);
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "first\nsecond\n");
+    state.apply_input(InputAction::Redo, 80, 24);
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "Afirst\nsecond\nthird\n"
+    );
+    assert!(!state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     let path = temp_file_path("insert_mode_undo_coalesce");
     let mut state = state_with_text(path.clone(), "hello");
