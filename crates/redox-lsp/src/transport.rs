@@ -119,7 +119,10 @@ pub fn default_initialize_params(root: &Path, client_info: ClientInfo<'_>) -> io
             "name": workspace_name
         }],
         "capabilities": {
-            "workspace": { "applyEdit": true },
+            "workspace": {
+                "applyEdit": true,
+                "workspaceEdit": { "documentChanges": true }
+            },
             "textDocument": {
                 "publishDiagnostics": {
                     "relatedInformation": true,

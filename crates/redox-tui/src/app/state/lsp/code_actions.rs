@@ -563,25 +563,29 @@ impl EditorState {
         let mut touched_buffers = Vec::new();
 
         for document_edit in &edit.document_edits {
-            let Some(expected_version) = document_edit.version else {
-                continue;
-            };
-            let Some((buffer_id, document)) = self
+            let open_document = self
                 .lsp
                 .documents
                 .iter()
-                .find(|(_, document)| document.uri == document_edit.uri)
-            else {
+                .find(|(_, document)| document.uri == document_edit.uri);
+            let Some((buffer_id, document)) = open_document else {
+                // An unversioned edit to an unopened document targets the file on disk.
+                if document_edit.version.is_none() {
+                    continue;
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "versioned workspace edit targets an unopened document",
                 ));
             };
+            // Without a version, the server must at least have seen the current text.
             let current_analysis_version = self
                 .views
                 .get(buffer_id)
                 .map(|view| view.analysis_version());
-            if document.document_version != expected_version
+            if document_edit
+                .version
+                .is_some_and(|expected| expected != document.document_version)
                 || document.last_sent_analysis_version != current_analysis_version
             {
                 return Err(io::Error::new(
