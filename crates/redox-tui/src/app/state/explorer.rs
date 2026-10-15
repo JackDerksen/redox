@@ -944,43 +944,7 @@ fn pending_explorer_deletions(
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
 ) -> Vec<ExplorerEntry> {
-    let old_entries: Vec<ExplorerEntry> = old_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-    let new_entries: Vec<ExplorerEntry> = new_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-
-    let old_index_by_name: HashMap<&str, usize> = old_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-    let new_index_by_name: HashMap<&str, usize> = new_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-
-    let old_missing: Vec<(usize, ExplorerEntry)> = old_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-    let new_added: Vec<(usize, ExplorerEntry)> = new_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-
-    let (_, deletions, _) = partition_explorer_entry_changes(old_missing, new_added);
-    deletions
+    diff_explorer_entries(old_entries, new_entries).deletions
 }
 
 fn explorer_delete_confirmation_token_for_drafts(
@@ -1127,54 +1091,19 @@ fn plan_explorer_dir_changes(
         }
     }
 
-    let old_entries: Vec<ExplorerEntry> = old_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-    let new_entries: Vec<ExplorerEntry> = new_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-
     let mut seen_names = HashSet::new();
-    for entry in &new_entries {
-        if !seen_names.insert(entry.name.clone()) {
+    for entry in new_entries.iter().filter(|entry| !entry.is_parent) {
+        if !seen_names.insert(entry.name.as_str()) {
             anyhow::bail!("duplicate entry name '{}'", entry.name);
         }
     }
 
-    let old_index_by_name: HashMap<&str, usize> = old_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-    let new_index_by_name: HashMap<&str, usize> = new_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-
-    let mut old_missing: Vec<(usize, ExplorerEntry)> = old_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-    let mut new_added: Vec<(usize, ExplorerEntry)> = new_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-
-    old_missing.sort_by_key(|(idx, _)| *idx);
-    new_added.sort_by_key(|(idx, _)| *idx);
-
     let mut renames = Vec::new();
-    let (rename_pairs, deletions, creations) =
-        partition_explorer_entry_changes(old_missing, new_added);
+    let ExplorerEntryDiff {
+        renames: rename_pairs,
+        deletions,
+        creations,
+    } = diff_explorer_entries(old_entries, new_entries);
     for (old, new) in rename_pairs {
         renames.push(PlannedExplorerRename {
             old_name: old.name.clone(),
@@ -1193,7 +1122,11 @@ fn plan_explorer_dir_changes(
         if !current_old_path.exists() {
             anyhow::bail!("rename source '{}' does not exist", rename.old_name);
         }
-        if rename.new_path.exists() && !rename_sources.contains(&rename.new_path) {
+        // A case-only rename on a case-insensitive filesystem "finds" its own source.
+        if rename.new_path.exists()
+            && !rename_sources.contains(&rename.new_path)
+            && !same_filesystem_entry(&rename.new_path, &current_old_path)
+        {
             anyhow::bail!("rename target '{}' already exists", rename.new_name);
         }
     }
@@ -1725,79 +1658,95 @@ fn push_explorer_entry_change_summary(
     parts.push(format!("{action} {kind}: {}", labels.join(", ")));
 }
 
-fn partition_explorer_entry_changes(
-    old_missing: Vec<(usize, ExplorerEntry)>,
-    new_added: Vec<(usize, ExplorerEntry)>,
-) -> (
-    Vec<(ExplorerEntry, ExplorerEntry)>,
-    Vec<ExplorerEntry>,
-    Vec<ExplorerEntry>,
-) {
-    fn pair_by_kind(
-        old_missing: &[(usize, ExplorerEntry)],
-        new_added: &[(usize, ExplorerEntry)],
-        is_dir: bool,
-        rename_pairs: &mut Vec<(ExplorerEntry, ExplorerEntry)>,
-        old_paired: &mut HashSet<usize>,
-        new_paired: &mut HashSet<usize>,
-    ) {
-        let old_candidates: Vec<(usize, &ExplorerEntry)> = old_missing
-            .iter()
-            .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| {
-                (entry.is_dir == is_dir).then_some((vec_idx, entry))
-            })
-            .collect();
-        let new_candidates: Vec<(usize, &ExplorerEntry)> = new_added
-            .iter()
-            .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| {
-                (entry.is_dir == is_dir).then_some((vec_idx, entry))
-            })
-            .collect();
+struct ExplorerEntryDiff {
+    renames: Vec<(ExplorerEntry, ExplorerEntry)>,
+    deletions: Vec<ExplorerEntry>,
+    creations: Vec<ExplorerEntry>,
+}
 
-        for ((old_vec_idx, old_entry), (new_vec_idx, new_entry)) in
-            old_candidates.into_iter().zip(new_candidates)
-        {
-            rename_pairs.push((old_entry.clone(), new_entry.clone()));
-            old_paired.insert(old_vec_idx);
-            new_paired.insert(new_vec_idx);
+/// Compare an edited listing with the original. Unchanged names anchor the listing:
+/// a vanished and an added entry of the same kind are a rename only when they sit
+/// between the same unchanged neighbours, so deleting one line while typing an
+/// unrelated name elsewhere stays a confirmed deletion plus a creation.
+fn diff_explorer_entries(
+    old_entries: &[ExplorerEntry],
+    new_entries: &[ExplorerEntry],
+) -> ExplorerEntryDiff {
+    fn gapped<'a>(
+        entries: &'a [ExplorerEntry],
+        others: &HashSet<&str>,
+    ) -> Vec<(Option<&'a str>, &'a ExplorerEntry)> {
+        let mut anchor = None;
+        let mut changed = Vec::new();
+        for entry in entries.iter().filter(|entry| !entry.is_parent) {
+            if others.contains(entry.name.as_str()) {
+                anchor = Some(entry.name.as_str());
+            } else {
+                changed.push((anchor, entry));
+            }
         }
+        changed
     }
 
-    let mut rename_pairs = Vec::new();
-    let mut old_paired = HashSet::new();
-    let mut new_paired = HashSet::new();
+    fn names(entries: &[ExplorerEntry]) -> HashSet<&str> {
+        entries
+            .iter()
+            .filter(|entry| !entry.is_parent)
+            .map(|entry| entry.name.as_str())
+            .collect()
+    }
+    let old_names = names(old_entries);
+    let new_names = names(new_entries);
 
-    pair_by_kind(
-        &old_missing,
-        &new_added,
-        false,
-        &mut rename_pairs,
-        &mut old_paired,
-        &mut new_paired,
-    );
-    pair_by_kind(
-        &old_missing,
-        &new_added,
-        true,
-        &mut rename_pairs,
-        &mut old_paired,
-        &mut new_paired,
-    );
-
-    let deletions = old_missing
+    let old_missing = gapped(old_entries, &new_names);
+    let mut new_added: Vec<_> = gapped(new_entries, &old_names)
         .into_iter()
-        .enumerate()
-        .filter_map(|(vec_idx, (_, entry))| (!old_paired.contains(&vec_idx)).then_some(entry))
-        .collect();
-    let creations = new_added
-        .into_iter()
-        .enumerate()
-        .filter_map(|(vec_idx, (_, entry))| (!new_paired.contains(&vec_idx)).then_some(entry))
+        .map(|added| (added, false))
         .collect();
 
-    (rename_pairs, deletions, creations)
+    let mut diff = ExplorerEntryDiff {
+        renames: Vec::new(),
+        deletions: Vec::new(),
+        creations: Vec::new(),
+    };
+    for (gap, old) in old_missing {
+        let partner = new_added.iter_mut().find(|((added_gap, added), paired)| {
+            !*paired && *added_gap == gap && added.is_dir == old.is_dir
+        });
+        match partner {
+            Some(((_, new), paired)) => {
+                *paired = true;
+                diff.renames.push((old.clone(), (*new).clone()));
+            }
+            None => diff.deletions.push(old.clone()),
+        }
+    }
+    diff.creations = new_added
+        .into_iter()
+        .filter(|(_, paired)| !paired)
+        .map(|((_, entry), _)| entry.clone())
+        .collect();
+    diff
+}
+
+/// Whether two paths name the same file, as a case-insensitive filesystem can make them.
+fn same_filesystem_entry(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(left), Ok(right)) = (fs::symlink_metadata(left), fs::symlink_metadata(right))
+        else {
+            return false;
+        };
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        matches!(
+            (fs::canonicalize(left), fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
+    }
 }
 
 #[cfg(test)]
@@ -2084,6 +2033,90 @@ mod tests {
         assert_eq!(lines[0].0, "confirm deletion of 101 entries:");
         assert_eq!(lines.len(), 1 + DELETE_TARGET_DISPLAY_LIMIT + 2);
         assert_eq!(lines[lines.len() - 2].0, " …and 61 more");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn names_of(entries: &[ExplorerEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn unrelated_delete_and_create_are_not_treated_as_a_rename() {
+        let old = vec![
+            file_entry("a.txt"),
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+        ];
+        let new = vec![
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+            file_entry("new.txt"),
+        ];
+
+        let diff = diff_explorer_entries(&old, &new);
+        assert!(diff.renames.is_empty());
+        assert_eq!(names_of(&diff.deletions), ["a.txt"]);
+        assert_eq!(names_of(&diff.creations), ["new.txt"]);
+        // The confirmation prompt sees exactly the same deletion.
+        assert_eq!(names_of(&pending_explorer_deletions(&old, &new)), ["a.txt"]);
+    }
+
+    #[test]
+    fn renames_survive_deletions_elsewhere_in_the_listing() {
+        let old = vec![
+            file_entry("a.txt"),
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+            file_entry("d.txt"),
+        ];
+        let new = vec![
+            file_entry("b.txt"),
+            file_entry("x.txt"),
+            file_entry("d.txt"),
+        ];
+
+        let diff = diff_explorer_entries(&old, &new);
+        let renames: Vec<_> = diff
+            .renames
+            .iter()
+            .map(|(old, new)| (old.name.as_str(), new.name.as_str()))
+            .collect();
+        assert_eq!(renames, [("c.txt", "x.txt")]);
+        assert_eq!(names_of(&diff.deletions), ["a.txt"]);
+        assert!(diff.creations.is_empty());
+    }
+
+    #[test]
+    fn renames_only_pair_entries_of_the_same_kind() {
+        let old = vec![dir_entry("docs"), file_entry("keep.txt")];
+        let new = vec![file_entry("notes.txt"), file_entry("keep.txt")];
+
+        let diff = diff_explorer_entries(&old, &new);
+        assert!(diff.renames.is_empty());
+        assert_eq!(names_of(&diff.deletions), ["docs"]);
+        assert_eq!(names_of(&diff.creations), ["notes.txt"]);
+    }
+
+    #[test]
+    fn case_only_rename_works_on_every_filesystem() {
+        let root = temp_dir_path("case_rename");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("readme.md"), "contents").unwrap();
+
+        let planned = apply_explorer_changes(
+            &root,
+            &[file_entry("readme.md")],
+            &[file_entry("README.md")],
+        )
+        .expect("a case-only rename must be allowed");
+        execute_plan(planned).unwrap();
+
+        assert_eq!(directory_names(&root), ["README.md"]);
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "contents"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
