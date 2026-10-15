@@ -33,7 +33,14 @@ impl EditorState {
         first_line: usize,
         line_count: usize,
     ) -> BTreeMap<usize, SearchLineHighlights> {
-        self.ensure_search_state_current();
+        // Hidden matches are refreshed when a command next needs them.
+        if self
+            .search_state
+            .as_ref()
+            .is_some_and(|search| search.visible)
+        {
+            self.ensure_search_state_current();
+        }
 
         let (matches, active_match) = if let Some(preview) = self.substitute_preview() {
             (preview.matches.as_slice(), None)
@@ -587,15 +594,15 @@ fn next_match_index_from_cursor(
     cursor: Pos,
     forward: bool,
 ) -> Option<usize> {
-    let cursor_char = buffer.pos_to_char(cursor);
+    // Matches are in document order, and valid positions order like offsets.
+    let cursor = buffer.clamp_pos(cursor);
     if forward {
-        matches
-            .iter()
-            .position(|matched| buffer.pos_to_char(matched.start) >= cursor_char)
+        let index = matches.partition_point(|matched| matched.start < cursor);
+        (index < matches.len()).then_some(index)
     } else {
         matches
-            .iter()
-            .rposition(|matched| buffer.pos_to_char(matched.start) <= cursor_char)
+            .partition_point(|matched| matched.start <= cursor)
+            .checked_sub(1)
     }
 }
 
@@ -608,7 +615,12 @@ pub(super) fn match_highlight_ranges(
 ) -> BTreeMap<usize, SearchLineHighlights> {
     let mut ranges = BTreeMap::new();
     let last_line = first_line.saturating_add(line_count);
-    for (index, matched) in matches.iter().enumerate() {
+    // Matches are in document order and don't overlap, so their ends are too.
+    let first = matches.partition_point(|matched| matched.end.line < first_line);
+    for (index, matched) in matches.iter().enumerate().skip(first) {
+        if matched.start.line >= last_line {
+            break;
+        }
         for line in
             matched.start.line.max(first_line)..=matched.end.line.min(last_line.saturating_sub(1))
         {
@@ -638,4 +650,91 @@ pub(super) fn match_highlight_ranges(
     }
 
     ranges
+}
+
+#[cfg(test)]
+mod tests {
+    use redox_core::{Pos, TextBuffer};
+
+    use super::{SearchMatch, match_highlight_ranges, next_match_index_from_cursor};
+
+    fn sample() -> (TextBuffer, Vec<SearchMatch>) {
+        let buffer = TextBuffer::from_text("ab ab\n\nab\nab ab ab\nx\nab\n");
+        let span = |start: (usize, usize), end: (usize, usize)| SearchMatch {
+            start: Pos::new(start.0, start.1),
+            end: Pos::new(end.0, end.1),
+        };
+        let matches = vec![
+            span((0, 0), (0, 2)),
+            span((0, 3), (2, 0)),
+            span((2, 0), (2, 2)),
+            span((3, 0), (3, 2)),
+            span((3, 3), (3, 5)),
+            span((3, 6), (5, 1)),
+            span((5, 2), (5, 2)),
+        ];
+        (buffer, matches)
+    }
+
+    #[test]
+    fn viewport_highlights_match_the_full_set_on_each_line() {
+        let (buffer, matches) = sample();
+        let flatten = |ranges: std::collections::BTreeMap<usize, super::SearchLineHighlights>| {
+            ranges
+                .into_iter()
+                .map(|(line, highlights)| (line, highlights.ranges, highlights.active))
+                .collect::<Vec<_>>()
+        };
+        for active in [None, Some(1), Some(5)] {
+            let all = flatten(match_highlight_ranges(
+                &buffer,
+                &matches,
+                active,
+                0,
+                usize::MAX,
+            ));
+            for first_line in 0..7 {
+                for line_count in 0..7 {
+                    let window = flatten(match_highlight_ranges(
+                        &buffer, &matches, active, first_line, line_count,
+                    ));
+                    let expected = all
+                        .iter()
+                        .filter(|(line, _, _)| (first_line..first_line + line_count).contains(line))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    assert_eq!(window, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn next_match_compares_positions_like_char_offsets() {
+        let (buffer, matches) = sample();
+        for line in 0..8 {
+            for col in 0..9 {
+                let cursor = Pos::new(line, col);
+                let cursor_char = buffer.pos_to_char(cursor);
+                let starts = matches
+                    .iter()
+                    .map(|matched| buffer.pos_to_char(matched.start));
+                let forward = starts.clone().position(|start| start >= cursor_char);
+                let backward = starts
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .rposition(|&start| start <= cursor_char);
+                assert_eq!(
+                    next_match_index_from_cursor(&buffer, &matches, cursor, true),
+                    forward,
+                    "{cursor:?}"
+                );
+                assert_eq!(
+                    next_match_index_from_cursor(&buffer, &matches, cursor, false),
+                    backward,
+                    "{cursor:?}"
+                );
+            }
+        }
+    }
 }
