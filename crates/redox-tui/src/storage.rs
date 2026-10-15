@@ -12,13 +12,23 @@ const APP_DIR: &str = "redox";
 const UNDO_HISTORY_VERSION: u32 = 1;
 const HASH_HEX_DIGITS: usize = u64::BITS as usize / 4;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct UndoHistorySnapshot {
     version: u32,
     path: String,
     content_hash: u64,
     content_len_chars: usize,
     history: UndoHistory,
+}
+
+/// Serializes exactly like `UndoHistorySnapshot`, borrowing the history.
+#[derive(Serialize)]
+struct UndoHistorySnapshotRef<'a> {
+    version: u32,
+    path: String,
+    content_hash: u64,
+    content_len_chars: usize,
+    history: &'a UndoHistory,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,11 +152,10 @@ pub fn load_undo_history(
         Err(error) => return Err(error),
     };
     let snapshot: UndoHistorySnapshot = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    let content = buffer.to_string();
     if snapshot.version != UNDO_HISTORY_VERSION
         || snapshot.path != path.to_string_lossy()
         || snapshot.content_len_chars != buffer.len_chars()
-        || snapshot.content_hash != stable_hash(content.as_bytes())
+        || snapshot.content_hash != buffer_hash(buffer)
     {
         return Ok(None);
     }
@@ -163,19 +172,18 @@ pub fn save_undo_history(
     buffer: &TextBuffer,
     history: &UndoHistory,
 ) -> io::Result<()> {
-    if history.tree_entries().len() <= 1 {
+    if !history.has_edits() {
         return remove_undo_history(path);
     }
 
     let root = undo_history_root();
     fs::create_dir_all(&root)?;
-    let content = buffer.to_string();
-    let snapshot = UndoHistorySnapshot {
+    let snapshot = UndoHistorySnapshotRef {
         version: UNDO_HISTORY_VERSION,
         path: path.to_string_lossy().into_owned(),
-        content_hash: stable_hash(content.as_bytes()),
+        content_hash: buffer_hash(buffer),
         content_len_chars: buffer.len_chars(),
-        history: history.clone(),
+        history,
     };
     let destination = undo_history_path(path);
     let mut temporary = tempfile::NamedTempFile::new_in(root)?;
@@ -268,7 +276,17 @@ fn undo_history_path(path: &Path) -> PathBuf {
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
+    stable_hash_continue(0xcbf29ce484222325u64, bytes)
+}
+
+/// FNV-1a over the buffer's chunks, equal to `stable_hash` of its text.
+fn buffer_hash(buffer: &TextBuffer) -> u64 {
+    buffer.chunks().fold(0xcbf29ce484222325u64, |hash, chunk| {
+        stable_hash_continue(hash, chunk.as_bytes())
+    })
+}
+
+fn stable_hash_continue(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
@@ -405,6 +423,36 @@ fn copy_directory(source: &Path, destination: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn undo_snapshots_hash_chunks_and_borrow_history_compatibly() {
+        let buffer = TextBuffer::from_text(&"chunked text \u{e9}\n".repeat(4_000));
+        assert!(buffer.chunks().nth(1).is_some());
+        assert_eq!(
+            buffer_hash(&buffer),
+            stable_hash(buffer.to_string().as_bytes())
+        );
+
+        let mut history = UndoHistory::default();
+        let mut edited = buffer.clone();
+        let checkpoint = history.checkpoint(edited.clone(), redox_core::Pos::zero());
+        edited.insert(redox_core::Pos::zero(), "x");
+        assert!(history.record_if_changed(checkpoint, &edited, redox_core::Pos::zero()));
+        let json = serde_json::to_string(&UndoHistorySnapshotRef {
+            version: UNDO_HISTORY_VERSION,
+            path: "a.rs".into(),
+            content_hash: buffer_hash(&edited),
+            content_len_chars: edited.len_chars(),
+            history: &history,
+        })
+        .unwrap();
+        let loaded: UndoHistorySnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.content_hash, buffer_hash(&edited));
+        assert_eq!(
+            loaded.history.tree_entries().len(),
+            history.tree_entries().len()
+        );
+    }
 
     // I changed the naming convention for these, so just in case...
     #[test]

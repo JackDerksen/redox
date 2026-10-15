@@ -580,6 +580,13 @@ impl UndoHistory {
         self.nodes.get(node_id)?.record.as_ref()
     }
 
+    /// Whether any edit is recorded, without building `tree_entries`.
+    pub fn has_edits(&self) -> bool {
+        self.nodes
+            .first()
+            .is_some_and(|root| root.children.iter().any(|&child| child < self.nodes.len()))
+    }
+
     pub fn tree_entries(&self) -> Vec<UndoTreeEntry> {
         let mut entries = Vec::with_capacity(self.nodes.len());
         let mut pending = vec![0];
@@ -735,6 +742,16 @@ mod tests {
             (diff.start_char, diff.deleted.as_str()),
             (before.len_chars(), "end")
         );
+    }
+
+    #[test]
+    fn has_edits_matches_the_tree_entry_count() {
+        let mut history = UndoHistory::default();
+        let mut buffer = TextBuffer::new();
+        assert!(!history.has_edits());
+        edit(&mut history, &mut buffer, "a");
+        assert!(history.has_edits());
+        assert_eq!(history.has_edits(), history.tree_entries().len() > 1);
     }
 
     #[test]
