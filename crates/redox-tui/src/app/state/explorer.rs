@@ -1257,52 +1257,151 @@ fn plan_explorer_dir_changes(
     })
 }
 
+/// A completed filesystem step that can be reversed if a later step fails.
+#[derive(Debug)]
+enum ExplorerUndoStep {
+    Moved { from: PathBuf, to: PathBuf },
+    CreatedFile(PathBuf),
+    CreatedDir(PathBuf),
+}
+
+/// Apply a planned write as one transaction. Deleted entries are first moved aside,
+/// so every step stays reversible until all renames and creations have succeeded.
 fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Result<()> {
+    let mut journal = Vec::new();
+    let staged_deletions = match apply_reversible_explorer_steps(planned_write, &mut journal) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let stranded = roll_back_explorer_steps(journal);
+            if stranded.is_empty() {
+                anyhow::bail!("{error:#}; no changes were made");
+            }
+            anyhow::bail!(
+                "{error:#}; rollback incomplete, check {}",
+                stranded.join(", ")
+            );
+        }
+    };
+
+    for (staged, is_dir) in staged_deletions {
+        let removed = if is_dir {
+            fs::remove_dir_all(&staged)
+        } else {
+            fs::remove_file(&staged)
+        };
+        removed.map_err(|error| {
+            anyhow::anyhow!("could not finish deleting {}: {error}", staged.display())
+        })?;
+    }
+    Ok(())
+}
+
+fn apply_reversible_explorer_steps(
+    planned_write: &PlannedExplorerWrite,
+    journal: &mut Vec<ExplorerUndoStep>,
+) -> anyhow::Result<Vec<(PathBuf, bool)>> {
     for dir_write in &planned_write.dir_writes {
         for rename in &dir_write.renames {
-            fs::rename(&rename.old_path, &rename.temp_path)?;
+            move_entry(&rename.old_path, &rename.temp_path, journal)?;
         }
         for rename in &dir_write.renames {
             if let Some(parent) = rename.new_path.parent() {
-                fs::create_dir_all(parent)?;
+                create_dirs(parent, journal)?;
             }
             if rename.new_path.exists() {
                 anyhow::bail!("rename target '{}' already exists", rename.new_name);
             }
-            fs::rename(&rename.temp_path, &rename.new_path)?;
+            move_entry(&rename.temp_path, &rename.new_path, journal)?;
         }
     }
 
+    let mut staged_deletions = Vec::new();
     for deleted in &planned_write.changes.deleted_entries {
-        if deleted.is_dir {
-            fs::remove_dir_all(&deleted.path)?;
-        } else {
-            fs::remove_file(&deleted.path)?;
-        }
+        let staged = unused_sibling_path(&deleted.path, "redox_delete_tmp")?;
+        move_entry(&deleted.path, &staged, journal)?;
+        staged_deletions.push((staged, deleted.is_dir));
     }
 
     for created in &planned_write.changes.created_entries {
         if created.is_dir {
-            fs::create_dir_all(&created.path)?;
-        } else {
-            if let Some(parent) = created.path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            // Never truncate: the path may have appeared since planning.
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&created.path)
-                .map_err(|error| match error.kind() {
-                    std::io::ErrorKind::AlreadyExists => {
-                        anyhow::anyhow!("'{}' already exists", created.name)
-                    }
-                    _ => error.into(),
-                })?;
+            create_dirs(&created.path, journal)?;
+            continue;
         }
+        if let Some(parent) = created.path.parent() {
+            create_dirs(parent, journal)?;
+        }
+        // Never truncate: the path may have appeared since planning.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&created.path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    anyhow::anyhow!("'{}' already exists", created.name)
+                }
+                _ => error.into(),
+            })?;
+        journal.push(ExplorerUndoStep::CreatedFile(created.path.clone()));
     }
 
+    Ok(staged_deletions)
+}
+
+fn move_entry(from: &Path, to: &Path, journal: &mut Vec<ExplorerUndoStep>) -> anyhow::Result<()> {
+    fs::rename(from, to)
+        .map_err(|error| anyhow::anyhow!("could not move {}: {error}", from.display()))?;
+    journal.push(ExplorerUndoStep::Moved {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+    });
     Ok(())
+}
+
+/// Create `dir` and any missing ancestors, journaling each directory actually created.
+fn create_dirs(dir: &Path, journal: &mut Vec<ExplorerUndoStep>) -> anyhow::Result<()> {
+    let missing: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|ancestor| fs::symlink_metadata(ancestor).is_err())
+        .collect();
+    for created in missing.into_iter().rev() {
+        fs::create_dir(created)
+            .map_err(|error| anyhow::anyhow!("could not create {}: {error}", created.display()))?;
+        journal.push(ExplorerUndoStep::CreatedDir(created.to_path_buf()));
+    }
+    Ok(())
+}
+
+fn unused_sibling_path(path: &Path, prefix: &str) -> anyhow::Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    (0..10_000)
+        .map(|attempt| parent.join(format!(".{prefix}_{attempt}")))
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+        .ok_or_else(|| anyhow::anyhow!("failed to allocate a temporary path"))
+}
+
+/// Undo completed steps newest first. Return the paths that could not be restored.
+fn roll_back_explorer_steps(journal: Vec<ExplorerUndoStep>) -> Vec<String> {
+    let mut stranded = Vec::new();
+    for step in journal.into_iter().rev() {
+        match step {
+            ExplorerUndoStep::Moved { from, to } => {
+                if fs::rename(&to, &from).is_err() {
+                    stranded.push(format!("{} (was {})", to.display(), from.display()));
+                }
+            }
+            ExplorerUndoStep::CreatedFile(path) => {
+                // Only an empty file was created; leave it if something wrote to it since.
+                if fs::metadata(&path).is_ok_and(|metadata| metadata.len() == 0) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+            ExplorerUndoStep::CreatedDir(path) => {
+                // Fails harmlessly if anything else now lives inside it.
+                let _ = fs::remove_dir(&path);
+            }
+        }
+    }
+    stranded
 }
 
 fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Result<String> {
@@ -1829,6 +1928,87 @@ mod tests {
             fs::read_to_string(root.join("README.md")).unwrap(),
             "important"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn directory_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn failed_rename_rolls_back_without_stranding_temporary_files() {
+        let root = temp_dir_path("rollback_rename");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("a.txt"), "a").unwrap();
+
+        let planned =
+            apply_explorer_changes(&root, &[file_entry("a.txt")], &[file_entry("b.txt")]).unwrap();
+        fs::write(root.join("b.txt"), "someone else's").unwrap();
+        let error = execute_plan(planned).expect_err("the rename target appeared");
+        assert!(
+            format!("{error:#}").contains("no changes were made"),
+            "{error:#}"
+        );
+
+        assert_eq!(directory_names(&root), ["a.txt", "b.txt"]);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a");
+        assert_eq!(
+            fs::read_to_string(root.join("b.txt")).unwrap(),
+            "someone else's"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failure_after_renames_and_deletes_restores_everything() {
+        let root = temp_dir_path("rollback_all");
+        fs::create_dir_all(root.join("doomed")).expect("failed to create fixture root");
+        fs::write(root.join("doomed/inner.txt"), "inner").unwrap();
+        fs::write(root.join("old.txt"), "old").unwrap();
+        fs::write(root.join("gone.txt"), "gone").unwrap();
+
+        // Rename old->renamed, delete gone.txt and doomed/, create nested/new.txt.
+        let old_entries = vec![
+            dir_entry("doomed"),
+            file_entry("gone.txt"),
+            file_entry("old.txt"),
+        ];
+        let new_entries = vec![file_entry("nested/new.txt"), file_entry("renamed.txt")];
+        let mut planned = apply_explorer_changes(&root, &old_entries, &new_entries).unwrap();
+        // Force the final step to fail by colliding with a file created after planning.
+        planned
+            .changes
+            .created_entries
+            .push(AppliedExplorerEntryChange {
+                name: "late.txt".to_string(),
+                path: root.join("late.txt"),
+                is_dir: false,
+            });
+        fs::write(root.join("late.txt"), "late").unwrap();
+
+        let error = execute_plan(planned).expect_err("the last creation must fail");
+        assert!(
+            format!("{error:#}").contains("no changes were made"),
+            "{error:#}"
+        );
+        assert_eq!(
+            directory_names(&root),
+            ["doomed", "gone.txt", "late.txt", "old.txt"]
+        );
+        assert_eq!(fs::read_to_string(root.join("old.txt")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(root.join("gone.txt")).unwrap(), "gone");
+        assert_eq!(
+            fs::read_to_string(root.join("doomed/inner.txt")).unwrap(),
+            "inner"
+        );
+        assert_eq!(fs::read_to_string(root.join("late.txt")).unwrap(), "late");
 
         let _ = fs::remove_dir_all(root);
     }
