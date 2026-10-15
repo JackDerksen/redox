@@ -4969,6 +4969,47 @@ mod tests {
     }
 
     #[test]
+    fn split_panes_keep_their_own_cursors_and_share_undo_history() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text(&"line\n".repeat(40));
+        state.set_editor_area_size(100, 29);
+        let style = UiStyle::default();
+        let mut window = TestWindow::new(100, 30);
+        let mut perf = FramePerfSample::default();
+        let mut clipboard = None;
+        state.split_active_pane(app::state::SplitAxis::Vertical);
+        let first = state
+            .panes()
+            .iter()
+            .find(|pane| pane.id != state.active_pane_id())
+            .unwrap()
+            .id;
+        for character in "5jix".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        let second = state.active_pane_id();
+        assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(5, 0));
+
+        state.focus_split(app::state::SplitDirection::Left);
+        assert_eq!(state.active_pane_id(), first);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert_eq!(state.active_cursor_pos(), redox_core::Pos::zero());
+        handle_editor_event(&mut state, &mut clipboard, Event::Character('u'));
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert_eq!(state.session.active_buffer().line_string(5), "line");
+
+        state.focus_split(app::state::SplitDirection::Right);
+        assert_eq!(state.active_pane_id(), second);
+        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(5, 0));
+        state.apply_input(InputAction::Redo, 100, 29);
+        assert_eq!(state.session.active_buffer().line_string(5), "xline");
+    }
+
+    #[test]
     fn substitution_preview_preserves_scrolled_split_views_and_syntax() {
         let _lock = app::state::global_test_state_lock().lock().unwrap();
         let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());

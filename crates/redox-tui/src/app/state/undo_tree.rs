@@ -8,7 +8,7 @@ use redox_core::{
 };
 
 use super::{
-    BufferViewState, EditorMode, EditorState, PaneId, PaneOptions, SplitAxis, SplitNode, SplitSize,
+    EditorMode, EditorState, PaneId, PaneOptions, PaneView, SplitAxis, SplitNode, SplitSize,
 };
 use crate::ui::UNDO_TREE_HEADER_ROWS;
 use crate::ui::style::UndoTreeStyle;
@@ -298,7 +298,7 @@ impl EditorState {
 
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id) {
             pane.buffer_id = surface_id;
-            pane.view = BufferViewState::default();
+            pane.view = PaneView::default();
             pane.options = PaneOptions {
                 resizable: true,
                 ..PaneOptions::ui()
@@ -328,7 +328,7 @@ impl EditorState {
         let diff_buffer_id = self.session.open_ui_buffer("undo-tree-diff", "");
         if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == diff_pane_id) {
             pane.buffer_id = diff_buffer_id;
-            pane.view = BufferViewState::default();
+            pane.view = PaneView::default();
         }
         self.views.entry(diff_buffer_id).or_default();
         self.undo_tree = Some(UndoTreeState {
