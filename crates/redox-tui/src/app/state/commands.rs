@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use redox_core::{BufferId, BufferKind, Pos, Selection, TextBuffer, TextDiff};
+use redox_core::{BufferId, BufferKind, Pos, Selection, TextBuffer};
 
 use super::{EditorMode, EditorState, SplitAxis, calculator};
 use crate::input::InputAction;
@@ -1220,7 +1220,10 @@ impl EditorState {
             let formatted = std::fs::read_to_string(path)
                 .map_err(|error| format!("failed to read formatter output: {error}"))?;
             self.session.refresh_active_disk_stamp();
-            changed |= replace_text_preserving_marks(self.session.active_buffer_mut(), &formatted);
+            changed |= self
+                .session
+                .active_buffer_mut()
+                .replace_text_preserving_marks(&formatted);
         }
 
         let passes = SavePasses::for_path(path.as_deref(), self.save);
@@ -1244,7 +1247,9 @@ impl EditorState {
         text_vh: usize,
     ) -> Result<(), std::io::Error> {
         let text = std::fs::read_to_string(path)?;
-        replace_text_preserving_marks(self.session.active_buffer_mut(), &text);
+        self.session
+            .active_buffer_mut()
+            .replace_text_preserving_marks(&text);
         self.reconcile_active_after_buffer_rewrite(viewport_width_cells, text_vh);
         self.session.mark_active_clean();
         let active_id = self.session.active_id();
@@ -1535,14 +1540,4 @@ fn expand_indent_tabs(indent: &str, tab_width: usize) -> String {
         }
     }
     expanded
-}
-
-/// Replace a buffer's text with one edit spanning only the changed region, so marks
-/// outside it keep their positions.
-fn replace_text_preserving_marks(buffer: &mut TextBuffer, text: &str) -> bool {
-    let Some(diff) = TextDiff::between(buffer, &TextBuffer::from_text(text)) else {
-        return false;
-    };
-    buffer.apply_edit(diff.forward_edit());
-    true
 }

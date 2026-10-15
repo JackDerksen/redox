@@ -4835,6 +4835,37 @@ exit 1
 }
 
 #[test]
+fn command_write_formatter_changes_keep_marks_between_them() {
+    with_isolated_launch_env("write_format_marks", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        write_executable(
+            &bin_dir.join("ruff"),
+            "#!/bin/sh
+if [ \"$1\" = \"format\" ]; then
+  printf 'a = 1\\nkeep()\\nb = 2\\n' > \"$2\"
+fi
+exit 0
+",
+        );
+        let path = root.join("example.py");
+        fs::write(&path, "a=1\nkeep()\nb=2\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .session
+            .active_buffer_mut()
+            .set_mark('k', Pos::new(1, 3));
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        let buffer = state.session.active_buffer();
+        assert_eq!(buffer.to_string(), "a = 1\nkeep()\nb = 2\n");
+        assert_eq!(buffer.mark('k'), Some(Pos::new(1, 3)));
+    });
+}
+
+#[test]
 fn command_write_records_undo_when_the_post_format_save_fails() {
     with_isolated_launch_env("write_format_save_fails", |root| {
         let bin_dir = root.join("bin");

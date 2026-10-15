@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use anyhow::{Context as _, Result, bail};
 
 use self::loading::IncrementalFileLoader;
-use crate::{TextBuffer, TextDiff};
+use crate::TextBuffer;
 
 const INITIAL_LOAD_BYTES: usize = 64 * 1024;
 const FULL_LOAD_CHUNK_BYTES: usize = 64 * 1024;
@@ -1207,13 +1207,11 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
     }
 }
 
-/// Replace `buffer` with `replacement` through one edit spanning only the changed text,
-/// so marks outside it stay put. Return the previous contents.
+/// Replace `buffer` with `replacement` line by line, so marks on unchanged lines stay
+/// put. Return the previous contents.
 fn replace_buffer_contents(buffer: &mut TextBuffer, replacement: TextBuffer) -> TextBuffer {
     let previous = buffer.clone();
-    if let Some(diff) = TextDiff::between(buffer, &replacement) {
-        buffer.apply_edit(diff.forward_edit());
-    }
+    buffer.replace_text_preserving_marks(&String::from(replacement));
     previous
 }
 

@@ -174,6 +174,38 @@ impl TextBuffer {
         self.char_to_pos(start + inserted_chars)
     }
 
+    /// Replace the whole text with `text` through one edit per changed run of lines,
+    /// so marks on unchanged lines stay put. A mark inside a changed run moves to the
+    /// start of that run. Return whether anything changed.
+    pub fn replace_text_preserving_marks(&mut self, text: &str) -> bool {
+        let current = String::from(&*self);
+        if current == text {
+            return false;
+        }
+        let old_lines: Vec<&str> = current.split_inclusive('\n').collect();
+        let new_lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let mut line_starts = Vec::with_capacity(old_lines.len() + 1);
+        line_starts.push(0);
+        for line in &old_lines {
+            line_starts.push(line_starts[line_starts.len() - 1] + line.chars().count());
+        }
+
+        let diff = similar::TextDiff::from_slices(&old_lines, &new_lines);
+        // Apply from the end so earlier offsets stay valid.
+        for op in diff.ops().iter().rev() {
+            let (tag, old_range, new_range) = op.as_tag_tuple();
+            if tag == similar::DiffTag::Equal {
+                continue;
+            }
+            self.replace_char_range(
+                line_starts[old_range.start],
+                line_starts[old_range.end],
+                &new_lines[new_range].concat(),
+            );
+        }
+        true
+    }
+
     /// Apply multiple edits sequentially and return a transaction-style summary.
     ///
     /// Edits are applied in input order against the current buffer state.
