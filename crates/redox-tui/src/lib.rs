@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -1009,17 +1010,23 @@ fn draw_gutter_padding(
     let pad = " ".repeat(padding_w as usize);
     let color = TextStyle::new(style.theme.bg, style.theme.bg);
     let staged_style = style.dimmed_by(style.dim_amount).git;
+    // Resolve each mark's line once, not once per row.
+    let marks = buffer
+        .map(|buffer| buffer.marks().collect::<Vec<_>>())
+        .unwrap_or_default();
     for row in 0..text_h {
         if padding_w > 0 {
             window.write_str_styled(row, gutter_w, &pad, color.into())?;
         }
         let line_idx = first_line.saturating_add(row as usize);
-        if let Some((name, _)) = buffer.and_then(|buffer| {
-            buffer
-                .marks()
-                .find(|(_, position)| position.line == line_idx)
-        }) {
-            window.write_str_styled(row, 0, &name.to_string(), style.gutter_mark.into())?;
+        if let Some((name, _)) = marks.iter().find(|(_, position)| position.line == line_idx) {
+            let mut name_buf = [0; 4];
+            window.write_str_styled(
+                row,
+                0,
+                name.encode_utf8(&mut name_buf),
+                style.gutter_mark.into(),
+            )?;
         } else if let Some(marker) = git_diff.and_then(|diff| diff.marker_for_line(line_idx)) {
             let marker_style = if marker.staged {
                 staged_style
@@ -1860,8 +1867,8 @@ fn draw_buffer_snapshot_for_id(
     let undo_tree_role = state.undo_tree_surface_role(buffer_id);
     let undo_tree_line_spans = state
         .undo_tree_line_spans(buffer_id)
-        .map(<[_]>::to_vec)
-        .unwrap_or_default();
+        .cloned()
+        .unwrap_or_else(|| Arc::new([]));
     let undo_tree_preview_separator_row = state.undo_tree_preview_separator_row(buffer_id);
     let git_diff = undo_tree_role
         .is_none()

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use redox_core::{
@@ -46,7 +47,7 @@ pub(super) struct UndoTreeState {
     pub(super) selected_node: UndoNodeId,
     pub(super) display_rows: Vec<Option<UndoNodeId>>,
     diff_separator_row: Option<usize>,
-    line_spans: Vec<Vec<UndoTreeLineSpan>>,
+    line_spans: Arc<[Vec<UndoTreeLineSpan>]>,
     rendered_at_ms: u128,
 }
 
@@ -249,9 +250,12 @@ impl EditorState {
         }
     }
 
-    pub fn undo_tree_line_spans(&self, buffer_id: BufferId) -> Option<&[Vec<UndoTreeLineSpan>]> {
+    pub fn undo_tree_line_spans(
+        &self,
+        buffer_id: BufferId,
+    ) -> Option<&Arc<[Vec<UndoTreeLineSpan>]>> {
         let tree = self.undo_tree.as_ref()?;
-        (tree.buffer_id == buffer_id).then_some(tree.line_spans.as_slice())
+        (tree.buffer_id == buffer_id).then_some(&tree.line_spans)
     }
 
     pub fn undo_tree_preview_separator_row(&self, buffer_id: BufferId) -> Option<usize> {
@@ -344,7 +348,7 @@ impl EditorState {
                 .unwrap_or(0),
             display_rows: Vec::new(),
             diff_separator_row: None,
-            line_spans: Vec::new(),
+            line_spans: Arc::new([]),
             rendered_at_ms: current_time_ms(),
         });
         self.refresh_undo_tree_surface(true);
@@ -427,7 +431,7 @@ impl EditorState {
         if let Some(tree) = self.undo_tree.as_mut() {
             tree.display_rows = rendered.display_rows;
             tree.diff_separator_row = diff_separator_row;
-            tree.line_spans = rendered.line_spans;
+            tree.line_spans = rendered.line_spans.into();
             tree.selected_node = selected_node;
             tree.rendered_at_ms = rendered_at_ms;
         }
