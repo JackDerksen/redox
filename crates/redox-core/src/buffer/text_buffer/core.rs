@@ -164,6 +164,11 @@ impl TextBuffer {
         self.rope.slice(start..end).chars()
     }
 
+    pub(crate) fn chunks_in(&self, range: Range<usize>) -> impl Iterator<Item = &str> {
+        let (start, end) = self.normalized_char_range(range.start, range.end);
+        self.rope.slice(start..end).chunks()
+    }
+
     pub(crate) fn chunks_reversed(&self, range: Range<usize>) -> impl Iterator<Item = &str> {
         let (start, end) = self.normalized_char_range(range.start, range.end);
         let slice = self.rope.slice(start..end);
