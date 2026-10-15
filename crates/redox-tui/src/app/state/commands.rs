@@ -1288,7 +1288,9 @@ impl EditorState {
         let language = language_for_path(self.session.active_meta().path.as_deref());
         let line = self.session.active_buffer().clamp_line(cursor.line);
         let indent_size = self.active_indent_width();
+        self.seed_indent_parser();
         let smart_insert = smart_open_line_insert(
+            &mut self.indent_parser,
             self.session.active_buffer(),
             language,
             line,

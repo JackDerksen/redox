@@ -1469,10 +1469,15 @@ impl EditorState {
         }
 
         let indent_size = self.active_indent_width();
+        self.seed_indent_parser();
         for line in start_line..=end_line {
-            let Some(indent) =
-                desired_indent_for_line(self.session.active_buffer(), language, line, indent_size)
-            else {
+            let Some(indent) = desired_indent_for_line(
+                &mut self.indent_parser,
+                self.session.active_buffer(),
+                language,
+                line,
+                indent_size,
+            ) else {
                 continue;
             };
             let Some((removed, added)) = self

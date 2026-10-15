@@ -18,6 +18,7 @@ use crate::input::cursor::CursorController;
 use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
 use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
+use crate::ui::syntax::IndentParser;
 use crate::ui::{
     RainAnimation, RenderLineCache, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
@@ -508,6 +509,7 @@ pub struct EditorState {
     transient_origin_buffer_id: Option<BufferId>,
     transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
+    indent_parser: IndentParser,
     git: git::GitState,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
@@ -604,6 +606,7 @@ impl EditorState {
             transient_origin_buffer_id: None,
             transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
+            indent_parser: IndentParser::default(),
             git: git::GitState::default(),
             perf_visible: false,
             perf_stats: None,
@@ -918,6 +921,13 @@ impl EditorState {
 
     pub fn viewport_size(&self) -> (usize, usize) {
         (self.viewport_width_cells, self.viewport_height_rows)
+    }
+
+    /// Let smart indent start from the active buffer's highlight tree.
+    fn seed_indent_parser(&mut self) {
+        if let Some(view) = self.views.get(&self.session.active_id()) {
+            self.indent_parser.seed_from(&view.syntax_highlighter);
+        }
     }
 
     pub fn sync_active_pane_view(&mut self) {

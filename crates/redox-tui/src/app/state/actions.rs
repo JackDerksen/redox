@@ -924,7 +924,9 @@ impl EditorState {
                     let active_id = self.session.active_id();
                     let cursor = self.views.entry(active_id).or_default().cursor.cursor;
                     let indent_size = self.active_indent_width();
+                    self.seed_indent_parser();
                     let smart_insert = smart_newline_insert(
+                        &mut self.indent_parser,
                         self.session.active_buffer(),
                         self.session.active_meta().path.as_deref(),
                         cursor,
@@ -1359,11 +1361,14 @@ impl EditorState {
         }
         let active_id = self.session.active_id();
         let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        if ch == '>' {
+            self.seed_indent_parser();
+        }
         let behavior = {
             let buffer = self.session.active_buffer();
             if ch == '>' {
                 let language = language_for_path(self.session.active_meta().path.as_deref());
-                auto_closing_tag(buffer, language, cursor)
+                auto_closing_tag(&mut self.indent_parser, buffer, language, cursor)
                     .map(InsertCharBehavior::InsertPair)
                     .unwrap_or(InsertCharBehavior::Plain)
             } else {
