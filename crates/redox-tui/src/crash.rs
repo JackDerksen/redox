@@ -65,36 +65,40 @@ pub(crate) fn take_deferred_panics() -> Vec<String> {
 /// Write every unsaved buffer to `recovery_dir` and describe what was saved.
 pub(crate) fn crash_report(state: &EditorState, recovery_dir: &Path) -> anyhow::Error {
     // The state may be mid-update; never let recovery itself abort the report.
-    let lines = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state
-            .session
-            .summaries()
-            .into_iter()
-            .filter(|summary| summary.dirty)
-            .filter_map(|summary| {
-                let buffer = state.session.buffer(summary.id)?;
-                Some(
-                    match storage::write_recovery_file(recovery_dir, &summary.display_name, buffer)
-                    {
-                        Ok(path) => format!("  {} -> {}", summary.display_name, path.display()),
-                        Err(error) => {
-                            format!("  {} could not be saved: {error}", summary.display_name)
-                        }
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-    }));
-    match lines {
-        Ok(lines) if lines.is_empty() => {
-            anyhow::anyhow!("redox crashed; no unsaved changes were lost")
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut saved = Vec::new();
+        let mut failed = Vec::new();
+        for summary in state.session.summaries() {
+            let Some(buffer) = state.session.buffer(summary.id).filter(|_| summary.dirty) else {
+                continue;
+            };
+            match storage::write_recovery_file(recovery_dir, &summary.display_name, buffer) {
+                Ok(path) => saved.push(format!("  {} -> {}", summary.display_name, path.display())),
+                Err(error) => failed.push(format!("  {}: {error}", summary.display_name)),
+            }
         }
-        Ok(lines) => anyhow::anyhow!(
-            "redox crashed; unsaved buffers were written to:\n{}",
-            lines.join("\n")
-        ),
-        Err(_) => anyhow::anyhow!("redox crashed and could not save unsaved buffers"),
+        (saved, failed)
+    }));
+    let Ok((saved, failed)) = outcome else {
+        return anyhow::anyhow!("redox crashed and could not save unsaved buffers");
+    };
+    let mut report = String::from("redox crashed; ");
+    match (saved.is_empty(), failed.is_empty()) {
+        (true, true) => report.push_str("no unsaved changes were lost"),
+        (false, _) => {
+            report.push_str("unsaved buffers were written to:\n");
+            report.push_str(&saved.join("\n"));
+        }
+        (true, false) => report.push_str("unsaved buffers could not be saved:"),
     }
+    if !failed.is_empty() {
+        if !saved.is_empty() {
+            report.push_str("\nthese could not be saved:");
+        }
+        report.push('\n');
+        report.push_str(&failed.join("\n"));
+    }
+    anyhow::anyhow!(report)
 }
 
 #[cfg(test)]
@@ -155,6 +159,17 @@ mod tests {
             std::fs::read_to_string(&written[0]).unwrap(),
             "unsaved saved\n"
         );
+
+        // A recovery location that cannot be created must not claim success.
+        let blocked = directory.path().join("blocked");
+        std::fs::write(&blocked, "").unwrap();
+        let report = crash_report(&state, &blocked).to_string();
+        assert!(
+            report.starts_with("redox crashed; unsaved buffers could not be saved:\n"),
+            "{report}"
+        );
+        assert!(report.contains("draft.txt: "), "{report}");
+        assert!(!report.contains("written to"), "{report}");
 
         let clean = EditorState::new(EditorSession::open_initial_file(&path).unwrap());
         let report = crash_report(&clean, &directory.path().join("unused")).to_string();

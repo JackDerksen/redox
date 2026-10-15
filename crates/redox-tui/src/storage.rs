@@ -203,6 +203,17 @@ pub fn write_recovery_file(
     display_name: &str,
     buffer: &TextBuffer,
 ) -> io::Result<PathBuf> {
+    // File names reveal buffer names, so keep the directory owner-only as well.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
     fs::create_dir_all(directory)?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -466,10 +477,16 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&first).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&first), 0o600);
+            assert_eq!(mode(directory.path()), 0o700);
+
+            // An existing, more permissive directory is tightened too.
+            let shared = directory.path().join("shared");
+            fs::create_dir(&shared).unwrap();
+            fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+            write_recovery_file(&shared, "notes", &buffer).unwrap();
+            assert_eq!(mode(&shared), 0o700);
         }
     }
 }
