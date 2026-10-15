@@ -1158,6 +1158,8 @@ impl EditorState {
         let changed_buffer = match format_result {
             Ok(format_changed) => format_changed,
             Err(error) => {
+                // A pass may have changed the buffer before the error; undo must match it.
+                let _ = self.record_active_undo_if_changed(before);
                 let _ = self.session.recompute_active_dirty();
                 self.mark_git_repo_statuses_stale();
                 match self.persist_active_undo_history() {

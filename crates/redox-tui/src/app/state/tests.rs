@@ -4835,6 +4835,42 @@ exit 1
 }
 
 #[test]
+fn command_write_records_undo_when_the_post_format_save_fails() {
+    with_isolated_launch_env("write_format_save_fails", |root| {
+        let bin_dir = root.join("bin");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        fs::create_dir_all(&src_dir).expect("failed to create src dir");
+        // Format with trailing whitespace, then make the directory read-only so the
+        // save after the whitespace pass cannot create its temporary file.
+        write_executable(
+            &bin_dir.join("ruff"),
+            "#!/bin/sh
+if [ \"$1\" = \"format\" ]; then
+  printf 'x = 1   \\n' > \"$2\"
+  chmod 555 \"$(dirname \"$2\")\"
+fi
+exit 0
+",
+        );
+        let path = src_dir.join("example.py");
+        fs::write(&path, "x=1\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+        fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = state.status_msg.clone().unwrap_or_default();
+        assert!(status.contains("format failed"), "{status}");
+        assert_eq!(state.session.active_buffer().to_string(), "x = 1\n");
+        // Undo must match the buffer, or later diffs would apply to the wrong text.
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "x=1\n");
+    });
+}
+
+#[test]
 fn command_write_formats_go_with_gofmt_and_keeps_its_tabs() {
     with_isolated_launch_env("write_formats_go", |root| {
         let bin_dir = root.join("bin");
