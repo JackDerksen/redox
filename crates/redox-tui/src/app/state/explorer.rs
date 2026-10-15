@@ -7,6 +7,11 @@ use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 use super::{BufferViewState, EditorMode, EditorState, GitFileStatusKind, StatusMessageStyle};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
+/// Stop walking a deleted tree after this many entries; the count is then shown as "N+".
+const DELETE_TARGET_SCAN_LIMIT: usize = 10_000;
+/// Confirmation lines listed before summarising the rest.
+const DELETE_TARGET_DISPLAY_LIMIT: usize = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExplorerEntry {
     name: String,
@@ -1466,20 +1471,29 @@ fn format_explorer_delete_confirmation_lines(
             dir_label.as_deref(),
         ));
     }
-    let noun = if targets.len() == 1 {
-        "entry"
+    let total = targets.len();
+    let more = if total >= DELETE_TARGET_SCAN_LIMIT {
+        "+"
     } else {
-        "entries"
+        ""
     };
+    let noun = if total == 1 { "entry" } else { "entries" };
     let mut lines = vec![(
-        format!("confirm deletion of {} {}:", targets.len(), noun),
+        format!("confirm deletion of {total}{more} {noun}:"),
         StatusMessageStyle::Normal,
     )];
     lines.extend(
         targets
             .into_iter()
+            .take(DELETE_TARGET_DISPLAY_LIMIT)
             .map(|target| (format!(" {target}"), StatusMessageStyle::Normal)),
     );
+    if total > DELETE_TARGET_DISPLAY_LIMIT {
+        lines.push((
+            format!(" …and {}{more} more", total - DELETE_TARGET_DISPLAY_LIMIT),
+            StatusMessageStyle::Dim,
+        ));
+    }
     lines.push(("press y".to_string(), StatusMessageStyle::Dim));
     lines
 }
@@ -1490,13 +1504,12 @@ fn explorer_delete_confirmation_targets(
 ) -> Vec<String> {
     let mut targets = Vec::new();
     for entry in deletions {
-        targets.push(explorer_entry_label(&entry.name, entry.is_dir));
-        if !entry.is_dir {
-            continue;
-        }
-
         let path = explorer_entry_path(dir_path, &entry.name);
-        collect_directory_delete_targets(dir_path, &path, &mut targets);
+        let descend = entry.is_dir && is_real_directory(&path);
+        targets.push(explorer_entry_label(&entry.name, descend));
+        if descend {
+            collect_directory_delete_targets(dir_path, &path, &mut targets);
+        }
     }
     targets.sort_by(|a, b| {
         let a_path = a.trim_end_matches('/');
@@ -1575,12 +1588,16 @@ fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &
     });
 
     for child in children {
+        if targets.len() >= DELETE_TARGET_SCAN_LIMIT {
+            return;
+        }
         let child_path = child.path();
         let relative_name = child_path
             .strip_prefix(root_dir)
             .ok()
             .map(|path| path.to_string_lossy().replace('\\', "/"));
-        let is_dir = child_path.is_dir();
+        // Deletion removes symlinks themselves, so never list or descend into their targets.
+        let is_dir = child.file_type().is_ok_and(|file_type| file_type.is_dir());
         if let Some(relative_name) = relative_name {
             targets.push(explorer_entry_label(&relative_name, is_dir));
         }
@@ -1588,6 +1605,10 @@ fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &
             collect_directory_delete_targets(root_dir, &child_path, targets);
         }
     }
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 fn format_explorer_write_summary(changes: &AppliedExplorerChanges) -> String {
@@ -2009,6 +2030,60 @@ mod tests {
             "inner"
         );
         assert_eq!(fs::read_to_string(root.join("late.txt")).unwrap(), "late");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_confirmation_lists_symlinks_without_following_them() {
+        let root = temp_dir_path("delete_symlinks");
+        fs::create_dir_all(root.join("doomed")).expect("failed to create fixture root");
+        fs::create_dir_all(root.join("elsewhere")).unwrap();
+        fs::write(root.join("elsewhere/precious.txt"), "precious").unwrap();
+        // A loop back to an ancestor used to recurse until the stack overflowed.
+        std::os::unix::fs::symlink(&root, root.join("doomed/loop")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("linked")).unwrap();
+
+        let targets = explorer_delete_confirmation_targets(
+            &root,
+            &[dir_entry("doomed"), dir_entry("linked")],
+        );
+        assert_eq!(targets, ["linked", "doomed/", "doomed/loop"]);
+
+        let planned = apply_explorer_changes(
+            &root,
+            &[
+                dir_entry("doomed"),
+                dir_entry("elsewhere"),
+                dir_entry("linked"),
+            ],
+            &[dir_entry("elsewhere")],
+        )
+        .unwrap();
+        execute_plan(planned).unwrap();
+        assert_eq!(directory_names(&root), ["elsewhere"]);
+        assert_eq!(
+            fs::read_to_string(root.join("elsewhere/precious.txt")).unwrap(),
+            "precious"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_confirmation_summarises_large_trees() {
+        let root = temp_dir_path("delete_large");
+        fs::create_dir_all(root.join("big")).expect("failed to create fixture root");
+        for index in 0..100 {
+            fs::write(root.join(format!("big/{index:03}.txt")), "").unwrap();
+        }
+
+        let lines =
+            format_explorer_delete_confirmation_lines(&[(root.clone(), vec![dir_entry("big")])]);
+        assert_eq!(lines[0].0, "confirm deletion of 101 entries:");
+        assert_eq!(lines.len(), 1 + DELETE_TARGET_DISPLAY_LIMIT + 2);
+        assert_eq!(lines[lines.len() - 2].0, " …and 61 more");
 
         let _ = fs::remove_dir_all(root);
     }
