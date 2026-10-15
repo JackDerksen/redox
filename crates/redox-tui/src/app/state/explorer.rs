@@ -1981,15 +1981,25 @@ mod tests {
         fs::write(root.join("doomed/inner.txt"), "inner").unwrap();
         fs::write(root.join("old.txt"), "old").unwrap();
         fs::write(root.join("gone.txt"), "gone").unwrap();
+        fs::write(root.join("keep.txt"), "keep").unwrap();
 
         // Rename old->renamed, delete gone.txt and doomed/, create nested/new.txt.
+        // `keep.txt` anchors the listing so gone.txt is not paired as a rename.
         let old_entries = vec![
             dir_entry("doomed"),
             file_entry("gone.txt"),
+            file_entry("keep.txt"),
             file_entry("old.txt"),
         ];
-        let new_entries = vec![file_entry("nested/new.txt"), file_entry("renamed.txt")];
+        let new_entries = vec![
+            file_entry("keep.txt"),
+            file_entry("renamed.txt"),
+            file_entry("nested/new.txt"),
+        ];
         let mut planned = apply_explorer_changes(&root, &old_entries, &new_entries).unwrap();
+        assert_eq!(planned.changes.renamed_entries.len(), 1);
+        assert_eq!(planned.changes.deleted_entries.len(), 2);
+        assert_eq!(planned.changes.created_entries.len(), 1);
         // Force the final step to fail by colliding with a file created after planning.
         planned
             .changes
@@ -2008,7 +2018,7 @@ mod tests {
         );
         assert_eq!(
             directory_names(&root),
-            ["doomed", "gone.txt", "late.txt", "old.txt"]
+            ["doomed", "gone.txt", "keep.txt", "late.txt", "old.txt"]
         );
         assert_eq!(fs::read_to_string(root.join("old.txt")).unwrap(), "old");
         assert_eq!(fs::read_to_string(root.join("gone.txt")).unwrap(), "gone");
