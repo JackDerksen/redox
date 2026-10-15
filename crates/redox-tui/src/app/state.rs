@@ -758,10 +758,16 @@ impl EditorState {
     }
 
     pub fn enforce_undo_history_size(&mut self) {
-        for view in self.views.values_mut() {
+        let mut pruned = Vec::new();
+        for (buffer_id, view) in &mut self.views {
             if view.undo_history.set_max_records(self.undo_history_size) {
                 view.pending_insert_undo = None;
+                pruned.push(*buffer_id);
             }
+        }
+        // Pruning renumbers nodes, so the undo tree must not keep an old selection.
+        for buffer_id in pruned {
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
     }
 
