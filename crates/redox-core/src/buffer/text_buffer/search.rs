@@ -69,19 +69,18 @@ impl TextBuffer {
         close: char,
     ) -> Option<Pos> {
         let mut depth = 0usize;
-        for idx in start_idx.saturating_add(1)..self.len_chars() {
-            if self.char_is_escaped_for_pairing(idx) {
+        let first = start_idx.saturating_add(1).min(self.len_chars());
+        for (idx, ch) in (first..).zip(self.rope.chars_at(first)) {
+            // Only delimiters need the (rarely needed) escape check.
+            if (ch != open && ch != close) || self.char_is_escaped_for_pairing(idx) {
                 continue;
             }
-            match self.char_at_index(idx) {
-                ch if ch == open => depth = depth.saturating_add(1),
-                ch if ch == close => {
-                    if depth == 0 {
-                        return Some(self.char_to_pos(idx));
-                    }
-                    depth = depth.saturating_sub(1);
-                }
-                _ => {}
+            if ch == open {
+                depth = depth.saturating_add(1);
+            } else if depth == 0 {
+                return Some(self.char_to_pos(idx));
+            } else {
+                depth = depth.saturating_sub(1);
             }
         }
         None
@@ -94,19 +93,18 @@ impl TextBuffer {
         close: char,
     ) -> Option<Pos> {
         let mut depth = 0usize;
-        for idx in (0..end_idx).rev() {
-            if self.char_is_escaped_for_pairing(idx) {
+        let end_idx = end_idx.min(self.len_chars());
+        let before = self.rope.chars_at(end_idx).reversed();
+        for (idx, ch) in (0..end_idx).rev().zip(before) {
+            if (ch != open && ch != close) || self.char_is_escaped_for_pairing(idx) {
                 continue;
             }
-            match self.char_at_index(idx) {
-                ch if ch == close => depth = depth.saturating_add(1),
-                ch if ch == open => {
-                    if depth == 0 {
-                        return Some(self.char_to_pos(idx));
-                    }
-                    depth = depth.saturating_sub(1);
-                }
-                _ => {}
+            if ch == close {
+                depth = depth.saturating_add(1);
+            } else if depth == 0 {
+                return Some(self.char_to_pos(idx));
+            } else {
+                depth = depth.saturating_sub(1);
             }
         }
         None
@@ -298,4 +296,70 @@ fn trailing_chars(text: &str, char_limit: usize) -> String {
         .map(|(byte_idx, _)| byte_idx)
         .unwrap_or(text.len());
     text[start_byte..].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Pos, TextBuffer};
+
+    /// The original per-index scan, kept as a reference for `matching_delimiter`.
+    fn reference_match(chars: &[char], idx: usize, open: char, close: char) -> Option<usize> {
+        let escaped = |idx: usize| {
+            chars[..idx]
+                .iter()
+                .rev()
+                .take_while(|&&ch| ch == '\\')
+                .count()
+                % 2
+                == 1
+        };
+        if escaped(idx) {
+            return None;
+        }
+        let mut depth = 0usize;
+        let forward = chars[idx] == open;
+        let (deeper, target) = if forward {
+            (open, close)
+        } else {
+            (close, open)
+        };
+        let candidates: Box<dyn Iterator<Item = (usize, &char)>> = if forward {
+            Box::new(chars.iter().enumerate().skip(idx + 1))
+        } else {
+            Box::new(chars.iter().enumerate().take(idx).rev())
+        };
+        for (i, &ch) in candidates {
+            if escaped(i) {
+                continue;
+            }
+            if ch == deeper {
+                depth += 1;
+            } else if ch == target {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn matching_delimiters_agree_with_a_per_char_scan() {
+        let text = "fn é(a: [u8; 2]) {\n    if (x \\( y) { \"\\\\(\" } else { f(g(h)) }\n}\n(\\\\) [ ] ( { ) }";
+        let buffer = TextBuffer::from_text(text);
+        let chars = text.chars().collect::<Vec<_>>();
+        for (idx, &ch) in chars.iter().enumerate() {
+            let pair = match ch {
+                '(' | ')' => ('(', ')'),
+                '[' | ']' => ('[', ']'),
+                '{' | '}' => ('{', '}'),
+                _ => continue,
+            };
+            let expected =
+                reference_match(&chars, idx, pair.0, pair.1).map(|found| buffer.char_to_pos(found));
+            let pos: Pos = buffer.char_to_pos(idx);
+            assert_eq!(buffer.matching_delimiter(pos), expected, "{pos:?} {ch:?}");
+        }
+    }
 }
