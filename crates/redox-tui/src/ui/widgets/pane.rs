@@ -37,7 +37,7 @@ pub fn draw_pane_filename(
 
 pub fn draw_pane_split_lines(
     window: &mut dyn Window,
-    style: UiStyle,
+    style: &UiStyle,
     rects: &[PaneRect],
     width: u16,
     height: u16,

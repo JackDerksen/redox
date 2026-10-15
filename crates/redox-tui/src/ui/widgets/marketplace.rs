@@ -18,7 +18,7 @@ const MARKETPLACE_TOOL_STATUS_GAP: u16 = 1;
 
 pub fn draw_lsp_marketplace_popup(
     popup: &LspMarketplacePopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
@@ -68,7 +68,7 @@ pub fn draw_lsp_marketplace_popup(
     Ok(mouse)
 }
 
-pub fn lsp_marketplace_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+pub fn lsp_marketplace_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16, u16) {
     popup_inner_size(
         term_w,
         term_h,
@@ -95,7 +95,7 @@ fn draw_section_header(
 fn draw_marketplace_entries(
     window: &mut WindowView<'_>,
     popup: &LspMarketplacePopup,
-    style: UiStyle,
+    style: &UiStyle,
     mut row: u16,
     shared_prefix_w: u16,
     language_w: u16,
@@ -223,7 +223,7 @@ fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool
 
 fn draw_marketplace_column_header(
     window: &mut WindowView<'_>,
-    style: UiStyle,
+    style: &UiStyle,
     row: u16,
     shared_prefix_w: u16,
     language_w: u16,

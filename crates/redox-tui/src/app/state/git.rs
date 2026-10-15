@@ -1067,7 +1067,7 @@ mod tests {
             };
             let dimmed = style.dimmed();
             let mut window = crate::tests::TestWindow::new(20, 8);
-            crate::draw_gutter_padding(&mut window, style, 3, 8, 1, 0, (Some(&snapshot), None))
+            crate::draw_gutter_padding(&mut window, &style, 3, 8, 1, 0, (Some(&snapshot), None))
                 .unwrap();
             for marker in &snapshot.markers {
                 let expected = if marker.staged { dimmed } else { style };
@@ -1083,7 +1083,7 @@ mod tests {
         let mut window = crate::tests::TestWindow::new(20, 8);
         crate::draw_gutter_padding(
             &mut window,
-            style,
+            &style,
             3,
             8,
             1,

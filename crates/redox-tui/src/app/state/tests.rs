@@ -1307,7 +1307,7 @@ fn finder_shows_pins_and_filters_files() {
         assert!(popup.entries.iter().all(|entry| entry.is_pinned));
         let mut window = crate::tests::TestWindow::new(100, 30);
         let layout =
-            crate::ui::draw_finder_popup(&popup, crate::ui::UiStyle::default(), &mut window)
+            crate::ui::draw_finder_popup(&popup, &crate::ui::UiStyle::default(), &mut window)
                 .unwrap();
         let results = layout.frames[0];
         let pinned_count = popup.entries.len() as u16;
@@ -2866,7 +2866,7 @@ fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
         crate::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
         crate::draw_buffer_snapshot_for_id(
             state,
-            style,
+            &style,
             state.session.active_id(),
             crate::BufferDrawOptions {
                 width: 40,
@@ -4562,7 +4562,7 @@ fn command_ls_populates_multiline_status_summary() {
             icons_enabled,
             ..crate::ui::UiStyle::default()
         };
-        let layout = crate::ui::draw_status_toast(&state, style, &mut window)
+        let layout = crate::ui::draw_status_toast(&state, &style, &mut window)
             .unwrap()
             .unwrap();
         assert_eq!(layout.inner_h, 4, "one heading and one row per buffer");
@@ -4623,7 +4623,7 @@ fn command_rain_captures_and_stop_clears_animation_state() {
         20,
         6,
         TextStyle::new(minui::Color::White, minui::Color::Black),
-        crate::ui::UiStyle::default(),
+        &crate::ui::UiStyle::default(),
     );
 
     assert!(state.rain_animation.is_some());

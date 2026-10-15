@@ -68,7 +68,7 @@ fn render(state: &mut EditorState, window: &mut TestWindow) {
     window.clear_screen().unwrap();
     draw_buffer_view(
         state,
-        UiStyle::default(),
+        &UiStyle::default(),
         window,
         &mut FramePerfSample::default(),
     )

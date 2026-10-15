@@ -39,7 +39,7 @@ pub(crate) fn search_toast_layout(
 
 pub(crate) fn draw_command_line_popup(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<PopupMouseLayout>> {
     draw_command_line_popup_after(state, style, window, None)
@@ -47,7 +47,7 @@ pub(crate) fn draw_command_line_popup(
 
 pub(crate) fn draw_command_line_popup_below(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     popup: PopupLayout,
     stacked_padding: u16,
@@ -57,7 +57,7 @@ pub(crate) fn draw_command_line_popup_below(
 
 fn draw_command_line_popup_after(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     popup: Option<(PopupLayout, u16)>,
 ) -> minui::Result<Option<PopupMouseLayout>> {

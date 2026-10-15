@@ -34,7 +34,7 @@ struct ExplorerRowStyle {
 /// `layout.inner_h`, preventing abrupt scrolling when the command line stacks below the popup.
 pub(crate) fn draw_explorer_popup_view(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     popup: ExplorerPopup,
     layout: PopupLayout,
@@ -311,7 +311,7 @@ fn explorer_entry_icon(dir_path: &Path, source_line: &str) -> Option<&'static st
     })
 }
 
-pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16, u16) {
     popup_inner_size(
         term_w,
         term_h,
@@ -322,7 +322,7 @@ pub fn explorer_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u
     )
 }
 
-fn explorer_row_style(style: UiStyle, row: ExplorerRenderRow) -> ExplorerRowStyle {
+fn explorer_row_style(style: &UiStyle, row: ExplorerRenderRow) -> ExplorerRowStyle {
     ExplorerRowStyle {
         text: match row.kind {
             ExplorerRenderRowKind::File => style.explorer.file,
@@ -336,7 +336,7 @@ fn explorer_row_style(style: UiStyle, row: ExplorerRenderRow) -> ExplorerRowStyl
 
 fn draw_explorer_status_dot(
     view: &mut WindowView<'_>,
-    style: UiStyle,
+    style: &UiStyle,
     col: u16,
     row: u16,
     status: Option<GitFileStatusKind>,

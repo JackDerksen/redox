@@ -127,7 +127,7 @@ struct SnapshotViewport {
 
 struct SnapshotStyle<'a> {
     default_colors: TextStyle,
-    style: UiStyle,
+    style: &'a UiStyle,
     syntax_spans: Option<VisibleLineSyntaxSpans<'a>>,
     lexical_fallback_enabled: bool,
 }
@@ -146,7 +146,7 @@ struct SnapshotOverlays<'a> {
 
 fn draw_buffer_view(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
@@ -213,7 +213,7 @@ fn draw_buffer_view(
 
 fn draw_editor_area(
     state: &mut EditorState,
-    mut style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
@@ -221,9 +221,15 @@ fn draw_editor_area(
     // Visible editor and popup cursors override this fallback during drawing.
     hide_cursor(window);
     state.mouse.popups.clear();
-    if state.zen.enabled && state.zen.hide_color_column {
-        style.layout.color_column = None;
-    }
+    let zen_style;
+    let style = if state.zen.enabled && state.zen.hide_color_column {
+        let mut without_color_column = *style;
+        without_color_column.layout.color_column = None;
+        zen_style = without_color_column;
+        &zen_style
+    } else {
+        style
+    };
     draw_editor_view(state, style, window, perf)?;
     for popup in &mut state.mouse.popups {
         popup.cache_interactions();
@@ -233,7 +239,7 @@ fn draw_editor_area(
 
 fn draw_editor_view(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     perf: &mut FramePerfSample,
 ) -> minui::Result<()> {
@@ -256,7 +262,7 @@ fn draw_editor_view(
         state.set_viewport_size(vw as usize, vh as usize);
         draw_dashboard(
             window,
-            background_style,
+            &background_style,
             selected,
             state.mode == app::EditorMode::Normal,
             state.dashboard_logo_progress(Instant::now()),
@@ -413,7 +419,7 @@ fn draw_editor_view(
                 pane_text_w as usize,
                 rect.height.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
             );
-            state.ensure_rain_animation(pane_text_w, rect.height, editor_text, background_style);
+            state.ensure_rain_animation(pane_text_w, rect.height, editor_text, &background_style);
         }
         state.sync_active_pane_view();
         draw_split_editor_panes(state, style, window, vw, text_h)?;
@@ -479,7 +485,7 @@ fn draw_editor_view(
                             source_line,
                             context.scroll_x,
                             context.text_w as usize,
-                            background_style,
+                            &background_style,
                         )?;
                     }
                     draw_completion_preview(
@@ -503,7 +509,7 @@ fn draw_editor_view(
                                 width: context.text_w as usize,
                             },
                             source_line,
-                            background_style,
+                            &background_style,
                             diagnostic,
                             preview_width,
                         )?;
@@ -566,12 +572,12 @@ fn draw_editor_view(
     }
 
     state.set_viewport_size(text_w as usize, vh as usize);
-    state.ensure_rain_animation(text_w, text_h, editor_text, background_style);
+    state.ensure_rain_animation(text_w, text_h, editor_text, &background_style);
 
     if let Some(animation) = state.active_rain_animation() {
         draw_line_numbers(
             window,
-            background_style,
+            &background_style,
             (gutter.gutter_w, text_h),
             u16::from(gutter.show_marker_column),
             animation.first_line()..gutter.total_lines,
@@ -580,7 +586,7 @@ fn draw_editor_view(
         )?;
         draw_gutter_padding(
             window,
-            background_style,
+            &background_style,
             gutter.gutter_w,
             text_h,
             GUTTER_CONTENT_PADDING,
@@ -609,7 +615,7 @@ fn draw_editor_view(
     {
         draw_buffer_snapshot_for_id(
             state,
-            background_style,
+            &background_style,
             state.session.active_id(),
             BufferDrawOptions {
                 width: vw,
@@ -665,7 +671,7 @@ fn draw_editor_view(
 
     draw_line_numbers(
         window,
-        background_style,
+        &background_style,
         (gutter.gutter_w, text_h),
         u16::from(gutter.show_marker_column),
         snapshot.first_line()..gutter.total_lines,
@@ -676,7 +682,7 @@ fn draw_editor_view(
     )?;
     draw_gutter_padding(
         window,
-        background_style,
+        &background_style,
         gutter.gutter_w,
         text_h,
         GUTTER_CONTENT_PADDING,
@@ -769,7 +775,7 @@ fn draw_editor_view(
                 },
                 SnapshotStyle {
                     default_colors: editor_text,
-                    style: background_style,
+                    style: &background_style,
                     syntax_spans,
                     lexical_fallback_enabled: use_lexical_fallback,
                 },
@@ -850,7 +856,7 @@ fn draw_editor_view(
                         source_line,
                         scroll_x,
                         text_w as usize,
-                        background_style,
+                        &background_style,
                     )?;
                 }
                 draw_completion_preview(
@@ -874,7 +880,7 @@ fn draw_editor_view(
                             width: text_w as usize,
                         },
                         source_line,
-                        background_style,
+                        &background_style,
                         diagnostic,
                         preview_width,
                     )?;
@@ -940,7 +946,7 @@ fn draw_editor_view(
 
 fn draw_loading_toast(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<ui::widgets::popup::PopupLayout>> {
     let Some(message) = state.active_loading_toast(Instant::now()) else {
@@ -973,7 +979,7 @@ fn draw_loading_toast(
 
 fn draw_notification_toast(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<PopupLayout>> {
     let layout = draw_status_toast(state, style, window)?;
@@ -986,7 +992,7 @@ fn draw_notification_toast(
 
 fn draw_gutter_padding(
     window: &mut dyn Window,
-    style: UiStyle,
+    style: &UiStyle,
     gutter_w: u16,
     text_h: u16,
     padding_w: u16,
@@ -1050,7 +1056,7 @@ fn line_number_gutter_width(total_lines: usize, marker_width: u16) -> u16 {
 
 fn draw_line_numbers(
     window: &mut dyn Window,
-    style: UiStyle,
+    style: &UiStyle,
     (gutter_w, text_h): (u16, u16),
     marker_width: u16,
     lines: std::ops::Range<usize>,
@@ -1113,7 +1119,7 @@ fn draw_line_with_highlights(
     source_line: &str,
     normal_color: TextStyle,
     highlights: LineHighlights<'_>,
-    style: UiStyle,
+    style: &UiStyle,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
 ) -> minui::Result<()> {
     let LineViewport {
@@ -1396,7 +1402,7 @@ fn anchored_popup_layout(window: &dyn Window, inner_size: (u16, u16)) -> PopupLa
 
 fn popup_stack_layout(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &dyn Window,
     inner_size: (u16, u16),
 ) -> PopupStackLayout {
@@ -1451,7 +1457,7 @@ fn popup_stack_layout(
 
 fn draw_command_line_below_popup(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     stack_layout: PopupStackLayout,
 ) -> minui::Result<bool> {
@@ -1467,7 +1473,7 @@ fn draw_command_line_below_popup(
 
 fn draw_modal_popup_background(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     (width, text_height): (u16, u16),
     fallback_buffer_id: Option<BufferId>,
@@ -1482,7 +1488,7 @@ fn draw_modal_popup_background(
     build_editor_status_bar(state, style).draw(window)
 }
 
-fn finder_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+fn finder_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16, u16) {
     crate::ui::widgets::popup::popup_inner_size(
         term_w,
         term_h,
@@ -1495,7 +1501,7 @@ fn finder_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u1
 
 fn draw_popup_background(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     width: u16,
     height: u16,
@@ -1509,7 +1515,7 @@ fn draw_popup_background(
     {
         return draw_dashboard(
             window,
-            background_style,
+            &background_style,
             selected,
             false,
             state.dashboard_logo_progress(Instant::now()),
@@ -1526,7 +1532,7 @@ fn draw_popup_background(
     if let Some(buffer_id) = fallback_buffer_id {
         draw_buffer_snapshot_for_id(
             state,
-            background_style,
+            &background_style,
             buffer_id,
             BufferDrawOptions {
                 width,
@@ -1549,7 +1555,7 @@ fn draw_popup_background(
 
 fn draw_split_editor_panes(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     width: u16,
     height: u16,
@@ -1588,7 +1594,7 @@ fn draw_split_editor_panes(
         if is_active_pane && state.active_rain_animation().is_some() {
             draw_active_split_rain_pane(
                 state,
-                pane_style,
+                &pane_style,
                 rect.width,
                 rect.height,
                 &mut pane_window,
@@ -1622,7 +1628,7 @@ fn draw_split_editor_panes(
             };
             draw_buffer_snapshot_for_id(
                 state,
-                pane_style,
+                &pane_style,
                 buffer_id,
                 BufferDrawOptions {
                     width: rect.width,
@@ -1647,7 +1653,7 @@ fn draw_split_editor_panes(
     }
     state.restore_active_pane_view();
     let style = style.dimmed_by(style.dim_amount * state.popup_background_dimming(now));
-    draw_pane_split_lines(window, style, &rects, width, height)
+    draw_pane_split_lines(window, &style, &rects, width, height)
 }
 
 fn inactive_pane_filename(state: &EditorState, buffer_id: BufferId) -> Option<(String, bool)> {
@@ -1779,7 +1785,7 @@ fn active_split_cursor_context(
 
 fn draw_active_split_rain_pane(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     width: u16,
     height: u16,
     window: &mut dyn Window,
@@ -1825,7 +1831,7 @@ fn draw_active_split_rain_pane(
 
 fn draw_buffer_snapshot_for_id(
     state: &mut EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     buffer_id: BufferId,
     options: BufferDrawOptions,
     window: &mut dyn Window,
@@ -2146,6 +2152,15 @@ fn draw_snapshot_lines(
         style.layout.color_column,
         style.theme.color_column,
     );
+    // Lines outside the focused range draw every syntax role in the ghost colour.
+    let ghost_colors = default_colors.with_colors(style.zen_ghost, default_colors.bg);
+    let ghost_style = focused_lines.is_some().then(|| {
+        let mut ghost = *style;
+        for (_, syntax_style) in ghost.syntax_roles_mut() {
+            *syntax_style = syntax_style.with_colors(ghost_colors.fg, ghost_colors.bg);
+        }
+        ghost
+    });
     for (row, render_line) in snapshot.iter().enumerate() {
         let line_viewport = LineViewport {
             row: row as u16,
@@ -2159,17 +2174,10 @@ fn draw_snapshot_lines(
         let is_focused = focused_lines
             .as_ref()
             .is_none_or(|lines| lines.contains(&line_idx));
-        let default_colors = if is_focused {
-            default_colors
-        } else {
-            default_colors.with_colors(style.zen_ghost, default_colors.bg)
+        let (default_colors, style) = match &ghost_style {
+            Some(ghost_style) if !is_focused => (ghost_colors, ghost_style),
+            _ => (default_colors, style),
         };
-        let mut style = style;
-        if !is_focused {
-            for (_, syntax_style) in style.syntax_roles_mut() {
-                *syntax_style = syntax_style.with_colors(default_colors.fg, default_colors.bg);
-            }
-        }
         let fallback_line_spans = lexical_fallback_enabled
             .then(|| lexical_fallback_line_spans(source_line))
             .filter(|spans| !spans.is_empty());
@@ -2690,7 +2698,7 @@ fn draw_snippet_placeholders(
     viewport: LineViewport,
     source_line: &str,
     ranges: &[std::ops::Range<usize>],
-    style: UiStyle,
+    style: &UiStyle,
     decorations: LineDecorations<'_>,
     syntax_spans: Option<&[ui::syntax::LineSyntaxSpan]>,
 ) -> minui::Result<()> {
@@ -2768,7 +2776,7 @@ fn draw_inline_diagnostic(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    style: UiStyle,
+    style: &UiStyle,
     diagnostic: &app::DiagnosticLine,
 ) -> minui::Result<()> {
     draw_inline_diagnostic_shifted(window, viewport, source_line, style, diagnostic, 0)
@@ -2781,7 +2789,7 @@ fn clear_inline_diagnostic(
     source_line: &str,
     scroll_x: usize,
     text_w: usize,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<()> {
     if text_w == 0 {
         return Ok(());
@@ -2803,7 +2811,7 @@ fn draw_inline_diagnostic_shifted(
     window: &mut dyn Window,
     viewport: LineViewport,
     source_line: &str,
-    style: UiStyle,
+    style: &UiStyle,
     diagnostic: &app::DiagnosticLine,
     shift_cells: usize,
 ) -> minui::Result<()> {
@@ -3985,7 +3993,7 @@ fn run_terminal_session(
 
         if state.take_redraw_request() {
             window.clear_screen()?;
-            draw_buffer_view(state, *style, &mut window, &mut perf_sample)?;
+            draw_buffer_view(state, style, &mut window, &mut perf_sample)?;
             let flush_start = Instant::now();
             window.end_frame()?;
             perf_sample.flush = flush_start.elapsed();
@@ -4026,7 +4034,7 @@ mod tests {
         let mut perf = FramePerfSample::default();
         let style = UiStyle::default();
         let mut clipboard = None;
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         let content = pane_content_x(&state, state.active_pane_id());
         let click = |x, y, button| Event::MouseClick { x, y, button };
         handle_editor_event(
@@ -4072,7 +4080,7 @@ mod tests {
                 },
             );
         }
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         state.with_active_buffer_view_mut(|buffer, view| {
             assert_eq!(view.cursor.viewport_scroll(), (3, 3));
             assert_eq!(view.cursor.cursor, Pos::zero());
@@ -4121,7 +4129,7 @@ mod tests {
             click(59, 10, MouseButton::Right),
         );
         assert_eq!(state.active_visual_selection().unwrap().0, selection);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert_eq!(state.active_visual_selection().unwrap().0, selection);
         state.configure_mouse(false, false, false, 3, 3);
         handle_editor_event(
@@ -4181,7 +4189,7 @@ mod tests {
             let mut window = TestWindow::new(80, 24);
             let mut perf = FramePerfSample::default();
             let style = UiStyle::default();
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert!(window.cursor.unwrap().visible);
 
             // Keep the same terminal cursor state across frames, as MinUI does.
@@ -4190,14 +4198,14 @@ mod tests {
                     view.cursor.scroll_x_cells = 3;
                     view.cursor.scroll_y_lines = scroll_y;
                 });
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 assert!(
                     !window.cursor.unwrap().visible,
                     "split={split}, top={scroll_y}"
                 );
             }
             state.with_active_buffer_view_mut(|_, view| view.cursor.scroll_x_cells = 0);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             let cursor = window.cursor.unwrap();
             assert!(cursor.visible);
             assert_eq!(cursor.y, 8);
@@ -4228,9 +4236,9 @@ mod tests {
         let mut perf = FramePerfSample::default();
         let style = UiStyle::default();
         let mut clipboard = None;
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         state.split_active_pane(app::state::SplitAxis::Vertical);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         let inactive = state
             .pane_rects(80, 11)
             .into_iter()
@@ -4247,7 +4255,7 @@ mod tests {
         );
         assert_eq!(state.active_pane_id(), inactive.pane_id);
         assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         for (x, y) in [(0, 2), (99, 2), (15, 11)] {
             handle_editor_event(
                 &mut state,
@@ -4289,7 +4297,7 @@ mod tests {
                     button: MouseButton::Left,
                 },
             );
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert_eq!(state.pane_rects(80, 11)[0].width, x - 10);
         }
         handle_editor_event(
@@ -4427,7 +4435,7 @@ mod tests {
             let mut window = TestWindow::new(80, 24);
             draw_buffer_view(
                 &mut state,
-                UiStyle::default(),
+                &UiStyle::default(),
                 &mut window,
                 &mut FramePerfSample::default(),
             )
@@ -4472,7 +4480,7 @@ mod tests {
                 (0, 0, false),
             ] {
                 let mut window = TestWindow::new(width, height);
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 if width > 0 && height > 0 {
                     let cursor = window.cursor.expect("dashboard cursor");
                     let menu_width = expected_menu_width.min(width);
@@ -4527,7 +4535,7 @@ mod tests {
                 assert!(state.explorer_popup().is_some());
             }
             let mut popup_window = TestWindow::new(120, 40);
-            draw_buffer_view(&mut state, style, &mut popup_window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut popup_window, &mut perf).unwrap();
             assert!(
                 popup_window
                     .row_text(popup_window.get_size().1 - 1)
@@ -4628,7 +4636,7 @@ mod tests {
         for hotkey in ['f', 'e'] {
             handle_editor_event(&mut state, &mut clipboard, Event::Character(hotkey));
             let mut window = TestWindow::new(120, 40);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert!(window.row_text(window.get_size().1 - 1).trim().is_empty());
             assert!(
                 !window
@@ -4667,7 +4675,7 @@ mod tests {
         ] {
             state.apply_input(action, 120, 40);
             let mut window = TestWindow::new(120, 40);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert!(window.row_text(window.get_size().1 - 1).contains("NORMAL"));
             handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         }
@@ -4721,7 +4729,7 @@ mod tests {
             let mut window = TestWindow::new(100, 30);
             draw_buffer_view(
                 &mut state,
-                UiStyle::default(),
+                &UiStyle::default(),
                 &mut window,
                 &mut FramePerfSample::default(),
             )
@@ -4804,7 +4812,7 @@ mod tests {
                 handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
             }
             let mut window = TestWindow::new(100, 30);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             let row = window.row_text(0);
             let column = row[..row.find(expected_line).expect(expected_line)]
                 .chars()
@@ -4841,7 +4849,7 @@ mod tests {
         }
         for (width, height) in [(32, 14), (10, 4), (1, 1), (0, 0)] {
             let mut window = TestWindow::new(width, height);
-            draw_command_line_popup(&state, style, &mut window).unwrap();
+            draw_command_line_popup(&state, &style, &mut window).unwrap();
             assert!(
                 window
                     .cursor
@@ -4850,7 +4858,7 @@ mod tests {
         }
         handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         let mut window = TestWindow::new(100, 30);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert!(window.row_text(0).contains("foo foo"));
         assert!(state.substitute_preview().is_none());
         assert_eq!(state.session.active_buffer().to_string(), "foo foo\nkeep\n");
@@ -4873,7 +4881,7 @@ mod tests {
                 handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
             }
             let mut window = TestWindow::new(100, 30);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             for (row, expected) in expected_lines.iter().enumerate() {
                 assert!(
                     window.row_text(row as u16).contains(expected),
@@ -4914,7 +4922,7 @@ mod tests {
         let style = UiStyle::default();
         let mut perf = FramePerfSample::default();
         let mut original = TestWindow::new(100, 30);
-        draw_buffer_view(&mut state, style, &mut original, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut original, &mut perf).unwrap();
         let brace_column = original.cells[0]
             .iter()
             .position(|cell| *cell == '{')
@@ -4935,7 +4943,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         let mut completed = TestWindow::new(100, 30);
-        draw_buffer_view(&mut state, style, &mut completed, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut completed, &mut perf).unwrap();
         assert!(completed.row_text(1).contains("bar"));
         assert!(completed.row_text(2).contains("line();"));
         assert_eq!(completed.backgrounds[0][brace_column], Some(style.theme.bg));
@@ -4953,7 +4961,7 @@ mod tests {
                 redox_core::Pos::new(3, 0)
             );
             let mut pending = TestWindow::new(100, 30);
-            draw_buffer_view(&mut state, style, &mut pending, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut pending, &mut perf).unwrap();
             assert_eq!(pending.cells[..4], completed.cells[..4]);
             assert_eq!(pending.backgrounds[..4], completed.backgrounds[..4]);
             assert_eq!(pending.foregrounds[..4], completed.foregrounds[..4]);
@@ -4989,21 +4997,21 @@ mod tests {
             handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
         }
         handle_editor_event(&mut state, &mut clipboard, Event::Escape);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         let second = state.active_pane_id();
         assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(5, 0));
 
         state.focus_split(app::state::SplitDirection::Left);
         assert_eq!(state.active_pane_id(), first);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert_eq!(state.active_cursor_pos(), redox_core::Pos::zero());
         handle_editor_event(&mut state, &mut clipboard, Event::Character('u'));
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert_eq!(state.session.active_buffer().line_string(5), "line");
 
         state.focus_split(app::state::SplitDirection::Right);
         assert_eq!(state.active_pane_id(), second);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(5, 0));
         state.apply_input(InputAction::Redo, 100, 29);
         assert_eq!(state.session.active_buffer().line_string(5), "xline");
@@ -5037,7 +5045,7 @@ mod tests {
         let style = UiStyle::default();
         let mut window = TestWindow::new(100, 30);
         let mut perf = FramePerfSample::default();
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 29) {
             let preview_row = rect.y + 2;
             let row = window.row_text(preview_row);
@@ -5080,7 +5088,7 @@ mod tests {
         );
         handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         let mut window = TestWindow::new(100, 30);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert!(window.row_text(0).contains("let foo"));
         assert_eq!(
             state.views[&state.session.active_id()]
@@ -5104,7 +5112,7 @@ mod tests {
         let style = UiStyle::default();
         let mut window = TestWindow::new(80, 24);
         let mut perf = FramePerfSample::default();
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         let row = (0..24)
             .find(|row| window.row_text(*row).contains("5+(2x4) = 13"))
             .expect("calculation preview");
@@ -5154,7 +5162,7 @@ mod tests {
             let style = UiStyle::default();
             let mut window = TestWindow::new(80, 24);
             let mut perf = FramePerfSample::default();
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             let expected = format!("{prefix}{suffix}");
             let row = (0..24)
                 .find(|row| window.row_text(*row).contains(&expected))
@@ -5205,7 +5213,7 @@ mod tests {
         let mut perf = FramePerfSample::default();
         let check =
             |state: &mut EditorState, window: &mut TestWindow, perf: &mut FramePerfSample| {
-                draw_buffer_view(state, UiStyle::default(), window, perf).unwrap();
+                draw_buffer_view(state, &UiStyle::default(), window, perf).unwrap();
                 state.with_active_buffer_view_mut(|_, view| {
                     assert_eq!(view.cursor.cursor, Pos::new(35, 90));
                     assert_eq!(view.cursor.viewport_scroll(), (10, 10));
@@ -5241,7 +5249,7 @@ mod tests {
         let mut narrow = TestWindow::new(60, 20);
         check(&mut state, &mut narrow, &mut perf);
         handle_editor_event(&mut state, &mut clipboard, Event::Character('h'));
-        draw_buffer_view(&mut state, UiStyle::default(), &mut narrow, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut narrow, &mut perf).unwrap();
         assert_eq!(state.active_cursor_pos(), Pos::new(35, 89));
         assert!(narrow.cursor.unwrap().visible);
     }
@@ -5257,7 +5265,7 @@ mod tests {
         let mut clipboard = None;
         let mut window = TestWindow::new(100, 30);
         let mut perf = FramePerfSample::default();
-        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf).unwrap();
         let toggle = Event::KeyWithModifiers(minui::KeyWithModifiers {
             key: KeyKind::Char('`'),
             mods: minui::KeyModifiers::ctrl(),
@@ -5275,7 +5283,7 @@ mod tests {
         loop {
             state.update_background(Instant::now());
             window.clear_screen().unwrap();
-            draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf).unwrap();
             if (20..30).any(|row| window.row_text(row).contains("__ROUTED__")) {
                 break;
             }
@@ -5283,7 +5291,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         state.update_background(Instant::now() + Duration::from_millis(150));
-        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf).unwrap();
         assert!(window.row_text(19).contains("TERMINAL"));
         assert!(!window.row_text(20).contains("Ctrl+` hide"));
         assert!(window.cursor.unwrap().y >= 20);
@@ -5331,7 +5339,7 @@ mod tests {
         let plain_config: config::Config = toml::from_str("text_formatting = false").unwrap();
         draw_buffer_view(
             &mut state,
-            plain_config.style().unwrap(),
+            &plain_config.style().unwrap(),
             &mut window,
             &mut perf,
         )
@@ -5366,7 +5374,7 @@ mod tests {
         assert!(!state.terminal.is_focused());
         state.sync_focus(Instant::now());
         state.update_background(Instant::now() + Duration::from_millis(150));
-        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf).unwrap();
         let style = UiStyle::default();
         for (offset, expected) in &expected_attributes {
             assert_eq!(
@@ -5422,7 +5430,7 @@ mod tests {
         assert!(!state.terminal.is_focused());
         assert_eq!(state.mode, app::EditorMode::Insert);
         state.split_active_pane(app::state::SplitAxis::Horizontal);
-        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf).unwrap();
         let lower_pane = state.active_pane_id();
         handle_editor_event(&mut state, &mut clipboard, navigation('k'));
         let upper_pane = state.active_pane_id();
@@ -5442,7 +5450,7 @@ mod tests {
         let style = UiStyle::default();
         state.sync_focus(Instant::now());
         state.update_background(Instant::now() + Duration::from_millis(150));
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         for rect in state.pane_rects(100, 19) {
             let (row, column) = (rect.y..rect.y + rect.height)
                 .find_map(|row| {
@@ -5465,14 +5473,14 @@ mod tests {
                     mods: minui::KeyModifiers::ctrl(),
                 }),
             );
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert_eq!(state.terminal.height(30), height);
         }
         state.configure_mouse(true, false, false, 3, 3);
         state.zen.enabled = true;
         state.zen.width_percent = 80;
         state.zen.min_width = 1;
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         for row in 0..30 {
             for column in (0..10).chain(90..100) {
                 assert_eq!(window.backgrounds[row][column], Some(style.zen_margin));
@@ -5519,7 +5527,7 @@ mod tests {
                     button: minui::MouseButton::Left,
                 },
             );
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert_eq!(state.terminal.height(30), height);
             assert!(state.terminal.is_focused());
         }
@@ -5534,13 +5542,13 @@ mod tests {
         );
         assert_eq!(state.mode, app::EditorMode::Insert);
         handle_editor_event(&mut state, &mut clipboard, toggle.clone());
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         handle_editor_event(&mut state, &mut clipboard, toggle.clone());
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
         assert_eq!(state.terminal.height(30), 16);
         for (width, height) in [(100, 20), (2, 3), (1, 1), (0, 0)] {
             let mut small = TestWindow::new(width, height);
-            draw_buffer_view(&mut state, UiStyle::default(), &mut small, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &UiStyle::default(), &mut small, &mut perf).unwrap();
             if let Some(cursor) = small.cursor
                 && cursor.visible
             {
@@ -5732,7 +5740,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 source,
                 style.editor_text,
                 None,
-                style,
+                &style,
                 &spans[0],
             )
             .unwrap();
@@ -5781,7 +5789,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             assert_eq!(decorated.has(Attribute::Italic), enabled);
 
             window.clear_screen().unwrap();
-            draw_dashboard(&mut window, style, 0, false, 1.0).unwrap();
+            draw_dashboard(&mut window, &style, 0, false, 1.0).unwrap();
             let row = (0..24)
                 .find(|row| window.row_text(*row).contains("Finder"))
                 .unwrap();
@@ -5896,7 +5904,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                                 undo_redo_highlight: None,
                             },
                         },
-                        style,
+                        &style,
                         Some(&spans),
                     )
                     .unwrap();
@@ -5907,7 +5915,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         source,
                         colors,
                         None,
-                        style,
+                        &style,
                         &spans,
                     )
                     .unwrap();
@@ -5976,7 +5984,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         empty_line: false,
                         decorations,
                     },
-                    style,
+                    &style,
                     None,
                 )
                 .unwrap();
@@ -5986,7 +5994,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     source,
                     (&[1, 3], decorations),
                     colors,
-                    style,
+                    &style,
                     None,
                 )
                 .unwrap();
@@ -5995,7 +6003,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     viewport,
                     source,
                     std::slice::from_ref(&(4..5)),
-                    style,
+                    &style,
                     decorations,
                     None,
                 )
@@ -6065,7 +6073,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                         undo_redo_highlight: None,
                     },
                 },
-                style,
+                &style,
                 None,
             )
             .unwrap();
@@ -6099,7 +6107,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     let mut window = TestWindow::new(gutter_width, 5);
                     draw_line_numbers(
                         &mut window,
-                        style,
+                        &style,
                         (gutter_width, 5),
                         marker_width,
                         7..11,
@@ -6156,7 +6164,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             },
             SnapshotStyle {
                 default_colors,
-                style,
+                style: &style,
                 syntax_spans: None,
                 lexical_fallback_enabled: false,
             },
@@ -6312,7 +6320,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                     ..UiStyle::default()
                 };
                 let mut window = TestWindow::new(100, 30);
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 assert!(window.row_text(1).contains(name));
                 let marker = if icons_enabled {
                     ui::icons::ZOOM
@@ -6364,7 +6372,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             let style = UiStyle::default();
             let mut perf = FramePerfSample::default();
             let mut window = TestWindow::new(80, 12);
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             state.split_active_pane(axis);
             state.session.open_unnamed_buffer();
             *state.session.active_buffer_mut() = TextBuffer::from_text(&source);
@@ -6374,7 +6382,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             {
                 state.apply_input(action, 80, 12);
                 state.update_background(Instant::now() + Duration::from_millis(150));
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 for rect in state.pane_rects(80, 11) {
                     let row = rect.y as usize;
                     let columns = rect.x as usize..(rect.x + rect.width) as usize;
@@ -6427,7 +6435,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
                 state.session.active_meta_mut().path = Some(PathBuf::from(path));
                 state.session.set_active_dirty(dirty);
                 state.session.activate(active_buffer);
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 let rect = state
                     .pane_rects(80, 11)
                     .into_iter()
@@ -6465,7 +6473,7 @@ markdown_emphasis = { italic = false, strikethrough = true }
             }
 
             state.close_active_split();
-            draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
             assert!(window.row_text(0).contains("first"));
             assert!(window.row_text(10).contains("body"));
             assert!(!window.row_text(0).contains("[No Name]"));
@@ -6532,7 +6540,7 @@ comment = { italic = false }
         let style = config.style().unwrap();
         let mut perf = FramePerfSample::default();
         let mut standard = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut standard, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut standard, &mut perf).unwrap();
         let content_x = pane_content_x(&state, state.active_pane_id()) as usize;
         assert!(content_x > 0);
         let keyword_color = standard.foregrounds[0][content_x];
@@ -6541,7 +6549,7 @@ comment = { italic = false }
         assert_eq!(state.status_msg.as_deref(), Some("zen"));
         state.clear_status();
         let mut zen = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut zen, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut zen, &mut perf).unwrap();
         assert_eq!(state.viewport_size(), (96, 24));
         assert_eq!(zen.row_text(0).find("fn first"), Some(12));
         assert_eq!(zen.foregrounds[0][12], keyword_color);
@@ -6564,7 +6572,7 @@ comment = { italic = false }
 
         state.session.active_meta_mut().path = None;
         let mut fallback = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut fallback, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut fallback, &mut perf).unwrap();
         let column = fallback.row_text(5).find('2').unwrap();
         assert_eq!(
             fallback.styles[5][column],
@@ -6588,7 +6596,7 @@ comment = { italic = false }
         state.zen.hide_gutter = false;
         state.zen.hide_color_column = false;
         let mut configured = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut configured, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut configured, &mut perf).unwrap();
         assert_eq!(
             configured.cells[0]
                 .iter()
@@ -6605,7 +6613,7 @@ comment = { italic = false }
         assert_eq!(state.status_msg.as_deref(), Some("standard"));
         state.clear_status();
         let mut restored = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut restored, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut restored, &mut perf).unwrap();
         assert_eq!(restored.cells, standard.cells);
         assert_eq!(restored.foregrounds, standard.foregrounds);
         assert_eq!(restored.backgrounds, standard.backgrounds);
@@ -6616,7 +6624,7 @@ comment = { italic = false }
         state.zen.hide_gutter = true;
         for (width, expected) in [(90, 80), (50, 50), (1, 1), (0, 0)] {
             let mut narrow = TestWindow::new(width, 24);
-            draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+            draw_buffer_view(&mut state, &style, &mut narrow, &mut perf).unwrap();
             assert_eq!(state.viewport_size().0, expected);
         }
 
@@ -6626,7 +6634,7 @@ comment = { italic = false }
             view.cursor.scroll_x_cells = 0;
         });
         let mut narrow = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut narrow, &mut perf).unwrap();
         let cursor = narrow.cursor.unwrap();
         assert!(!cursor.visible);
         assert_eq!(state.active_cursor_pos(), redox_core::Pos::new(0, 115));
@@ -6638,14 +6646,14 @@ comment = { italic = false }
             96,
             24,
         );
-        draw_buffer_view(&mut state, style, &mut narrow, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut narrow, &mut perf).unwrap();
         let cursor = narrow.cursor.unwrap();
         assert!(cursor.visible && (12..108).contains(&cursor.x));
 
         state.apply_input(InputAction::SplitVertical, 96, 24);
         assert_eq!(state.panes().len(), 2);
         let mut split = TestWindow::new(120, 24);
-        draw_buffer_view(&mut state, style, &mut split, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut split, &mut perf).unwrap();
         let cursor = split.cursor.unwrap();
         assert!(cursor.visible && (12..108).contains(&cursor.x));
         assert_eq!(split.cells[cursor.y as usize][cursor.x as usize], 'x');
@@ -6683,7 +6691,7 @@ comment = { italic = false }
             ] {
                 state.with_active_buffer_view_mut(|_, view| view.cursor.cursor = cursor);
                 let mut window = TestWindow::new(120, 24);
-                draw_buffer_view(&mut state, style, &mut window, &mut perf).unwrap();
+                draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
                 let content_x = window.cells[0]
                     .iter()
                     .position(|character| *character == 'f')
@@ -6753,7 +6761,7 @@ comment = { italic = false }
 
         let mut window = TestWindow::new(80, 24);
         let mut perf = FramePerfSample::default();
-        draw_buffer_view(&mut state, UiStyle::default(), &mut window, &mut perf)
+        draw_buffer_view(&mut state, &UiStyle::default(), &mut window, &mut perf)
             .expect("draw should succeed");
 
         let screen = (0..24)
@@ -6785,7 +6793,7 @@ comment = { italic = false }
         }
 
         let style = UiStyle::default();
-        let (inner_w, inner_h) = explorer_popup_inner_size(80, 24, style);
+        let (inner_w, inner_h) = explorer_popup_inner_size(80, 24, &style);
         let (_, popup_y) = anchored_popup_origin(80, 24, inner_w, inner_h);
         let command_outer_h = style
             .command_line
@@ -6798,9 +6806,9 @@ comment = { italic = false }
             .saturating_sub(command_outer_h);
         let mut window = TestWindow::new(80, 24);
         let mut perf = FramePerfSample::default();
-        let stacked = popup_stack_layout(&state, style, &window, (inner_w, inner_h));
+        let stacked = popup_stack_layout(&state, &style, &window, (inner_w, inner_h));
         assert_eq!(stacked.popup.inner_h, inner_h - command_outer_h);
-        draw_buffer_view(&mut state, style, &mut window, &mut perf).expect("draw should succeed");
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).expect("draw should succeed");
 
         assert!(window.row_text(command_y.saturating_sub(1)).contains('╰'));
         assert!(window.row_text(command_y).contains("Command"));
@@ -6812,14 +6820,14 @@ comment = { italic = false }
 
         state.zen.enabled = true;
         let mut zen_window = TestWindow::new(120, 24);
-        let (zen_width, zen_height) = explorer_popup_inner_size(96, 24, style);
+        let (zen_width, zen_height) = explorer_popup_inner_size(96, 24, &style);
         let zen_stack = popup_stack_layout(
             &state,
-            style,
+            &style,
             &TestWindow::new(96, 24),
             (zen_width, zen_height),
         );
-        draw_buffer_view(&mut state, style, &mut zen_window, &mut perf).unwrap();
+        draw_buffer_view(&mut state, &style, &mut zen_window, &mut perf).unwrap();
         let popup_row = &zen_window.cells[zen_stack.popup.y as usize];
         let left = popup_row
             .iter()
@@ -6840,12 +6848,12 @@ comment = { italic = false }
         state.zen.enabled = false;
 
         let mut cramped_window = TestWindow::new(80, 8);
-        draw_buffer_view(&mut state, style, &mut cramped_window, &mut perf)
+        draw_buffer_view(&mut state, &style, &mut cramped_window, &mut perf)
             .expect("cramped draw should succeed");
         assert!((0..8).any(|row| cramped_window.row_text(row).contains("Command")));
 
         state.apply_input(InputAction::CommandCancel, 80, 24);
-        let expanded = popup_stack_layout(&state, style, &window, (inner_w, inner_h));
+        let expanded = popup_stack_layout(&state, &style, &window, (inner_w, inner_h));
         assert_eq!(expanded.popup.inner_h, inner_h);
 
         let _ = fs::remove_dir_all(dir);

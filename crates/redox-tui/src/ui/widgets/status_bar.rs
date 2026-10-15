@@ -430,7 +430,7 @@ impl Widget for EditorStatusBar {
     }
 }
 
-pub fn build_editor_status_bar(state: &EditorState, style: UiStyle) -> EditorStatusBar {
+pub fn build_editor_status_bar(state: &EditorState, style: &UiStyle) -> EditorStatusBar {
     let buffer_id = state.statusline_buffer_id();
     let Some(buffer) = state.session.buffer(buffer_id) else {
         return EditorStatusBar::new()
@@ -644,7 +644,7 @@ fn visual_column(line: &str, char_col: usize) -> usize {
 fn status_bar_mode_presentation(
     mode: EditorMode,
     rain_active: bool,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> (&'static str, TextStyle) {
     if rain_active {
         return ("RAIN", style.status_line.mode_command);

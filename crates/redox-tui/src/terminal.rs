@@ -233,7 +233,7 @@ impl TerminalPanel {
     pub(crate) fn draw(
         &self,
         window: &mut dyn Window,
-        style: UiStyle,
+        style: &UiStyle,
         dimming: f32,
     ) -> minui::Result<()> {
         let height = self.height(self.window_height);

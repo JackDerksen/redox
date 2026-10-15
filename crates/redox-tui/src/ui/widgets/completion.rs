@@ -23,7 +23,7 @@ const COMPLETION_MIN_KEYWORD_WIDTH: usize = 8;
 
 pub(crate) fn draw_completion_popup(
     popup: &CompletionPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     anchor_x: u16,
     anchor_y: u16,
@@ -87,7 +87,7 @@ pub(crate) fn draw_completion_popup(
 
 pub fn draw_completion_preview(
     window: &mut dyn Window,
-    style: UiStyle,
+    style: &UiStyle,
     x: u16,
     y: u16,
     available_width: u16,
@@ -191,7 +191,7 @@ fn completion_kind_display(kind: Option<&str>, icons_enabled: bool) -> Option<&s
 fn draw_entries(
     window: &mut dyn Window,
     popup: &CompletionPopup,
-    style: UiStyle,
+    style: &UiStyle,
     x: u16,
     y: u16,
     layout: CompletionLayout,
@@ -314,7 +314,7 @@ fn draw_completion_keyword(
     Ok(())
 }
 
-fn completion_kind_color(style: UiStyle, entry: &CompletionEntry, is_selected: bool) -> TextStyle {
+fn completion_kind_color(style: &UiStyle, entry: &CompletionEntry, is_selected: bool) -> TextStyle {
     let role = completion_keyword_role(entry.kind.as_deref());
     let color = style.syntax.color_for(role);
     if is_selected {

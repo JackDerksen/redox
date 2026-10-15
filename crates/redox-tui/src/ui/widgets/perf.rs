@@ -28,7 +28,7 @@ struct PerfRow {
 pub type PerfPopupLayout = PopupLayout;
 
 pub fn draw_perf_popup_view(
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     popup: PerfPopup,
 ) -> minui::Result<()> {
@@ -140,7 +140,7 @@ pub fn draw_perf_popup_view(
     Ok(())
 }
 
-pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16, u16) {
     let max_h = term_h.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
     popup_inner_size(
         term_w,
@@ -152,7 +152,7 @@ pub fn perf_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, 
     )
 }
 
-pub fn perf_popup_layout(term_w: u16, term_h: u16, style: UiStyle) -> PerfPopupLayout {
+pub fn perf_popup_layout(term_w: u16, term_h: u16, style: &UiStyle) -> PerfPopupLayout {
     let (inner_w, inner_h) = perf_popup_inner_size(term_w, term_h, style);
     let x = term_w.saturating_sub(inner_w.saturating_add(2));
     PerfPopupLayout {
@@ -234,7 +234,7 @@ fn draw_bar(
     col: u16,
     width: u16,
     perf: &PerfRow,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<()> {
     if width == 0 {
         return Ok(());
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn perf_popup_layout_anchors_to_top_right() {
-        let layout = perf_popup_layout(100, 40, UiStyle::default());
+        let layout = perf_popup_layout(100, 40, &UiStyle::default());
         assert_eq!(layout.y, 0);
         assert_eq!(layout.x + layout.inner_w + 2, 100);
         assert_eq!(layout.inner_w, 42);

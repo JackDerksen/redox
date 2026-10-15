@@ -1549,7 +1549,7 @@ pub fn draw_line_with_syntax(
     source_line: &str,
     base_color: TextStyle,
     color_column: Option<(usize, minui::Color)>,
-    style: UiStyle,
+    style: &UiStyle,
     spans: &[LineSyntaxSpan],
 ) -> minui::Result<()> {
     let LineViewport {
@@ -1705,7 +1705,7 @@ fn flush_pending_syntax_span(
 
 pub fn syntax_style_for_range(
     base_color: TextStyle,
-    style: UiStyle,
+    style: &UiStyle,
     spans: &[LineSyntaxSpan],
     start_byte: usize,
     end_byte: usize,
