@@ -1193,6 +1193,17 @@ fn plan_explorer_dir_changes(
         }
     }
 
+    // New names never reuse anything on disk. Case-insensitive filesystems treat
+    // `Readme.md` as an existing `README.md`, so check the filesystem, not the listing.
+    for entry in &creations {
+        let occupied = [current_dir_path, resolved_dir_path]
+            .iter()
+            .any(|dir| fs::symlink_metadata(explorer_entry_path(dir, &entry.name)).is_ok());
+        if occupied {
+            anyhow::bail!("'{}' already exists", entry.name);
+        }
+    }
+
     // Stage each source to a unique temporary path first so swaps/cycles cannot conflict.
     let mut reserved_temp_paths: HashSet<PathBuf> = HashSet::new();
 
@@ -1277,7 +1288,17 @@ fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Resul
             if let Some(parent) = created.path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let _ = fs::File::create(&created.path)?;
+            // Never truncate: the path may have appeared since planning.
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&created.path)
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::AlreadyExists => {
+                        anyhow::anyhow!("'{}' already exists", created.name)
+                    }
+                    _ => error.into(),
+                })?;
         }
     }
 
@@ -1749,6 +1770,80 @@ mod tests {
             fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
             "beta"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn execute_plan(planned: PlannedExplorerDirWrite) -> anyhow::Result<()> {
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+    }
+
+    #[test]
+    fn creating_over_an_unlisted_existing_file_is_rejected_without_truncating() {
+        let root = temp_dir_path("create_existing");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        // Appeared on disk after the listing was taken.
+        fs::write(root.join("notes.txt"), "keep me").expect("failed to write fixture");
+
+        let error = apply_explorer_changes(&root, &[], &[file_entry("notes.txt")])
+            .expect_err("planning must refuse to create over an existing file");
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "keep me"
+        );
+
+        // A path that appears between planning and execution is not truncated either.
+        let planned = apply_explorer_changes(&root, &[], &[file_entry("late.txt")]).unwrap();
+        fs::write(root.join("late.txt"), "raced").unwrap();
+        let error = execute_plan(planned).expect_err("execution must not overwrite");
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(fs::read_to_string(root.join("late.txt")).unwrap(), "raced");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creating_a_case_variant_never_truncates_on_case_insensitive_filesystems() {
+        let root = temp_dir_path("create_case_variant");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("README.md"), "important").expect("failed to write fixture");
+        let case_insensitive = root.join("readme.md").exists();
+
+        let old_entries = vec![file_entry("README.md")];
+        let new_entries = vec![file_entry("README.md"), file_entry("Readme.md")];
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries);
+        if case_insensitive {
+            assert!(
+                planned.is_err(),
+                "case variant of an existing file must be refused"
+            );
+        } else {
+            execute_plan(planned.unwrap()).unwrap();
+            assert_eq!(fs::read_to_string(root.join("Readme.md")).unwrap(), "");
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creating_new_files_and_directories_still_works() {
+        let root = temp_dir_path("create_new");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+
+        let new_entries = vec![dir_entry("src"), file_entry("src/main.rs")];
+        let planned = apply_explorer_changes(&root, &[], &new_entries).unwrap();
+        execute_plan(planned).unwrap();
+
+        assert!(root.join("src").is_dir());
+        assert_eq!(fs::read_to_string(root.join("src/main.rs")).unwrap(), "");
 
         let _ = fs::remove_dir_all(root);
     }
