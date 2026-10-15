@@ -5757,6 +5757,57 @@ fn explorer_rename_updates_hidden_buffer_path_for_bprev() {
     let _ = fs::remove_dir(dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn explorer_deletion_failure_after_commit_still_syncs_renames() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_file_path("explorer_unfinished_delete").with_extension("");
+    let locked = dir.join("stuck/locked");
+    fs::create_dir_all(&locked).expect("failed to create temp dir");
+    fs::write(locked.join("file.txt"), "kept").unwrap();
+    let current = dir.join("current.txt");
+    let victim = dir.join("victim.txt");
+    fs::write(&current, "current").unwrap();
+    fs::write(&victim, "victim").unwrap();
+    // A read-only directory makes remove_dir_all fail after the rename succeeded.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(locked.join("probe"), "").is_ok() {
+        // Running as root ignores permissions; nothing to test.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(dir);
+        return;
+    }
+
+    let session = EditorSession::open_initial_file(&current).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, &format!("e {}", victim.display()));
+    let victim_id = state.session.active_id();
+    run_command(&mut state, "bp");
+
+    run_command(&mut state, "explorer");
+    *state.session.active_buffer_mut() = TextBuffer::from_text("../\ncurrent.txt\nrenamed.txt");
+    let _ = state.session.recompute_active_dirty();
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    let status = state.status_msg.clone().unwrap_or_default();
+    assert!(
+        status.contains("renamed file: victim.txt -> renamed.txt"),
+        "{status}"
+    );
+    assert!(status.contains("could not finish deleting"), "{status}");
+    // What could not be deleted is back under its own name, not a hidden one.
+    assert_eq!(fs::read_to_string(locked.join("file.txt")).unwrap(), "kept");
+    let renamed = fs::canonicalize(dir.join("renamed.txt")).unwrap();
+    assert_eq!(
+        state.session.meta(victim_id).unwrap().path.as_ref(),
+        Some(&renamed)
+    );
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn explorer_delete_removes_hidden_buffer_from_mru() {
     let dir = std::env::temp_dir().join(format!(

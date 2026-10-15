@@ -707,14 +707,25 @@ impl EditorState {
                 }
             };
 
-        if let Err(error) = execute_explorer_write(&planned_write) {
-            self.explorer_delete_confirmation_token = None;
-            self.set_status(format!("explorer write failed: {error}"));
-            return false;
-        }
+        let unfinished_deletions = match execute_explorer_write(&planned_write) {
+            Ok(unfinished) => unfinished,
+            Err(error) => {
+                self.explorer_delete_confirmation_token = None;
+                self.set_status(format!("explorer write failed: {error}"));
+                return false;
+            }
+        };
+        // Everything else was committed, so the session must follow it. Entries
+        // restored after a failed deletion still exist and are not deletions.
+        let mut changes = planned_write.changes.clone();
+        changes.deleted_entries.retain(|entry| {
+            !unfinished_deletions
+                .iter()
+                .any(|unfinished| unfinished.restored && unfinished.path == entry.path)
+        });
 
-        self.sync_session_after_explorer_write(&planned_write.changes);
-        let pin_sync_error = self.sync_pinned_files_after_explorer_write(&planned_write.changes);
+        self.sync_session_after_explorer_write(&changes);
+        let pin_sync_error = self.sync_pinned_files_after_explorer_write(&changes);
         self.mark_git_repo_statuses_stale();
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
@@ -766,12 +777,15 @@ impl EditorState {
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
-        let status = format_explorer_write_summary(&planned_write.changes);
-        if let Some(error) = pin_sync_error {
-            self.set_status(format!("{status}; pin save failed: {error}"));
-        } else {
-            self.set_status(status);
+        let mut status = format_explorer_write_summary(&changes);
+        for unfinished in &unfinished_deletions {
+            status.push_str("; ");
+            status.push_str(&unfinished.message);
         }
+        if let Some(error) = pin_sync_error {
+            status.push_str(&format!("; pin save failed: {error}"));
+        }
+        self.set_status(status);
         true
     }
 
@@ -1203,9 +1217,22 @@ enum ExplorerUndoStep {
     CreatedDir(PathBuf),
 }
 
+/// A deletion that failed after the rest of the write was committed.
+#[derive(Debug)]
+struct UnfinishedExplorerDeletion {
+    path: PathBuf,
+    /// Whether the entry was moved back to `path` after the failure.
+    restored: bool,
+    message: String,
+}
+
 /// Apply a planned write as one transaction. Deleted entries are first moved aside,
 /// so every step stays reversible until all renames and creations have succeeded.
-fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Result<()> {
+/// Removing them is the final step; a removal that fails then is returned rather
+/// than reported as a failed write, because everything else has been committed.
+fn execute_explorer_write(
+    planned_write: &PlannedExplorerWrite,
+) -> anyhow::Result<Vec<UnfinishedExplorerDeletion>> {
     let mut journal = Vec::new();
     let staged_deletions = match apply_reversible_explorer_steps(planned_write, &mut journal) {
         Ok(staged) => staged,
@@ -1221,23 +1248,32 @@ fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Resul
         }
     };
 
-    for (staged, is_dir) in staged_deletions {
+    let mut unfinished = Vec::new();
+    for (path, staged, is_dir) in staged_deletions {
         let removed = if is_dir {
             fs::remove_dir_all(&staged)
         } else {
             fs::remove_file(&staged)
         };
-        removed.map_err(|error| {
-            anyhow::anyhow!("could not finish deleting {}: {error}", staged.display())
-        })?;
+        let Err(error) = removed else {
+            continue;
+        };
+        // Keep whatever could not be removed under its own name, not a hidden one.
+        let restored = fs::rename(&staged, &path).is_ok();
+        let location = if restored { &path } else { &staged };
+        unfinished.push(UnfinishedExplorerDeletion {
+            message: format!("could not finish deleting {}: {error}", location.display()),
+            path,
+            restored,
+        });
     }
-    Ok(())
+    Ok(unfinished)
 }
 
 fn apply_reversible_explorer_steps(
     planned_write: &PlannedExplorerWrite,
     journal: &mut Vec<ExplorerUndoStep>,
-) -> anyhow::Result<Vec<(PathBuf, bool)>> {
+) -> anyhow::Result<Vec<(PathBuf, PathBuf, bool)>> {
     for dir_write in &planned_write.dir_writes {
         for rename in &dir_write.renames {
             move_entry(&rename.old_path, &rename.temp_path, journal)?;
@@ -1257,7 +1293,7 @@ fn apply_reversible_explorer_steps(
     for deleted in &planned_write.changes.deleted_entries {
         let staged = unused_sibling_path(&deleted.path, "redox_delete_tmp")?;
         move_entry(&deleted.path, &staged, journal)?;
-        staged_deletions.push((staged, deleted.is_dir));
+        staged_deletions.push((deleted.path.clone(), staged, deleted.is_dir));
     }
 
     for created in &planned_write.changes.created_entries {
@@ -1843,7 +1879,9 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    fn execute_plan(planned: PlannedExplorerDirWrite) -> anyhow::Result<()> {
+    fn execute_plan(
+        planned: PlannedExplorerDirWrite,
+    ) -> anyhow::Result<Vec<UnfinishedExplorerDeletion>> {
         execute_explorer_write(&PlannedExplorerWrite {
             changes: planned.changes.clone(),
             dir_writes: vec![planned],
