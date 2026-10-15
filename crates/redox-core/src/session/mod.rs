@@ -624,6 +624,14 @@ impl EditorSession {
         Some(id)
     }
 
+    /// Open buffer ids, most recently used first.
+    pub fn buffer_ids(&self) -> impl Iterator<Item = BufferId> + '_ {
+        self.mru
+            .iter()
+            .copied()
+            .filter(|id| self.buffers.contains_key(id))
+    }
+
     pub fn summaries(&self) -> Vec<BufferSummary> {
         let active = self.active;
         self.mru
