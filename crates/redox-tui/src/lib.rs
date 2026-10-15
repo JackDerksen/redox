@@ -420,7 +420,7 @@ fn draw_editor_view(
                 pane_text_w as usize,
                 rect.height.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
             );
-            state.ensure_rain_animation(pane_text_w, rect.height, editor_text, &background_style);
+            start_pending_rain(state, style, pane_text_w, rect.height);
         }
         state.sync_active_pane_view();
         draw_split_editor_panes(state, style, window, vw, text_h)?;
@@ -573,7 +573,7 @@ fn draw_editor_view(
     }
 
     state.set_viewport_size(text_w as usize, vh as usize);
-    state.ensure_rain_animation(text_w, text_h, editor_text, &background_style);
+    start_pending_rain(state, style, text_w, text_h);
 
     if let Some(animation) = state.active_rain_animation() {
         draw_line_numbers(
@@ -1788,6 +1788,18 @@ fn active_split_cursor_context(
         height: rect.height,
         scroll_x,
     })
+}
+
+/// Rain freezes the colours it captures, so take them from where the active
+/// pane's dimming settles, not from a frame partway through a focus fade
+/// (such as the command prompt that ran `:rain` fading out).
+fn start_pending_rain(state: &mut EditorState, style: &UiStyle, text_w: u16, text_h: u16) {
+    if !state.rain_is_active() || state.active_rain_animation().is_some() {
+        return;
+    }
+    let resting = style
+        .dimmed_by(style.dim_amount * state.resting_pane_focus_dimming(state.active_pane_id()));
+    state.ensure_rain_animation(text_w, text_h, resting.editor_text, &resting);
 }
 
 fn draw_active_split_rain_pane(
@@ -4348,6 +4360,35 @@ mod tests {
         );
         assert_eq!(state.mode, app::EditorMode::Command);
         assert_eq!(state.active_cursor_pos(), Pos::new(2, 3));
+    }
+
+    #[test]
+    fn rain_keeps_the_active_pane_colours_after_the_command_prompt_closes() {
+        let _lock = app::state::global_test_state_lock().lock().unwrap();
+        let mut state = EditorState::new(EditorSession::open_initial_unnamed().unwrap());
+        *state.session.active_buffer_mut() = TextBuffer::from_text("rain on me\n");
+        let style = UiStyle::default();
+        let mut window = TestWindow::new(40, 10);
+        let mut perf = FramePerfSample::default();
+        let mut clipboard = None;
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
+        let content_x = pane_content_x(&state, state.active_pane_id()) as usize;
+        let resting = window.foregrounds[0][content_x];
+
+        // The prompt dims the editor; its fade back out is still under way
+        // when the first rain frame captures the text.
+        for character in ":rain".chars() {
+            handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+        }
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
+        std::thread::sleep(
+            Duration::from_millis(state.animations.focus_fade_ms) + Duration::from_millis(50),
+        );
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
+        handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        draw_buffer_view(&mut state, &style, &mut window, &mut perf).unwrap();
+        assert!(state.active_rain_animation().is_some());
+        assert_eq!(window.foregrounds[0][content_x], resting);
     }
 
     #[test]

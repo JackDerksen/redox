@@ -1253,14 +1253,7 @@ impl EditorState {
     }
 
     pub(crate) fn pane_focus_dimming(&self, pane_id: PaneId, now: Instant) -> f32 {
-        let target = if !self.terminal_focused
-            && !self.popup_background_dimmed
-            && self.pane_draws_as_active(pane_id)
-        {
-            0.0
-        } else {
-            1.0
-        };
+        let target = self.resting_pane_focus_dimming(pane_id);
         let Some(transition) = self.pane_focus_transition.as_ref() else {
             return target;
         };
@@ -1270,6 +1263,18 @@ impl EditorState {
             .find(|(id, _)| *id == pane_id)
             .map_or(target, |(_, amount)| *amount);
         transition.interpolate(from, target, now)
+    }
+
+    /// The dimming a pane settles at once any focus fade has finished.
+    pub(crate) fn resting_pane_focus_dimming(&self, pane_id: PaneId) -> f32 {
+        if !self.terminal_focused
+            && !self.popup_background_dimmed
+            && self.pane_draws_as_active(pane_id)
+        {
+            0.0
+        } else {
+            1.0
+        }
     }
 
     pub(crate) fn terminal_focus_dimming(&self, now: Instant) -> f32 {
