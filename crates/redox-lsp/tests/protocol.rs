@@ -262,7 +262,7 @@ fn hover_and_code_actions_keep_structured_content() {
 }
 
 #[test]
-fn workspace_edits_prefer_document_changes_and_reject_unversioned_changes_alone() {
+fn workspace_edits_prefer_document_changes_and_accept_unversioned_changes() {
     let edits = json!([{
         "range": {
             "start": { "line": 0, "character": 0 },
@@ -271,12 +271,18 @@ fn workspace_edits_prefer_document_changes_and_reject_unversioned_changes_alone(
         "newText": "changed"
     }]);
     let changes = json!({ "file:///tmp/example.rs": edits });
-    assert!(parse_workspace_edit(&json!({ "changes": changes })).is_none());
+    let unversioned = parse_workspace_edit(&json!({ "changes": changes })).unwrap();
+    assert_eq!(unversioned.document_edits.len(), 1);
+    assert_eq!(unversioned.document_edits[0].uri, "file:///tmp/example.rs");
+    assert_eq!(unversioned.document_edits[0].version, None);
+    assert_eq!(unversioned.document_edits[0].edits[0].new_text, "changed");
+    let actions = parse_code_action_response(&json!({
+        "result": [{ "title": "Unversioned edit", "edit": { "changes": changes } }]
+    }));
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].edit.as_ref(), Some(&unversioned));
     assert!(
-        parse_code_action_response(&json!({
-            "result": [{ "title": "Unsafe edit", "edit": { "changes": changes } }]
-        }))
-        .is_empty()
+        parse_workspace_edit(&json!({ "changes": { "file:///tmp/a.rs": "invalid" } })).is_none()
     );
 
     for document in [

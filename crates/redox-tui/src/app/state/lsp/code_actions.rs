@@ -556,6 +556,18 @@ impl EditorState {
         }))
     }
 
+    fn has_unsaved_buffer_for_uri(&self, uri: &str) -> bool {
+        let Some(path) = file_path_from_uri(uri) else {
+            return false;
+        };
+        // Session paths are canonical; servers may report a symlinked spelling.
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        self.session
+            .summaries()
+            .iter()
+            .any(|summary| summary.dirty && summary.path.as_deref() == Some(path.as_path()))
+    }
+
     pub(super) fn apply_workspace_edit(&mut self, edit: &WorkspaceEdit) -> io::Result<()> {
         let original_active = self.session.active_id();
         let (viewport_width_cells, viewport_height_rows) = self.viewport_size();
@@ -563,25 +575,36 @@ impl EditorState {
         let mut touched_buffers = Vec::new();
 
         for document_edit in &edit.document_edits {
-            let Some(expected_version) = document_edit.version else {
-                continue;
-            };
-            let Some((buffer_id, document)) = self
+            let open_document = self
                 .lsp
                 .documents
                 .iter()
-                .find(|(_, document)| document.uri == document_edit.uri)
-            else {
+                .find(|(_, document)| document.uri == document_edit.uri);
+            let Some((buffer_id, document)) = open_document else {
+                // An unversioned edit to a document the server has not opened targets
+                // the file on disk, which an open buffer only matches while it is clean.
+                if document_edit.version.is_none() {
+                    if self.has_unsaved_buffer_for_uri(&document_edit.uri) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "workspace edit targets unsaved changes the server has not seen",
+                        ));
+                    }
+                    continue;
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "versioned workspace edit targets an unopened document",
                 ));
             };
+            // Without a version, the server must at least have seen the current text.
             let current_analysis_version = self
                 .views
                 .get(buffer_id)
                 .map(|view| view.analysis_version());
-            if document.document_version != expected_version
+            if document_edit
+                .version
+                .is_some_and(|expected| expected != document.document_version)
                 || document.last_sent_analysis_version != current_analysis_version
             {
                 return Err(io::Error::new(

@@ -3010,6 +3010,45 @@ fn reload_from_disk_clears_stale_undo_history() {
 }
 
 #[test]
+fn external_reload_is_an_undoable_change_that_keeps_history_and_marks() {
+    let path = temp_file_path("external_reload_undo");
+    let mut state = state_with_text(path.clone(), "first\nsecond\n");
+    state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
+    run_command(&mut state, "w");
+    state
+        .session
+        .active_buffer_mut()
+        .set_mark('m', Pos::new(1, 3));
+
+    // Another program (git checkout, a formatter) rewrites the clean file.
+    fs::write(&path, "Afirst\nsecond\nthird\n").expect("failed to update test file");
+    state.update_background(state.next_external_file_check_at);
+
+    let buffer = state.session.active_buffer();
+    assert_eq!(buffer.to_string(), "Afirst\nsecond\nthird\n");
+    assert_eq!(buffer.mark('m'), Some(Pos::new(1, 3)));
+    assert!(!state.session.active_meta().dirty);
+
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "Afirst\nsecond\n"
+    );
+    assert!(state.session.active_meta().dirty);
+    state.apply_input(InputAction::Undo, 80, 24);
+    assert_eq!(state.session.active_buffer().to_string(), "first\nsecond\n");
+    state.apply_input(InputAction::Redo, 80, 24);
+    state.apply_input(InputAction::Redo, 80, 24);
+    assert_eq!(
+        state.session.active_buffer().to_string(),
+        "Afirst\nsecond\nthird\n"
+    );
+    assert!(!state.session.active_meta().dirty);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     let path = temp_file_path("insert_mode_undo_coalesce");
     let mut state = state_with_text(path.clone(), "hello");
@@ -4796,7 +4835,74 @@ exit 1
 }
 
 #[test]
-fn command_write_formats_go_with_gofmt_and_converts_tabs_to_soft_tabs() {
+fn command_write_formatter_changes_keep_marks_between_them() {
+    with_isolated_launch_env("write_format_marks", |root| {
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        write_executable(
+            &bin_dir.join("ruff"),
+            "#!/bin/sh
+if [ \"$1\" = \"format\" ]; then
+  printf 'a = 1\\nkeep()\\nb = 2\\n' > \"$2\"
+fi
+exit 0
+",
+        );
+        let path = root.join("example.py");
+        fs::write(&path, "a=1\nkeep()\nb=2\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+        state
+            .session
+            .active_buffer_mut()
+            .set_mark('k', Pos::new(1, 3));
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+
+        let buffer = state.session.active_buffer();
+        assert_eq!(buffer.to_string(), "a = 1\nkeep()\nb = 2\n");
+        assert_eq!(buffer.mark('k'), Some(Pos::new(1, 3)));
+    });
+}
+
+#[test]
+fn command_write_records_undo_when_the_post_format_save_fails() {
+    with_isolated_launch_env("write_format_save_fails", |root| {
+        let bin_dir = root.join("bin");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+        fs::create_dir_all(&src_dir).expect("failed to create src dir");
+        // Format with trailing whitespace, then make the directory read-only so the
+        // save after the whitespace pass cannot create its temporary file.
+        write_executable(
+            &bin_dir.join("ruff"),
+            "#!/bin/sh
+if [ \"$1\" = \"format\" ]; then
+  printf 'x = 1   \\n' > \"$2\"
+  chmod 555 \"$(dirname \"$2\")\"
+fi
+exit 0
+",
+        );
+        let path = src_dir.join("example.py");
+        fs::write(&path, "x=1\n").expect("failed to write file");
+        let session = EditorSession::open_initial_file(&path).expect("failed to open session");
+        let mut state = EditorState::new(session);
+
+        with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
+        fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let status = state.status_msg.clone().unwrap_or_default();
+        assert!(status.contains("format failed"), "{status}");
+        assert_eq!(state.session.active_buffer().to_string(), "x = 1\n");
+        // Undo must match the buffer, or later diffs would apply to the wrong text.
+        state.apply_input(InputAction::Undo, 80, 24);
+        assert_eq!(state.session.active_buffer().to_string(), "x=1\n");
+    });
+}
+
+#[test]
+fn command_write_formats_go_with_gofmt_and_keeps_its_tabs() {
     with_isolated_launch_env("write_formats_go", |root| {
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
@@ -4825,16 +4931,80 @@ EOF
 
         with_path_prefix(&bin_dir, || run_command(&mut state, "w"));
 
-        assert_eq!(
-            state.session.active_buffer().to_string(),
-            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
-        );
+        // gofmt's canonical output is tab-indented; converting it would fail `gofmt -l`.
+        let gofmt_output = "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n";
+        assert_eq!(state.session.active_buffer().to_string(), gofmt_output);
         assert_eq!(
             fs::read_to_string(&path).expect("failed to read saved file"),
-            "package main\n\nfunc main() {\n    println(\"hi\")\n}\n"
+            gofmt_output
         );
         assert!(state.save_confirmation.is_some());
     });
+}
+
+#[test]
+fn command_write_keeps_whitespace_where_formats_depend_on_it() {
+    for (name, text) in [
+        ("Makefile", "all:\n\tcc main.c  \n"),
+        ("rules.mk", "all:\n\tcc main.c\n"),
+        ("notes.md", "first line  \nsecond line\n"),
+        ("table.tsv", "a\tb\t\n\tc\t\n"),
+        ("fix.patch", "@@ -1,2 +1,2 @@\n \n-\told\n+\tnew\n"),
+    ] {
+        let directory = temp_file_path("write_keeps").with_extension("");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(name);
+        let mut state = state_with_text(path.clone(), text);
+
+        run_command(&mut state, "w");
+
+        let expected = match name {
+            // Makefiles keep tabs but are still trimmed.
+            "Makefile" => "all:\n\tcc main.c\n",
+            _ => text,
+        };
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            expected,
+            "{name}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected, "{name}");
+        let _ = fs::remove_dir_all(directory);
+    }
+}
+
+#[test]
+fn command_write_save_passes_can_be_disabled() {
+    let path = temp_file_path("write_passes_disabled");
+    let text = "\tindented  \n";
+    let mut state = state_with_text(path.clone(), text);
+    state.save = crate::config::SaveConfig {
+        trim_trailing_whitespace: false,
+        expand_tabs: false,
+    };
+
+    run_command(&mut state, "w");
+
+    assert_eq!(state.session.active_buffer().to_string(), text);
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_write_save_passes_keep_marks_on_their_lines() {
+    let path = temp_file_path("write_passes_marks");
+    let mut state = state_with_text(path.clone(), "one  \n\ttwo\nthree\t\nfour\n");
+    let buffer = state.session.active_buffer_mut();
+    buffer.set_mark('a', Pos::new(1, 2));
+    buffer.set_mark('b', Pos::new(3, 1));
+
+    run_command(&mut state, "w");
+
+    let buffer = state.session.active_buffer();
+    assert_eq!(buffer.to_string(), "one\n    two\nthree\nfour\n");
+    assert_eq!(buffer.mark('a'), Some(Pos::new(1, 5)));
+    assert_eq!(buffer.mark('b'), Some(Pos::new(3, 1)));
+    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -5652,6 +5822,57 @@ fn explorer_rename_updates_hidden_buffer_path_for_bprev() {
     let _ = fs::remove_file(current);
     let _ = fs::remove_file(renamed);
     let _ = fs::remove_dir(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn explorer_deletion_failure_after_commit_still_syncs_renames() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_file_path("explorer_unfinished_delete").with_extension("");
+    let locked = dir.join("stuck/locked");
+    fs::create_dir_all(&locked).expect("failed to create temp dir");
+    fs::write(locked.join("file.txt"), "kept").unwrap();
+    let current = dir.join("current.txt");
+    let victim = dir.join("victim.txt");
+    fs::write(&current, "current").unwrap();
+    fs::write(&victim, "victim").unwrap();
+    // A read-only directory makes remove_dir_all fail after the rename succeeded.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(locked.join("probe"), "").is_ok() {
+        // Running as root ignores permissions; nothing to test.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(dir);
+        return;
+    }
+
+    let session = EditorSession::open_initial_file(&current).expect("failed to open session");
+    let mut state = EditorState::new(session);
+    run_command(&mut state, &format!("e {}", victim.display()));
+    let victim_id = state.session.active_id();
+    run_command(&mut state, "bp");
+
+    run_command(&mut state, "explorer");
+    *state.session.active_buffer_mut() = TextBuffer::from_text("../\ncurrent.txt\nrenamed.txt");
+    let _ = state.session.recompute_active_dirty();
+    run_command(&mut state, "w");
+    state.apply_input(InputAction::ConfirmExplorerDelete, 80, 24);
+
+    let status = state.status_msg.clone().unwrap_or_default();
+    assert!(
+        status.contains("renamed file: victim.txt -> renamed.txt"),
+        "{status}"
+    );
+    assert!(status.contains("could not finish deleting"), "{status}");
+    // What could not be deleted is back under its own name, not a hidden one.
+    assert_eq!(fs::read_to_string(locked.join("file.txt")).unwrap(), "kept");
+    let renamed = fs::canonicalize(dir.join("renamed.txt")).unwrap();
+    assert_eq!(
+        state.session.meta(victim_id).unwrap().path.as_ref(),
+        Some(&renamed)
+    );
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

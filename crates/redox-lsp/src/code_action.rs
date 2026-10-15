@@ -120,11 +120,20 @@ pub fn parse_workspace_edit(value: &Value) -> Option<WorkspaceEdit> {
             }
         }
     } else if let Some(changes) = value.get("changes").and_then(Value::as_object) {
-        for edits in changes.values() {
-            // `changes` carries no versions, and this parser has no document context
-            // to validate them. Reject the whole edit rather than apply only part.
-            if !edits.as_array()?.is_empty() {
-                return None;
+        // `changes` carries no versions. Frontends must check that the server has seen
+        // each open document's current text before applying it, as for a null version.
+        for (uri, edits) in changes {
+            let edits = edits
+                .as_array()?
+                .iter()
+                .map(parse_text_edit)
+                .collect::<Option<Vec<_>>>()?;
+            if !edits.is_empty() {
+                document_edits.push(DocumentEdit {
+                    uri: uri.clone(),
+                    version: None,
+                    edits,
+                });
             }
         }
     }

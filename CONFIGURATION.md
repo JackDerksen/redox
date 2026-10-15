@@ -138,7 +138,7 @@ leader = " "
 | `check_updates` | boolean | `true` | Check GitHub for a newer release on startup. Successful checks are cached for 24 hours and require `curl`. `:check-update` performs a manual check at any time. |
 | `scrolloff` | non-negative integer | `5` | Keeps this many rows visible above and below the cursor while scrolling. |
 | `background_dimming` | number | `0.301` | Dimming for inactive panes, popup backgrounds, and staged Git gutter markers from `0.0` (none) through `1.0` (maximum). |
-| `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox starts a fresh bounded segment while keeping the latest edit undoable. |
+| `undo_tree_history_size` | positive integer | unlimited | Maximum undo records retained per buffer. When full, Redox first drops abandoned branches, oldest first, then the oldest undo steps, so the most recent edits always stay undoable. |
 | `color_column` | non-negative integer | `79` | Zero-based text column at which the colour-column background is drawn. |
 | `line_numbers` | string | `"relative"` | `"relative"` shows the distance from the cursor, with the current line's actual number. `"absolute"` shows actual line numbers on every row. Applies to editor panes and the explorer. |
 | `leader` | one-character string | `" "` | Character substituted for `<leader>` in keybindings and built-in leader sequences. |
@@ -428,6 +428,29 @@ Override the zen colours per theme:
 "zen.margin" = "#111112"
 "zen.ghost" = "#606079"
 ```
+
+## Saving
+
+After a write, Redox runs the language formatter when one is installed
+(`cargo fmt`, `gofmt`, `ruff`, or `clang-format`), then applies two whitespace
+passes and saves again if anything changed.
+
+```toml
+[save]
+trim_trailing_whitespace = true
+expand_tabs = true
+```
+
+| Option | Default | Behaviour |
+| --- | --- | --- |
+| `trim_trailing_whitespace` | `true` | Remove spaces and tabs at the end of every line. |
+| `expand_tabs` | `true` | Convert tabs in leading indentation to spaces, using the file's detected indentation width. |
+
+Each pass is skipped for files whose whitespace carries meaning. Tabs are kept in
+Go files (gofmt requires them) and Makefiles (`Makefile`, `makefile`,
+`GNUmakefile`, `*.mk`, `*.mak`). Trailing whitespace is kept in Markdown, where
+two trailing spaces mark a line break. Neither pass touches `*.tsv`, `*.diff`, or
+`*.patch` files. Both passes edit lines in place, so marks stay where they were.
 
 ## Popup sizes
 

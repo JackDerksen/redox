@@ -7,6 +7,11 @@ use redox_core::{BufferId, BufferKind, Pos, TextBuffer};
 use super::{BufferViewState, EditorMode, EditorState, GitFileStatusKind, StatusMessageStyle};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 
+/// Stop walking a deleted tree after this many entries; the count is then shown as "N+".
+const DELETE_TARGET_SCAN_LIMIT: usize = 10_000;
+/// Confirmation lines listed before summarising the rest.
+const DELETE_TARGET_DISPLAY_LIMIT: usize = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ExplorerEntry {
     name: String,
@@ -702,14 +707,25 @@ impl EditorState {
                 }
             };
 
-        if let Err(error) = execute_explorer_write(&planned_write) {
-            self.explorer_delete_confirmation_token = None;
-            self.set_status(format!("explorer write failed: {error}"));
-            return false;
-        }
+        let unfinished_deletions = match execute_explorer_write(&planned_write) {
+            Ok(unfinished) => unfinished,
+            Err(error) => {
+                self.explorer_delete_confirmation_token = None;
+                self.set_status(format!("explorer write failed: {error}"));
+                return false;
+            }
+        };
+        // Everything else was committed, so the session must follow it. Entries
+        // restored after a failed deletion still exist and are not deletions.
+        let mut changes = planned_write.changes.clone();
+        changes.deleted_entries.retain(|entry| {
+            !unfinished_deletions
+                .iter()
+                .any(|unfinished| unfinished.restored && unfinished.path == entry.path)
+        });
 
-        self.sync_session_after_explorer_write(&planned_write.changes);
-        let pin_sync_error = self.sync_pinned_files_after_explorer_write(&planned_write.changes);
+        self.sync_session_after_explorer_write(&changes);
+        let pin_sync_error = self.sync_pinned_files_after_explorer_write(&changes);
         self.mark_git_repo_statuses_stale();
 
         let refreshed_entries = match list_explorer_entries(&explorer.dir_path) {
@@ -761,12 +777,15 @@ impl EditorState {
         self.explorer = Some(explorer);
         self.session.mark_active_clean();
         self.explorer_delete_confirmation_token = None;
-        let status = format_explorer_write_summary(&planned_write.changes);
-        if let Some(error) = pin_sync_error {
-            self.set_status(format!("{status}; pin save failed: {error}"));
-        } else {
-            self.set_status(status);
+        let mut status = format_explorer_write_summary(&changes);
+        for unfinished in &unfinished_deletions {
+            status.push_str("; ");
+            status.push_str(&unfinished.message);
         }
+        if let Some(error) = pin_sync_error {
+            status.push_str(&format!("; pin save failed: {error}"));
+        }
+        self.set_status(status);
         true
     }
 
@@ -939,43 +958,7 @@ fn pending_explorer_deletions(
     old_entries: &[ExplorerEntry],
     new_entries: &[ExplorerEntry],
 ) -> Vec<ExplorerEntry> {
-    let old_entries: Vec<ExplorerEntry> = old_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-    let new_entries: Vec<ExplorerEntry> = new_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-
-    let old_index_by_name: HashMap<&str, usize> = old_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-    let new_index_by_name: HashMap<&str, usize> = new_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-
-    let old_missing: Vec<(usize, ExplorerEntry)> = old_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-    let new_added: Vec<(usize, ExplorerEntry)> = new_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-
-    let (_, deletions, _) = partition_explorer_entry_changes(old_missing, new_added);
-    deletions
+    diff_explorer_entries(old_entries, new_entries).deletions
 }
 
 fn explorer_delete_confirmation_token_for_drafts(
@@ -1122,54 +1105,19 @@ fn plan_explorer_dir_changes(
         }
     }
 
-    let old_entries: Vec<ExplorerEntry> = old_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-    let new_entries: Vec<ExplorerEntry> = new_entries
-        .iter()
-        .filter(|entry| !entry.is_parent)
-        .cloned()
-        .collect();
-
     let mut seen_names = HashSet::new();
-    for entry in &new_entries {
-        if !seen_names.insert(entry.name.clone()) {
+    for entry in new_entries.iter().filter(|entry| !entry.is_parent) {
+        if !seen_names.insert(entry.name.as_str()) {
             anyhow::bail!("duplicate entry name '{}'", entry.name);
         }
     }
 
-    let old_index_by_name: HashMap<&str, usize> = old_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-    let new_index_by_name: HashMap<&str, usize> = new_entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.name.as_str(), idx))
-        .collect();
-
-    let mut old_missing: Vec<(usize, ExplorerEntry)> = old_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !new_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-    let mut new_added: Vec<(usize, ExplorerEntry)> = new_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| !old_index_by_name.contains_key(entry.name.as_str()))
-        .map(|(idx, entry)| (idx, entry.clone()))
-        .collect();
-
-    old_missing.sort_by_key(|(idx, _)| *idx);
-    new_added.sort_by_key(|(idx, _)| *idx);
-
     let mut renames = Vec::new();
-    let (rename_pairs, deletions, creations) =
-        partition_explorer_entry_changes(old_missing, new_added);
+    let ExplorerEntryDiff {
+        renames: rename_pairs,
+        deletions,
+        creations,
+    } = diff_explorer_entries(old_entries, new_entries);
     for (old, new) in rename_pairs {
         renames.push(PlannedExplorerRename {
             old_name: old.name.clone(),
@@ -1188,8 +1136,23 @@ fn plan_explorer_dir_changes(
         if !current_old_path.exists() {
             anyhow::bail!("rename source '{}' does not exist", rename.old_name);
         }
-        if rename.new_path.exists() && !rename_sources.contains(&rename.new_path) {
+        // A case-only rename on a case-insensitive filesystem "finds" its own source.
+        if rename.new_path.exists()
+            && !rename_sources.contains(&rename.new_path)
+            && !same_filesystem_entry(&rename.new_path, &current_old_path)
+        {
             anyhow::bail!("rename target '{}' already exists", rename.new_name);
+        }
+    }
+
+    // New names never reuse anything on disk. Case-insensitive filesystems treat
+    // `Readme.md` as an existing `README.md`, so check the filesystem, not the listing.
+    for entry in &creations {
+        let occupied = [current_dir_path, resolved_dir_path]
+            .iter()
+            .any(|dir| fs::symlink_metadata(explorer_entry_path(dir, &entry.name)).is_ok());
+        if occupied {
+            anyhow::bail!("'{}' already exists", entry.name);
         }
     }
 
@@ -1246,42 +1209,173 @@ fn plan_explorer_dir_changes(
     })
 }
 
-fn execute_explorer_write(planned_write: &PlannedExplorerWrite) -> anyhow::Result<()> {
+/// A completed filesystem step that can be reversed if a later step fails.
+#[derive(Debug)]
+enum ExplorerUndoStep {
+    Moved { from: PathBuf, to: PathBuf },
+    CreatedFile(PathBuf),
+    CreatedDir(PathBuf),
+}
+
+/// A deletion that failed after the rest of the write was committed.
+#[derive(Debug)]
+struct UnfinishedExplorerDeletion {
+    path: PathBuf,
+    /// Whether the entry was moved back to `path` after the failure.
+    restored: bool,
+    message: String,
+}
+
+/// Apply a planned write as one transaction. Deleted entries are first moved aside,
+/// so every step stays reversible until all renames and creations have succeeded.
+/// Removing them is the final step; a removal that fails then is returned rather
+/// than reported as a failed write, because everything else has been committed.
+fn execute_explorer_write(
+    planned_write: &PlannedExplorerWrite,
+) -> anyhow::Result<Vec<UnfinishedExplorerDeletion>> {
+    let mut journal = Vec::new();
+    let staged_deletions = match apply_reversible_explorer_steps(planned_write, &mut journal) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let stranded = roll_back_explorer_steps(journal);
+            if stranded.is_empty() {
+                anyhow::bail!("{error:#}; no changes were made");
+            }
+            anyhow::bail!(
+                "{error:#}; rollback incomplete, check {}",
+                stranded.join(", ")
+            );
+        }
+    };
+
+    let mut unfinished = Vec::new();
+    for (path, staged, is_dir) in staged_deletions {
+        let removed = if is_dir {
+            fs::remove_dir_all(&staged)
+        } else {
+            fs::remove_file(&staged)
+        };
+        let Err(error) = removed else {
+            continue;
+        };
+        // Keep whatever could not be removed under its own name, not a hidden one.
+        let restored = fs::rename(&staged, &path).is_ok();
+        let location = if restored { &path } else { &staged };
+        unfinished.push(UnfinishedExplorerDeletion {
+            message: format!("could not finish deleting {}: {error}", location.display()),
+            path,
+            restored,
+        });
+    }
+    Ok(unfinished)
+}
+
+fn apply_reversible_explorer_steps(
+    planned_write: &PlannedExplorerWrite,
+    journal: &mut Vec<ExplorerUndoStep>,
+) -> anyhow::Result<Vec<(PathBuf, PathBuf, bool)>> {
     for dir_write in &planned_write.dir_writes {
         for rename in &dir_write.renames {
-            fs::rename(&rename.old_path, &rename.temp_path)?;
+            move_entry(&rename.old_path, &rename.temp_path, journal)?;
         }
         for rename in &dir_write.renames {
             if let Some(parent) = rename.new_path.parent() {
-                fs::create_dir_all(parent)?;
+                create_dirs(parent, journal)?;
             }
             if rename.new_path.exists() {
                 anyhow::bail!("rename target '{}' already exists", rename.new_name);
             }
-            fs::rename(&rename.temp_path, &rename.new_path)?;
+            move_entry(&rename.temp_path, &rename.new_path, journal)?;
         }
     }
 
+    let mut staged_deletions = Vec::new();
     for deleted in &planned_write.changes.deleted_entries {
-        if deleted.is_dir {
-            fs::remove_dir_all(&deleted.path)?;
-        } else {
-            fs::remove_file(&deleted.path)?;
-        }
+        let staged = unused_sibling_path(&deleted.path, "redox_delete_tmp")?;
+        move_entry(&deleted.path, &staged, journal)?;
+        staged_deletions.push((deleted.path.clone(), staged, deleted.is_dir));
     }
 
     for created in &planned_write.changes.created_entries {
         if created.is_dir {
-            fs::create_dir_all(&created.path)?;
-        } else {
-            if let Some(parent) = created.path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let _ = fs::File::create(&created.path)?;
+            create_dirs(&created.path, journal)?;
+            continue;
         }
+        if let Some(parent) = created.path.parent() {
+            create_dirs(parent, journal)?;
+        }
+        // Never truncate: the path may have appeared since planning.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&created.path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    anyhow::anyhow!("'{}' already exists", created.name)
+                }
+                _ => error.into(),
+            })?;
+        journal.push(ExplorerUndoStep::CreatedFile(created.path.clone()));
     }
 
+    Ok(staged_deletions)
+}
+
+fn move_entry(from: &Path, to: &Path, journal: &mut Vec<ExplorerUndoStep>) -> anyhow::Result<()> {
+    fs::rename(from, to)
+        .map_err(|error| anyhow::anyhow!("could not move {}: {error}", from.display()))?;
+    journal.push(ExplorerUndoStep::Moved {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+    });
     Ok(())
+}
+
+/// Create `dir` and any missing ancestors, journaling each directory actually created.
+fn create_dirs(dir: &Path, journal: &mut Vec<ExplorerUndoStep>) -> anyhow::Result<()> {
+    let missing: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|ancestor| fs::symlink_metadata(ancestor).is_err())
+        .collect();
+    for created in missing.into_iter().rev() {
+        fs::create_dir(created)
+            .map_err(|error| anyhow::anyhow!("could not create {}: {error}", created.display()))?;
+        journal.push(ExplorerUndoStep::CreatedDir(created.to_path_buf()));
+    }
+    Ok(())
+}
+
+fn unused_sibling_path(path: &Path, prefix: &str) -> anyhow::Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    (0..10_000)
+        .map(|attempt| parent.join(format!(".{prefix}_{attempt}")))
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+        .ok_or_else(|| anyhow::anyhow!("failed to allocate a temporary path"))
+}
+
+/// Undo completed steps newest first. Return the paths that could not be restored.
+fn roll_back_explorer_steps(journal: Vec<ExplorerUndoStep>) -> Vec<String> {
+    let mut stranded = Vec::new();
+    for step in journal.into_iter().rev() {
+        match step {
+            ExplorerUndoStep::Moved { from, to } => {
+                if fs::rename(&to, &from).is_err() {
+                    stranded.push(format!("{} (was {})", to.display(), from.display()));
+                }
+            }
+            ExplorerUndoStep::CreatedFile(path) => {
+                // Only an empty file was created; leave it if something wrote to it since.
+                if fs::metadata(&path).is_ok_and(|metadata| metadata.len() == 0) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+            ExplorerUndoStep::CreatedDir(path) => {
+                // Fails harmlessly if anything else now lives inside it.
+                let _ = fs::remove_dir(&path);
+            }
+        }
+    }
+    stranded
 }
 
 fn normalize_explorer_entry_name(name: &str, line_number: usize) -> anyhow::Result<String> {
@@ -1346,20 +1440,29 @@ fn format_explorer_delete_confirmation_lines(
             dir_label.as_deref(),
         ));
     }
-    let noun = if targets.len() == 1 {
-        "entry"
+    let total = targets.len();
+    let more = if total >= DELETE_TARGET_SCAN_LIMIT {
+        "+"
     } else {
-        "entries"
+        ""
     };
+    let noun = if total == 1 { "entry" } else { "entries" };
     let mut lines = vec![(
-        format!("confirm deletion of {} {}:", targets.len(), noun),
+        format!("confirm deletion of {total}{more} {noun}:"),
         StatusMessageStyle::Normal,
     )];
     lines.extend(
         targets
             .into_iter()
+            .take(DELETE_TARGET_DISPLAY_LIMIT)
             .map(|target| (format!(" {target}"), StatusMessageStyle::Normal)),
     );
+    if total > DELETE_TARGET_DISPLAY_LIMIT {
+        lines.push((
+            format!(" …and {}{more} more", total - DELETE_TARGET_DISPLAY_LIMIT),
+            StatusMessageStyle::Dim,
+        ));
+    }
     lines.push(("press y".to_string(), StatusMessageStyle::Dim));
     lines
 }
@@ -1370,13 +1473,12 @@ fn explorer_delete_confirmation_targets(
 ) -> Vec<String> {
     let mut targets = Vec::new();
     for entry in deletions {
-        targets.push(explorer_entry_label(&entry.name, entry.is_dir));
-        if !entry.is_dir {
-            continue;
-        }
-
         let path = explorer_entry_path(dir_path, &entry.name);
-        collect_directory_delete_targets(dir_path, &path, &mut targets);
+        let descend = entry.is_dir && is_real_directory(&path);
+        targets.push(explorer_entry_label(&entry.name, descend));
+        if descend {
+            collect_directory_delete_targets(dir_path, &path, &mut targets);
+        }
     }
     targets.sort_by(|a, b| {
         let a_path = a.trim_end_matches('/');
@@ -1455,12 +1557,16 @@ fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &
     });
 
     for child in children {
+        if targets.len() >= DELETE_TARGET_SCAN_LIMIT {
+            return;
+        }
         let child_path = child.path();
         let relative_name = child_path
             .strip_prefix(root_dir)
             .ok()
             .map(|path| path.to_string_lossy().replace('\\', "/"));
-        let is_dir = child_path.is_dir();
+        // Deletion removes symlinks themselves, so never list or descend into their targets.
+        let is_dir = child.file_type().is_ok_and(|file_type| file_type.is_dir());
         if let Some(relative_name) = relative_name {
             targets.push(explorer_entry_label(&relative_name, is_dir));
         }
@@ -1468,6 +1574,10 @@ fn collect_directory_delete_targets(root_dir: &Path, dir_path: &Path, targets: &
             collect_directory_delete_targets(root_dir, &child_path, targets);
         }
     }
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 fn format_explorer_write_summary(changes: &AppliedExplorerChanges) -> String {
@@ -1584,79 +1694,95 @@ fn push_explorer_entry_change_summary(
     parts.push(format!("{action} {kind}: {}", labels.join(", ")));
 }
 
-fn partition_explorer_entry_changes(
-    old_missing: Vec<(usize, ExplorerEntry)>,
-    new_added: Vec<(usize, ExplorerEntry)>,
-) -> (
-    Vec<(ExplorerEntry, ExplorerEntry)>,
-    Vec<ExplorerEntry>,
-    Vec<ExplorerEntry>,
-) {
-    fn pair_by_kind(
-        old_missing: &[(usize, ExplorerEntry)],
-        new_added: &[(usize, ExplorerEntry)],
-        is_dir: bool,
-        rename_pairs: &mut Vec<(ExplorerEntry, ExplorerEntry)>,
-        old_paired: &mut HashSet<usize>,
-        new_paired: &mut HashSet<usize>,
-    ) {
-        let old_candidates: Vec<(usize, &ExplorerEntry)> = old_missing
-            .iter()
-            .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| {
-                (entry.is_dir == is_dir).then_some((vec_idx, entry))
-            })
-            .collect();
-        let new_candidates: Vec<(usize, &ExplorerEntry)> = new_added
-            .iter()
-            .enumerate()
-            .filter_map(|(vec_idx, (_, entry))| {
-                (entry.is_dir == is_dir).then_some((vec_idx, entry))
-            })
-            .collect();
+struct ExplorerEntryDiff {
+    renames: Vec<(ExplorerEntry, ExplorerEntry)>,
+    deletions: Vec<ExplorerEntry>,
+    creations: Vec<ExplorerEntry>,
+}
 
-        for ((old_vec_idx, old_entry), (new_vec_idx, new_entry)) in
-            old_candidates.into_iter().zip(new_candidates)
-        {
-            rename_pairs.push((old_entry.clone(), new_entry.clone()));
-            old_paired.insert(old_vec_idx);
-            new_paired.insert(new_vec_idx);
+/// Compare an edited listing with the original. Unchanged names anchor the listing:
+/// a vanished and an added entry of the same kind are a rename only when they sit
+/// between the same unchanged neighbours, so deleting one line while typing an
+/// unrelated name elsewhere stays a confirmed deletion plus a creation.
+fn diff_explorer_entries(
+    old_entries: &[ExplorerEntry],
+    new_entries: &[ExplorerEntry],
+) -> ExplorerEntryDiff {
+    fn gapped<'a>(
+        entries: &'a [ExplorerEntry],
+        others: &HashSet<&str>,
+    ) -> Vec<(Option<&'a str>, &'a ExplorerEntry)> {
+        let mut anchor = None;
+        let mut changed = Vec::new();
+        for entry in entries.iter().filter(|entry| !entry.is_parent) {
+            if others.contains(entry.name.as_str()) {
+                anchor = Some(entry.name.as_str());
+            } else {
+                changed.push((anchor, entry));
+            }
         }
+        changed
     }
 
-    let mut rename_pairs = Vec::new();
-    let mut old_paired = HashSet::new();
-    let mut new_paired = HashSet::new();
+    fn names(entries: &[ExplorerEntry]) -> HashSet<&str> {
+        entries
+            .iter()
+            .filter(|entry| !entry.is_parent)
+            .map(|entry| entry.name.as_str())
+            .collect()
+    }
+    let old_names = names(old_entries);
+    let new_names = names(new_entries);
 
-    pair_by_kind(
-        &old_missing,
-        &new_added,
-        false,
-        &mut rename_pairs,
-        &mut old_paired,
-        &mut new_paired,
-    );
-    pair_by_kind(
-        &old_missing,
-        &new_added,
-        true,
-        &mut rename_pairs,
-        &mut old_paired,
-        &mut new_paired,
-    );
-
-    let deletions = old_missing
+    let old_missing = gapped(old_entries, &new_names);
+    let mut new_added: Vec<_> = gapped(new_entries, &old_names)
         .into_iter()
-        .enumerate()
-        .filter_map(|(vec_idx, (_, entry))| (!old_paired.contains(&vec_idx)).then_some(entry))
-        .collect();
-    let creations = new_added
-        .into_iter()
-        .enumerate()
-        .filter_map(|(vec_idx, (_, entry))| (!new_paired.contains(&vec_idx)).then_some(entry))
+        .map(|added| (added, false))
         .collect();
 
-    (rename_pairs, deletions, creations)
+    let mut diff = ExplorerEntryDiff {
+        renames: Vec::new(),
+        deletions: Vec::new(),
+        creations: Vec::new(),
+    };
+    for (gap, old) in old_missing {
+        let partner = new_added.iter_mut().find(|((added_gap, added), paired)| {
+            !*paired && *added_gap == gap && added.is_dir == old.is_dir
+        });
+        match partner {
+            Some(((_, new), paired)) => {
+                *paired = true;
+                diff.renames.push((old.clone(), (*new).clone()));
+            }
+            None => diff.deletions.push(old.clone()),
+        }
+    }
+    diff.creations = new_added
+        .into_iter()
+        .filter(|(_, paired)| !paired)
+        .map(|((_, entry), _)| entry.clone())
+        .collect();
+    diff
+}
+
+/// Whether two paths name the same file, as a case-insensitive filesystem can make them.
+fn same_filesystem_entry(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(left), Ok(right)) = (fs::symlink_metadata(left), fs::symlink_metadata(right))
+        else {
+            return false;
+        };
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        matches!(
+            (fs::canonicalize(left), fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1749,6 +1875,311 @@ mod tests {
             fs::read_to_string(root.join("beta.txt")).expect("failed to read beta"),
             "beta"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn execute_plan(
+        planned: PlannedExplorerDirWrite,
+    ) -> anyhow::Result<Vec<UnfinishedExplorerDeletion>> {
+        execute_explorer_write(&PlannedExplorerWrite {
+            changes: planned.changes.clone(),
+            dir_writes: vec![planned],
+        })
+    }
+
+    #[test]
+    fn creating_over_an_unlisted_existing_file_is_rejected_without_truncating() {
+        let root = temp_dir_path("create_existing");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        // Appeared on disk after the listing was taken.
+        fs::write(root.join("notes.txt"), "keep me").expect("failed to write fixture");
+
+        let error = apply_explorer_changes(&root, &[], &[file_entry("notes.txt")])
+            .expect_err("planning must refuse to create over an existing file");
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "keep me"
+        );
+
+        // A path that appears between planning and execution is not truncated either.
+        let planned = apply_explorer_changes(&root, &[], &[file_entry("late.txt")]).unwrap();
+        fs::write(root.join("late.txt"), "raced").unwrap();
+        let error = execute_plan(planned).expect_err("execution must not overwrite");
+        assert!(error.to_string().contains("already exists"), "{error}");
+        assert_eq!(fs::read_to_string(root.join("late.txt")).unwrap(), "raced");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creating_a_case_variant_never_truncates_on_case_insensitive_filesystems() {
+        let root = temp_dir_path("create_case_variant");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("README.md"), "important").expect("failed to write fixture");
+        let case_insensitive = root.join("readme.md").exists();
+
+        let old_entries = vec![file_entry("README.md")];
+        let new_entries = vec![file_entry("README.md"), file_entry("Readme.md")];
+        let planned = apply_explorer_changes(&root, &old_entries, &new_entries);
+        if case_insensitive {
+            assert!(
+                planned.is_err(),
+                "case variant of an existing file must be refused"
+            );
+        } else {
+            execute_plan(planned.unwrap()).unwrap();
+            assert_eq!(fs::read_to_string(root.join("Readme.md")).unwrap(), "");
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn directory_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn failed_rename_rolls_back_without_stranding_temporary_files() {
+        let root = temp_dir_path("rollback_rename");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("a.txt"), "a").unwrap();
+
+        let planned =
+            apply_explorer_changes(&root, &[file_entry("a.txt")], &[file_entry("b.txt")]).unwrap();
+        fs::write(root.join("b.txt"), "someone else's").unwrap();
+        let error = execute_plan(planned).expect_err("the rename target appeared");
+        assert!(
+            format!("{error:#}").contains("no changes were made"),
+            "{error:#}"
+        );
+
+        assert_eq!(directory_names(&root), ["a.txt", "b.txt"]);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a");
+        assert_eq!(
+            fs::read_to_string(root.join("b.txt")).unwrap(),
+            "someone else's"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failure_after_renames_and_deletes_restores_everything() {
+        let root = temp_dir_path("rollback_all");
+        fs::create_dir_all(root.join("doomed")).expect("failed to create fixture root");
+        fs::write(root.join("doomed/inner.txt"), "inner").unwrap();
+        fs::write(root.join("old.txt"), "old").unwrap();
+        fs::write(root.join("gone.txt"), "gone").unwrap();
+        fs::write(root.join("keep.txt"), "keep").unwrap();
+
+        // Rename old->renamed, delete gone.txt and doomed/, create nested/new.txt.
+        // `keep.txt` anchors the listing so gone.txt is not paired as a rename.
+        let old_entries = vec![
+            dir_entry("doomed"),
+            file_entry("gone.txt"),
+            file_entry("keep.txt"),
+            file_entry("old.txt"),
+        ];
+        let new_entries = vec![
+            file_entry("keep.txt"),
+            file_entry("renamed.txt"),
+            file_entry("nested/new.txt"),
+        ];
+        let mut planned = apply_explorer_changes(&root, &old_entries, &new_entries).unwrap();
+        assert_eq!(planned.changes.renamed_entries.len(), 1);
+        assert_eq!(planned.changes.deleted_entries.len(), 2);
+        assert_eq!(planned.changes.created_entries.len(), 1);
+        // Force the final step to fail by colliding with a file created after planning.
+        planned
+            .changes
+            .created_entries
+            .push(AppliedExplorerEntryChange {
+                name: "late.txt".to_string(),
+                path: root.join("late.txt"),
+                is_dir: false,
+            });
+        fs::write(root.join("late.txt"), "late").unwrap();
+
+        let error = execute_plan(planned).expect_err("the last creation must fail");
+        assert!(
+            format!("{error:#}").contains("no changes were made"),
+            "{error:#}"
+        );
+        assert_eq!(
+            directory_names(&root),
+            ["doomed", "gone.txt", "keep.txt", "late.txt", "old.txt"]
+        );
+        assert_eq!(fs::read_to_string(root.join("old.txt")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(root.join("gone.txt")).unwrap(), "gone");
+        assert_eq!(
+            fs::read_to_string(root.join("doomed/inner.txt")).unwrap(),
+            "inner"
+        );
+        assert_eq!(fs::read_to_string(root.join("late.txt")).unwrap(), "late");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_confirmation_lists_symlinks_without_following_them() {
+        let root = temp_dir_path("delete_symlinks");
+        fs::create_dir_all(root.join("doomed")).expect("failed to create fixture root");
+        fs::create_dir_all(root.join("elsewhere")).unwrap();
+        fs::write(root.join("elsewhere/precious.txt"), "precious").unwrap();
+        // A loop back to an ancestor used to recurse until the stack overflowed.
+        std::os::unix::fs::symlink(&root, root.join("doomed/loop")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("linked")).unwrap();
+
+        let targets = explorer_delete_confirmation_targets(
+            &root,
+            &[dir_entry("doomed"), dir_entry("linked")],
+        );
+        assert_eq!(targets, ["linked", "doomed/", "doomed/loop"]);
+
+        let planned = apply_explorer_changes(
+            &root,
+            &[
+                dir_entry("doomed"),
+                dir_entry("elsewhere"),
+                dir_entry("linked"),
+            ],
+            &[dir_entry("elsewhere")],
+        )
+        .unwrap();
+        execute_plan(planned).unwrap();
+        assert_eq!(directory_names(&root), ["elsewhere"]);
+        assert_eq!(
+            fs::read_to_string(root.join("elsewhere/precious.txt")).unwrap(),
+            "precious"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_confirmation_summarises_large_trees() {
+        let root = temp_dir_path("delete_large");
+        fs::create_dir_all(root.join("big")).expect("failed to create fixture root");
+        for index in 0..100 {
+            fs::write(root.join(format!("big/{index:03}.txt")), "").unwrap();
+        }
+
+        let lines =
+            format_explorer_delete_confirmation_lines(&[(root.clone(), vec![dir_entry("big")])]);
+        assert_eq!(lines[0].0, "confirm deletion of 101 entries:");
+        assert_eq!(lines.len(), 1 + DELETE_TARGET_DISPLAY_LIMIT + 2);
+        assert_eq!(lines[lines.len() - 2].0, " …and 61 more");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn names_of(entries: &[ExplorerEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn unrelated_delete_and_create_are_not_treated_as_a_rename() {
+        let old = vec![
+            file_entry("a.txt"),
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+        ];
+        let new = vec![
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+            file_entry("new.txt"),
+        ];
+
+        let diff = diff_explorer_entries(&old, &new);
+        assert!(diff.renames.is_empty());
+        assert_eq!(names_of(&diff.deletions), ["a.txt"]);
+        assert_eq!(names_of(&diff.creations), ["new.txt"]);
+        // The confirmation prompt sees exactly the same deletion.
+        assert_eq!(names_of(&pending_explorer_deletions(&old, &new)), ["a.txt"]);
+    }
+
+    #[test]
+    fn renames_survive_deletions_elsewhere_in_the_listing() {
+        let old = vec![
+            file_entry("a.txt"),
+            file_entry("b.txt"),
+            file_entry("c.txt"),
+            file_entry("d.txt"),
+        ];
+        let new = vec![
+            file_entry("b.txt"),
+            file_entry("x.txt"),
+            file_entry("d.txt"),
+        ];
+
+        let diff = diff_explorer_entries(&old, &new);
+        let renames: Vec<_> = diff
+            .renames
+            .iter()
+            .map(|(old, new)| (old.name.as_str(), new.name.as_str()))
+            .collect();
+        assert_eq!(renames, [("c.txt", "x.txt")]);
+        assert_eq!(names_of(&diff.deletions), ["a.txt"]);
+        assert!(diff.creations.is_empty());
+    }
+
+    #[test]
+    fn renames_only_pair_entries_of_the_same_kind() {
+        let old = vec![dir_entry("docs"), file_entry("keep.txt")];
+        let new = vec![file_entry("notes.txt"), file_entry("keep.txt")];
+
+        let diff = diff_explorer_entries(&old, &new);
+        assert!(diff.renames.is_empty());
+        assert_eq!(names_of(&diff.deletions), ["docs"]);
+        assert_eq!(names_of(&diff.creations), ["notes.txt"]);
+    }
+
+    #[test]
+    fn case_only_rename_works_on_every_filesystem() {
+        let root = temp_dir_path("case_rename");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+        fs::write(root.join("readme.md"), "contents").unwrap();
+
+        let planned = apply_explorer_changes(
+            &root,
+            &[file_entry("readme.md")],
+            &[file_entry("README.md")],
+        )
+        .expect("a case-only rename must be allowed");
+        execute_plan(planned).unwrap();
+
+        assert_eq!(directory_names(&root), ["README.md"]);
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "contents"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn creating_new_files_and_directories_still_works() {
+        let root = temp_dir_path("create_new");
+        fs::create_dir_all(&root).expect("failed to create fixture root");
+
+        let new_entries = vec![dir_entry("src"), file_entry("src/main.rs")];
+        let planned = apply_explorer_changes(&root, &[], &new_entries).unwrap();
+        execute_plan(planned).unwrap();
+
+        assert!(root.join("src").is_dir());
+        assert_eq!(fs::read_to_string(root.join("src/main.rs")).unwrap(), "");
 
         let _ = fs::remove_dir_all(root);
     }

@@ -52,6 +52,12 @@ hide_diagnostics = true # Hide inline diagnostics; the diagnostics list remains 
 minimal_statusline = true # Mode, filename, and the normal modules on the right
 show_toast = true # "zen" / "standard" when toggled
 
+# Whitespace passes after each write. Go/Makefile tabs, Markdown trailing spaces,
+# and TSV/patch files are always left alone.
+[save]
+trim_trailing_whitespace = true
+expand_tabs = true # Leading tabs become spaces at the detected indentation width
+
 [which_key]
 enabled = true
 delay_ms = 3000

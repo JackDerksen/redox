@@ -4814,6 +4814,40 @@ mod regressions {
     }
 
     #[test]
+    fn unversioned_edits_never_land_on_unsaved_buffers_the_server_has_not_seen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.txt");
+        fs::write(&path, "before\n").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        state.lsp.installed.clear();
+        let edit = parse_workspace_edit(&json!({"changes":{file_uri(&path).unwrap():[{
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}},
+            "newText":"after"
+        }]}}))
+        .unwrap();
+
+        state.mode = EditorMode::Insert;
+        state.apply_input(crate::input::InputAction::InsertChar('x'), 80, 24);
+        state.mode = EditorMode::Normal;
+        let error = state.apply_workspace_edit(&edit).unwrap_err();
+        assert!(error.to_string().contains("unsaved"), "{error}");
+        assert_eq!(state.session.active_buffer().to_string(), "xbefore\n");
+
+        // Once saved, the buffer matches the file the edit was computed against.
+        state.session.save_active().unwrap();
+        state.session.recompute_active_dirty();
+        let edit = parse_workspace_edit(&json!({"changes":{file_uri(&path).unwrap():[{
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}},
+            "newText":"after"
+        }]}}))
+        .unwrap();
+        state.apply_workspace_edit(&edit).unwrap();
+        assert_eq!(state.session.active_buffer().to_string(), "after\n");
+    }
+
+    #[test]
     fn workspace_edit_can_be_undone() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("example.txt");
@@ -4830,6 +4864,65 @@ mod regressions {
         assert_eq!(state.session.active_buffer().to_string(), "after");
         state.undo_active(80, 24);
         assert_eq!(state.session.active_buffer().to_string(), "before");
+    }
+
+    #[test]
+    fn unversioned_changes_apply_only_when_the_server_has_the_current_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.rs");
+        fs::write(&path, "before\n").unwrap();
+        let mut session = EditorSession::open_initial_unnamed().unwrap();
+        let buffer_id = session.open_file(&path).unwrap();
+        let mut state = EditorState::new(session);
+        state.lsp.installed.clear();
+        let uri = file_uri(&path).unwrap();
+        let sent_version = state.views[&buffer_id].analysis_version();
+        state.lsp.documents.insert(
+            buffer_id,
+            ManagedDocument {
+                workspace: WorkspaceKey {
+                    provider_id: ProviderId::RustAnalyzer,
+                    root: directory.path().to_path_buf(),
+                },
+                path: path.clone(),
+                uri: uri.clone(),
+                language_id: "rust",
+                document_version: 1,
+                last_sent_analysis_version: Some(sent_version),
+                last_sent_text: Some("before\n".to_string()),
+                pending_sync_since: None,
+                pending_sync_analysis_version: None,
+                opened: true,
+            },
+        );
+        // Servers send this form when the client lacks documentChanges support.
+        let edit = parse_workspace_edit(&json!({"changes":{uri.clone():[{
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}},
+            "newText":"after"
+        }]}}))
+        .unwrap();
+
+        state.mode = EditorMode::Insert;
+        state.apply_input(crate::input::InputAction::InsertChar('x'), 80, 24);
+        let error = state.apply_workspace_edit(&edit).unwrap_err();
+        assert!(error.to_string().contains("stale"), "{error}");
+        assert_eq!(state.session.active_buffer().to_string(), "xbefore\n");
+
+        // Once the server has the current text, an edit computed against it applies.
+        let current = state.views[&buffer_id].analysis_version();
+        state
+            .lsp
+            .documents
+            .get_mut(&buffer_id)
+            .unwrap()
+            .last_sent_analysis_version = Some(current);
+        let edit = parse_workspace_edit(&json!({"changes":{uri:[{
+            "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}},
+            "newText":"after"
+        }]}}))
+        .unwrap();
+        state.apply_workspace_edit(&edit).unwrap();
+        assert_eq!(state.session.active_buffer().to_string(), "after\n");
     }
 
     #[test]

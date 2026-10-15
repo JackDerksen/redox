@@ -4,7 +4,8 @@
 //! and ends, but this module owns how changed buffer states are represented and
 //! replayed.
 
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::buffer::{Edit, Pos, TextBuffer};
@@ -15,27 +16,28 @@ pub type UndoNodeId = usize;
 pub struct UndoCheckpoint {
     buffer: TextBuffer,
     cursor: Pos,
-    base_node: UndoNodeId,
+    /// The base node's sequence number, which survives pruning unlike its index.
+    base_sequence: u64,
     coalesced: bool,
     replaces_previous_coalesced_record: bool,
 }
 
 impl UndoCheckpoint {
-    fn new(buffer: TextBuffer, cursor: Pos, base_node: UndoNodeId) -> Self {
+    fn new(buffer: TextBuffer, cursor: Pos, base_sequence: u64) -> Self {
         Self {
             buffer,
             cursor,
-            base_node,
+            base_sequence,
             coalesced: false,
             replaces_previous_coalesced_record: false,
         }
     }
 
-    fn coalesced(buffer: TextBuffer, cursor: Pos, base_node: UndoNodeId) -> Self {
+    fn coalesced(buffer: TextBuffer, cursor: Pos, base_sequence: u64) -> Self {
         Self {
             buffer,
             cursor,
-            base_node,
+            base_sequence,
             coalesced: true,
             replaces_previous_coalesced_record: false,
         }
@@ -319,7 +321,12 @@ impl UndoHistory {
             .map(|node| node.sequence)
             .max()
             .unwrap_or(0);
-        if self.next_sequence <= max_sequence {
+        if self.next_sequence <= max_sequence
+            || self
+                .nodes
+                .windows(2)
+                .any(|pair| pair[0].sequence >= pair[1].sequence)
+        {
             return false;
         }
 
@@ -329,7 +336,7 @@ impl UndoHistory {
     }
 
     pub fn checkpoint(&self, buffer: TextBuffer, cursor: Pos) -> UndoCheckpoint {
-        UndoCheckpoint::new(buffer, cursor, self.current)
+        UndoCheckpoint::new(buffer, cursor, self.nodes[self.current].sequence)
     }
 
     pub fn coalesced_checkpoint(&mut self, buffer: TextBuffer, cursor: Pos) -> UndoCheckpoint {
@@ -338,7 +345,8 @@ impl UndoHistory {
             return existing;
         }
 
-        let checkpoint = UndoCheckpoint::coalesced(buffer, cursor, self.current);
+        let checkpoint =
+            UndoCheckpoint::coalesced(buffer, cursor, self.nodes[self.current].sequence);
         self.insert_mode_coalesce_base = Some(checkpoint.clone());
         checkpoint
     }
@@ -349,18 +357,18 @@ impl UndoHistory {
 
     pub fn clear(&mut self) {
         let max_records = self.max_records;
+        // Keep sequences unique so an older checkpoint never matches the new root.
+        let sequence = self.next_sequence;
         *self = Self::default();
+        self.nodes[0].sequence = sequence;
+        self.next_sequence = sequence.saturating_add(1);
         self.max_records = max_records;
     }
 
+    /// Limit the number of stored edits. Return whether older history was pruned.
     pub fn set_max_records(&mut self, max_records: usize) -> bool {
         self.max_records = max_records.max(1);
-        if self.nodes.len().saturating_sub(1) > self.max_records {
-            self.clear();
-            true
-        } else {
-            false
-        }
+        self.prune_to_limit()
     }
 
     pub fn current(&self) -> UndoNodeId {
@@ -373,14 +381,16 @@ impl UndoHistory {
         after_buffer: &TextBuffer,
         after_cursor: Pos,
     ) -> bool {
-        let base_node = if before.base_node < self.nodes.len() {
-            before.base_node
-        } else {
-            0
-        };
+        let base_node = self.node_for_sequence(before.base_sequence);
         let base_buffer = before.buffer.clone();
         let Some(record) = UndoRecord::from_checkpoint(before, after_buffer, after_cursor) else {
             return false;
+        };
+        let Some(base_node) = base_node else {
+            // The checkpoint's base was pruned, so its edit can only start a new history.
+            self.clear();
+            self.push_record(0, record);
+            return true;
         };
 
         if let Some(existing_node) =
@@ -408,14 +418,12 @@ impl UndoHistory {
             return true;
         }
 
-        let parent = if self.nodes.len().saturating_sub(1) >= self.max_records {
-            // Start a fresh tree whose root represents this edit's checkpoint. This keeps
-            // history strictly bounded without retaining full buffer snapshots in each node.
-            self.clear();
-            0
-        } else {
-            base_node
-        };
+        self.push_record(base_node, record);
+        self.prune_to_limit();
+        true
+    }
+
+    fn push_record(&mut self, parent: UndoNodeId, record: UndoRecord) {
         let id = self.nodes.len();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -428,6 +436,85 @@ impl UndoHistory {
         });
         self.nodes[parent].children.push(id);
         self.current = id;
+    }
+
+    /// Nodes are stored in creation order, so sequences are sorted by index.
+    fn node_for_sequence(&self, sequence: u64) -> Option<UndoNodeId> {
+        self.nodes
+            .binary_search_by_key(&sequence, |node| node.sequence)
+            .ok()
+    }
+
+    /// Drop the oldest history until at most `max_records` edits remain. Branches that
+    /// undo cannot reach go first, oldest leaf first; then the oldest undo steps, by
+    /// re-rooting the tree along the path to the current node.
+    fn prune_to_limit(&mut self) -> bool {
+        let records = self.nodes.len().saturating_sub(1);
+        if records <= self.max_records {
+            return false;
+        }
+        let mut excess = records - self.max_records;
+        let node_count = self.nodes.len();
+        let mut keep = vec![true; node_count];
+        let path = self.ancestors(self.current);
+        let mut on_path = vec![false; node_count];
+        for &id in &path {
+            on_path[id] = true;
+        }
+
+        let mut live_children: Vec<usize> =
+            self.nodes.iter().map(|node| node.children.len()).collect();
+        let mut leaves: BinaryHeap<_> = (0..node_count)
+            .filter(|&id| !on_path[id] && live_children[id] == 0)
+            .map(|id| Reverse((self.nodes[id].sequence, id)))
+            .collect();
+        while excess > 0
+            && let Some(Reverse((_, id))) = leaves.pop()
+        {
+            keep[id] = false;
+            excess -= 1;
+            if let Some(parent) = self.nodes[id].parent {
+                live_children[parent] -= 1;
+                if !on_path[parent] && live_children[parent] == 0 {
+                    leaves.push(Reverse((self.nodes[parent].sequence, parent)));
+                }
+            }
+        }
+
+        // Only the path remains when excess is still positive; each step drops one edit.
+        let path_from_root: Vec<_> = path.into_iter().rev().collect();
+        for &id in path_from_root.iter().take(excess) {
+            keep[id] = false;
+        }
+
+        let mut new_ids = vec![None; node_count];
+        let mut next_id = 0;
+        for (id, kept) in keep.iter().enumerate() {
+            if *kept {
+                new_ids[id] = Some(next_id);
+                next_id += 1;
+            }
+        }
+        // The new root is an ancestor of every kept node, so it has the lowest index.
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = nodes
+            .into_iter()
+            .enumerate()
+            .filter(|(id, _)| keep[*id])
+            .map(|(_, mut node)| {
+                node.parent = node.parent.and_then(|parent| new_ids[parent]);
+                if node.parent.is_none() {
+                    node.record = None;
+                }
+                node.children = node
+                    .children
+                    .iter()
+                    .filter_map(|&child| new_ids[child])
+                    .collect();
+                node
+            })
+            .collect();
+        self.current = new_ids[self.current].expect("the current node is never pruned");
         true
     }
 
@@ -584,6 +671,104 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn edit(history: &mut UndoHistory, buffer: &mut TextBuffer, text: &str) {
+        let checkpoint = history.checkpoint(buffer.clone(), Pos::zero());
+        let end = buffer.char_to_pos(buffer.len_chars());
+        buffer.insert(end, text);
+        assert!(history.record_if_changed(checkpoint, buffer, Pos::zero()));
+    }
+
+    fn undo_all(history: &mut UndoHistory, buffer: &mut TextBuffer) -> usize {
+        let mut steps = 0;
+        while history.undo(buffer).is_some() {
+            steps += 1;
+        }
+        steps
+    }
+
+    #[test]
+    fn exceeding_the_limit_drops_only_the_oldest_edits() {
+        let mut history = UndoHistory::default();
+        history.set_max_records(3);
+        let mut buffer = TextBuffer::new();
+        for text in ["a", "b", "c", "d", "e"] {
+            edit(&mut history, &mut buffer, text);
+        }
+
+        assert_eq!(history.tree_entries().len(), 4);
+        assert_eq!(undo_all(&mut history, &mut buffer), 3);
+        assert_eq!(buffer.to_string(), "ab");
+        while history.redo(&mut buffer).is_some() {}
+        assert_eq!(buffer.to_string(), "abcde");
+    }
+
+    #[test]
+    fn unreachable_branches_are_pruned_before_undo_steps() {
+        let mut history = UndoHistory::default();
+        let mut buffer = TextBuffer::new();
+        edit(&mut history, &mut buffer, "a");
+        edit(&mut history, &mut buffer, "-old");
+        history.undo(&mut buffer);
+        edit(&mut history, &mut buffer, "b");
+        edit(&mut history, &mut buffer, "c");
+
+        // Four edits; the abandoned "-old" branch goes before any undo step.
+        assert!(history.set_max_records(3));
+        assert_eq!(buffer.to_string(), "abc");
+        assert_eq!(undo_all(&mut history, &mut buffer), 3);
+        assert_eq!(buffer.to_string(), "");
+    }
+
+    #[test]
+    fn checkpoints_follow_their_base_node_across_pruning() {
+        let mut history = UndoHistory::default();
+        history.set_max_records(2);
+        let mut buffer = TextBuffer::new();
+        edit(&mut history, &mut buffer, "a");
+        edit(&mut history, &mut buffer, "b");
+
+        // Taken at "ab"; recording "c" prunes and renumbers the nodes underneath it.
+        let checkpoint = history.checkpoint(buffer.clone(), Pos::zero());
+        edit(&mut history, &mut buffer, "c");
+        history.undo(&mut buffer);
+        assert_eq!(buffer.to_string(), "ab");
+        buffer.insert(Pos::new(0, 2), "X");
+        assert!(history.record_if_changed(checkpoint, &buffer, Pos::zero()));
+
+        assert_eq!(buffer.to_string(), "abX");
+        history.undo(&mut buffer);
+        assert_eq!(buffer.to_string(), "ab");
+        history.undo(&mut buffer);
+        assert_eq!(buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn checkpoints_whose_base_was_pruned_start_a_new_history() {
+        let mut history = UndoHistory::default();
+        let mut buffer = TextBuffer::new();
+        let stale = history.checkpoint(buffer.clone(), Pos::zero());
+        edit(&mut history, &mut buffer, "a");
+        edit(&mut history, &mut buffer, "b");
+        history.set_max_records(1);
+
+        buffer.insert(Pos::new(0, 2), "c");
+        assert!(history.record_if_changed(stale, &buffer, Pos::zero()));
+        assert_eq!(history.tree_entries().len(), 2);
+        history.undo(&mut buffer);
+        // The recorded diff runs from the checkpoint's buffer to the result.
+        assert_eq!(buffer.to_string(), "");
+
+        let mut cleared = UndoHistory::default();
+        let mut buffer = TextBuffer::new();
+        let before_clear = cleared.checkpoint(buffer.clone(), Pos::zero());
+        cleared.clear();
+        edit(&mut cleared, &mut buffer, "x");
+        // A pre-clear checkpoint never matches a node created after the clear.
+        buffer.insert(Pos::new(0, 1), "y");
+        assert!(cleared.record_if_changed(before_clear, &buffer, Pos::zero()));
+        assert_eq!(cleared.tree_entries().len(), 2);
+    }
 
     #[test]
     fn chunk_diffs_round_trip_unicode_edits_across_rope_boundaries() {

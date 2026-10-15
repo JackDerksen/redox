@@ -117,6 +117,26 @@ mod tests {
     }
 
     #[test]
+    fn replacing_text_keeps_marks_between_separate_changes() {
+        let mut buffer = TextBuffer::from_text("a\nb\nc\nd\ne\n");
+        buffer.set_mark('b', Pos::new(1, 0));
+        buffer.set_mark('c', Pos::new(2, 1));
+        buffer.set_mark('d', Pos::new(3, 0));
+        buffer.set_mark('e', Pos::new(4, 0));
+
+        assert!(buffer.replace_text_preserving_marks("new\nA\nb\nC changed\nd\ne\n"));
+
+        assert_eq!(buffer.to_string(), "new\nA\nb\nC changed\nd\ne\n");
+        // Unchanged lines keep their marks, shifted by the inserted line.
+        assert_eq!(buffer.mark('b'), Some(Pos::new(2, 0)));
+        assert_eq!(buffer.mark('d'), Some(Pos::new(4, 0)));
+        assert_eq!(buffer.mark('e'), Some(Pos::new(5, 0)));
+        // A mark on a changed line moves to the start of its change.
+        assert_eq!(buffer.mark('c'), Some(Pos::new(3, 0)));
+        assert!(!buffer.replace_text_preserving_marks("new\nA\nb\nC changed\nd\ne\n"));
+    }
+
+    #[test]
     fn last_visual_selection_follows_edits_and_line_moves() {
         let mut buffer = TextBuffer::from_text("one\ntwo\nthree");
         assert_eq!(buffer.last_visual_selection(), None);

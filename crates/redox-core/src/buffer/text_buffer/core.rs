@@ -25,6 +25,8 @@ impl PartialEq for TextBuffer {
     }
 }
 
+impl Eq for TextBuffer {}
+
 /// A borrowed, non-allocating view into a [`TextBuffer`].
 ///
 /// This deliberately keeps Ropey out of the public API by exposing only the

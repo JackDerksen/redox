@@ -487,6 +487,7 @@ pub struct EditorState {
     pub should_quit: bool,
     pub(crate) icons_enabled: bool,
     pub zen: crate::config::ZenConfig,
+    pub(crate) save: crate::config::SaveConfig,
     pub(crate) animations: crate::config::AnimationConfig,
     rain_animation: Option<RainAnimation>,
     rain_pending_start: bool,
@@ -582,6 +583,7 @@ impl EditorState {
             should_quit: false,
             icons_enabled: false,
             zen: crate::config::ZenConfig::default(),
+            save: crate::config::SaveConfig::default(),
             animations: crate::config::AnimationConfig::default(),
             rain_animation: None,
             rain_pending_start: false,
@@ -756,10 +758,16 @@ impl EditorState {
     }
 
     pub fn enforce_undo_history_size(&mut self) {
-        for view in self.views.values_mut() {
+        let mut pruned = Vec::new();
+        for (buffer_id, view) in &mut self.views {
             if view.undo_history.set_max_records(self.undo_history_size) {
                 view.pending_insert_undo = None;
+                pruned.push(*buffer_id);
             }
+        }
+        // Pruning renumbers nodes, so the undo tree must not keep an old selection.
+        for buffer_id in pruned {
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
     }
 
@@ -1467,7 +1475,7 @@ impl EditorState {
             match change.kind {
                 ExternalFileChangeKind::Reloaded => {
                     reloaded = reloaded.saturating_add(1);
-                    self.clear_buffer_undo_history(change.id);
+                    self.record_external_reload(change.id, change.previous_buffer);
                     self.reset_buffer_render_caches(change.id);
                     if let Err(error) = self.notify_lsp_did_save(change.id) {
                         diagnostics_error = Some(error);
@@ -1500,6 +1508,30 @@ impl EditorState {
             self.set_status("reloaded from disk");
         } else {
             self.set_status(format!("reloaded {reloaded} files from disk"));
+        }
+    }
+
+    /// Record a reload from disk as one undoable change, so `git checkout` or an
+    /// external formatter never costs the buffer its history.
+    fn record_external_reload(&mut self, buffer_id: BufferId, previous: Option<TextBuffer>) {
+        let Some(previous) = previous else {
+            self.clear_buffer_undo_history(buffer_id);
+            return;
+        };
+        let Some(current) = self.session.buffer(buffer_id).cloned() else {
+            return;
+        };
+        let view = self.views.entry(buffer_id).or_default();
+        view.pending_insert_undo = None;
+        view.undo_history.clear_coalesce();
+        view.undo_history.set_max_records(self.undo_history_size);
+        let cursor = view.cursor.cursor;
+        let checkpoint = view.undo_history.checkpoint(previous, cursor);
+        if view
+            .undo_history
+            .record_if_changed(checkpoint, &current, current.clamp_pos(cursor))
+        {
+            self.refresh_undo_tree_for_buffer(buffer_id);
         }
     }
 
