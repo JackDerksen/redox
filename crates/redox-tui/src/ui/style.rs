@@ -807,7 +807,7 @@ impl SyntaxStyle {
         }
     }
 
-    pub fn color_for(self, role: SyntaxRole) -> TextStyle {
+    pub fn color_for(&self, role: SyntaxRole) -> TextStyle {
         match role {
             SyntaxRole::MarkdownCode => self.markdown_code,
             SyntaxRole::MarkdownEmphasis => self.markdown_emphasis,
@@ -928,7 +928,7 @@ impl Default for UiStyle {
 const SUBSTITUTE_BACKGROUND_DIM_AMOUNT: f32 = 0.9;
 
 impl UiStyle {
-    pub(crate) fn substitute_colors(self, replacing: bool) -> TextStyle {
+    pub(crate) fn substitute_colors(&self, replacing: bool) -> TextStyle {
         if replacing {
             TextStyle::new(
                 self.theme.light_green,

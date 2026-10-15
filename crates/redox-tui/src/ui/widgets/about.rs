@@ -12,7 +12,7 @@ use crate::ui::{UiStyle, build_editor_status_bar};
 
 pub(crate) fn draw_about_popup_view(
     state: &mut crate::app::EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     popup: AboutPopup,
     layout: PopupLayout,
@@ -114,7 +114,7 @@ fn about_content_height(width: u16, message: &str, repo_line: &str, crates_line:
         })
 }
 
-pub fn about_popup_inner_size(term_w: u16, term_h: u16, style: UiStyle) -> (u16, u16) {
+pub fn about_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16, u16) {
     popup_inner_size(
         term_w,
         term_h,

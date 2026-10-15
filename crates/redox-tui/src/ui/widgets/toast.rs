@@ -22,7 +22,7 @@ const TOAST_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 
 pub fn draw_status_toast(
     state: &EditorState,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<PopupLayout>> {
     let recording_toast = state.recording_macro_register().map(|register| {
@@ -66,7 +66,7 @@ pub fn draw_status_toast(
         toast.inner_w,
         toast.inner_h,
         "",
-        PopupChrome::command_line(style),
+        PopupChrome::command_line(&style),
     )?;
     let mut view = popup_window_view(window, layout);
     for (row, line) in toast.lines.iter().enumerate() {
@@ -79,13 +79,14 @@ pub fn draw_status_toast(
             TOAST_HORIZONTAL_PADDING,
             &line.text,
             line.style,
-            style,
+            &style,
         )?;
     }
     Ok(Some(layout))
 }
 
-fn faded_toast_style(mut style: UiStyle, opacity: f32) -> UiStyle {
+fn faded_toast_style(style: &UiStyle, opacity: f32) -> UiStyle {
+    let mut style = *style;
     if opacity >= 1.0 {
         return style;
     }
@@ -110,7 +111,7 @@ fn status_toast_perf_popup_layout(
     state: &EditorState,
     term_w: u16,
     term_h: u16,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> Option<PerfPopupLayout> {
     let perf_popup_visible = state.perf_popup().is_some() && !state.mode.has_popup_overlay();
     perf_popup_visible.then(|| perf_popup_layout(term_w, term_h, style))
@@ -299,7 +300,7 @@ fn write_toast_line(
     col: u16,
     line: &str,
     message_style: StatusMessageStyle,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<()> {
     if message_style == StatusMessageStyle::Dim {
         return window.write_str_styled(
@@ -342,7 +343,7 @@ fn write_toast_token(
     row: u16,
     col: u16,
     token: &str,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<u16> {
     let mut cell_col = col;
     for (segment, is_dir) in toast_token_segments(token) {

@@ -34,7 +34,7 @@ impl WhichKeyLayout {
 
 pub(crate) fn draw_which_key_popup(
     popup: &WhichKeyPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<Option<(WhichKeyLayout, PopupMouseLayout)>> {
     let (term_w, term_h) = window.get_size();
@@ -161,7 +161,7 @@ fn visible_entries(entries: &[WhichKeyEntry], capacity: usize) -> Vec<WhichKeyEn
 fn draw_entry(
     window: &mut dyn Window,
     entry: &WhichKeyEntry,
-    style: UiStyle,
+    style: &UiStyle,
     (x, y): (u16, u16),
     width: usize,
     key_width: usize,

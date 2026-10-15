@@ -3,6 +3,7 @@
 use crate::ui::text_style::TextStyle;
 
 use crate::ui::render::LineViewport;
+mod indent_parser;
 mod languages;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -15,6 +16,8 @@ use tree_sitter::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+pub(crate) use self::indent_parser::IndentParser;
+use self::indent_parser::string_edit;
 use self::languages::{
     LanguageConfig, language_config_for, language_for_path as config_language_for_path,
 };
@@ -643,6 +646,12 @@ impl SyntaxHighlighter {
             })
     }
 
+    /// The cached tree with the text it has been edited to match.
+    fn parse_seed(&self) -> Option<(SyntaxLanguage, &TextBuffer, &Tree)> {
+        let cache = self.cache.as_ref()?;
+        Some((cache.language, &cache.source, &cache.tree))
+    }
+
     pub(crate) fn replace_cache(&mut self, cache: Option<HighlightCache>) {
         self.cache = cache;
         self.cache_stale = false;
@@ -827,6 +836,7 @@ pub fn scope_guides_enabled(language: Option<SyntaxLanguage>) -> bool {
 }
 
 pub(crate) fn auto_closing_tag(
+    parser: &mut IndentParser,
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
     cursor: Pos,
@@ -843,9 +853,11 @@ pub(crate) fn auto_closing_tag(
     if remainder.starts_with(">") || remainder.starts_with("/>") {
         return None;
     }
+    let tree = parser.parse_buffer(buffer, &source, language)?;
+    let edit = string_edit(&source, cursor_byte, cursor_byte, ">");
     let mut source = source;
     source.insert(cursor_byte, '>');
-    let tree = parse_tree(&source, language)?;
+    let tree = parser.reparse_edited(&tree, &edit, &source, language)?;
     let opening = opening_tag_at_byte(&tree, cursor_byte)?;
     let name_node = if language == SyntaxLanguage::Html {
         opening.named_child(0)
@@ -949,6 +961,7 @@ pub(crate) struct NewlineInsert {
 }
 
 pub(crate) fn smart_newline_insert(
+    parser: &mut IndentParser,
     buffer: &TextBuffer,
     path: Option<&Path>,
     cursor: Pos,
@@ -976,10 +989,10 @@ pub(crate) fn smart_newline_insert(
     } else {
         String::new()
     };
-    let tree = language.and_then(|language| parse_tree(&source, language));
+    let tree = language.and_then(|language| parser.parse_buffer(buffer, &source, language));
     let cursor_byte = buffer.char_to_byte(buffer.pos_to_char(cursor));
     if let Some((prefix, closing)) =
-        comment_continuation(&source, tree.as_ref(), path, cursor_byte, &left)
+        comment_continuation(parser, &source, tree.as_ref(), path, cursor_byte, &left)
     {
         let insert = if closing.is_some_and(|closing| right.trim_start().starts_with(closing)) {
             let closing_indent = leading_indent(&left);
@@ -1006,11 +1019,14 @@ pub(crate) fn smart_newline_insert(
             comment_prefix_bytes: 0,
         });
     };
+    let tree = tree?;
     let mut virtual_source = source;
     let line_start = source_line_start_byte(&virtual_source, line)?;
     // Analyse the new blank line, rather than the existing line below the cursor.
-    virtual_source.replace_range(line_start + left.len()..line_start + line_text.len(), "\n");
-    let tree = parse_tree(&virtual_source, language)?;
+    let replaced = line_start + left.len()..line_start + line_text.len();
+    let edit = string_edit(&virtual_source, replaced.start, replaced.end, "\n");
+    virtual_source.replace_range(replaced, "\n");
+    let tree = parser.reparse_edited(&tree, &edit, &virtual_source, language)?;
     let base_indent = floored_indent(leading_indent(&line_text), indent_size);
     let inner_indent = indent_after_line(&virtual_source, &tree, language, line, indent_size)
         .unwrap_or_else(|| base_indent.clone());
@@ -1054,6 +1070,7 @@ pub(crate) fn smart_newline_insert(
 }
 
 fn comment_continuation(
+    parser: &mut IndentParser,
     source: &str,
     tree: Option<&Tree>,
     path: Option<&Path>,
@@ -1085,7 +1102,14 @@ fn comment_continuation(
         // Complete unfinished block comments only in the source used for analysis.
         let recovery_tree = if comment.is_none() && tree.root_node().has_error() {
             recovery_closer.and_then(|closing| {
-                parse_tree(&format!("{source}\n{closing}"), language_for_path(path)?)
+                let closing = format!("\n{closing}");
+                let edit = string_edit(source, source.len(), source.len(), &closing);
+                parser.reparse_edited(
+                    tree,
+                    &edit,
+                    &format!("{source}{closing}"),
+                    language_for_path(path)?,
+                )
             })
         } else {
             None
@@ -1144,6 +1168,7 @@ fn comment_continuation(
 }
 
 pub(crate) fn smart_open_line_insert(
+    parser: &mut IndentParser,
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
     line: usize,
@@ -1166,10 +1191,12 @@ pub(crate) fn smart_open_line_insert(
             .map(char::len_utf8)
             .sum::<usize>();
 
+    let tree = parser.parse_buffer(buffer, &source, language)?;
+    let edit = string_edit(&source, insert_byte, insert_byte, "\n");
     let mut virtual_source = source;
     virtual_source.insert(insert_byte, '\n');
     let new_line = if above { line } else { line + 1 };
-    let tree = parse_tree(&virtual_source, language)?;
+    let tree = parser.reparse_edited(&tree, &edit, &virtual_source, language)?;
     let indent =
         desired_indent_for_line_source(&virtual_source, &tree, language, new_line, indent_size)?;
     let insert = if above {
@@ -1182,6 +1209,7 @@ pub(crate) fn smart_open_line_insert(
 }
 
 pub(crate) fn desired_indent_for_line(
+    parser: &mut IndentParser,
     buffer: &TextBuffer,
     language: Option<SyntaxLanguage>,
     line: usize,
@@ -1189,7 +1217,7 @@ pub(crate) fn desired_indent_for_line(
 ) -> Option<String> {
     let language = language?;
     let source = buffer.to_string();
-    let tree = parse_tree(&source, language)?;
+    let tree = parser.parse_buffer(buffer, &source, language)?;
     desired_indent_for_line_source(&source, &tree, language, line, indent_size)
 }
 
@@ -1200,12 +1228,13 @@ fn desired_indent_for_line_source(
     line: usize,
     indent_size: usize,
 ) -> Option<String> {
-    let lines = source.lines().collect::<Vec<_>>();
-    let line_text = lines.get(line).copied().unwrap_or("");
     let Some(prev_line) = line.checked_sub(1) else {
         return Some(String::new());
     };
-    let prev_text = lines.get(prev_line).copied().unwrap_or("");
+    let mut lines = source.lines().skip(prev_line);
+    let prev_text = lines.next().unwrap_or("");
+    let line_text = lines.next().unwrap_or("");
+    let next_text = lines.next();
     if language == SyntaxLanguage::Markdown {
         let previous_byte =
             source_line_start_byte(source, prev_line)? + leading_indent(prev_text).len();
@@ -1225,7 +1254,7 @@ fn desired_indent_for_line_source(
     }
     if prev_text.trim().is_empty() {
         if line_text.trim().is_empty()
-            && let Some(next_text) = lines.get(line + 1).copied()
+            && let Some(next_text) = next_text
             && (starts_with_closing_delimiter(next_text.trim_start())
                 || starts_with_html_closing(next_text.trim_start()))
         {
@@ -1246,6 +1275,7 @@ fn desired_indent_for_line_source(
     Some(indent)
 }
 
+#[cfg(test)]
 fn parse_tree(source: &str, language: SyntaxLanguage) -> Option<Tree> {
     let config = language_config_for(language)?;
     let mut parser = Parser::new();
@@ -1260,8 +1290,7 @@ fn indent_after_line(
     line: usize,
     indent_size: usize,
 ) -> Option<String> {
-    let lines = source.lines().collect::<Vec<_>>();
-    let text = lines.get(line).copied()?;
+    let text = source.lines().nth(line)?;
     let mut indent = floored_indent(leading_indent(text), indent_size);
     if opens_line(source, tree, language, line) {
         indent.extend(std::iter::repeat_n(' ', indent_size));
@@ -1505,7 +1534,13 @@ fn markdown_list_marker_len(text: &str) -> Option<usize> {
 }
 
 fn source_line_start_byte(source: &str, line: usize) -> Option<usize> {
-    compute_line_start_bytes(source).get(line).copied()
+    let Some(previous_line) = line.checked_sub(1) else {
+        return Some(0);
+    };
+    source
+        .match_indices('\n')
+        .nth(previous_line)
+        .map(|(byte, _)| byte + 1)
 }
 
 pub fn draw_line_with_syntax(
@@ -1514,7 +1549,7 @@ pub fn draw_line_with_syntax(
     source_line: &str,
     base_color: TextStyle,
     color_column: Option<(usize, minui::Color)>,
-    style: UiStyle,
+    style: &UiStyle,
     spans: &[LineSyntaxSpan],
 ) -> minui::Result<()> {
     let LineViewport {
@@ -1670,7 +1705,7 @@ fn flush_pending_syntax_span(
 
 pub fn syntax_style_for_range(
     base_color: TextStyle,
-    style: UiStyle,
+    style: &UiStyle,
     spans: &[LineSyntaxSpan],
     start_byte: usize,
     end_byte: usize,
@@ -2213,6 +2248,7 @@ mod tests {
     fn markdown_inline_code_backtick_does_not_open_indent() {
         assert_eq!(
             super::desired_indent_for_line(
+                &mut super::IndentParser::default(),
                 &TextBuffer::from_text("`code`\n"),
                 Some(SyntaxLanguage::Markdown),
                 1,

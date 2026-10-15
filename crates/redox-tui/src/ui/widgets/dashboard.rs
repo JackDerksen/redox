@@ -40,7 +40,7 @@ const LOGO_BOTTOM_CONNECTOR: &[&str] = &[
 
 pub(crate) fn draw_dashboard(
     window: &mut dyn Window,
-    style: UiStyle,
+    style: &UiStyle,
     selected: usize,
     show_cursor: bool,
     logo_progress: f32,

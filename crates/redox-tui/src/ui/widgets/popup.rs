@@ -239,11 +239,11 @@ impl PopupChrome {
         }
     }
 
-    pub fn about(style: UiStyle) -> Self {
+    pub fn about(style: &UiStyle) -> Self {
         Self::new(style.about.border, style.about.title, style.about.text)
     }
 
-    pub fn command_line(style: UiStyle) -> Self {
+    pub fn command_line(style: &UiStyle) -> Self {
         Self::new(
             style.command_line.border,
             style.command_line.title,
@@ -251,7 +251,7 @@ impl PopupChrome {
         )
     }
 
-    pub fn explorer(style: UiStyle) -> Self {
+    pub fn explorer(style: &UiStyle) -> Self {
         Self::new(
             style.explorer.border,
             style.explorer.title,
@@ -259,11 +259,11 @@ impl PopupChrome {
         )
     }
 
-    pub fn finder(style: UiStyle) -> Self {
+    pub fn finder(style: &UiStyle) -> Self {
         Self::new(style.finder.border, style.finder.title, style.finder.text)
     }
 
-    pub fn finder_preview(style: UiStyle) -> Self {
+    pub fn finder_preview(style: &UiStyle) -> Self {
         Self::new(
             style.finder.border,
             style.finder.preview_title,
@@ -271,7 +271,7 @@ impl PopupChrome {
         )
     }
 
-    pub fn finder_query(style: UiStyle) -> Self {
+    pub fn finder_query(style: &UiStyle) -> Self {
         Self::new(
             style.command_line.border,
             style.finder.query_title,
@@ -279,7 +279,7 @@ impl PopupChrome {
         )
     }
 
-    pub fn perf(style: UiStyle) -> Self {
+    pub fn perf(style: &UiStyle) -> Self {
         Self::new(style.perf.border, style.perf.title, style.perf.text)
     }
 }

@@ -33,7 +33,7 @@ impl EditorState {
         text_width: u16,
         text_height: u16,
         default_colors: TextStyle,
-        style: UiStyle,
+        style: &UiStyle,
     ) {
         if !self.rain_pending_start
             || self.rain_animation.is_some()

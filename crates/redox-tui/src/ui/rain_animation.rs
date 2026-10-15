@@ -45,7 +45,7 @@ impl RainAnimation {
         scroll_x: usize,
         (width, height): (usize, usize),
         default_colors: TextStyle,
-        style: UiStyle,
+        style: &UiStyle,
         syntax_spans: Option<VisibleLineSyntaxSpans<'_>>,
         color_column: Option<(usize, minui::Color)>,
     ) -> Self {

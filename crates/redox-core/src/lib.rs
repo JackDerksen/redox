@@ -39,7 +39,7 @@ pub use buffer::{
 };
 pub use fuzzy::{
     FuzzyMatch, FuzzyQuery, PathMatchScore, compare_path_match_scores, fuzzy_match_ranges,
-    path_match_score,
+    fuzzy_path_match, path_match_score,
 };
 pub use session::{
     BufferId, BufferKind, BufferLoadPhase, BufferLoadStatus, BufferMeta, BufferSummary,

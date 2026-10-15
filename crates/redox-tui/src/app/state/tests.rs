@@ -1307,7 +1307,7 @@ fn finder_shows_pins_and_filters_files() {
         assert!(popup.entries.iter().all(|entry| entry.is_pinned));
         let mut window = crate::tests::TestWindow::new(100, 30);
         let layout =
-            crate::ui::draw_finder_popup(&popup, crate::ui::UiStyle::default(), &mut window)
+            crate::ui::draw_finder_popup(&popup, &crate::ui::UiStyle::default(), &mut window)
                 .unwrap();
         let results = layout.frames[0];
         let pinned_count = popup.entries.len() as u16;
@@ -2158,6 +2158,46 @@ fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
 }
 
 #[test]
+fn hidden_search_matches_refresh_only_when_a_command_needs_them() {
+    let path = temp_file_path("hidden_search_refresh");
+    let mut state = state_with_text(path.clone(), "alpha beta\nbeta\n");
+    state.apply_input(InputAction::EnterSearch, 80, 24);
+    for ch in "alpha".chars() {
+        state.apply_input(InputAction::SearchChar(ch), 80, 24);
+    }
+    state.apply_input(InputAction::SearchEnter, 80, 24);
+    state.apply_input(InputAction::ClearSearch, 80, 24);
+
+    let _ = state
+        .session
+        .active_buffer_mut()
+        .insert(Pos::new(1, 0), "alpha ");
+    state.invalidate_active_render_caches();
+    assert!(state.active_search_highlight_ranges(0, 2).is_empty());
+    assert!(state.search_state.as_ref().unwrap().dirty);
+
+    let id = state.session.active_id();
+    state
+        .views
+        .get_mut(&id)
+        .expect("missing view")
+        .cursor
+        .cursor = Pos::new(0, 1);
+    state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
+    assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
+    assert!(!state.search_state.as_ref().unwrap().dirty);
+    assert_eq!(
+        state
+            .active_search_highlight_ranges(0, 2)
+            .get(&1)
+            .map(|highlights| (highlights.ranges.len(), highlights.ranges[0].clone())),
+        Some((1, 0..5))
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn till_char_search_repeat_tracks_the_actual_matched_character() {
     let path = temp_file_path("till_char_search_repeat_target");
     let mut state = state_with_text(path.clone(), "aabac\n");
@@ -2826,7 +2866,7 @@ fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
         crate::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
         crate::draw_buffer_snapshot_for_id(
             state,
-            style,
+            &style,
             state.session.active_id(),
             crate::BufferDrawOptions {
                 width: 40,
@@ -4522,7 +4562,7 @@ fn command_ls_populates_multiline_status_summary() {
             icons_enabled,
             ..crate::ui::UiStyle::default()
         };
-        let layout = crate::ui::draw_status_toast(&state, style, &mut window)
+        let layout = crate::ui::draw_status_toast(&state, &style, &mut window)
             .unwrap()
             .unwrap();
         assert_eq!(layout.inner_h, 4, "one heading and one row per buffer");
@@ -4583,7 +4623,7 @@ fn command_rain_captures_and_stop_clears_animation_state() {
         20,
         6,
         TextStyle::new(minui::Color::White, minui::Color::Black),
-        crate::ui::UiStyle::default(),
+        &crate::ui::UiStyle::default(),
     );
 
     assert!(state.rain_animation.is_some());

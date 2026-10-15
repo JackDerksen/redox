@@ -83,7 +83,7 @@ impl FinderRightFooter {
 
 pub(crate) fn draw_finder_popup(
     popup: &FinderPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<PopupMouseLayout> {
     let mut mouse = PopupMouseLayout::new(MousePopup::Finder);
@@ -274,7 +274,7 @@ fn compute_finder_popup_layout(
 
 pub(crate) fn draw_pin_selector_popup(
     popup: &PinSelectorPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<PopupMouseLayout> {
     let mut mouse = PopupMouseLayout::new(MousePopup::Pinboard);
@@ -586,7 +586,7 @@ fn visible_entry_rows(
 fn draw_preview(
     view: &mut WindowView<'_>,
     preview: &FinderPreview,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<()> {
     let visible_rows = view.height.saturating_sub(1) as usize;
     let scroll_y = preview
@@ -639,7 +639,7 @@ fn draw_preview(
 fn draw_query_row(
     view: &mut WindowView<'_>,
     popup: &FinderPopup,
-    style: UiStyle,
+    style: &UiStyle,
     right_footer: &FinderRightFooter,
 ) -> minui::Result<u16> {
     let prompt_col = 1u16.min(view.width.saturating_sub(1));
@@ -806,7 +806,7 @@ fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
     cursor
 }
 
-fn finder_right_footer(popup: &FinderPopup, style: UiStyle) -> FinderRightFooter {
+fn finder_right_footer(popup: &FinderPopup, style: &UiStyle) -> FinderRightFooter {
     let text = format!(
         "{:>width$}/{}",
         popup.result_count,
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn finder_footer_reserves_counter_padding_and_scroll_indicator() {
         let mut popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "main".to_string(),
             query_cursor: 4,
             selected: 0,
@@ -964,14 +964,14 @@ mod tests {
             indexing: false,
             preview: None,
         };
-        let footer = finder_right_footer(&popup, UiStyle::default());
+        let footer = finder_right_footer(&popup, &UiStyle::default());
 
         assert!(footer.indicator.is_some());
         assert_eq!(footer.width(), text_width("84/84") as u16 + 4);
         for count in [0, 1, 9, 10, 84] {
             popup.result_count = count;
             assert_eq!(
-                finder_right_footer(&popup, UiStyle::default()).width(),
+                finder_right_footer(&popup, &UiStyle::default()).width(),
                 footer.width()
             );
         }
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn finder_empty_states_preserve_frames_and_center_messages() {
         let mut popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "missing".into(),
             query_cursor: 7,
             selected: 0,
@@ -1000,7 +1000,7 @@ mod tests {
                     ..UiStyle::default()
                 };
                 let mut window = TestWindow::new(width, 40);
-                let empty = draw_finder_popup(&popup, style, &mut window).unwrap();
+                let empty = draw_finder_popup(&popup, &style, &mut window).unwrap();
                 let results = empty.frames[0];
                 let row = results.y + 1 + (results.height - 3) / 2;
                 let column = results.x + 1 + (results.width - 2 - 12) / 2;
@@ -1012,23 +1012,26 @@ mod tests {
                 );
                 assert_eq!(empty.frames.len(), if width >= 130 { 3 } else { 2 });
 
-                popup.preview = Some(FinderPreview {
-                    title: "main.rs".into(),
-                    lines: vec!["fn main() {}".into()],
-                    syntax_spans: Vec::new(),
-                    scroll_x: 0,
-                    scroll_y: 0,
-                });
-                let populated = draw_finder_popup(&popup, style, &mut window).unwrap();
+                popup.preview = Some(
+                    FinderPreview {
+                        title: "main.rs".into(),
+                        lines: vec!["fn main() {}".into()],
+                        syntax_spans: Vec::new(),
+                        scroll_x: 0,
+                        scroll_y: 0,
+                    }
+                    .into(),
+                );
+                let populated = draw_finder_popup(&popup, &style, &mut window).unwrap();
                 assert_eq!(populated.frames, empty.frames);
                 popup.preview = None;
                 popup.indexing = true;
-                draw_finder_popup(&popup, style, &mut window).unwrap();
+                draw_finder_popup(&popup, &style, &mut window).unwrap();
                 assert!(window.row_text(row).contains("<searching…>"));
                 popup.indexing = false;
                 popup.query.clear();
                 popup.query_cursor = 0;
-                draw_finder_popup(&popup, style, &mut window).unwrap();
+                draw_finder_popup(&popup, &style, &mut window).unwrap();
                 let text = window.row_text(row);
                 assert_eq!(
                     text.find("<no files>")
@@ -1044,7 +1047,7 @@ mod tests {
     #[test]
     fn finder_footer_does_not_reserve_width_when_it_cannot_fit() {
         let popup = FinderPopup {
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             query: "abcdef".to_string(),
             query_cursor: 6,
             selected: 0,
@@ -1054,7 +1057,7 @@ mod tests {
             indexing: false,
             preview: None,
         };
-        let footer = finder_right_footer(&popup, UiStyle::default());
+        let footer = finder_right_footer(&popup, &UiStyle::default());
         let prompt_col = 1u16;
         let input_col = prompt_col + 2;
         let query_w = footer.width();

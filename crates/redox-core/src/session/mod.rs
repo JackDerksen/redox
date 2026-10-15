@@ -3,7 +3,6 @@
 mod loading;
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -13,6 +12,7 @@ use anyhow::{Context as _, Result, bail};
 
 use self::loading::IncrementalFileLoader;
 use crate::TextBuffer;
+use crate::buffer::ChangedRange;
 
 const INITIAL_LOAD_BYTES: usize = 64 * 1024;
 const FULL_LOAD_CHUNK_BYTES: usize = 64 * 1024;
@@ -120,8 +120,8 @@ impl BufferLoadStatus {
 struct BufferRecord {
     meta: BufferMeta,
     buffer: TextBuffer,
-    clean_fingerprint: u64,
-    clean_normalized_len_chars: usize,
+    /// The text as last opened or saved; it shares unchanged chunks with `buffer`.
+    clean_text: TextBuffer,
     disk_stamp: Option<FileStamp>,
     loader: Option<IncrementalFileLoader>,
     load_status: BufferLoadStatus,
@@ -283,20 +283,18 @@ impl EditorSession {
             is_new_file: !file_exists,
         };
         let disk_stamp = file_exists.then(|| file_stamp(&normalized).ok()).flatten();
-        let (clean_fingerprint, clean_normalized_len_chars) =
-            if matches!(load_status.phase, BufferLoadPhase::Complete) {
-                normalized_content_fingerprint(&buffer)
-            } else {
-                normalized_text_fingerprint("")
-            };
+        let clean_text = if matches!(load_status.phase, BufferLoadPhase::Complete) {
+            buffer.clone()
+        } else {
+            TextBuffer::new()
+        };
 
         self.buffers.insert(
             id,
             BufferRecord {
                 meta,
                 buffer,
-                clean_fingerprint,
-                clean_normalized_len_chars,
+                clean_text,
                 disk_stamp,
                 loader,
                 load_status,
@@ -311,8 +309,7 @@ impl EditorSession {
     /// Open an in-memory UI buffer.
     pub fn open_ui_buffer(&mut self, name: impl Into<String>, initial_text: &str) -> BufferId {
         let id = self.alloc_id();
-        let (clean_fingerprint, clean_normalized_len_chars) =
-            normalized_text_fingerprint(initial_text);
+        let buffer = TextBuffer::from_text(initial_text);
         let meta = BufferMeta {
             id,
             kind: BufferKind::Ui,
@@ -327,9 +324,8 @@ impl EditorSession {
             id,
             BufferRecord {
                 meta,
-                buffer: TextBuffer::from_text(initial_text),
-                clean_fingerprint,
-                clean_normalized_len_chars,
+                clean_text: buffer.clone(),
+                buffer,
                 disk_stamp: None,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
@@ -343,7 +339,6 @@ impl EditorSession {
     /// Open a new unnamed file buffer and activate it.
     pub fn open_unnamed_buffer(&mut self) -> BufferId {
         let id = self.alloc_id();
-        let (clean_fingerprint, clean_normalized_len_chars) = normalized_text_fingerprint("");
         let meta = BufferMeta {
             id,
             kind: BufferKind::File,
@@ -359,8 +354,7 @@ impl EditorSession {
             BufferRecord {
                 meta,
                 buffer: TextBuffer::new(),
-                clean_fingerprint,
-                clean_normalized_len_chars,
+                clean_text: TextBuffer::new(),
                 disk_stamp: None,
                 loader: None,
                 load_status: BufferLoadStatus::not_loading(),
@@ -471,9 +465,7 @@ impl EditorSession {
             .buffers
             .get_mut(&id)
             .expect("active buffer must exist in session map");
-        let (fingerprint, normalized_len_chars) = normalized_content_fingerprint(&rec.buffer);
-        rec.clean_fingerprint = fingerprint;
-        rec.clean_normalized_len_chars = normalized_len_chars;
+        rec.clean_text = rec.buffer.clone();
         rec.meta.dirty = false;
         rec.meta.external_changed = false;
         rec.disk_stamp = rec
@@ -630,6 +622,14 @@ impl EditorSession {
         let id = self.mru[0];
         self.active = Some(id);
         Some(id)
+    }
+
+    /// Open buffer ids, most recently used first.
+    pub fn buffer_ids(&self) -> impl Iterator<Item = BufferId> + '_ {
+        self.mru
+            .iter()
+            .copied()
+            .filter(|id| self.buffers.contains_key(id))
     }
 
     pub fn summaries(&self) -> Vec<BufferSummary> {
@@ -880,10 +880,7 @@ impl EditorSession {
                 if needs_final_newline {
                     rec.buffer.append("\n");
                 }
-                let (fingerprint, normalized_len_chars) =
-                    normalized_content_fingerprint(&rec.buffer);
-                rec.clean_fingerprint = fingerprint;
-                rec.clean_normalized_len_chars = normalized_len_chars;
+                rec.clean_text = rec.buffer.clone();
                 rec.meta.dirty = false;
                 rec.meta.external_changed = false;
                 rec.meta.is_new_file = false;
@@ -961,10 +958,7 @@ impl EditorSession {
                         });
                     } else if let Ok(buffer) = TextBuffer::from_file(&path) {
                         let previous = replace_buffer_contents(&mut rec.buffer, buffer);
-                        let (fingerprint, normalized_len_chars) =
-                            normalized_content_fingerprint(&rec.buffer);
-                        rec.clean_fingerprint = fingerprint;
-                        rec.clean_normalized_len_chars = normalized_len_chars;
+                        rec.clean_text = rec.buffer.clone();
                         rec.disk_stamp = Some(current);
                         rec.meta.is_new_file = false;
                         changes.push(ExternalFileChange {
@@ -1000,10 +994,7 @@ impl EditorSession {
             match TextBuffer::from_file(&path) {
                 Ok(buffer) => {
                     let previous = replace_buffer_contents(&mut rec.buffer, buffer);
-                    let (fingerprint, normalized_len_chars) =
-                        normalized_content_fingerprint(&rec.buffer);
-                    rec.clean_fingerprint = fingerprint;
-                    rec.clean_normalized_len_chars = normalized_len_chars;
+                    rec.clean_text = rec.buffer.clone();
                     rec.disk_stamp = Some(current);
                     rec.meta.dirty = false;
                     rec.meta.external_changed = false;
@@ -1057,13 +1048,7 @@ impl EditorSession {
             return Some(rec.meta.dirty);
         }
 
-        let (current, current_len) = normalized_content_fingerprint(&rec.buffer);
-        if current_len != rec.clean_normalized_len_chars {
-            rec.meta.dirty = true;
-            return Some(true);
-        }
-
-        rec.meta.dirty = current != rec.clean_fingerprint;
+        rec.meta.dirty = !same_normalized_text(&rec.clean_text, &rec.buffer);
         Some(rec.meta.dirty)
     }
 
@@ -1101,10 +1086,7 @@ impl EditorSession {
                 rec.load_status.phase = BufferLoadPhase::Complete;
                 rec.load_status.error = None;
                 if rec.meta.path.is_some() {
-                    let (fingerprint, normalized_len_chars) =
-                        normalized_content_fingerprint(&rec.buffer);
-                    rec.clean_fingerprint = fingerprint;
-                    rec.clean_normalized_len_chars = normalized_len_chars;
+                    rec.clean_text = rec.buffer.clone();
                     rec.disk_stamp = rec
                         .meta
                         .path
@@ -1126,10 +1108,7 @@ impl EditorSession {
             rec.load_status.phase = BufferLoadPhase::Complete;
             rec.load_status.error = None;
             if rec.meta.path.is_some() {
-                let (fingerprint, normalized_len_chars) =
-                    normalized_content_fingerprint(&rec.buffer);
-                rec.clean_fingerprint = fingerprint;
-                rec.clean_normalized_len_chars = normalized_len_chars;
+                rec.clean_text = rec.buffer.clone();
                 rec.disk_stamp = rec
                     .meta
                     .path
@@ -1201,9 +1180,7 @@ fn orphan_file_buffer(session: &mut EditorSession, id: BufferId, old_path: PathB
         rec.meta.dirty = true;
         rec.meta.external_changed = false;
         rec.disk_stamp = None;
-        let (fingerprint, normalized_len_chars) = normalized_text_fingerprint("");
-        rec.clean_fingerprint = fingerprint;
-        rec.clean_normalized_len_chars = normalized_len_chars;
+        rec.clean_text = TextBuffer::new();
     }
 }
 
@@ -1339,45 +1316,94 @@ fn relative_path(path: &Path, base: &Path) -> Option<PathBuf> {
     }
 }
 
-fn normalized_content_fingerprint(buffer: &TextBuffer) -> (u64, usize) {
-    let mut hasher = DefaultHasher::new();
-    let mut len = 0usize;
-    let mut previous_was_cr = false;
-    for chunk in buffer.chunks() {
-        hash_normalized_newlines(chunk.chars(), &mut hasher, &mut len, &mut previous_was_cr);
-    }
-    (hasher.finish(), len)
+/// Whether the texts match once CR and CRLF are read as LF.
+fn same_normalized_text(clean: &TextBuffer, current: &TextBuffer) -> bool {
+    let Some(change) = ChangedRange::between(clean, current) else {
+        return true;
+    };
+    // How a line break reads depends only on the char before it, so one
+    // shared char of context on each side of the change settles the rest.
+    let start = change.start.saturating_sub(1);
+    let clean_end = (change.before_end + 1).min(clean.len_chars());
+    let current_end = (change.after_end + 1).min(current.len_chars());
+    normalized_bytes(clean.chunks_in(start..clean_end))
+        == normalized_bytes(current.chunks_in(start..current_end))
 }
 
-fn normalized_text_fingerprint(text: &str) -> (u64, usize) {
-    let mut hasher = DefaultHasher::new();
-    let mut len = 0usize;
-    let mut previous_was_cr = false;
-    hash_normalized_newlines(text.chars(), &mut hasher, &mut len, &mut previous_was_cr);
-    (hasher.finish(), len)
+fn normalized_bytes<'a>(chunks: impl IntoIterator<Item = &'a str>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for_each_normalized_run(chunks, |run| bytes.extend_from_slice(run));
+    bytes
 }
 
-fn hash_normalized_newlines(
-    chars: impl Iterator<Item = char>,
-    hasher: &mut DefaultHasher,
-    len: &mut usize,
-    previous_was_cr: &mut bool,
+/// Feed the text to `f` in byte runs with each CR or CRLF replaced by LF.
+fn for_each_normalized_run<'a>(
+    chunks: impl IntoIterator<Item = &'a str>,
+    mut f: impl FnMut(&[u8]),
 ) {
-    for ch in chars {
-        match ch {
-            '\r' => {
-                '\n'.hash(hasher);
-                *len += 1;
-                *previous_was_cr = true;
+    let mut previous_was_cr = false;
+    for chunk in chunks {
+        let mut bytes = chunk.as_bytes();
+        while let Some((&first, rest)) = bytes.split_first() {
+            if previous_was_cr && first == b'\n' {
+                bytes = rest;
             }
-            '\n' if *previous_was_cr => {
-                *previous_was_cr = false;
+            previous_was_cr = false;
+            match bytes.iter().position(|&byte| byte == b'\r') {
+                Some(cr) => {
+                    f(&bytes[..cr]);
+                    f(b"\n");
+                    previous_was_cr = true;
+                    bytes = &bytes[cr + 1..];
+                }
+                None => {
+                    f(bytes);
+                    break;
+                }
             }
-            _ => {
-                ch.hash(hasher);
-                *len += 1;
-                *previous_was_cr = false;
-            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod clean_text_tests {
+    use super::{TextBuffer, normalized_bytes, same_normalized_text};
+
+    #[test]
+    fn normalizing_ignores_chunk_boundaries() {
+        for chunks in [
+            vec!["a\r\nb\r\r\ncd\u{e9}\n"],
+            vec!["a\r", "\nb\r", "\r", "\ncd\u{e9}\r\n"],
+            vec!["a", "\r", "", "\n", "b\n\rc", "d\u{e9}", "\r"],
+        ] {
+            assert_eq!(normalized_bytes(chunks), "a\nb\n\ncd\u{e9}\n".as_bytes());
+        }
+    }
+
+    #[test]
+    fn clean_comparison_reads_line_endings_in_context() {
+        let same = |clean: &str, current: &str| {
+            same_normalized_text(
+                &TextBuffer::from_text(clean),
+                &TextBuffer::from_text(current),
+            )
+        };
+        let long = "x".repeat(5_000);
+        for (clean, current, expected) in [
+            ("a\r\nb", "a\nb", true),
+            ("a\r\nb", "a\rb", true),
+            ("a\rb", "a\r\nb", true),
+            ("a\r\n\nb", "a\n\nb", true),
+            ("a\r\nb", "a\r\n\nb", false),
+            ("a\rb", "a\r\rb", false),
+            ("ab", "a\nb", false),
+            ("", "", true),
+            ("", "\n", false),
+        ] {
+            assert_eq!(same(clean, current), expected, "{clean:?} vs {current:?}");
+            let clean = format!("{long}{clean}{long}");
+            let current = format!("{long}{current}{long}");
+            assert_eq!(same(&clean, &current), expected, "{clean:?} vs {current:?}");
         }
     }
 }

@@ -34,7 +34,7 @@ pub fn symbol_info_content_width_limit(term_w: u16) -> usize {
 
 pub fn draw_symbol_info_popup(
     popup: &SymbolInfoPopup<'_>,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
     cursor_x: u16,
     cursor_y: u16,
@@ -133,7 +133,7 @@ fn draw_symbol_info_line(
     row: u16,
     line: &SymbolInfoDisplayLine,
     max_width: usize,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<()> {
     if line.text.is_empty() {
         return Ok(());
@@ -418,7 +418,7 @@ fn strip_plain_text_code_indent(line: &str) -> &str {
     line.strip_prefix("    ").unwrap_or(line)
 }
 
-fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> TextStyle {
+fn symbol_info_base_color(style: &UiStyle, kind: &SymbolInfoDisplayKind) -> TextStyle {
     match kind {
         SymbolInfoDisplayKind::PlainText => style.finder.dim,
         SymbolInfoDisplayKind::Markdown | SymbolInfoDisplayKind::Code { .. } => style.finder.text,
@@ -427,7 +427,7 @@ fn symbol_info_base_color(style: UiStyle, kind: &SymbolInfoDisplayKind) -> TextS
 
 pub fn draw_diagnostics_popup(
     popup: &DiagnosticsPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
@@ -662,7 +662,7 @@ pub fn draw_diagnostics_popup(
 
 pub fn draw_code_actions_popup(
     popup: &CodeActionPopup,
-    style: UiStyle,
+    style: &UiStyle,
     window: &mut dyn Window,
 ) -> minui::Result<PopupMouseLayout> {
     let (term_w, term_h) = window.get_size();
@@ -721,7 +721,7 @@ fn draw_diagnostics_code_actions_split(
     separator_row: u16,
     pane: &DiagnosticsCodeActionsPane,
     active: bool,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<PopupMouseLayout> {
     if separator_row >= view.height {
         return Ok(PopupMouseLayout::new(MousePopup::Diagnostics));
@@ -789,7 +789,7 @@ fn draw_code_action_entries(
     selected_index: usize,
     scroll: usize,
     active: bool,
-    style: UiStyle,
+    style: &UiStyle,
 ) -> minui::Result<PopupMouseLayout> {
     let mut mouse = PopupMouseLayout::new(MousePopup::CodeActions);
     mouse.scrolls.push((
@@ -890,7 +890,7 @@ fn severity_glyph(severity: DiagnosticSeverity, icons_enabled: bool) -> &'static
     glyphs[severity.sort_rank() as usize]
 }
 
-fn severity_color(style: UiStyle, severity: DiagnosticSeverity) -> TextStyle {
+fn severity_color(style: &UiStyle, severity: DiagnosticSeverity) -> TextStyle {
     let popup_bg = style.finder.text.bg;
     match severity {
         DiagnosticSeverity::Error => style

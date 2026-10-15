@@ -12,4 +12,5 @@ pub use text_buffer::{
     DelimiterKind, SelectionIncrement, TextBuffer, TextObjectEditPlan, TextObjectKind,
     TextObjectScope, TextObjectSpec, TextSlice, VisualModeKind, VisualSelectionEditPlan,
 };
+pub(crate) use undo::ChangedRange;
 pub use undo::{TextDiff, UndoCheckpoint, UndoHistory, UndoNodeId, UndoRecord, UndoTreeEntry};

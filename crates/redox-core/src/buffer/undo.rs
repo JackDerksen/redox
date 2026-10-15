@@ -55,17 +55,50 @@ pub struct TextDiff {
     pub inserted: String,
 }
 
+/// Where two texts differ, in chars: `start..before_end` of the first
+/// became `start..after_end` of the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChangedRange {
+    pub start: usize,
+    pub before_end: usize,
+    pub after_end: usize,
+}
+
 impl TextDiff {
     pub fn between(before: &TextBuffer, after: &TextBuffer) -> Option<Self> {
-        if before == after {
-            return None;
-        }
+        let change = ChangedRange::between(before, after)?;
+        Some(Self {
+            start_char: change.start,
+            deleted: before.slice_chars(change.start, change.before_end),
+            inserted: after.slice_chars(change.start, change.after_end),
+        })
+    }
 
+    pub fn forward_edit(&self) -> Edit {
+        Edit::replace(
+            self.start_char..self.start_char + self.deleted.chars().count(),
+            self.inserted.clone(),
+        )
+    }
+
+    pub fn reverse_edit(&self) -> Edit {
+        Edit::replace(
+            self.start_char..self.start_char + self.inserted.chars().count(),
+            self.deleted.clone(),
+        )
+    }
+}
+
+impl ChangedRange {
+    pub fn between(before: &TextBuffer, after: &TextBuffer) -> Option<Self> {
         let before_len = before.len_chars();
         let after_len = after.len_chars();
         // Compare equal rope chunks in bulk; only inspect individual bytes in
         // the chunks containing the edit. Round partial UTF-8 matches outwards.
         let prefix_bytes = common_chunk_bytes(before.chunks(), after.chunks(), false);
+        if prefix_bytes == before.len_bytes() && prefix_bytes == after.len_bytes() {
+            return None;
+        }
         let prefix_len = before
             .byte_to_char(prefix_bytes)
             .expect("prefix is in bounds");
@@ -82,27 +115,11 @@ impl TextDiff {
             - suffix_start_char
             - usize::from(before.char_to_byte(suffix_start_char) < suffix_start_byte);
 
-        let before_changed_end = before_len - suffix_len;
-        let after_changed_end = after_len - suffix_len;
         Some(Self {
-            start_char: prefix_len,
-            deleted: before.slice_chars(prefix_len, before_changed_end),
-            inserted: after.slice_chars(prefix_len, after_changed_end),
+            start: prefix_len,
+            before_end: before_len - suffix_len,
+            after_end: after_len - suffix_len,
         })
-    }
-
-    pub fn forward_edit(&self) -> Edit {
-        Edit::replace(
-            self.start_char..self.start_char + self.deleted.chars().count(),
-            self.inserted.clone(),
-        )
-    }
-
-    pub fn reverse_edit(&self) -> Edit {
-        Edit::replace(
-            self.start_char..self.start_char + self.inserted.chars().count(),
-            self.deleted.clone(),
-        )
     }
 }
 
@@ -136,7 +153,9 @@ fn common_chunk_bytes<'a>(
         } else {
             (&before_chunk[..length], &after_chunk[..length])
         };
-        if before_part != after_part {
+        // A rope and its edited clone share untouched chunks, so equal
+        // addresses skip comparing their bytes.
+        if !std::ptr::eq(before_part, after_part) && before_part != after_part {
             let matching_bytes = if from_end {
                 before_part
                     .iter()
@@ -561,6 +580,13 @@ impl UndoHistory {
         self.nodes.get(node_id)?.record.as_ref()
     }
 
+    /// Whether any edit is recorded, without building `tree_entries`.
+    pub fn has_edits(&self) -> bool {
+        self.nodes
+            .first()
+            .is_some_and(|root| root.children.iter().any(|&child| child < self.nodes.len()))
+    }
+
     pub fn tree_entries(&self) -> Vec<UndoTreeEntry> {
         let mut entries = Vec::with_capacity(self.nodes.len());
         let mut pending = vec![0];
@@ -685,6 +711,47 @@ mod tests {
             steps += 1;
         }
         steps
+    }
+
+    #[test]
+    fn diffs_between_edited_clones_find_only_the_change() {
+        let text = "line of text \u{e9}\n".repeat(5_000);
+        let before = TextBuffer::from_text(&text);
+        assert_eq!(TextDiff::between(&before, &before.clone()), None);
+        assert_eq!(
+            TextDiff::between(&before, &TextBuffer::from_text(&text)),
+            None
+        );
+
+        let mut after = before.clone();
+        after.insert(Pos::new(2_500, 3), "\u{e9}x");
+        let diff = TextDiff::between(&before, &after).unwrap();
+        assert_eq!(diff.start_char, after.pos_to_char(Pos::new(2_500, 3)));
+        assert_eq!(diff.deleted, "");
+        assert_eq!(diff.inserted, "\u{e9}x");
+
+        let mut longer = before.clone();
+        longer.insert(before.char_to_pos(before.len_chars()), "end");
+        let diff = TextDiff::between(&before, &longer).unwrap();
+        assert_eq!(
+            (diff.start_char, diff.inserted.as_str()),
+            (before.len_chars(), "end")
+        );
+        let diff = TextDiff::between(&longer, &before).unwrap();
+        assert_eq!(
+            (diff.start_char, diff.deleted.as_str()),
+            (before.len_chars(), "end")
+        );
+    }
+
+    #[test]
+    fn has_edits_matches_the_tree_entry_count() {
+        let mut history = UndoHistory::default();
+        let mut buffer = TextBuffer::new();
+        assert!(!history.has_edits());
+        edit(&mut history, &mut buffer, "a");
+        assert!(history.has_edits());
+        assert_eq!(history.has_edits(), history.tree_entries().len() > 1);
     }
 
     #[test]

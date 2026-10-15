@@ -461,7 +461,7 @@ pub(crate) fn draw_indent_guides(
     (row, col): (u16, u16),
     visible_xs: &[usize],
     occupied_cells: &[bool],
-    style: UiStyle,
+    style: &UiStyle,
     selected_cells: Option<(&[bool], Color)>,
     decorations: LineDecorations<'_>,
 ) -> minui::Result<()> {
@@ -581,7 +581,7 @@ pub(crate) fn draw_delimiter_highlights(
     source_line: &str,
     (delimiter_highlight_chars, decorations): (&[usize], LineDecorations<'_>),
     normal_color: TextStyle,
-    style: UiStyle,
+    style: &UiStyle,
     syntax_spans: Option<&[LineSyntaxSpan]>,
 ) -> minui::Result<()> {
     let LineViewport {

@@ -68,7 +68,7 @@ fn render(state: &mut EditorState, window: &mut TestWindow) {
     window.clear_screen().unwrap();
     draw_buffer_view(
         state,
-        UiStyle::default(),
+        &UiStyle::default(),
         window,
         &mut FramePerfSample::default(),
     )
@@ -274,8 +274,8 @@ fn finder_scrolls_the_page_and_keeps_physical_double_click_targets_still() {
         .finder_popup()
         .unwrap()
         .entries
-        .into_iter()
-        .map(|entry| entry.path)
+        .iter()
+        .map(|entry| entry.path.clone())
         .collect();
     let entry_index = |path: &PathBuf| {
         ordered_paths

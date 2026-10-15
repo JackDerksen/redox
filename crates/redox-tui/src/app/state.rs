@@ -18,6 +18,7 @@ use crate::input::cursor::CursorController;
 use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
 use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
+use crate::ui::syntax::IndentParser;
 use crate::ui::{
     RainAnimation, RenderLineCache, STATUS_BAR_HEIGHT_ROWS, SyntaxHighlighter, language_for_path,
 };
@@ -263,23 +264,6 @@ pub struct BufferViewState {
     pending_insert_undo: Option<UndoCheckpoint>,
 }
 
-impl Clone for BufferViewState {
-    fn clone(&self) -> Self {
-        Self {
-            cursor: self.cursor.clone(),
-            render_line_cache: RenderLineCache::new(512),
-            syntax_highlighter: SyntaxHighlighter::default(),
-            delimiter_pair_cache: DelimiterPairCache::default(),
-            visual_anchor: self.visual_anchor,
-            last_visual_mode: self.last_visual_mode,
-            analysis_version: self.analysis_version,
-            indent_width: self.indent_width,
-            undo_history: self.undo_history.clone(),
-            pending_insert_undo: self.pending_insert_undo.clone(),
-        }
-    }
-}
-
 impl Default for BufferViewState {
     fn default() -> Self {
         Self {
@@ -297,17 +281,35 @@ impl Default for BufferViewState {
     }
 }
 
-impl BufferViewState {
-    pub(crate) fn copy_pane_state_from(&mut self, source: &Self) {
-        self.cursor = source.cursor.clone();
-        self.visual_anchor = source.visual_anchor;
+/// The part of a buffer's view that each split pane keeps for itself.
+///
+/// Panes showing the same buffer share its `BufferViewState` (undo history,
+/// render caches) and only differ in where they are looking, so swapping a
+/// pane in or out copies just these fields.
+#[derive(Debug, Clone, Default)]
+pub struct PaneView {
+    pub cursor: CursorController,
+    pub visual_anchor: Option<Pos>,
+}
+
+impl PaneView {
+    fn copy_from(&mut self, view: &BufferViewState) {
+        self.cursor.clone_from(&view.cursor);
+        self.visual_anchor = view.visual_anchor;
     }
 
-    fn reset_pane_position(&mut self) {
+    fn reset_position(&mut self) {
         let follow = self.cursor.follow;
         self.cursor = CursorController::new();
         self.cursor.follow = follow;
         self.visual_anchor = None;
+    }
+}
+
+impl BufferViewState {
+    pub(crate) fn copy_pane_state_from(&mut self, source: &PaneView) {
+        self.cursor.clone_from(&source.cursor);
+        self.visual_anchor = source.visual_anchor;
     }
 
     pub(crate) fn analysis_version(&self) -> u64 {
@@ -421,7 +423,7 @@ pub struct PaneId(usize);
 pub struct EditorPane {
     pub id: PaneId,
     pub buffer_id: BufferId,
-    pub view: BufferViewState,
+    pub view: PaneView,
     pub last_used: u64,
     pub options: PaneOptions,
     half_page_rows: Option<usize>,
@@ -507,6 +509,7 @@ pub struct EditorState {
     transient_origin_buffer_id: Option<BufferId>,
     transient_origin_dir: Option<PathBuf>,
     analysis_worker: AnalysisWorker,
+    indent_parser: IndentParser,
     git: git::GitState,
     perf_visible: bool,
     perf_stats: Option<FramePerfStats>,
@@ -536,7 +539,7 @@ impl EditorState {
         let mut views = HashMap::new();
         views.insert(active, BufferViewState::default());
 
-        let initial_view = BufferViewState::default();
+        let initial_view = PaneView::default();
         let initial_pane = EditorPane {
             id: PaneId(0),
             buffer_id: active,
@@ -603,6 +606,7 @@ impl EditorState {
             transient_origin_buffer_id: None,
             transient_origin_dir: None,
             analysis_worker: AnalysisWorker::new(),
+            indent_parser: IndentParser::default(),
             git: git::GitState::default(),
             perf_visible: false,
             perf_stats: None,
@@ -919,6 +923,13 @@ impl EditorState {
         (self.viewport_width_cells, self.viewport_height_rows)
     }
 
+    /// Let smart indent start from the active buffer's highlight tree.
+    fn seed_indent_parser(&mut self) {
+        if let Some(view) = self.views.get(&self.session.active_id()) {
+            self.indent_parser.seed_from(&view.syntax_highlighter);
+        }
+    }
+
     pub fn sync_active_pane_view(&mut self) {
         let active_id = self.session.active_id();
         self.apply_configured_scrolloff(active_id);
@@ -930,14 +941,14 @@ impl EditorState {
         {
             return;
         }
-        if let Some(view) = self.views.get(&active_id).cloned()
+        if let Some(view) = self.views.get(&active_id)
             && let Some(pane) = self
                 .panes
                 .iter_mut()
                 .find(|pane| pane.id == self.active_pane)
         {
             pane.buffer_id = active_id;
-            pane.view = view;
+            pane.view.copy_from(view);
         }
     }
 
@@ -945,24 +956,20 @@ impl EditorState {
         if let Some(view) = self.views.get(&buffer_id)
             && let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == pane_id)
         {
-            pane.view.copy_pane_state_from(view);
+            pane.view.copy_from(view);
         }
     }
 
     pub fn restore_active_pane_view(&mut self) {
-        let Some(pane) = self
-            .panes
-            .iter()
-            .find(|pane| pane.id == self.active_pane)
-            .cloned()
-        else {
+        let Some(pane) = self.panes.iter().find(|pane| pane.id == self.active_pane) else {
             return;
         };
+        let buffer_id = pane.buffer_id;
         self.views
-            .entry(pane.buffer_id)
+            .entry(buffer_id)
             .or_default()
             .copy_pane_state_from(&pane.view);
-        let _ = self.session.activate(pane.buffer_id);
+        let _ = self.session.activate(buffer_id);
     }
 
     fn activate_pane(&mut self, pane_id: PaneId) -> bool {
@@ -974,14 +981,15 @@ impl EditorState {
             return true;
         }
         self.sync_active_pane_view();
-        let Some(pane) = self.panes.iter().find(|pane| pane.id == pane_id).cloned() else {
+        let Some(pane) = self.panes.iter().find(|pane| pane.id == pane_id) else {
             return false;
         };
-        if !self.session.activate(pane.buffer_id) {
+        let buffer_id = pane.buffer_id;
+        if !self.session.activate(buffer_id) {
             return false;
         }
         self.views
-            .entry(pane.buffer_id)
+            .entry(buffer_id)
             .or_default()
             .copy_pane_state_from(&pane.view);
         self.start_pane_focus_transition(Instant::now());
@@ -1019,7 +1027,7 @@ impl EditorState {
         let new_id = PaneId(self.next_pane_id);
         self.next_pane_id = self.next_pane_id.saturating_add(1);
         let mut new_view = active.view.clone();
-        new_view.reset_pane_position();
+        new_view.reset_position();
         self.panes.push(EditorPane {
             id: new_id,
             buffer_id: active.buffer_id,
@@ -1245,14 +1253,7 @@ impl EditorState {
     }
 
     pub(crate) fn pane_focus_dimming(&self, pane_id: PaneId, now: Instant) -> f32 {
-        let target = if !self.terminal_focused
-            && !self.popup_background_dimmed
-            && self.pane_draws_as_active(pane_id)
-        {
-            0.0
-        } else {
-            1.0
-        };
+        let target = self.resting_pane_focus_dimming(pane_id);
         let Some(transition) = self.pane_focus_transition.as_ref() else {
             return target;
         };
@@ -1262,6 +1263,18 @@ impl EditorState {
             .find(|(id, _)| *id == pane_id)
             .map_or(target, |(_, amount)| *amount);
         transition.interpolate(from, target, now)
+    }
+
+    /// The dimming a pane settles at once any focus fade has finished.
+    pub(crate) fn resting_pane_focus_dimming(&self, pane_id: PaneId) -> f32 {
+        if !self.terminal_focused
+            && !self.popup_background_dimmed
+            && self.pane_draws_as_active(pane_id)
+        {
+            0.0
+        } else {
+            1.0
+        }
     }
 
     pub(crate) fn terminal_focus_dimming(&self, now: Instant) -> f32 {

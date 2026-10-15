@@ -269,8 +269,8 @@ impl TextBuffer {
         let mut containing_pairs = Vec::new();
         let mut same_line_pairs = Vec::new();
         let mut stack = Vec::new();
-        for char_idx in 0..self.len_chars() {
-            let ch = self.char_at_index(char_idx);
+        // Iterate rather than index: each `rope.char` lookup walks the tree.
+        for (char_idx, ch) in self.rope.chars().enumerate() {
             if ch == open {
                 stack.push(char_idx);
             } else if ch == close

@@ -458,10 +458,10 @@ impl EditorState {
             return None;
         }
         let buffer = self.session.buffer(buffer_id)?;
-        let view = if active {
-            self.views.get(&buffer_id)?
+        let cursor = if active {
+            &self.views.get(&buffer_id)?.cursor
         } else {
-            &pane.view
+            &pane.view.cursor
         };
         let gutter = if pane.options.has_line_numbers && !(self.zen.enabled && self.zen.hide_gutter)
         {
@@ -481,12 +481,12 @@ impl EditorState {
         }
         let header = if is_tree { UNDO_TREE_HEADER_ROWS } else { 0 };
         let line = buffer.clamp_line(
-            view.cursor.scroll_y_lines.saturating_add(
+            cursor.scroll_y_lines.saturating_add(
                 row.clamp(rect.y, rect.y + rect.height - 1)
                     .saturating_sub(rect.y + header) as usize,
             ),
         );
-        let cell = view.cursor.scroll_x_cells.saturating_add(
+        let cell = cursor.scroll_x_cells.saturating_add(
             column
                 .clamp(rect.x, rect.x + rect.width - 1)
                 .saturating_sub(rect.x + gutter) as usize,

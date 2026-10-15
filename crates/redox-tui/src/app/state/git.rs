@@ -74,7 +74,8 @@ pub struct GitLineMarker {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitDiffSnapshot {
     pub stats: GitDiffStats,
-    pub markers: Vec<GitLineMarker>,
+    /// Sorted by line, at most one per line, and shared so drawing can hold it cheaply.
+    pub markers: Arc<[GitLineMarker]>,
     index_path: Option<PathBuf>,
     index_modified_at: Option<SystemTime>,
 }
@@ -82,9 +83,9 @@ pub struct GitDiffSnapshot {
 impl GitDiffSnapshot {
     pub fn marker_for_line(&self, line: usize) -> Option<GitLineMarker> {
         self.markers
-            .iter()
-            .find(|marker| marker.line == line)
-            .copied()
+            .binary_search_by_key(&line, |marker| marker.line)
+            .ok()
+            .map(|index| self.markers[index])
     }
 
     fn index_changed(&self) -> bool {
@@ -709,9 +710,14 @@ impl GitDiffWorker {
         )?;
         let unstaged_lines: HashSet<_> =
             unstaged.markers.iter().map(|marker| marker.line).collect();
-        for marker in &mut snapshot.markers {
-            marker.staged = !unstaged_lines.contains(&marker.line);
-        }
+        snapshot.markers = snapshot
+            .markers
+            .iter()
+            .map(|&marker| GitLineMarker {
+                staged: !unstaged_lines.contains(&marker.line),
+                ..marker
+            })
+            .collect();
         Some(snapshot)
     }
 }
@@ -1067,9 +1073,9 @@ mod tests {
             };
             let dimmed = style.dimmed();
             let mut window = crate::tests::TestWindow::new(20, 8);
-            crate::draw_gutter_padding(&mut window, style, 3, 8, 1, 0, (Some(&snapshot), None))
+            crate::draw_gutter_padding(&mut window, &style, 3, 8, 1, 0, (Some(&snapshot), None))
                 .unwrap();
-            for marker in &snapshot.markers {
+            for marker in snapshot.markers.iter() {
                 let expected = if marker.staged { dimmed } else { style };
                 let (glyph, marker_style) = expected.git.gutter_marker(marker.kind);
                 assert!(window.row_text(marker.line as u16).starts_with(glyph));
@@ -1083,7 +1089,7 @@ mod tests {
         let mut window = crate::tests::TestWindow::new(20, 8);
         crate::draw_gutter_padding(
             &mut window,
-            style,
+            &style,
             3,
             8,
             1,
@@ -1198,6 +1204,13 @@ diff --git a/old b/new
 
         let snapshot = parse_git_patch(patch);
         let marker_kind = |line| snapshot.marker_for_line(line).map(|marker| marker.kind);
+        // `marker_for_line` binary-searches, so markers must stay sorted and unique.
+        assert!(
+            snapshot
+                .markers
+                .windows(2)
+                .all(|pair| pair[0].line < pair[1].line)
+        );
         assert_eq!(
             snapshot.stats,
             GitDiffStats {

@@ -4,7 +4,70 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct FuzzyQuery {
-    tokens: Vec<String>,
+    tokens: Vec<QueryToken>,
+}
+
+#[derive(Debug, Clone)]
+struct QueryToken {
+    /// The lowercased token's chars, matched one by one in subsequences.
+    chars: Vec<char>,
+    /// Each of `chars` lowercased again, for contiguous matches.
+    lower: Vec<Lower>,
+}
+
+/// A char's lowercase form. Only a few chars lowercase to several chars.
+#[derive(Debug, Clone, Copy)]
+enum Lower {
+    One(char),
+    /// Holds the original char, whose lowercase has several chars.
+    Many(char),
+}
+
+impl PartialEq for Lower {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::One(left), Self::One(right)) => left == right,
+            (Self::Many(left), Self::Many(right)) => left.to_lowercase().eq(right.to_lowercase()),
+            _ => false,
+        }
+    }
+}
+
+impl Lower {
+    fn of(ch: char) -> Self {
+        if ch.is_ascii() {
+            return Self::One(ch.to_ascii_lowercase());
+        }
+        let mut lower = ch.to_lowercase();
+        match (lower.next(), lower.next()) {
+            (Some(single), None) => Self::One(single),
+            _ => Self::Many(ch),
+        }
+    }
+}
+
+/// A label char with its byte span, lowercased once per label.
+#[derive(Debug, Clone, Copy)]
+struct LabelChar {
+    byte: usize,
+    len: usize,
+    lower: Lower,
+}
+
+fn lower_label(label: &str) -> Vec<LabelChar> {
+    label
+        .char_indices()
+        .map(|(byte, ch)| LabelChar {
+            byte,
+            len: ch.len_utf8(),
+            lower: Lower::of(ch),
+        })
+        .collect()
+}
+
+/// The label chars starting at `byte`, which must be a char boundary.
+fn chars_from(chars: &[LabelChar], byte: usize) -> &[LabelChar] {
+    &chars[chars.partition_point(|ch| ch.byte < byte)..]
 }
 
 impl FuzzyQuery {
@@ -13,7 +76,11 @@ impl FuzzyQuery {
             tokens: query
                 .split_whitespace()
                 .filter(|token| !token.is_empty())
-                .map(|token| token.to_lowercase())
+                .map(|token| {
+                    let chars = token.to_lowercase().chars().collect::<Vec<_>>();
+                    let lower = chars.iter().map(|&ch| Lower::of(ch)).collect();
+                    QueryToken { chars, lower }
+                })
                 .collect(),
         }
     }
@@ -21,6 +88,32 @@ impl FuzzyQuery {
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty()
     }
+
+    /// Whether every label this query matches is also matched by `broader`,
+    /// so its results can be filtered from `broader`'s instead of from scratch.
+    ///
+    /// Holds when each broader token is a subsequence of one of these tokens
+    /// and lowercasing its chars again leaves them unchanged. Then any match
+    /// of the longer token also contains the broader token as a subsequence.
+    pub fn refines(&self, broader: &FuzzyQuery) -> bool {
+        broader.tokens.iter().all(|broader_token| {
+            broader_token
+                .chars
+                .iter()
+                .all(|&ch| Lower::of(ch) == Lower::One(ch))
+                && self
+                    .tokens
+                    .iter()
+                    .any(|token| is_subsequence(&broader_token.chars, &token.chars))
+        })
+    }
+}
+
+fn is_subsequence(needle: &[char], haystack: &[char]) -> bool {
+    let mut haystack = haystack.iter();
+    needle
+        .iter()
+        .all(|ch| haystack.any(|candidate| candidate == ch))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +149,36 @@ struct FuzzyTokenMatch {
 
 pub fn fuzzy_match_ranges(label: &str, query: &FuzzyQuery) -> Option<FuzzyMatch> {
     if query.is_empty() {
+        return Some(empty_query_match());
+    }
+    fuzzy_match_lowered(label, &lower_label(label), query)
+}
+
+/// Match a path label and score it, lowercasing the label only once.
+pub fn fuzzy_path_match(label: &str, query: &FuzzyQuery) -> Option<(FuzzyMatch, PathMatchScore)> {
+    if query.is_empty() {
+        let matched = empty_query_match();
+        let score = path_match_score_lowered(label, &[], &matched, query);
+        return Some((matched, score));
+    }
+    let chars = lower_label(label);
+    let matched = fuzzy_match_lowered(label, &chars, query)?;
+    let score = path_match_score_lowered(label, &chars, &matched, query);
+    Some((matched, score))
+}
+
+fn empty_query_match() -> FuzzyMatch {
+    FuzzyMatch {
+        highlights: Vec::new(),
+        first_match: usize::MAX,
+        match_span: usize::MAX,
+        gap_count: usize::MAX,
+        contiguous_match_count: 0,
+    }
+}
+
+fn fuzzy_match_lowered(label: &str, chars: &[LabelChar], query: &FuzzyQuery) -> Option<FuzzyMatch> {
+    if query.is_empty() {
         return Some(FuzzyMatch {
             highlights: Vec::new(),
             first_match: usize::MAX,
@@ -71,8 +194,9 @@ pub fn fuzzy_match_ranges(label: &str, query: &FuzzyQuery) -> Option<FuzzyMatch>
     let mut gap_count = 0usize;
     let mut contiguous_match_count = 0usize;
 
+    let file_name_chars = chars_from(chars, file_name_byte_offset(label));
     for token in &query.tokens {
-        let token_match = fuzzy_match_token(label, token)?;
+        let token_match = fuzzy_match_token(file_name_chars, chars, token)?;
         if first_match == usize::MAX {
             first_match = token_match.first_match;
         } else if token_match.first_match > last_match_end {
@@ -103,11 +227,30 @@ pub fn fuzzy_match_ranges(label: &str, query: &FuzzyQuery) -> Option<FuzzyMatch>
 }
 
 pub fn path_match_score(label: &str, matched: &FuzzyMatch, query: &FuzzyQuery) -> PathMatchScore {
+    let chars = if query.is_empty() {
+        Vec::new()
+    } else {
+        lower_label(label)
+    };
+    path_match_score_lowered(label, &chars, matched, query)
+}
+
+fn path_match_score_lowered(
+    label: &str,
+    chars: &[LabelChar],
+    matched: &FuzzyMatch,
+    query: &FuzzyQuery,
+) -> PathMatchScore {
     let file_name = Path::new(label)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(label);
-    let filename_stats = filename_match_stats(file_name, query);
+    // `file_name` borrows from `label`, so its address gives its offset.
+    let file_name_start = file_name.as_ptr() as usize - label.as_ptr() as usize;
+    let file_name_chars = chars_from(chars, file_name_start);
+    let file_name_chars = &file_name_chars
+        [..file_name_chars.partition_point(|ch| ch.byte < file_name_start + file_name.len())];
+    let filename_stats = filename_match_stats(file_name_chars, file_name_start, query);
 
     PathMatchScore {
         filename_match_count: filename_stats.match_count,
@@ -132,17 +275,22 @@ struct FilenameMatchStats {
     first_match: usize,
 }
 
-fn filename_match_stats(file_name: &str, query: &FuzzyQuery) -> FilenameMatchStats {
+/// Match each token against the file name alone; offsets are relative to it.
+fn filename_match_stats(
+    file_name: &[LabelChar],
+    file_name_start: usize,
+    query: &FuzzyQuery,
+) -> FilenameMatchStats {
     let mut match_count = 0usize;
     let mut contiguous_match_count = 0usize;
     let mut first_match = usize::MAX;
 
     for token in &query.tokens {
-        let Some(matched) = fuzzy_match_token(file_name, token) else {
+        let Some(matched) = fuzzy_match_token(file_name, file_name, token) else {
             continue;
         };
         match_count += 1;
-        first_match = first_match.min(matched.first_match);
+        first_match = first_match.min(matched.first_match.saturating_sub(file_name_start));
         if matched.is_contiguous {
             contiguous_match_count += 1;
         }
@@ -177,8 +325,13 @@ pub fn compare_path_match_scores(left: &PathMatchScore, right: &PathMatchScore) 
         .then(left.len.cmp(&right.len))
 }
 
-fn fuzzy_match_token(label: &str, token: &str) -> Option<FuzzyTokenMatch> {
-    if token.is_empty() {
+/// Prefer a contiguous match in the file name, then anywhere, then a subsequence.
+fn fuzzy_match_token(
+    file_name: &[LabelChar],
+    label: &[LabelChar],
+    token: &QueryToken,
+) -> Option<FuzzyTokenMatch> {
+    if token.chars.is_empty() {
         return Some(FuzzyTokenMatch {
             highlights: Vec::new(),
             first_match: usize::MAX,
@@ -188,9 +341,9 @@ fn fuzzy_match_token(label: &str, token: &str) -> Option<FuzzyTokenMatch> {
         });
     }
 
-    let file_name_offset = file_name_byte_offset(label);
-    if let Some(range) = contiguous_match_range(&label[file_name_offset..], token) {
-        let range = range.start + file_name_offset..range.end + file_name_offset;
+    if let Some(range) = contiguous_match_range(file_name, &token.lower)
+        .or_else(|| contiguous_match_range(label, &token.lower))
+    {
         return Some(FuzzyTokenMatch {
             first_match: range.start,
             last_match_end: range.end,
@@ -199,84 +352,50 @@ fn fuzzy_match_token(label: &str, token: &str) -> Option<FuzzyTokenMatch> {
             is_contiguous: true,
         });
     }
-
-    if let Some(range) = contiguous_match_range(label, token) {
-        return Some(FuzzyTokenMatch {
-            first_match: range.start,
-            last_match_end: range.end,
-            highlights: vec![range],
-            gap_count: 0,
-            is_contiguous: true,
-        });
-    }
-
-    let label_chars = label
-        .char_indices()
-        .map(|(byte_idx, ch)| (byte_idx, ch, ch.len_utf8(), ch.to_lowercase().to_string()))
-        .collect::<Vec<_>>();
-    let token_chars = token.chars().map(|ch| ch.to_string()).collect::<Vec<_>>();
 
     let mut search_start = 0usize;
-    let mut highlights = Vec::with_capacity(token_chars.len());
-    let mut matched_char_indices = Vec::with_capacity(token_chars.len());
-
-    for token_ch in token_chars {
-        let next = label_chars
+    let mut highlights = Vec::with_capacity(token.chars.len());
+    let mut gap_count = 0usize;
+    let mut previous_index = None;
+    for &token_ch in &token.chars {
+        let offset = label[search_start..]
             .iter()
-            .enumerate()
-            .skip(search_start)
-            .find(|(_, (_, _, _, label_ch))| label_ch == &token_ch)?;
-        let (char_idx, (byte_idx, _, byte_len, _)) = next;
-        highlights.push(*byte_idx..*byte_idx + *byte_len);
-        matched_char_indices.push(char_idx);
+            .position(|label_ch| label_ch.lower == Lower::One(token_ch))?;
+        let char_idx = search_start + offset;
+        let matched = label[char_idx];
+        highlights.push(matched.byte..matched.byte + matched.len);
+        if let Some(previous) = previous_index {
+            gap_count += char_idx - previous - 1;
+        }
+        previous_index = Some(char_idx);
         search_start = char_idx + 1;
     }
 
-    let first_match = highlights
-        .first()
-        .map(|range| range.start)
-        .unwrap_or(usize::MAX);
-    let last_match_end = highlights.last().map(|range| range.end).unwrap_or(0);
-    let gap_count = matched_char_indices
-        .windows(2)
-        .map(|window| window[1].saturating_sub(window[0]).saturating_sub(1))
-        .sum();
-
     Some(FuzzyTokenMatch {
+        first_match: highlights.first().map_or(usize::MAX, |range| range.start),
+        last_match_end: highlights.last().map_or(0, |range| range.end),
         highlights,
-        first_match,
-        last_match_end,
         gap_count,
         is_contiguous: false,
     })
 }
 
-fn contiguous_match_range(label: &str, token: &str) -> Option<Range<usize>> {
-    let label_chars = label
-        .char_indices()
-        .map(|(byte_idx, ch)| (byte_idx, ch.len_utf8(), ch.to_lowercase().to_string()))
-        .collect::<Vec<_>>();
-    let token_chars = token
-        .chars()
-        .map(|ch| ch.to_lowercase().to_string())
-        .collect::<Vec<_>>();
-
-    if token_chars.is_empty() || token_chars.len() > label_chars.len() {
+fn contiguous_match_range(label: &[LabelChar], token: &[Lower]) -> Option<Range<usize>> {
+    if token.is_empty() || token.len() > label.len() {
         return None;
     }
 
-    label_chars
-        .windows(token_chars.len())
+    label
+        .windows(token.len())
         .find(|window| {
             window
                 .iter()
-                .zip(&token_chars)
-                .all(|((_, _, label_ch), token_ch)| label_ch == token_ch)
+                .zip(token)
+                .all(|(label_ch, token_ch)| label_ch.lower == *token_ch)
         })
         .map(|window| {
-            let (start, _, _) = window[0];
-            let (end_start, end_len, _) = window[window.len() - 1];
-            start..end_start + end_len
+            let last = window[window.len() - 1];
+            window[0].byte..last.byte + last.len
         })
 }
 
@@ -305,4 +424,46 @@ fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
         merged.push(range);
     }
     merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FuzzyQuery, fuzzy_match_ranges, fuzzy_path_match, path_match_score};
+
+    #[test]
+    fn matching_ignores_case_and_reports_byte_ranges() {
+        let query = FuzzyQuery::new("ÉT rs");
+        let matched = fuzzy_match_ranges("src/été.rs", &query).unwrap();
+        assert_eq!(matched.highlights, vec![4..7, 10..12]);
+        assert!(fuzzy_match_ranges("src/main.rs", &query).is_none());
+    }
+
+    #[test]
+    fn path_match_reuses_one_lowercase_pass_for_both_results() {
+        for label in ["crates/core/src/fuzzy.rs", "README.md", "a/b/", ""] {
+            for query in ["", "fz", "src rs", "md read", "zz"] {
+                let query = FuzzyQuery::new(query);
+                let separate = fuzzy_match_ranges(label, &query)
+                    .map(|matched| (path_match_score(label, &matched, &query), matched));
+                let combined =
+                    fuzzy_path_match(label, &query).map(|(matched, score)| (score, matched));
+                assert_eq!(combined, separate, "{label:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn refining_queries_only_add_non_space_chars() {
+        let refines =
+            |query: &str, broader: &str| FuzzyQuery::new(query).refines(&FuzzyQuery::new(broader));
+        assert!(refines("abc", ""));
+        assert!(refines("abc", "ab"));
+        assert!(refines("axbc", "abc"));
+        assert!(refines("ab x", "ab"));
+        assert!(refines("Ab", "ab"));
+        assert!(!refines("ab", "abc"));
+        assert!(!refines("a bc", "abc"));
+        // Lowercasing depends on context: a final sigma changes form.
+        assert!(!refines("ΑΣΒ", "ΑΣ"));
+    }
 }

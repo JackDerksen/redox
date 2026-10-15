@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use redox_core::{BufferId, BufferKind, Pos};
+use redox_core::{BufferId, BufferKind, Pos, TextBuffer, TextDiff};
 #[cfg(test)]
 use redox_lsp::InsertTextFormat;
 use redox_lsp::diagnostics::{configuration_response, workspace_folders_response};
@@ -152,6 +152,8 @@ struct QueuedLintRun {
 pub(super) struct LspState {
     installed: HashMap<MarketplaceItemId, InstalledToolRecord>,
     tool_availability: HashMap<MarketplaceItemId, bool>,
+    /// Which installers are on `PATH`, checked with `tool_availability`.
+    install_method_availability: HashMap<InstallMethodId, bool>,
     marketplace: Option<LspMarketplaceState>,
     diagnostics_popup: Option<DiagnosticsPopupState>,
     code_actions_popup: Option<CodeActionsPopupState>,
@@ -257,7 +259,8 @@ struct ManagedDocument {
     language_id: &'static str,
     document_version: i32,
     last_sent_analysis_version: Option<u64>,
-    last_sent_text: Option<String>,
+    /// What the server has, sharing unchanged chunks with the buffer.
+    last_sent_text: Option<TextBuffer>,
     pending_sync_since: Option<Instant>,
     pending_sync_analysis_version: Option<u64>,
     opened: bool,
@@ -1604,7 +1607,7 @@ impl EditorState {
             )?;
             document.opened = true;
             document.last_sent_analysis_version = Some(analysis_version);
-            document.last_sent_text = Some(text);
+            document.last_sent_text = Some(buffer.clone());
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
             return Ok(());
@@ -1628,9 +1631,11 @@ impl EditorState {
             }
         }
 
-        let text = buffer.to_string();
-
-        if document.last_sent_text.as_deref() == Some(text.as_str()) {
+        if document
+            .last_sent_text
+            .as_ref()
+            .is_some_and(|sent| TextDiff::between(sent, buffer).is_none())
+        {
             document.last_sent_analysis_version = Some(analysis_version);
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
@@ -1638,23 +1643,19 @@ impl EditorState {
         }
 
         document.document_version = document.document_version.saturating_add(1);
-        client
-            .session
-            .send_did_change(&document.path, document.document_version, &text)?;
+        client.session.send_did_change(
+            &document.path,
+            document.document_version,
+            &buffer.to_string(),
+        )?;
         document.last_sent_analysis_version = Some(analysis_version);
-        document.last_sent_text = Some(text);
+        document.last_sent_text = Some(buffer.clone());
         document.pending_sync_since = None;
         document.pending_sync_analysis_version = None;
         Ok(())
     }
 
     fn cleanup_orphaned_lsp_state(&mut self) {
-        let valid_ids = self
-            .session
-            .summaries()
-            .into_iter()
-            .map(|summary| summary.id)
-            .collect::<HashSet<_>>();
         let closed = self
             .lsp
             .documents
@@ -1677,13 +1678,32 @@ impl EditorState {
             .values()
             .map(|document| document.workspace.clone())
             .collect::<HashSet<_>>();
-        let live_lint_sources = valid_ids
-            .iter()
-            .filter_map(|buffer_id| {
-                self.saved_buffer_lint_context(*buffer_id)
-                    .map(|request| request.source)
-            })
-            .collect::<HashSet<_>>();
+        // Finding a buffer's lint source searches the filesystem for its
+        // workspace root, so only do it when lint diagnostics need checking.
+        let has_lint_diagnostics = self
+            .lsp
+            .diagnostics
+            .values()
+            .flatten()
+            .map(|entry| &entry.source)
+            .chain(
+                self.lsp
+                    .deferred_diagnostics
+                    .iter()
+                    .map(|pending| &pending.source),
+            )
+            .any(|source| matches!(source, DiagnosticSource::Lint(_)));
+        let live_lint_sources = if has_lint_diagnostics {
+            self.session
+                .buffer_ids()
+                .filter_map(|buffer_id| {
+                    self.saved_buffer_lint_context(buffer_id)
+                        .map(|request| request.source)
+                })
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
         self.lsp
             .clients
             .retain(|workspace, _| live_workspaces.contains(workspace));
@@ -3445,7 +3465,7 @@ impl EditorState {
             .install_plans()
             .iter()
             .copied()
-            .find(|plan| install_method_available(plan.method))
+            .find(|plan| self.install_method_available(plan.method))
         {
             (
                 "i".to_string(),
@@ -3681,6 +3701,16 @@ impl EditorState {
             .unwrap_or_else(|| marketplace_tool_available(item))
     }
 
+    /// Cached because the marketplace draws every entry's status each frame,
+    /// and each uncached check searches every `PATH` directory.
+    fn install_method_available(&self, method: InstallMethodId) -> bool {
+        self.lsp
+            .install_method_availability
+            .get(&method)
+            .copied()
+            .unwrap_or_else(|| install_method_available(method))
+    }
+
     fn refresh_lsp_tool_availability(&mut self) {
         self.lsp.tool_availability = PROVIDERS
             .iter()
@@ -3689,6 +3719,16 @@ impl EditorState {
             .chain(LINTERS.iter().copied().map(MarketplaceSpec::Linter))
             .map(|item| (item.id(), marketplace_tool_available(item)))
             .collect();
+        self.lsp.install_method_availability = [
+            InstallMethod::Brew,
+            InstallMethod::Cargo,
+            InstallMethod::Go,
+            InstallMethod::Npm,
+            InstallMethod::Rustup,
+        ]
+        .into_iter()
+        .map(|method| (method, install_method_available(method)))
+        .collect();
     }
 }
 
@@ -4649,7 +4689,11 @@ mod regressions {
             )
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("original")
         );
         assert_eq!(state.lsp.documents[&buffer_id].document_version, 1);
@@ -4662,7 +4706,11 @@ mod regressions {
             )
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("changed 雪")
         );
         for _ in 0..20 {
@@ -4680,7 +4728,11 @@ mod regressions {
             .sync_lsp_document(buffer_id, SyncPolicy::Immediate)
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("immediate")
         );
         assert_eq!(state.lsp.documents[&buffer_id].document_version, 3);
@@ -4889,7 +4941,7 @@ mod regressions {
                 language_id: "rust",
                 document_version: 1,
                 last_sent_analysis_version: Some(sent_version),
-                last_sent_text: Some("before\n".to_string()),
+                last_sent_text: Some(TextBuffer::from_text("before\n")),
                 pending_sync_since: None,
                 pending_sync_analysis_version: None,
                 opened: true,
@@ -4983,6 +5035,11 @@ mod regressions {
         state.zen.hide_diagnostics = true;
         state.zen.enabled = false;
         assert_eq!(state.active_diagnostic_lines(0, 1).len(), 1);
+
+        // Without the linter, no open buffer has that lint source any more.
+        state.lsp.installed.clear();
+        state.cleanup_orphaned_lsp_state();
+        assert!(!state.lsp.diagnostics.contains_key(&uri));
     }
 
     #[test]
