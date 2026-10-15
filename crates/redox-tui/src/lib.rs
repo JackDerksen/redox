@@ -22,6 +22,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 mod app;
 mod config;
+mod crash;
 mod indentation;
 mod input;
 mod storage;
@@ -3838,8 +3839,48 @@ pub fn run() -> anyhow::Result<()> {
         state.set_status(format!("could not enable logging: {error}"));
     }
 
+    crash::install_panic_hook();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_terminal_session(
+            &mut state,
+            &mut config,
+            &mut style,
+            &mut active_theme,
+            &mut theme_override,
+            &options.config,
+        )
+    }));
+    // The terminal is restored by now, so deferred panic messages are readable.
+    for message in crash::take_deferred_panics() {
+        eprintln!("{message}");
+    }
+    match outcome {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(crash::crash_report(
+                &state,
+                &storage::state_root().join("recovery"),
+            ));
+        }
+    }
+    state.log_event("session_end", serde_json::Value::Null);
+    state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
+    Ok(())
+}
+
+/// Own the terminal for one editing session. Its guards restore the terminal when
+/// dropped, including while unwinding from a panic.
+fn run_terminal_session(
+    state: &mut EditorState,
+    config: &mut config::Config,
+    style: &mut UiStyle,
+    active_theme: &mut String,
+    theme_override: &mut Option<String>,
+    launch_config: &LaunchConfig,
+) -> anyhow::Result<()> {
+    let _panic_deferral = crash::PanicDeferral::start();
     let mut window = TerminalWindow::new()?;
-    let keyboard_reporting = KeyboardReporting::enable()?;
+    let _keyboard_reporting = KeyboardReporting::enable()?;
     window.mouse_mut().set_movement_tracking(false);
     window.mouse_mut().set_scroll_axis_filtering(false);
     // MinUI reports left as positive; Redox uses positive deltas for down/right.
@@ -3874,7 +3915,7 @@ pub fn run() -> anyhow::Result<()> {
             event_count += 1;
             let previous_context = (state.mode, state.session.active_id());
             mouse_frame_pending = input::is_mouse_event(&event) || !state.mouse.popups.is_empty();
-            if !handle_editor_event(&mut state, &mut clipboard, event) {
+            if !handle_editor_event(state, &mut clipboard, event) {
                 break 'editor;
             }
             mouse_frame_pending |= previous_context != (state.mode, state.session.active_id())
@@ -3886,14 +3927,14 @@ pub fn run() -> anyhow::Result<()> {
             if mouse_frame_pending || input_start.elapsed() >= MAX_INPUT_TIME_PER_FRAME {
                 break;
             }
-            match read_editor_input(&mut state, &mut window, Some(Duration::ZERO))? {
+            match read_editor_input(state, &mut window, Some(Duration::ZERO))? {
                 Some(Event::Unknown) => continue,
                 Some(event) => {
                     event_count += 1;
                     let previous_context = (state.mode, state.session.active_id());
                     mouse_frame_pending =
                         input::is_mouse_event(&event) || !state.mouse.popups.is_empty();
-                    if !handle_editor_event(&mut state, &mut clipboard, event) {
+                    if !handle_editor_event(state, &mut clipboard, event) {
                         break 'editor;
                     }
                     mouse_frame_pending |= previous_context
@@ -3905,15 +3946,15 @@ pub fn run() -> anyhow::Result<()> {
         }
         perf_sample.input = input_start.elapsed();
         perf_sample.event_count = event_count;
-        open_runtime_config(&mut state, options.config.path.as_deref());
+        open_runtime_config(state, launch_config.path.as_deref());
         reload_runtime_config(
-            &mut state,
+            state,
             window.keyboard_mut(),
-            &mut style,
-            &mut config,
-            &mut active_theme,
-            &mut theme_override,
-            &options.config,
+            style,
+            config,
+            active_theme,
+            theme_override,
+            launch_config,
         );
         if config.mouse != state.mouse.enabled {
             window.set_mouse_capture(config.mouse)?;
@@ -3925,13 +3966,7 @@ pub fn run() -> anyhow::Result<()> {
             config.mouse_scroll_step_vertical,
             config.mouse_scroll_step_horizontal,
         );
-        apply_runtime_colorscheme(
-            &mut state,
-            &mut style,
-            &config,
-            &mut active_theme,
-            &mut theme_override,
-        );
+        apply_runtime_colorscheme(state, style, config, active_theme, theme_override);
         if event_count > 0 {
             state.request_redraw();
         }
@@ -3950,7 +3985,7 @@ pub fn run() -> anyhow::Result<()> {
 
         if state.take_redraw_request() {
             window.clear_screen()?;
-            draw_buffer_view(&mut state, style, &mut window, &mut perf_sample)?;
+            draw_buffer_view(state, *style, &mut window, &mut perf_sample)?;
             let flush_start = Instant::now();
             window.end_frame()?;
             perf_sample.flush = flush_start.elapsed();
@@ -3960,18 +3995,14 @@ pub fn run() -> anyhow::Result<()> {
 
         pending_wake_event = match state.next_wake_deadline(Instant::now()) {
             Some(deadline) => read_editor_input(
-                &mut state,
+                state,
                 &mut window,
                 Some(deadline.saturating_duration_since(Instant::now())),
             )?,
-            None => read_editor_input(&mut state, &mut window, None)?,
+            None => read_editor_input(state, &mut window, None)?,
         }
         .filter(|event| !matches!(event, Event::Unknown));
     }
-    drop(keyboard_reporting);
-    drop(window);
-    state.log_event("session_end", serde_json::Value::Null);
-    state.save_previous_session(&storage::session_path(state.session.launch_dir()))?;
     Ok(())
 }
 

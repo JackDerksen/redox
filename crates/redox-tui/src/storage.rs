@@ -196,6 +196,59 @@ pub fn remove_undo_history(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Write a buffer's contents to a new, owner-only file in `directory`, named after
+/// the buffer and the current time. Return the file's path.
+pub fn write_recovery_file(
+    directory: &Path,
+    display_name: &str,
+    buffer: &TextBuffer,
+) -> io::Result<PathBuf> {
+    fs::create_dir_all(directory)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let mut name: String = display_name
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    if name.trim_matches(['.', '_']).is_empty() {
+        name = "buffer".to_string();
+    }
+
+    for attempt in 0..1000 {
+        let file_name = match attempt {
+            0 => format!("{stamp}-{name}"),
+            _ => format!("{stamp}-{attempt}-{name}"),
+        };
+        let path = directory.join(file_name);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let mut writer = io::BufWriter::new(file);
+        buffer.write_to(&mut writer)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        return Ok(path);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free recovery file name",
+    ))
+}
+
 fn undo_history_path(path: &Path) -> PathBuf {
     undo_history_root().join(format!(
         "{:0HASH_HEX_DIGITS$x}.json",
@@ -391,5 +444,32 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_files_are_private_unique_and_safely_named() {
+        let directory = tempfile::tempdir().unwrap();
+        let buffer = TextBuffer::from_text("secret draft\n");
+
+        let first = write_recovery_file(directory.path(), "../src/main.rs", &buffer).unwrap();
+        let second = write_recovery_file(directory.path(), "../src/main.rs", &buffer).unwrap();
+        let unnamed = write_recovery_file(directory.path(), "..", &buffer).unwrap();
+
+        assert_ne!(first, second);
+        for path in [&first, &second, &unnamed] {
+            assert_eq!(path.parent(), Some(directory.path()));
+            assert_eq!(fs::read_to_string(path).unwrap(), "secret draft\n");
+        }
+        let name = first.file_name().unwrap().to_string_lossy();
+        assert!(name.ends_with("-.._src_main.rs"), "{name}");
+        assert!(unnamed.to_string_lossy().ends_with("-buffer"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }
