@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use redox_core::{BufferId, BufferKind, Pos};
+use redox_core::{BufferId, BufferKind, Pos, TextBuffer, TextDiff};
 #[cfg(test)]
 use redox_lsp::InsertTextFormat;
 use redox_lsp::diagnostics::{configuration_response, workspace_folders_response};
@@ -259,7 +259,8 @@ struct ManagedDocument {
     language_id: &'static str,
     document_version: i32,
     last_sent_analysis_version: Option<u64>,
-    last_sent_text: Option<String>,
+    /// What the server has, sharing unchanged chunks with the buffer.
+    last_sent_text: Option<TextBuffer>,
     pending_sync_since: Option<Instant>,
     pending_sync_analysis_version: Option<u64>,
     opened: bool,
@@ -1606,7 +1607,7 @@ impl EditorState {
             )?;
             document.opened = true;
             document.last_sent_analysis_version = Some(analysis_version);
-            document.last_sent_text = Some(text);
+            document.last_sent_text = Some(buffer.clone());
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
             return Ok(());
@@ -1630,9 +1631,11 @@ impl EditorState {
             }
         }
 
-        let text = buffer.to_string();
-
-        if document.last_sent_text.as_deref() == Some(text.as_str()) {
+        if document
+            .last_sent_text
+            .as_ref()
+            .is_some_and(|sent| TextDiff::between(sent, buffer).is_none())
+        {
             document.last_sent_analysis_version = Some(analysis_version);
             document.pending_sync_since = None;
             document.pending_sync_analysis_version = None;
@@ -1640,11 +1643,13 @@ impl EditorState {
         }
 
         document.document_version = document.document_version.saturating_add(1);
-        client
-            .session
-            .send_did_change(&document.path, document.document_version, &text)?;
+        client.session.send_did_change(
+            &document.path,
+            document.document_version,
+            &buffer.to_string(),
+        )?;
         document.last_sent_analysis_version = Some(analysis_version);
-        document.last_sent_text = Some(text);
+        document.last_sent_text = Some(buffer.clone());
         document.pending_sync_since = None;
         document.pending_sync_analysis_version = None;
         Ok(())
@@ -4684,7 +4689,11 @@ mod regressions {
             )
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("original")
         );
         assert_eq!(state.lsp.documents[&buffer_id].document_version, 1);
@@ -4697,7 +4706,11 @@ mod regressions {
             )
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("changed 雪")
         );
         for _ in 0..20 {
@@ -4715,7 +4728,11 @@ mod regressions {
             .sync_lsp_document(buffer_id, SyncPolicy::Immediate)
             .unwrap();
         assert_eq!(
-            state.lsp.documents[&buffer_id].last_sent_text.as_deref(),
+            state.lsp.documents[&buffer_id]
+                .last_sent_text
+                .as_ref()
+                .map(TextBuffer::to_string)
+                .as_deref(),
             Some("immediate")
         );
         assert_eq!(state.lsp.documents[&buffer_id].document_version, 3);
@@ -4924,7 +4941,7 @@ mod regressions {
                 language_id: "rust",
                 document_version: 1,
                 last_sent_analysis_version: Some(sent_version),
-                last_sent_text: Some("before\n".to_string()),
+                last_sent_text: Some(TextBuffer::from_text("before\n")),
                 pending_sync_since: None,
                 pending_sync_analysis_version: None,
                 opened: true,
