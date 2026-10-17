@@ -11,7 +11,7 @@ use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
+use crate::input::{InputAction, InsertKind, OperatorTarget, TextObjectOperator};
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::syntax::SyntaxLanguage;
 
@@ -46,11 +46,7 @@ fn apply_keys(state: &mut EditorState, keys: &str) {
         } else {
             Event::Character(character)
         };
-        let action = crate::input::map_event_with_state(
-            &mut state.input,
-            state.mode.as_input_mode(),
-            &event,
-        );
+        let action = crate::input::map_event_with_state(&mut state.input, state.mode, &event);
         if !matches!(
             action,
             InputAction::ToggleMacroRecording | InputAction::StartMacroRecording { .. }
@@ -963,7 +959,7 @@ fn open_pinned_slot_from_visual_mode_clears_visual_state() {
             .session
             .open_file(&first_path)
             .expect("failed to return to first file");
-        state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
         assert_eq!(state.mode, EditorMode::Visual);
         assert!(state.active_visual_selection().is_some());
 
@@ -1658,7 +1654,7 @@ fn paragraph_motions_skip_separator_runs_and_support_counts_and_visual_modes() {
             let mut state = state_with_text(path.clone(), "one\ntwo\n\n \t\nthree\nfour\n\n猫yz");
             let buffer_id = state.session.active_id();
             state.views.get_mut(&buffer_id).unwrap().cursor.cursor = start;
-            state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+            state.apply_input(InputAction::SetMode(mode), 80, 24);
             apply_keys(&mut state, keys);
             assert_eq!(
                 state.active_cursor_pos(),
@@ -1877,7 +1873,7 @@ fn character_search_repeats_preserve_direction_counts_and_mode() {
             let mut state = state_with_text(path.clone(), "aébécédéeé\né");
             let buffer_id = state.session.active_id();
             state.views.get_mut(&buffer_id).unwrap().cursor.cursor = Pos::new(0, start_column);
-            state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+            state.apply_input(InputAction::SetMode(mode), 80, 24);
             apply_keys(&mut state, keys);
             assert_eq!(
                 state.active_cursor_pos(),
@@ -2312,7 +2308,7 @@ fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sy
     let mut state = state_with_text(path.clone(), "");
     let chunk = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
 
-    state.apply_input(InputAction::SetMode(InputMode::Insert), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Insert), 80, 24);
     state.apply_input(InputAction::Paste(chunk.to_string()), 80, 24);
     state.apply_input(InputAction::Paste(chunk.to_string()), 80, 24);
 
@@ -2345,8 +2341,8 @@ fn exiting_insert_mode_after_tab_keeps_cursor_after_tab() {
         .cursor
         .cursor = Pos::new(0, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::Insert), 80, 24);
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Insert), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
 
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
 
@@ -2410,7 +2406,7 @@ fn visual_block_tilde_toggles_rectangular_selection() {
     let path = temp_file_path("toggle_case_visual_block");
     let mut state = state_with_text(path.clone(), "abC\nDeF\n");
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -2448,7 +2444,7 @@ fn visual_char_replace_replaces_entire_selection_and_normalizes_mode() {
         .cursor
         .cursor = Pos::new(0, 0);
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Right,
@@ -2478,7 +2474,7 @@ fn visual_block_replace_preserves_block_shape_when_replacing_tabs() {
         .cursor
         .cursor = Pos::new(0, 0);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -2516,7 +2512,7 @@ fn visual_line_replace_preserves_line_structure() {
         .cursor
         .cursor = Pos::new(0, 0);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -2538,7 +2534,7 @@ fn visual_line_replace_preserves_line_structure() {
 fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
     let cases = [
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "aé🙂z\n",
             Pos::new(0, 2),
             Pos::new(0, 1),
@@ -2546,7 +2542,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::new(0, 1),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "abc\ndef\nghi\n",
             Pos::new(0, 1),
             Pos::new(1, 1),
@@ -2554,7 +2550,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::new(0, 1),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "abc",
             Pos::new(0, 2),
             Pos::new(0, 2),
@@ -2562,7 +2558,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::new(0, 2),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "",
             Pos::zero(),
             Pos::zero(),
@@ -2570,7 +2566,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::zero(),
         ),
         (
-            InputMode::VisualLine,
+            EditorMode::VisualLine,
             "ab\ncde\nnext\n",
             Pos::new(1, 2),
             Pos::new(0, 1),
@@ -2578,7 +2574,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::zero(),
         ),
         (
-            InputMode::VisualLine,
+            EditorMode::VisualLine,
             "ab\ncde",
             Pos::new(0, 1),
             Pos::new(1, 2),
@@ -2586,7 +2582,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::zero(),
         ),
         (
-            InputMode::VisualBlock,
+            EditorMode::VisualBlock,
             "ab\ncde\n",
             Pos::new(0, 0),
             Pos::new(1, 1),
@@ -2594,7 +2590,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
             Pos::zero(),
         ),
         (
-            InputMode::VisualBlock,
+            EditorMode::VisualBlock,
             "a\té🙂z\nx\n\nbcd\n",
             Pos::new(3, 2),
             Pos::new(0, 1),
@@ -2650,76 +2646,76 @@ fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
 
     let cases = [
         (
-            InputMode::Normal,
+            EditorMode::Normal,
             "rs",
             "  run();\nnext();\n",
             0,
             Some("  // run();\nnext();\n"),
         ),
         (
-            InputMode::Normal,
+            EditorMode::Normal,
             "css",
             "p { color: red; }\n",
             0,
             Some("/* p { color: red; } */\n"),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "rs",
             "  café();\r\n\tstep();\r\n\r\noutside\r\n",
             2,
             Some("  // café();\r\n\t// step();\r\n\r\noutside\r\n"),
         ),
         (
-            InputMode::VisualLine,
+            EditorMode::VisualLine,
             "py",
             "    # keep\n    run()\n",
             1,
             Some("    # # keep\n    # run()\n"),
         ),
         (
-            InputMode::VisualBlock,
+            EditorMode::VisualBlock,
             "lua",
             "  run()\n    next()\n",
             1,
             Some("  -- run()\n    -- next()\n"),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "css",
             "  p {\n    color: red;\n  }\noutside\n",
             2,
             Some("  /* p {\n    color: red;\n  } */\noutside\n"),
         ),
         (
-            InputMode::VisualLine,
+            EditorMode::VisualLine,
             "html",
             "  <div>\n    text\n",
             1,
             Some("  <!-- <div>\n    text -->\n"),
         ),
         (
-            InputMode::VisualBlock,
+            EditorMode::VisualBlock,
             "sql",
             "SELECT value;\nFROM data;\n",
             1,
             Some("-- SELECT value;\n-- FROM data;\n"),
         ),
         (
-            InputMode::VisualLine,
+            EditorMode::VisualLine,
             "sh",
             "echo hello\n",
             0,
             Some("# echo hello\n"),
         ),
         (
-            InputMode::Visual,
+            EditorMode::Visual,
             "jsonc",
             "{\"value\": 1}\n",
             0,
             Some("// {\"value\": 1}\n"),
         ),
-        (InputMode::Visual, "json", "{\"value\": 1}\n", 0, None),
+        (EditorMode::Visual, "json", "{\"value\": 1}\n", 0, None),
     ];
     for (mode, extension, original, end_line, commented) in cases {
         let path = temp_file_path("visual_comment_toggle").with_extension(extension);
@@ -2730,10 +2726,10 @@ fn comment_toggle_uses_file_syntax_and_undoes_as_one_edit() {
         for expected in commented.into_iter().chain(std::iter::once(original)) {
             state.apply_input(InputAction::SetMode(mode), 80, 24);
             state.with_active_buffer_view_mut(|_, view| {
-                view.visual_anchor = (mode != InputMode::Normal).then_some(Pos::new(end_line, 0));
+                view.visual_anchor = (mode != EditorMode::Normal).then_some(Pos::new(end_line, 0));
                 view.cursor.cursor = Pos::zero();
             });
-            let keys = if mode == InputMode::Normal {
+            let keys = if mode == EditorMode::Normal {
                 "gcc"
             } else {
                 "gc"
@@ -3099,7 +3095,7 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
     state.apply_input(InputAction::InsertChar('c'), 80, 24);
     let active_id = state.session.active_id();
     assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
     let history = undo_history_of(&state, active_id);
     assert_eq!(history.undo_len(), 1);
@@ -3124,7 +3120,7 @@ fn insert_mode_escape_does_not_snapshot_clean_buffer() {
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
     state.apply_input(InputAction::Backspace, 80, 24);
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
 
     let active_id = state.session.active_id();
     assert_eq!(state.session.active_buffer().to_string(), "hello");
@@ -3140,7 +3136,7 @@ fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
 
     let active_id = state.session.active_id();
     state
@@ -3152,7 +3148,7 @@ fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('b'), 80, 24);
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
 
     let history = undo_history_of(&state, active_id);
     assert_eq!(history.undo_len(), 2);
@@ -4115,7 +4111,7 @@ fn triple_backticks_pair_and_open_a_code_block() {
             state.apply_input(InputAction::InsertChar('`'), 80, 24);
         }
         assert_eq!(state.session.active_buffer().to_string(), paired);
-        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
         state.apply_input(InputAction::Undo, 80, 24);
         assert_eq!(state.session.active_buffer().to_string(), prefix);
         let _ = fs::remove_file(path);
@@ -6365,11 +6361,8 @@ fn half_page_scroll_centers_cursor_and_remembers_counts() {
                         mods: KeyModifiers::ctrl(),
                     })
                 };
-                let action = crate::input::map_event_with_state(
-                    &mut state.input,
-                    state.mode.as_input_mode(),
-                    &event,
-                );
+                let action =
+                    crate::input::map_event_with_state(&mut state.input, state.mode, &event);
                 state.apply_input(action, 80, 8);
             }
             let view = state.views.get(&id).unwrap();
@@ -6382,11 +6375,7 @@ fn half_page_scroll_centers_cursor_and_remembers_counts() {
             assert_eq!(state.mode, mode);
         }
         assert_eq!(
-            crate::input::map_event_with_state(
-                &mut state.input,
-                mode.as_input_mode(),
-                &Event::Character('j'),
-            ),
+            crate::input::map_event_with_state(&mut state.input, mode, &Event::Character('j'),),
             InputAction::Motion {
                 motion: Motion::Down,
                 count: 1
@@ -6646,7 +6635,7 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
         .cursor
         .cursor = Pos::new(0, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     let (sel, mode) = state
         .active_visual_selection()
         .expect("visual selection should exist");
@@ -6668,7 +6657,7 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
     assert_eq!(sel.anchor, Pos::new(0, 1));
     assert_eq!(sel.cursor.line, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
     assert!(state.active_visual_selection().is_none());
 
     let _ = fs::remove_file(path);
@@ -6685,7 +6674,7 @@ fn visual_yank_private_copies_selection_and_exits_visual_mode() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Right,
@@ -6728,7 +6717,7 @@ fn visual_line_leader_y_queues_system_clipboard_text() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -6762,7 +6751,7 @@ fn visual_yank_private_without_motion_includes_cursor_char() {
         .cursor
         .cursor = Pos::new(0, 2);
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
 
     assert_eq!(state.private_register, "p");
@@ -6783,7 +6772,7 @@ fn visual_block_yank_private_copies_rectangular_selection() {
         .cursor
         .cursor = Pos::new(0, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -6819,7 +6808,7 @@ fn visual_change_private_cuts_charwise_selection_and_enters_insert() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Right,
@@ -6851,7 +6840,7 @@ fn visual_line_change_private_cuts_full_lines_and_enters_insert() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -6952,7 +6941,7 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
         .cursor
         .cursor = Pos::new(0, 5);
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
@@ -6993,7 +6982,7 @@ fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
         .cursor
         .cursor = Pos::new(2, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
@@ -7032,7 +7021,7 @@ fn visual_text_object_selection_forces_full_load_before_resolving() {
         BufferLoadPhase::Loading
     );
 
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::OperateTarget {
             operator: TextObjectOperator::Select,
@@ -7066,7 +7055,7 @@ fn visual_line_delete_private_cuts_all_selected_lines() {
         .cursor
         .cursor = Pos::new(0, 0);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -7097,7 +7086,7 @@ fn visual_block_change_private_cuts_rectangular_selection_and_enters_insert() {
         .cursor
         .cursor = Pos::new(0, 1);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -7137,7 +7126,7 @@ fn visual_block_delete_private_removes_fully_covered_lines() {
         .cursor
         .cursor = Pos::new(1, 0);
 
-    state.apply_input(InputAction::SetMode(InputMode::VisualBlock), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state
         .views
         .get_mut(&id)
@@ -7229,7 +7218,7 @@ fn visual_x_deletes_selection_without_modifying_private_register() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Right,
@@ -7252,7 +7241,7 @@ fn visual_x_deletes_selection_without_modifying_private_register() {
 fn normal_mode_shift_p_pastes_private_register_before_cursor() {
     let path = temp_file_path("paste_before_charwise");
     let mut state = state_with_text(path.clone(), "abc\n");
-    state.apply_input(InputAction::SetMode(InputMode::Visual), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
 
     let id = state.session.active_id();
@@ -7581,7 +7570,7 @@ fn normal_mode_o_and_shift_o_indent_between_delimiters() {
     );
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 4));
 
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
     state
         .views
         .get_mut(&id)
@@ -7615,7 +7604,7 @@ fn markdown_enter_and_open_line_continue_list_indentation() {
     assert_eq!(state.session.active_buffer().to_string(), "- item\n  ");
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 2));
 
-    state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
     state
         .views
         .get_mut(&id)
@@ -7733,7 +7722,7 @@ fn markdown_list_indent_survives_consecutive_enters_and_wrapped_lines() {
             "blank Enter: {initial}"
         );
 
-        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
         state.apply_input(InputAction::Undo, 80, 24);
         assert_eq!(
             state.session.active_buffer().to_string(),
@@ -7845,7 +7834,7 @@ fn insert_enter_continues_comments_without_commenting_strings_or_code() {
             prefix.chars().count(),
             "repeat: {initial}"
         );
-        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
         state.apply_input(InputAction::Undo, 80, 24);
         assert_eq!(
             state.session.active_buffer().to_string(),
@@ -7867,7 +7856,7 @@ fn visual_shift_j_and_k_move_selected_lines() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(1, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -7902,7 +7891,7 @@ fn visual_move_reindents_line_for_new_tree_sitter_scope() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(3, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
 
     state.apply_input(InputAction::MoveVisualSelectionUp { count: 1 }, 80, 24);
     assert_eq!(
@@ -7956,7 +7945,7 @@ fn visual_line_moves_preserve_eof_boundaries() {
             .cursor
             .cursor = initial_cursor;
 
-        state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
         state.apply_input(action, 80, 24);
 
         assert_eq!(
@@ -7979,7 +7968,7 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
         .expect("missing view")
         .cursor
         .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(InputMode::VisualLine), 80, 24);
+    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
     state.apply_input(
         InputAction::Motion {
             motion: Motion::Down,
@@ -8180,11 +8169,7 @@ fn number_increments_work_at_the_cursor_and_on_selections() {
             key: KeyKind::Char(c),
             mods,
         });
-        let action = crate::input::map_event_with_state(
-            &mut state.input,
-            state.mode.as_input_mode(),
-            &event,
-        );
+        let action = crate::input::map_event_with_state(&mut state.input, state.mode, &event);
         state.apply_input(action, 80, 24);
     };
     let alt = KeyModifiers {
@@ -8210,7 +8195,7 @@ fn number_increments_work_at_the_cursor_and_on_selections() {
     assert_eq!(
         crate::input::map_event_with_state(
             &mut state.input,
-            InputMode::Normal,
+            EditorMode::Normal,
             &Event::KeyWithModifiers(KeyWithModifiers {
                 key: KeyKind::Char('x'),
                 mods: KeyModifiers::ctrl(),
@@ -8266,7 +8251,7 @@ fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
     ] {
         state.mode = EditorMode::Normal;
         apply_keys(&mut state, "gg");
-        state.apply_input(InputAction::SetMode(mode.as_input_mode()), 80, 24);
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
         let anchor = state.views[&buffer_id].visual_anchor;
         apply_keys(&mut state, "`a");
         assert_eq!(state.mode, mode);

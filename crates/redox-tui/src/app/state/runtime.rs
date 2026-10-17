@@ -215,7 +215,8 @@ impl EditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::{InputAction, InputMode, map_event_with_state};
+    use crate::input::{InputAction, map_event_with_state};
+    use crate::mode::EditorMode;
     use minui::Event;
     use redox_core::EditorSession;
 
@@ -294,7 +295,7 @@ mod tests {
 
         state.command_open_about();
         settle(&mut state);
-        map_event_with_state(&mut state.input, InputMode::Normal, &Event::Character(' '));
+        map_event_with_state(&mut state.input, EditorMode::Normal, &Event::Character(' '));
         let hint_due = state
             .input
             .which_key_deadline(state.which_key_delay)

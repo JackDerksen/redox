@@ -6,7 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::{EditorMode, EditorState, SplitAxis, SplitDirection};
 use crate::SOFT_TAB_WIDTH;
-use crate::input::{InputAction, InputMode, InsertKind};
+use crate::input::{InputAction, InsertKind};
 use crate::ui::syntax::{auto_closing_tag, smart_newline_insert};
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
 
@@ -111,10 +111,7 @@ impl EditorState {
             | InputAction::PlayMacro { .. }
             | InputAction::None => {}
             InputAction::ReplaySequence(sequence) => {
-                match self
-                    .input
-                    .expand_replay_sequence(self.mode.as_input_mode(), &sequence)
-                {
+                match self.input.expand_replay_sequence(self.mode, &sequence) {
                     Ok(actions) => {
                         for action in actions {
                             self.apply_input(action, viewport_width_cells, viewport_height_rows);
@@ -396,7 +393,7 @@ impl EditorState {
                 let _ = self.close_completion();
                 if !had_visible_completion {
                     self.apply_input(
-                        InputAction::SetMode(InputMode::Normal),
+                        InputAction::SetMode(EditorMode::Normal),
                         viewport_width_cells,
                         viewport_height_rows,
                     );
@@ -573,9 +570,8 @@ impl EditorState {
         ControlFlow::Continue(())
     }
 
-    fn set_mode(&mut self, mode: InputMode, viewport_width_cells: usize, text_vh: usize) {
+    fn set_mode(&mut self, next_mode: EditorMode, viewport_width_cells: usize, text_vh: usize) {
         let prev_mode = self.mode;
-        let next_mode = EditorMode::from(mode);
         if prev_mode == EditorMode::Insert && next_mode != EditorMode::Insert {
             let _ = self.finalize_active_insert_undo_if_changed();
             self.close_completion();
@@ -1424,7 +1420,10 @@ fn is_buffer_editing_action(action: &InputAction) -> bool {
     match action {
         InputAction::SetMode(mode) => matches!(
             mode,
-            InputMode::Insert | InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
+            EditorMode::Insert
+                | EditorMode::Visual
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock
         ),
         InputAction::Paste(_)
         | InputAction::EnterInsert(_)

@@ -403,7 +403,7 @@ fn input_popups_route_cursor_clicks_and_outside_dismissal() {
     assert_eq!(state.session.active_meta().path.as_ref(), Some(&document));
     state.apply_input(InputAction::RunCommand("perf popup".to_string()), 100, 30);
     state.apply_input(
-        InputAction::SetMode(crate::input::InputMode::Insert),
+        InputAction::SetMode(crate::mode::EditorMode::Insert),
         100,
         30,
     );
@@ -430,7 +430,7 @@ fn perf_overlay_allows_buffer_scrolling_inside_and_outside_its_bounds() {
         state.apply_input(InputAction::RunCommand("perf popup".to_string()), 100, 30);
         if split {
             state.apply_input(
-                InputAction::SetMode(crate::input::InputMode::Insert),
+                InputAction::SetMode(crate::mode::EditorMode::Insert),
                 100,
                 30,
             );
@@ -896,7 +896,7 @@ fn pinboard_double_click_opens_occupied_slots_without_assigning_empty_ones() {
 
 #[test]
 fn mouse_scrolling_preserves_offscreen_cursor_and_centres_before_editing() {
-    use crate::input::InputMode;
+    use crate::mode::EditorMode;
 
     let files = MouseFiles::new();
     let line = format!("\t界{}", "abcdef".repeat(40));
@@ -904,11 +904,11 @@ fn mouse_scrolling_preserves_offscreen_cursor_and_centres_before_editing() {
     for split in [false, true] {
         for (mode, events) in [
             (
-                InputMode::Normal,
+                EditorMode::Normal,
                 vec![Event::Character('i'), Event::Character('@')],
             ),
-            (InputMode::Insert, vec![Event::Character('@')]),
-            (InputMode::Normal, vec![Event::Paste("@".to_string())]),
+            (EditorMode::Insert, vec![Event::Character('@')]),
+            (EditorMode::Normal, vec![Event::Paste("@".to_string())]),
         ] {
             let mut state = EditorState::new(EditorSession::open_initial_file(&document).unwrap());
             state.configure_mouse(true, false, false, 3, 3);
@@ -964,7 +964,7 @@ fn mouse_scrolling_preserves_offscreen_cursor_and_centres_before_editing() {
             assert!(!window.cursor.unwrap().visible);
             let scrolled =
                 state.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll());
-            if mode == InputMode::Normal {
+            if mode == EditorMode::Normal {
                 handle_editor_event(&mut state, &mut None, Event::Character(':'));
                 handle_editor_event(&mut state, &mut None, Event::Character('a'));
                 render(&mut state, &mut window);

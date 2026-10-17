@@ -9,8 +9,8 @@ use super::resize::ResizeTarget;
 use super::{
     EditorMode, EditorState, PaneId, PaneRect, UndoTreeSurfaceRole, char_col_at_or_before_cell,
 };
+use crate::input::InputAction;
 use crate::input::cursor::CursorController;
-use crate::input::{InputAction, InputMode};
 use crate::ui::widgets::popup::{MousePopup, MouseScroll, MouseTarget, PopupMouseLayout};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UNDO_TREE_HEADER_ROWS};
 
@@ -275,7 +275,7 @@ impl EditorState {
                 let (width, height) = self.viewport_size();
                 let scroll =
                     self.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll());
-                self.apply_input(InputAction::SetMode(InputMode::Normal), width, height);
+                self.apply_input(InputAction::SetMode(EditorMode::Normal), width, height);
                 self.with_active_buffer_view_mut(|_, view| {
                     view.cursor.scroll_x_cells = scroll.0;
                     view.cursor.scroll_y_lines = scroll.1;
@@ -541,7 +541,7 @@ impl EditorState {
         }
         let (width, height) = self.viewport_size();
         if self.mode != EditorMode::Visual {
-            self.apply_input(InputAction::SetMode(InputMode::Visual), width, height);
+            self.apply_input(InputAction::SetMode(EditorMode::Visual), width, height);
         }
         self.with_active_buffer_view_mut(|buffer, view| {
             // Visual selections include their upper endpoint. Keep the entire

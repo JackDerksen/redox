@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::app::state::{EditorMode, EditorState};
-use crate::input::{InputAction, InputMode};
+use crate::input::InputAction;
 use crate::ui::STATUS_BAR_HEIGHT_ROWS;
 use crate::ui::widgets::popup::{MousePopup, MouseRect, MouseScroll, MouseTarget};
 
@@ -103,7 +103,7 @@ impl EditorState {
                 let (width, height) = self.viewport_size();
                 let scroll =
                     self.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll());
-                self.apply_input(InputAction::SetMode(InputMode::Normal), width, height);
+                self.apply_input(InputAction::SetMode(EditorMode::Normal), width, height);
                 self.with_active_buffer_view_mut(|buffer, view| {
                     view.cursor.scroll_x_cells = scroll.0;
                     view.cursor.scroll_y_lines = scroll.1;

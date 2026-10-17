@@ -26,6 +26,7 @@ mod config;
 mod crash;
 mod indentation;
 mod input;
+mod mode;
 mod storage;
 mod terminal;
 mod ui;
@@ -3372,7 +3373,7 @@ fn handle_editor_event_inner(
         Event::Paste(text) => InputAction::Paste(text.clone()),
         _ => map_event_with_context(
             &mut state.input,
-            state.mode.as_input_mode(),
+            state.mode,
             confirm_explorer_delete,
             &event,
         ),
@@ -6834,7 +6835,7 @@ background = "#010203"
         assert_eq!(
             map_event_with_context(
                 &mut state.input,
-                input::InputMode::Normal,
+                mode::EditorMode::Normal,
                 false,
                 &Event::Character(','),
             ),
@@ -6843,7 +6844,7 @@ background = "#010203"
         assert_eq!(
             map_event_with_context(
                 &mut state.input,
-                input::InputMode::Normal,
+                mode::EditorMode::Normal,
                 false,
                 &Event::Character('f'),
             ),

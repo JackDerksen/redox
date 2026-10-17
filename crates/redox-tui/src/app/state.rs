@@ -15,7 +15,8 @@ use redox_core::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::input::cursor::CursorController;
-use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputMode, InputState, WhichKeyPopup};
+use crate::input::{DEFAULT_WHICH_KEY_DELAY, InputState, WhichKeyPopup};
+pub use crate::mode::EditorMode;
 use crate::storage;
 use crate::ui::overlays::DelimiterPairCache;
 use crate::ui::syntax::IndentParser;
@@ -195,84 +196,6 @@ struct CommandHistoryState {
     entries: Vec<String>,
     nav_index: Option<usize>,
     draft: String,
-}
-
-/// Vim-like editor mode for the TUI frontend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorMode {
-    Normal,
-    Insert,
-    Command,
-    Search,
-    Finder,
-    PinSelect,
-    LspMarketplace,
-    DiagnosticsList,
-    CodeActions,
-    SymbolInfo,
-    Visual,
-    VisualLine,
-    VisualBlock,
-}
-
-impl EditorMode {
-    pub fn has_popup_overlay(self) -> bool {
-        matches!(
-            self,
-            EditorMode::Command
-                | EditorMode::Finder
-                | EditorMode::PinSelect
-                | EditorMode::LspMarketplace
-                | EditorMode::DiagnosticsList
-                | EditorMode::CodeActions
-                | EditorMode::SymbolInfo
-        )
-    }
-
-    pub fn is_visual(self) -> bool {
-        matches!(
-            self,
-            EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-        )
-    }
-
-    pub fn as_input_mode(self) -> InputMode {
-        match self {
-            EditorMode::Normal => InputMode::Normal,
-            EditorMode::Insert => InputMode::Insert,
-            EditorMode::Command => InputMode::Command,
-            EditorMode::Search => InputMode::Search,
-            EditorMode::Finder => InputMode::Finder,
-            EditorMode::PinSelect => InputMode::PinSelect,
-            EditorMode::LspMarketplace => InputMode::LspMarketplace,
-            EditorMode::DiagnosticsList => InputMode::DiagnosticsList,
-            EditorMode::CodeActions => InputMode::CodeActions,
-            EditorMode::SymbolInfo => InputMode::SymbolInfo,
-            EditorMode::Visual => InputMode::Visual,
-            EditorMode::VisualLine => InputMode::VisualLine,
-            EditorMode::VisualBlock => InputMode::VisualBlock,
-        }
-    }
-}
-
-impl From<InputMode> for EditorMode {
-    fn from(mode: InputMode) -> Self {
-        match mode {
-            InputMode::Normal => EditorMode::Normal,
-            InputMode::Insert => EditorMode::Insert,
-            InputMode::Command => EditorMode::Command,
-            InputMode::Search => EditorMode::Search,
-            InputMode::Finder => EditorMode::Finder,
-            InputMode::PinSelect => EditorMode::PinSelect,
-            InputMode::LspMarketplace => EditorMode::LspMarketplace,
-            InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
-            InputMode::CodeActions => EditorMode::CodeActions,
-            InputMode::SymbolInfo => EditorMode::SymbolInfo,
-            InputMode::Visual => EditorMode::Visual,
-            InputMode::VisualLine => EditorMode::VisualLine,
-            InputMode::VisualBlock => EditorMode::VisualBlock,
-        }
-    }
 }
 
 /// Per-buffer UI/view state that is not persisted in `redox-core`.
@@ -731,7 +654,7 @@ impl EditorState {
             return None;
         }
         self.input
-            .which_key_popup(self.mode.as_input_mode(), now, self.which_key_delay)
+            .which_key_popup(self.mode, now, self.which_key_delay)
     }
 
     fn configured_scrolloff_for_buffer(&self, buffer_id: BufferId) -> usize {
