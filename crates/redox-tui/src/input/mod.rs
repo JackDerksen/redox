@@ -1434,15 +1434,10 @@ pub(crate) fn which_key_event(label: &str, leader: char) -> Option<Event> {
             })
         }
     };
-    let event = Event::KeyWithModifiers(KeyWithModifiers {
+    Some(Event::KeyWithModifiers(KeyWithModifiers {
         key,
         mods: modifiers,
-    });
-    if unmodified(modifiers) {
-        event.as_legacy_key_event()
-    } else {
-        Some(event)
-    }
+    }))
 }
 
 fn which_key_entry(key: impl Into<String>, description: impl Into<String>) -> WhichKeyEntry {
@@ -1765,6 +1760,7 @@ pub fn map_event_with_context(
     confirm_explorer_delete: bool,
     event: &Event,
 ) -> InputAction {
+    let event = &*normalize_legacy_key_event(event);
     if modal_sequence_mode(mode)
         && (state.pending_input().is_some()
             || state.which_key_forced
@@ -1788,20 +1784,42 @@ pub fn map_event_with_context(
     action
 }
 
+/// Rewrites MinUI's legacy key events as the unmodified key events a terminal produces, so
+/// synthetic input (tests, replayed sequences, which-key) takes the same path as typed keys.
+fn normalize_legacy_key_event(event: &Event) -> Cow<'_, Event> {
+    let key = match event {
+        Event::Character(c) => KeyKind::Char(*c),
+        Event::Escape => KeyKind::Escape,
+        Event::Enter => KeyKind::Enter,
+        Event::Backspace => KeyKind::Backspace,
+        Event::Tab => KeyKind::Tab,
+        Event::Delete => KeyKind::Delete,
+        Event::KeyUp => KeyKind::Up,
+        Event::KeyDown => KeyKind::Down,
+        Event::KeyLeft => KeyKind::Left,
+        Event::KeyRight => KeyKind::Right,
+        Event::CapsLock => KeyKind::CapsLock,
+        Event::FunctionKey(number) => KeyKind::Function(*number),
+        _ => return Cow::Borrowed(event),
+    };
+    Cow::Owned(Event::KeyWithModifiers(KeyWithModifiers {
+        key,
+        mods: KeyModifiers::none(),
+    }))
+}
+
 fn pending_escape_event(event: &Event) -> bool {
-    matches!(event, Event::Escape)
-        || matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
-            key: KeyKind::Escape,
-            mods,
-        }) if unmodified(*mods))
+    matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
+        key: KeyKind::Escape,
+        mods,
+    }) if unmodified(*mods))
 }
 
 fn pending_backspace_event(event: &Event) -> bool {
-    matches!(event, Event::Backspace)
-        || matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
-            key: KeyKind::Backspace,
-            mods,
-        }) if unmodified(*mods))
+    matches!(event, Event::KeyWithModifiers(KeyWithModifiers {
+        key: KeyKind::Backspace,
+        mods,
+    }) if unmodified(*mods))
 }
 
 pub(crate) fn macro_key_label(event: &Event) -> String {
@@ -1884,15 +1902,11 @@ fn map_event_with_context_inner(
             },
         };
     }
-    let custom_character = match event {
-        Event::Character(c) => Some(*c),
-        Event::KeyWithModifiers(KeyWithModifiers {
-            key: KeyKind::Char(c),
-            mods,
-        }) if text_mods(*mods) => Some(*c),
-        _ => None,
-    };
-    if let Some(c) = custom_character
+    if let Event::KeyWithModifiers(KeyWithModifiers {
+        key: KeyKind::Char(c),
+        mods,
+    }) = event
+        && text_mods(*mods)
         && !matches!(
             mode,
             EditorMode::Normal
@@ -1905,63 +1919,6 @@ fn map_event_with_context_inner(
         return finish_custom_action(state, action);
     }
     match event {
-        Event::Escape => {
-            state.reset_prefixes();
-            match mode {
-                EditorMode::Insert => InputAction::CompletionCancel,
-                EditorMode::Command => InputAction::CommandCancel,
-                EditorMode::Search => InputAction::SearchCancel,
-                EditorMode::Finder => InputAction::FinderCancel,
-                EditorMode::PinSelect => InputAction::PinSelectorCancel,
-                EditorMode::LspMarketplace => InputAction::LspMarketplaceCancel,
-                EditorMode::DiagnosticsList => InputAction::DiagnosticsListCancel,
-                EditorMode::CodeActions => InputAction::CodeActionsCancel,
-                EditorMode::SymbolInfo => InputAction::SymbolInfoCancel,
-                EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
-                    InputAction::SetMode(EditorMode::Normal)
-                }
-                EditorMode::Normal => InputAction::ClearSearch,
-            }
-        }
-
-        Event::Backspace => {
-            state.reset_prefixes();
-            match mode {
-                EditorMode::Insert => InputAction::Backspace,
-                EditorMode::Command => InputAction::CommandBackspace,
-                EditorMode::Search => InputAction::SearchBackspace,
-                EditorMode::Finder => InputAction::FinderBackspace,
-                EditorMode::PinSelect => InputAction::None,
-                EditorMode::LspMarketplace => InputAction::None,
-                EditorMode::DiagnosticsList => InputAction::None,
-                EditorMode::CodeActions => InputAction::None,
-                EditorMode::SymbolInfo => InputAction::None,
-                EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
-                    InputAction::None
-                }
-                EditorMode::Normal => InputAction::None,
-            }
-        }
-
-        Event::Enter => {
-            state.reset_prefixes();
-            match mode {
-                EditorMode::Insert => InputAction::Enter,
-                EditorMode::Command => InputAction::CommandEnter,
-                EditorMode::Search => InputAction::SearchEnter,
-                EditorMode::Finder => InputAction::FinderEnter,
-                EditorMode::PinSelect => InputAction::PinSelectorOpenSelected,
-                EditorMode::LspMarketplace => InputAction::None,
-                EditorMode::DiagnosticsList => InputAction::DiagnosticsListOpenSelected,
-                EditorMode::CodeActions => InputAction::CodeActionsApplySelected,
-                EditorMode::SymbolInfo => InputAction::None,
-                EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock => {
-                    InputAction::None
-                }
-                EditorMode::Normal => InputAction::SurfaceOpenSelected,
-            }
-        }
-
         Event::Keybind(KeybindAction::Custom(action)) if action == "trigger-completion" => {
             state.reset_prefixes();
             if mode == EditorMode::Insert {
@@ -1991,70 +1948,6 @@ fn map_event_with_context_inner(
         }
 
         Event::KeyWithModifiers(k) => map_key_with_state(state, mode, confirm_explorer_delete, *k),
-
-        Event::Character(c) => match mode {
-            EditorMode::Insert if *c == '\0' => {
-                state.reset_prefixes();
-                InputAction::None
-            }
-            EditorMode::Insert => InputAction::InsertChar(*c),
-            EditorMode::Command => InputAction::CommandChar(*c),
-            EditorMode::Search => InputAction::SearchChar(*c),
-            EditorMode::Finder => InputAction::FinderChar(*c),
-            EditorMode::PinSelect => {
-                state.reset_prefixes();
-                match c {
-                    'J' => InputAction::PinSelectorReorderDown,
-                    'K' => InputAction::PinSelectorReorderUp,
-                    'j' => InputAction::PinSelectorMoveNext,
-                    'k' => InputAction::PinSelectorMovePrev,
-                    'p' => InputAction::PinSelectorAssign,
-                    'd' => InputAction::PinSelectorDeleteSelected,
-                    _ => InputAction::None,
-                }
-            }
-            EditorMode::LspMarketplace => {
-                state.reset_prefixes();
-                match c {
-                    'j' => InputAction::LspMarketplaceMoveNext,
-                    'k' => InputAction::LspMarketplaceMovePrev,
-                    'i' => InputAction::LspMarketplaceInstallSelected,
-                    'u' => InputAction::LspMarketplaceUninstallSelected,
-                    _ => InputAction::None,
-                }
-            }
-            EditorMode::DiagnosticsList => {
-                state.reset_prefixes();
-                match c {
-                    'j' => InputAction::DiagnosticsListMoveNext,
-                    'k' => InputAction::DiagnosticsListMovePrev,
-                    'a' => InputAction::TriggerCodeActions,
-                    _ => InputAction::None,
-                }
-            }
-            EditorMode::CodeActions => {
-                state.reset_prefixes();
-                match c {
-                    'j' => InputAction::CodeActionsMoveNext,
-                    'k' => InputAction::CodeActionsMovePrev,
-                    _ => InputAction::None,
-                }
-            }
-            EditorMode::SymbolInfo => {
-                state.reset_prefixes();
-                match c {
-                    'j' => InputAction::SymbolInfoMoveNext,
-                    'k' => InputAction::SymbolInfoMovePrev,
-                    _ => InputAction::None,
-                }
-            }
-            EditorMode::Normal
-            | EditorMode::Visual
-            | EditorMode::VisualLine
-            | EditorMode::VisualBlock => {
-                modal_char_action(state, mode, confirm_explorer_delete, *c)
-            }
-        },
 
         _ => InputAction::None,
     }
@@ -3495,6 +3388,10 @@ fn map_key_with_state(
                     count: 1,
                 },
 
+                KeyKind::Char('\0') => {
+                    state.reset_prefixes();
+                    InputAction::None
+                }
                 KeyKind::Char(c) if text_mods(mods) => InputAction::InsertChar(c),
 
                 _ => InputAction::None,
@@ -4574,7 +4471,7 @@ mod tests {
         for (event, expected) in [
             (Event::Escape, InputAction::None),
             (Event::Backspace, InputAction::None),
-            (Event::Enter, InputAction::SurfaceOpenSelected),
+            (Event::Enter, InputAction::None),
         ] {
             let mut state = InputState::new();
             let _ = map_event_with_state(&mut state, EditorMode::Normal, &Event::Character('r'));
