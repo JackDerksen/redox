@@ -1,11 +1,9 @@
+use crate::ui::helpers::visual_column;
 use std::ops::ControlFlow;
 
-use minui::{TabPolicy, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
-use unicode_segmentation::UnicodeSegmentation;
 
 use super::{EditorMode, EditorState, SplitAxis, SplitDirection};
-use crate::SOFT_TAB_WIDTH;
 use crate::input::{InputAction, InsertKind};
 use crate::ui::syntax::{auto_closing_tag, smart_newline_insert};
 use crate::ui::{STATUS_BAR_HEIGHT_ROWS, language_for_path};
@@ -1187,31 +1185,14 @@ fn soft_tab_insert_text(buffer: &TextBuffer, cursor: Pos, indent_size: usize) ->
     " ".repeat(next_tab - col)
 }
 
-fn visual_column(line: &str, char_col: usize) -> usize {
-    let mut chars_seen = 0usize;
-    let mut width = 0usize;
-    for grapheme in line.graphemes(true) {
-        let next = chars_seen + grapheme.chars().count();
-        if char_col < next {
-            return width;
-        }
-        width += cell_width(grapheme, TabPolicy::Fixed(SOFT_TAB_WIDTH as u16)) as usize;
-        chars_seen = next;
-        if chars_seen == char_col {
-            return width;
-        }
-    }
-    width
-}
-
 pub(super) fn insert_at_cursor(text: &mut String, cursor: &mut usize, inserted: &str) {
-    clamp_str_cursor(text, cursor);
+    *cursor = text.floor_char_boundary(*cursor);
     text.insert_str(*cursor, inserted);
     *cursor += inserted.len();
 }
 
 pub(super) fn backspace_at_cursor(text: &mut String, cursor: &mut usize) {
-    clamp_str_cursor(text, cursor);
+    *cursor = text.floor_char_boundary(*cursor);
     let Some(prev) = previous_char_boundary(text, *cursor) else {
         return;
     };
@@ -1220,14 +1201,14 @@ pub(super) fn backspace_at_cursor(text: &mut String, cursor: &mut usize) {
 }
 
 pub(super) fn move_cursor_left(text: &str, cursor: &mut usize) {
-    clamp_str_cursor(text, cursor);
+    *cursor = text.floor_char_boundary(*cursor);
     if let Some(prev) = previous_char_boundary(text, *cursor) {
         *cursor = prev;
     }
 }
 
 pub(super) fn move_cursor_right(text: &str, cursor: &mut usize) {
-    clamp_str_cursor(text, cursor);
+    *cursor = text.floor_char_boundary(*cursor);
     if *cursor >= text.len() {
         return;
     }
@@ -1236,13 +1217,6 @@ pub(super) fn move_cursor_right(text: &str, cursor: &mut usize) {
         .next()
         .map(char::len_utf8)
         .unwrap_or(0);
-}
-
-pub(super) fn clamp_str_cursor(text: &str, cursor: &mut usize) {
-    *cursor = (*cursor).min(text.len());
-    while *cursor > 0 && !text.is_char_boundary(*cursor) {
-        *cursor -= 1;
-    }
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {

@@ -1,11 +1,10 @@
-use crate::ui::text_style::TextStyle;
+use crate::ui::widgets::popup::write_clipped_line;
 use minui::Window;
 
 use crate::app::{FramePerfStats, PerfPopup};
 use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    PopupChrome, PopupLayout, clip_text_to_cells, draw_popup_frame_at, popup_inner_size,
-    popup_window_view,
+    PopupChrome, PopupLayout, draw_popup_frame_at, popup_inner_size, popup_window_view,
 };
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, UiStyle};
 
@@ -56,7 +55,7 @@ pub fn draw_perf_popup_view(
     let max_w = inner_w.saturating_sub(left);
     let Some(stats) = popup.stats else {
         if inner_h > 0 {
-            write_line(
+            write_clipped_line(
                 &mut view,
                 PERF_BUDGET_ROW,
                 left,
@@ -70,7 +69,7 @@ pub fn draw_perf_popup_view(
 
     if inner_h > PERF_BUDGET_ROW {
         let budget = format!("budget {:>4.1} ms", PERF_FRAME_BUDGET_MS);
-        write_line(
+        write_clipped_line(
             &mut view,
             PERF_BUDGET_ROW,
             left,
@@ -80,7 +79,7 @@ pub fn draw_perf_popup_view(
         )?;
     }
     if inner_h > PERF_HEADER_ROW {
-        write_line(
+        write_clipped_line(
             &mut view,
             PERF_HEADER_ROW,
             left,
@@ -88,7 +87,7 @@ pub fn draw_perf_popup_view(
             style.perf.label,
             max_w,
         )?;
-        write_line(
+        write_clipped_line(
             &mut view,
             PERF_HEADER_ROW,
             left.saturating_add(PERF_VALUE_COL),
@@ -107,7 +106,7 @@ pub fn draw_perf_popup_view(
             break;
         }
 
-        write_line(
+        write_clipped_line(
             &mut view,
             y,
             left,
@@ -120,7 +119,7 @@ pub fn draw_perf_popup_view(
             row.value_ms,
             width = PERF_VALUE_WIDTH as usize
         );
-        write_line(
+        write_clipped_line(
             &mut view,
             y,
             left.saturating_add(PERF_VALUE_COL),
@@ -134,7 +133,7 @@ pub fn draw_perf_popup_view(
     let events_row = PERF_FIRST_METRIC_ROW.saturating_add(rows.len() as u16);
     if events_row < inner_h {
         let events = format!("events {:>3}", stats.event_count);
-        write_line(&mut view, events_row, left, &events, style.perf.dim, max_w)?;
+        write_clipped_line(&mut view, events_row, left, &events, style.perf.dim, max_w)?;
     }
 
     Ok(())
@@ -257,22 +256,6 @@ fn draw_bar(
         view.write_str_styled(row, col, &"#".repeat(filled), color.into())?;
     }
     Ok(())
-}
-
-fn write_line(
-    view: &mut minui::widgets::WindowView<'_>,
-    row: u16,
-    col: u16,
-    text: &str,
-    color: TextStyle,
-    width: u16,
-) -> minui::Result<()> {
-    if width == 0 {
-        return Ok(());
-    }
-
-    let clipped = clip_text_to_cells(text, width as usize);
-    view.write_str_styled(row, col, &clipped, color.into())
 }
 
 #[cfg(test)]

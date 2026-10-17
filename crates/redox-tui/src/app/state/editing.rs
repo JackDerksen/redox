@@ -1,3 +1,4 @@
+use crate::ui::syntax::leading_indent;
 use redox_core::{
     Pos, Selection, SelectionIncrement, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
     motion::{Motion, apply_motion_for_operator, apply_motion_n},
@@ -668,7 +669,7 @@ impl EditorState {
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
             let exact_text = buffer.line_span_text(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
-            let indent = leading_line_indent(&buffer.line_string(start_line)).to_string();
+            let indent = leading_indent(&buffer.line_string(start_line)).to_string();
             let line_ending = trailing_line_ending(&exact_text).to_string();
             (start_pos, end_pos, text, indent, line_ending)
         };
@@ -1171,11 +1172,11 @@ impl EditorState {
         let replacements = if closing.is_empty() {
             let uncomment = lines
                 .iter()
-                .all(|(_, text)| text[leading_line_indent(text).len()..].starts_with(opening));
+                .all(|(_, text)| text[leading_indent(text).len()..].starts_with(opening));
             lines
                 .iter()
                 .map(|(line, text)| {
-                    let indent = leading_line_indent(text);
+                    let indent = leading_indent(text);
                     let content = &text[indent.len()..];
                     let replacement = if uncomment {
                         let content = &content[opening.len()..];
@@ -1192,7 +1193,7 @@ impl EditorState {
                 .collect::<Vec<_>>()
         } else {
             let (last_line, last_text) = lines.last().expect("nonempty selection");
-            let start = Pos::new(*first_line, leading_line_indent(first_text).chars().count());
+            let start = Pos::new(*first_line, leading_indent(first_text).chars().count());
             let end = Pos::new(*last_line, last_text.trim_end().chars().count());
             let source = buffer.slice_pos_range(start, end);
             if let Some(content) = uncomment_paired_content(&source, opening, closing) {
@@ -1200,7 +1201,7 @@ impl EditorState {
             } else if let Some(replacements) = lines
                 .iter()
                 .map(|(line, text)| {
-                    let indent = leading_line_indent(text);
+                    let indent = leading_indent(text);
                     let content = uncomment_paired_content(
                         text[indent.len()..].trim_end(),
                         opening,
@@ -1675,14 +1676,6 @@ fn uncomment_paired_content<'source>(
     }
     let content = content.strip_prefix(' ').unwrap_or(content);
     Some(content.strip_suffix(' ').unwrap_or(content))
-}
-
-fn leading_line_indent(text: &str) -> &str {
-    let end = text
-        .char_indices()
-        .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))
-        .unwrap_or(text.len());
-    &text[..end]
 }
 
 fn trailing_line_ending(text: &str) -> &str {

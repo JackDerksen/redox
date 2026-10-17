@@ -1,7 +1,7 @@
-use crate::ui::text_style::TextStyle;
+use crate::ui::helpers::text_width;
+use crate::ui::widgets::popup::{draw_section_header, selection_aware_color};
+use minui::Window;
 use minui::widgets::WindowView;
-use minui::{TabPolicy, Window, cell_width};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{LspEntryStatusKind, LspMarketplacePopup};
 use crate::ui::UiStyle;
@@ -77,19 +77,6 @@ pub fn lsp_marketplace_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyl
         style.lsp_marketplace.min_width,
         style.lsp_marketplace.min_height,
     )
-}
-
-fn draw_section_header(
-    window: &mut WindowView<'_>,
-    row: u16,
-    text: &str,
-    colors: TextStyle,
-) -> minui::Result<u16> {
-    if row >= window.height {
-        return Ok(row);
-    }
-    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
-    Ok(row.saturating_add(1))
 }
 
 fn draw_marketplace_entries(
@@ -213,14 +200,6 @@ fn draw_marketplace_entries(
     Ok(row)
 }
 
-fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
-    if is_selected {
-        base.selected(selected)
-    } else {
-        base
-    }
-}
-
 fn draw_marketplace_column_header(
     window: &mut WindowView<'_>,
     style: &UiStyle,
@@ -339,10 +318,4 @@ fn pad_or_clip(text: &str, width: usize) -> String {
     let clipped = clip_text_to_cells(text, width);
     let pad = width.saturating_sub(text_width(&clipped));
     format!("{clipped}{}", " ".repeat(pad))
-}
-
-fn text_width(text: &str) -> usize {
-    text.graphemes(true)
-        .map(|grapheme| (cell_width(grapheme, TabPolicy::Fixed(4)) as usize).max(1))
-        .sum()
 }

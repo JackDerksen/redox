@@ -119,11 +119,7 @@ impl EditorState {
                 self.finder_position_query_cursor(*cursor);
             }
             (MousePopup::Command | MousePopup::Search, MouseTarget::InputCursor(cursor)) => {
-                self.command_line_cursor = *cursor;
-                super::super::actions::clamp_str_cursor(
-                    &self.command_line,
-                    &mut self.command_line_cursor,
-                );
+                self.command_line_cursor = self.command_line.floor_char_boundary(*cursor);
             }
             (MousePopup::WhichKey, MouseTarget::Key(key)) => {
                 self.mouse.pending_key = crate::input::which_key_event(key, self.input.leader());

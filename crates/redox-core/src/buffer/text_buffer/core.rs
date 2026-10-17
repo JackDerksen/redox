@@ -202,6 +202,20 @@ impl TextBuffer {
         self.rope.char(char_idx)
     }
 
+    /// Whether the char at `char_idx` follows an odd run of backslashes.
+    pub(super) fn char_is_escaped(&self, char_idx: usize) -> bool {
+        let mut backslashes = 0;
+        let mut idx = char_idx;
+        while idx > 0 {
+            idx -= 1;
+            if self.char_at_index(idx) != '\\' {
+                break;
+            }
+            backslashes += 1;
+        }
+        backslashes % 2 == 1
+    }
+
     pub(super) fn normalized_char_range(&self, start: usize, end: usize) -> (usize, usize) {
         let start = start.min(self.len_chars());
         let end = end.min(self.len_chars());

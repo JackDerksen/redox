@@ -44,7 +44,7 @@ impl TextBuffer {
         let pos = self.clamp_pos(pos);
         let char_idx = self.pos_to_char(pos);
         let ch = self.char_at(pos)?;
-        if self.char_is_escaped_for_pairing(char_idx) {
+        if self.char_is_escaped(char_idx) {
             return None;
         }
 
@@ -72,7 +72,7 @@ impl TextBuffer {
         let first = start_idx.saturating_add(1).min(self.len_chars());
         for (idx, ch) in (first..).zip(self.rope.chars_at(first)) {
             // Only delimiters need the (rarely needed) escape check.
-            if (ch != open && ch != close) || self.char_is_escaped_for_pairing(idx) {
+            if (ch != open && ch != close) || self.char_is_escaped(idx) {
                 continue;
             }
             if ch == open {
@@ -96,7 +96,7 @@ impl TextBuffer {
         let end_idx = end_idx.min(self.len_chars());
         let before = self.rope.chars_at(end_idx).reversed();
         for (idx, ch) in (0..end_idx).rev().zip(before) {
-            if (ch != open && ch != close) || self.char_is_escaped_for_pairing(idx) {
+            if (ch != open && ch != close) || self.char_is_escaped(idx) {
                 continue;
             }
             if ch == close {
@@ -111,7 +111,7 @@ impl TextBuffer {
     }
 
     fn match_symmetric_delimiter(&self, char_idx: usize, delimiter: char) -> Option<Pos> {
-        if self.char_is_escaped_for_pairing(char_idx) {
+        if self.char_is_escaped(char_idx) {
             return None;
         }
 
@@ -119,7 +119,7 @@ impl TextBuffer {
         let line_range = self.line_char_range(line);
         let mut delimiters = Vec::new();
         for idx in line_range {
-            if self.char_at_index(idx) == delimiter && !self.char_is_escaped_for_pairing(idx) {
+            if self.char_at_index(idx) == delimiter && !self.char_is_escaped(idx) {
                 delimiters.push(idx);
             }
         }
@@ -133,19 +133,6 @@ impl TextBuffer {
                 None
             }
         })
-    }
-
-    fn char_is_escaped_for_pairing(&self, char_idx: usize) -> bool {
-        let mut backslashes = 0;
-        let mut idx = char_idx;
-        while idx > 0 {
-            idx -= 1;
-            if self.char_at_index(idx) != '\\' {
-                break;
-            }
-            backslashes += 1;
-        }
-        backslashes % 2 == 1
     }
 
     /// Find all non-overlapping literal matches of `needle` in the buffer.

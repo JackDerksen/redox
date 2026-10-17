@@ -1,3 +1,4 @@
+use redox_lsp::provider::executable_on_path;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -1453,18 +1454,6 @@ fn run_command_status(command: &mut Command, label: &str) -> Result<(), String> 
         format!("exit status {}", output.status)
     };
     Err(format!("{label} failed: {detail}"))
-}
-
-fn executable_on_path(executable: &str) -> bool {
-    if executable.contains(std::path::MAIN_SEPARATOR) {
-        return Path::new(executable).exists();
-    }
-
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-
-    std::env::split_paths(&paths).any(|dir| dir.join(executable).exists())
 }
 
 /// Which whitespace passes a save may apply to a file.

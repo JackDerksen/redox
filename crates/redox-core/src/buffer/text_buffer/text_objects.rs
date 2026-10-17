@@ -449,19 +449,6 @@ impl TextBuffer {
         }
         char_idx
     }
-
-    fn char_is_escaped(&self, char_idx: usize) -> bool {
-        let mut backslashes = 0;
-        let mut idx = char_idx;
-        while idx > 0 {
-            idx -= 1;
-            if self.char_at_index(idx) != '\\' {
-                break;
-            }
-            backslashes += 1;
-        }
-        backslashes % 2 == 1
-    }
 }
 
 fn delimiter_chars(kind: DelimiterKind) -> (char, char) {

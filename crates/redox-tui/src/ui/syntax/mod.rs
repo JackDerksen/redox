@@ -1418,7 +1418,7 @@ fn ancestor_at_byte<'tree>(
     None
 }
 
-fn leading_indent(text: &str) -> &str {
+pub(crate) fn leading_indent(text: &str) -> &str {
     let end = text
         .char_indices()
         .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))

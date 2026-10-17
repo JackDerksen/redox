@@ -2795,7 +2795,7 @@ fn search_highlight_cells(
             .char_indices()
             .nth(range.start)
             .map_or(source_line.len(), |(byte, _)| byte);
-        let start = line_cell_width(&source_line[..byte]);
+        let start = ui::helpers::text_width(&source_line[..byte]);
         mark_visible_cell_range(&mut cells, start, start.saturating_add(1), scroll_x);
     }
     cells
@@ -2866,7 +2866,7 @@ fn visual_selection_visible_cells(
             // Keep a single cell visible for selected empty lines.
             visible_cell_range(
                 0,
-                line_cell_width(source_line).max(1),
+                ui::helpers::text_width(source_line).max(1),
                 scroll_x,
                 width_cells,
             )
@@ -2899,13 +2899,6 @@ fn visual_selection_visible_cells(
     };
 
     cells.iter().any(|cell| *cell).then_some(cells)
-}
-
-fn line_cell_width(source_line: &str) -> usize {
-    source_line
-        .graphemes(true)
-        .map(|g| (cell_width(g, TabPolicy::Fixed(4)) as usize).max(1))
-        .sum()
 }
 
 fn visible_cell_range(
