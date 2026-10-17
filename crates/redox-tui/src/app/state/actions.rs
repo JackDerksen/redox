@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use minui::{TabPolicy, cell_width};
 use redox_core::{Pos, Selection, TextBuffer, motion::Motion};
 use unicode_segmentation::UnicodeSegmentation;
@@ -29,32 +31,26 @@ impl EditorState {
         self.cancel_obsolete_lsp_requests();
         self.apply_configured_scrolloff(self.session.active_id());
         let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
-        if self
-            .undo_tree_surface_role(self.session.active_id())
-            .is_some()
-            && is_buffer_editing_action(&action)
-        {
-            self.mode = EditorMode::Normal;
-            self.input.reset_prefixes();
-            return;
-        }
 
-        if is_buffer_editing_action(&action)
-            && !matches!(action, InputAction::SetMode(_))
-            && matches!(
-                self.mode,
-                EditorMode::Normal
-                    | EditorMode::Insert
-                    | EditorMode::Visual
-                    | EditorMode::VisualLine
-                    | EditorMode::VisualBlock
-            )
-            && self.session.active_meta().kind == redox_core::BufferKind::File
-        {
-            self.with_active_buffer_view_mut(|buffer, view| {
-                view.cursor
-                    .center_if_outside(buffer, viewport_width_cells, text_vh);
-            });
+        if is_buffer_editing_action(&action) {
+            if self
+                .undo_tree_surface_role(self.session.active_id())
+                .is_some()
+            {
+                self.mode = EditorMode::Normal;
+                self.input.reset_prefixes();
+                return;
+            }
+            if !matches!(action, InputAction::SetMode(_))
+                && (self.mode.is_visual()
+                    || matches!(self.mode, EditorMode::Normal | EditorMode::Insert))
+                && self.session.active_meta().kind == redox_core::BufferKind::File
+            {
+                self.with_active_buffer_view_mut(|buffer, view| {
+                    view.cursor
+                        .center_if_outside(buffer, viewport_width_cells, text_vh);
+                });
+            }
         }
 
         let keep_insert_coalesce = self.mode == EditorMode::Insert
@@ -70,6 +66,28 @@ impl EditorState {
             self.clear_active_insert_undo_coalesce();
         }
 
+        if action_modes(&action).is_none_or(|modes| modes.contains(&self.mode))
+            && self
+                .dispatch_input_action(action, viewport_width_cells, viewport_height_rows, text_vh)
+                .is_break()
+        {
+            return;
+        }
+
+        self.refresh_command_argument_completions();
+        self.refresh_substitute_preview();
+        self.clamp_active_cursor_for_normal_mode();
+    }
+
+    /// Runs an action that [`action_modes`] allows in the current mode. Returns `Break` when the
+    /// action bailed out early and the post-action refreshes should be skipped.
+    fn dispatch_input_action(
+        &mut self,
+        action: InputAction,
+        viewport_width_cells: usize,
+        viewport_height_rows: usize,
+        text_vh: usize,
+    ) -> ControlFlow<()> {
         match action {
             InputAction::ApplyRecordedInsert {
                 start_offset,
@@ -86,10 +104,12 @@ impl EditorState {
                     text_vh,
                 );
             }
+            // Handled by `apply_input` before dispatch.
             InputAction::RepeatLastChange { .. }
             | InputAction::ToggleMacroRecording
             | InputAction::StartMacroRecording { .. }
-            | InputAction::PlayMacro { .. } => {}
+            | InputAction::PlayMacro { .. }
+            | InputAction::None => {}
             InputAction::ReplaySequence(sequence) => {
                 match self
                     .input
@@ -103,9 +123,7 @@ impl EditorState {
                     Err(error) => self.set_status(error.to_string()),
                 }
             }
-            InputAction::RunCommand(command) => {
-                self.execute_configured_command(command);
-            }
+            InputAction::RunCommand(command) => self.execute_configured_command(command),
             InputAction::WriteQuitIfDirty => {
                 let command = if self.session.active_meta().dirty {
                     "wq"
@@ -119,964 +137,84 @@ impl EditorState {
                 self.session.active_buffer_mut().set_mark(name, position);
             }
             InputAction::Motion { motion, count } => {
-                if let Motion::MarkLine(name) | Motion::MarkExact(name) = motion
-                    && self.session.active_buffer().mark(name).is_none()
-                {
-                    self.set_status(format!("Mark {name} is not set"));
-                    return;
-                }
-                if self.mode == EditorMode::Insert {
-                    let handled_completion = match motion {
-                        Motion::Down => self.completion_move(count as isize),
-                        Motion::Up => self.completion_move(-(count as isize)),
-                        _ => false,
-                    };
-                    if handled_completion {
-                        return;
-                    }
-                }
-
-                if !is_char_search_motion(motion) {
-                    self.clear_search_highlights();
-                }
-                if is_char_search_motion(motion) {
-                    self.remember_motion_search(motion, count);
-                }
-                if self.apply_undo_tree_motion(motion, count) {
-                    return;
-                }
-                let previous_cursor = self.active_cursor_pos();
-                let is_explorer = self.explorer_is_active();
-                let active_id = self.session.active_id();
-                let view = self.views.entry(active_id).or_default();
-                let buffer = self.session.active_buffer();
-                if is_explorer {
-                    view.cursor.follow.top_margin_rows = 0;
-                    view.cursor.follow.bottom_margin_rows = 0;
-                }
-
-                view.cursor
-                    .apply_motion(buffer, motion, count, viewport_width_cells, text_vh);
-                if is_explorer {
-                    let total_lines = buffer.len_lines().max(1);
-                    let max_top = if text_vh == 0 {
-                        total_lines.saturating_sub(1)
-                    } else {
-                        total_lines.saturating_sub(text_vh)
-                    };
-                    view.cursor.scroll_y_lines = view.cursor.scroll_y_lines.min(max_top);
-                }
-                if self.undo_tree_is_active() {
-                    self.clamp_undo_tree_cursor();
-                }
-                let cursor = self.active_cursor_pos();
-                if cursor != previous_cursor
-                    && (cursor.line.abs_diff(previous_cursor.line) >= 5
-                        || matches!(
-                            motion,
-                            Motion::FileStart
-                                | Motion::FileEnd
-                                | Motion::LineNumber
-                                | Motion::MatchDelimiter
-                                | Motion::MarkLine(_)
-                                | Motion::MarkExact(_)
-                        ))
-                {
-                    self.start_jump_highlight(text_vh);
-                }
+                self.apply_motion_action(motion, count, viewport_width_cells, text_vh)?;
             }
-
-            InputAction::SetMode(mode) => {
-                let prev_mode = self.mode;
-                let leaving_insert_to_normal =
-                    prev_mode == EditorMode::Insert && mode == InputMode::Normal;
-                if prev_mode == EditorMode::Insert && mode != InputMode::Insert {
-                    let _ = self.finalize_active_insert_undo_if_changed();
-                    self.close_completion();
-                    self.close_active_snippet();
-                }
-                if prev_mode == EditorMode::SymbolInfo && mode != InputMode::SymbolInfo {
-                    self.clear_symbol_info();
-                }
-                let entering_visual = matches!(
-                    mode,
-                    InputMode::Visual | InputMode::VisualLine | InputMode::VisualBlock
-                );
-                let was_visual = matches!(
-                    prev_mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                );
-
-                self.mode = match mode {
-                    InputMode::Normal => EditorMode::Normal,
-                    InputMode::Insert => EditorMode::Insert,
-                    InputMode::Command => EditorMode::Command,
-                    InputMode::Search => EditorMode::Search,
-                    InputMode::Finder => EditorMode::Finder,
-                    InputMode::PinSelect => EditorMode::PinSelect,
-                    InputMode::LspMarketplace => EditorMode::LspMarketplace,
-                    InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
-                    InputMode::CodeActions => EditorMode::CodeActions,
-                    InputMode::SymbolInfo => EditorMode::SymbolInfo,
-                    InputMode::Visual => EditorMode::Visual,
-                    InputMode::VisualLine => EditorMode::VisualLine,
-                    InputMode::VisualBlock => EditorMode::VisualBlock,
-                };
-
-                if leaving_insert_to_normal {
-                    let active_id = self.session.active_id();
-                    let view = self.views.entry(active_id).or_default();
-                    let buffer = self.session.active_buffer();
-
-                    if view.cursor.cursor.col > 0
-                        && !matches!(buffer.char_before(view.cursor.cursor), Some('\t'))
-                    {
-                        view.cursor.cursor.col -= 1;
-                    }
-
-                    view.cursor
-                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-                }
-
-                if mode == InputMode::Normal {
-                    self.clear_search_highlights();
-                }
-
-                if entering_visual && !was_visual {
-                    self.set_active_visual_anchor_if_missing();
-                }
-
-                if was_visual && !entering_visual {
-                    self.clear_active_visual_anchor();
-                }
-
-                self.input.reset_prefixes();
-            }
-
+            InputAction::SetMode(mode) => self.set_mode(mode, viewport_width_cells, text_vh),
             InputAction::EnterInsert(kind) => {
-                self.clear_active_visual_anchor();
-                self.mode = EditorMode::Insert;
-                self.clear_status();
-                self.input.reset_prefixes();
-
-                {
-                    let active_id = self.session.active_id();
-                    let view = self.views.entry(active_id).or_default();
-                    let buffer = self.session.active_buffer();
-
-                    match kind {
-                        InsertKind::Insert => {}
-                        InsertKind::Append => {
-                            let line = buffer.clamp_line(view.cursor.cursor.line);
-                            let line_len_chars = buffer.line_len_chars(line);
-                            if view.cursor.cursor.col < line_len_chars {
-                                view.cursor.cursor.col += 1;
-                            }
-                        }
-                        InsertKind::InsertLineStart => {
-                            let line = buffer.clamp_line(view.cursor.cursor.line);
-                            view.cursor.cursor.col = buffer.line_first_non_whitespace_col(line);
-                        }
-                        InsertKind::AppendLineEnd => {
-                            let line = buffer.clamp_line(view.cursor.cursor.line);
-                            view.cursor.cursor.col = buffer.line_len_chars(line);
-                        }
-                    }
-
-                    view.cursor
-                        .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-                }
+                self.enter_insert(kind, viewport_width_cells, text_vh)
             }
 
+            // Buffer edits.
             InputAction::OpenLineBelow => {
-                if self.mode == EditorMode::Normal {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.open_line_and_enter_insert(false, viewport_width_cells, text_vh);
-                }
+                self.require_fully_loaded()?;
+                self.open_line_and_enter_insert(false, viewport_width_cells, text_vh);
             }
-
             InputAction::OpenLineAbove => {
-                if self.mode == EditorMode::Normal {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.open_line_and_enter_insert(true, viewport_width_cells, text_vh);
-                }
+                self.require_fully_loaded()?;
+                self.open_line_and_enter_insert(true, viewport_width_cells, text_vh);
             }
-
-            InputAction::JoinLineBelow => {
-                if self.mode == EditorMode::Normal {
-                    self.join_line_below(viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::EnterCommand => {
-                self.begin_command();
-            }
-
-            InputAction::EnterSearch => {
-                if self.mode == EditorMode::Normal {
-                    self.enter_search_mode();
-                }
-            }
-
-            InputAction::ClearSearch => {
-                self.clear_search_highlights();
-            }
-
-            InputAction::CommandCancel => {
-                self.mode = EditorMode::Normal;
-                self.command_line.clear();
-                self.command_line_cursor = 0;
-                self.reset_command_history_navigation();
-                self.input.reset_prefixes();
-            }
-
-            InputAction::CommandChar(c) => {
-                if self.mode == EditorMode::Command {
-                    self.detach_command_history_navigation();
-                    insert_at_cursor(
-                        &mut self.command_line,
-                        &mut self.command_line_cursor,
-                        c.encode_utf8(&mut [0; 4]),
-                    );
-                }
-            }
-
-            InputAction::CommandBackspace => {
-                if self.mode == EditorMode::Command {
-                    self.detach_command_history_navigation();
-                    backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
-                }
-            }
-
-            InputAction::CommandMoveLeft => {
-                if self.mode == EditorMode::Command {
-                    self.command_completion_index = 0;
-                    move_cursor_left(&self.command_line, &mut self.command_line_cursor);
-                }
-            }
-
-            InputAction::CommandMoveRight => {
-                if self.mode == EditorMode::Command {
-                    self.command_completion_index = 0;
-                    move_cursor_right(&self.command_line, &mut self.command_line_cursor);
-                }
-            }
-
-            InputAction::CommandHistoryPrev => {
-                if self.mode == EditorMode::Command {
-                    self.command_history_prev();
-                }
-            }
-
-            InputAction::CommandHistoryNext => {
-                if self.mode == EditorMode::Command {
-                    self.command_history_next();
-                }
-            }
-
-            InputAction::CommandEnter => {
-                self.execute_command_line();
-            }
-
-            InputAction::CommandComplete => self.accept_command_completion(),
-            InputAction::CommandCompletionNext => self.cycle_command_completion(true),
-            InputAction::CommandCompletionPrev => self.cycle_command_completion(false),
-
-            InputAction::OpenFinder => {
-                if self.mode == EditorMode::Normal {
-                    self.close_completion();
-                    self.open_finder();
-                }
-            }
-
-            InputAction::ToggleDiagnosticsList => {
-                if self.mode == EditorMode::Normal || self.mode == EditorMode::DiagnosticsList {
-                    self.close_completion();
-                    self.toggle_diagnostics_popup();
-                }
-            }
-
-            InputAction::GotoDefinition => {
-                if self.mode == EditorMode::Normal {
-                    self.goto_definition();
-                }
-            }
-
-            InputAction::TriggerCodeActions => {
-                if matches!(self.mode, EditorMode::Normal | EditorMode::DiagnosticsList) {
-                    self.trigger_code_actions();
-                }
-            }
-
-            InputAction::TriggerSymbolInfo => {
-                if matches!(self.mode, EditorMode::Normal | EditorMode::Insert) {
-                    self.trigger_symbol_info();
-                }
-            }
-
-            InputAction::TriggerCompletion => {
-                if self.mode == EditorMode::Insert {
-                    self.trigger_completion();
-                }
-            }
-
-            InputAction::CompletionMoveNext => {
-                if self.mode == EditorMode::Insert {
-                    let _ = self.completion_move(1);
-                }
-            }
-
-            InputAction::CompletionMovePrev => {
-                if self.mode == EditorMode::Insert {
-                    let _ = self.completion_move(-1);
-                }
-            }
-
-            InputAction::CompletionAccept => {
-                if self.mode == EditorMode::Insert
-                    && !self.accept_completion(viewport_width_cells, text_vh)
-                {
-                    self.apply_input(
-                        InputAction::Enter,
-                        viewport_width_cells,
-                        viewport_height_rows,
-                    );
-                }
-            }
-
-            InputAction::CompletionCancel => {
-                if self.mode == EditorMode::Insert {
-                    let had_visible_completion = self.has_visible_completion_popup();
-                    let _ = self.close_completion();
-                    if !had_visible_completion {
-                        self.apply_input(
-                            InputAction::SetMode(InputMode::Normal),
-                            viewport_width_cells,
-                            viewport_height_rows,
-                        );
-                    }
-                }
-            }
-
-            InputAction::SymbolInfoMoveNext => {
-                if self.mode == EditorMode::SymbolInfo {
-                    self.symbol_info_popup_move(1);
-                }
-            }
-
-            InputAction::SymbolInfoMovePrev => {
-                if self.mode == EditorMode::SymbolInfo {
-                    self.symbol_info_popup_move(-1);
-                }
-            }
-
-            InputAction::SymbolInfoCancel => {
-                if self.mode == EditorMode::SymbolInfo {
-                    self.close_symbol_info_popup();
-                }
-            }
-
-            InputAction::SnippetNext => {
-                if self.mode == EditorMode::Insert
-                    && !self.snippet_jump_next(viewport_width_cells, text_vh)
-                {
-                    self.apply_input(
-                        InputAction::InsertChar('\t'),
-                        viewport_width_cells,
-                        viewport_height_rows,
-                    );
-                }
-            }
-
-            InputAction::SearchCancel => {
-                self.cancel_search();
-            }
-
-            InputAction::SearchChar(c) => {
-                if self.mode == EditorMode::Search {
-                    insert_at_cursor(
-                        &mut self.command_line,
-                        &mut self.command_line_cursor,
-                        c.encode_utf8(&mut [0; 4]),
-                    );
-                    self.schedule_search_preview(std::time::Instant::now());
-                }
-            }
-
-            InputAction::SearchBackspace => {
-                if self.mode == EditorMode::Search {
-                    backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
-                    self.schedule_search_preview(std::time::Instant::now());
-                }
-            }
-
-            InputAction::SearchMoveLeft => {
-                if self.mode == EditorMode::Search {
-                    move_cursor_left(&self.command_line, &mut self.command_line_cursor);
-                }
-            }
-
-            InputAction::SearchMoveRight => {
-                if self.mode == EditorMode::Search {
-                    move_cursor_right(&self.command_line, &mut self.command_line_cursor);
-                }
-            }
-
-            InputAction::SearchEnter => {
-                self.execute_search_line(viewport_width_cells, text_vh);
-            }
-
-            InputAction::FinderCancel => {
-                if self.mode == EditorMode::Finder {
-                    self.close_finder();
-                }
-            }
-
-            InputAction::FinderChar(c) => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_insert_text(c.encode_utf8(&mut [0; 4]));
-                }
-            }
-
-            InputAction::FinderBackspace => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_backspace();
-                }
-            }
-
-            InputAction::FinderMoveLeft => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_move_query_cursor_left();
-                }
-            }
-
-            InputAction::FinderMoveRight => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_move_query_cursor_right();
-                }
-            }
-
-            InputAction::FinderMoveNext => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_move_selection(1);
-                }
-            }
-
-            InputAction::FinderMovePrev => {
-                if self.mode == EditorMode::Finder {
-                    self.finder_move_selection(-1);
-                }
-            }
-
-            InputAction::FinderEnter => {
-                if self.mode == EditorMode::Finder {
-                    self.open_selected_finder_entry();
-                }
-            }
-
-            InputAction::FinderBeginPin => {
-                if self.mode == EditorMode::Finder {
-                    self.begin_pin_selection_for_finder_entry();
-                }
-            }
-
-            InputAction::PinSelectorMoveNext => {
-                if self.mode == EditorMode::PinSelect {
-                    self.pin_selector_move(1);
-                }
-            }
-
-            InputAction::PinSelectorMovePrev => {
-                if self.mode == EditorMode::PinSelect {
-                    self.pin_selector_move(-1);
-                }
-            }
-
-            InputAction::PinSelectorOpenSelected => {
-                if self.mode == EditorMode::PinSelect {
-                    self.open_selected_pin_selector_entry();
-                }
-            }
-
-            InputAction::PinSelectorAssign => {
-                if self.mode == EditorMode::PinSelect {
-                    self.assign_selected_pin_slot();
-                }
-            }
-
-            InputAction::PinSelectorReorderUp => {
-                if self.mode == EditorMode::PinSelect {
-                    self.pin_selector_reorder_selected(-1);
-                }
-            }
-
-            InputAction::PinSelectorReorderDown => {
-                if self.mode == EditorMode::PinSelect {
-                    self.pin_selector_reorder_selected(1);
-                }
-            }
-
-            InputAction::PinSelectorDeleteSelected => {
-                if self.mode == EditorMode::PinSelect {
-                    self.pin_selector_delete_selected();
-                }
-            }
-
-            InputAction::PinSelectorCancel => {
-                if self.mode == EditorMode::PinSelect {
-                    self.cancel_pin_selection();
-                }
-            }
-
-            InputAction::LspMarketplaceMoveNext => {
-                if self.mode == EditorMode::LspMarketplace {
-                    self.lsp_marketplace_move(1);
-                }
-            }
-
-            InputAction::LspMarketplaceMovePrev => {
-                if self.mode == EditorMode::LspMarketplace {
-                    self.lsp_marketplace_move(-1);
-                }
-            }
-
-            InputAction::LspMarketplaceInstallSelected => {
-                if self.mode == EditorMode::LspMarketplace {
-                    self.install_selected_lsp();
-                }
-            }
-
-            InputAction::LspMarketplaceUninstallSelected => {
-                if self.mode == EditorMode::LspMarketplace {
-                    self.uninstall_selected_lsp();
-                }
-            }
-
-            InputAction::LspMarketplaceCancel => {
-                if self.mode == EditorMode::LspMarketplace {
-                    self.close_lsp_marketplace();
-                }
-            }
-
-            InputAction::DiagnosticsListMoveNext => {
-                if self.mode == EditorMode::DiagnosticsList {
-                    self.diagnostics_popup_move(1);
-                }
-            }
-
-            InputAction::DiagnosticsListMovePrev => {
-                if self.mode == EditorMode::DiagnosticsList {
-                    self.diagnostics_popup_move(-1);
-                }
-            }
-
-            InputAction::DiagnosticsListOpenSelected => {
-                if self.mode == EditorMode::DiagnosticsList {
-                    self.diagnostics_popup_open_selected();
-                }
-            }
-
-            InputAction::DiagnosticsListCancel => {
-                if self.mode == EditorMode::DiagnosticsList {
-                    self.diagnostics_popup_cancel();
-                }
-            }
-
-            InputAction::CodeActionsMoveNext => {
-                if self.mode == EditorMode::CodeActions {
-                    self.code_actions_popup_move(1);
-                }
-            }
-
-            InputAction::CodeActionsMovePrev => {
-                if self.mode == EditorMode::CodeActions {
-                    self.code_actions_popup_move(-1);
-                }
-            }
-
-            InputAction::CodeActionsApplySelected => {
-                if self.mode == EditorMode::CodeActions {
-                    self.apply_selected_code_action();
-                }
-            }
-
-            InputAction::CodeActionsCancel => {
-                if self.mode == EditorMode::CodeActions {
-                    self.close_code_actions_popup();
-                }
-            }
-
-            InputAction::AssignPinSlot { slot } => {
-                if self.mode == EditorMode::PinSelect {
-                    self.assign_pin_slot(slot);
-                }
-            }
-
-            InputAction::OpenPinnedSlot { slot } => {
-                self.open_pinned_slot(slot);
-            }
-
-            InputAction::QuickPinCurrentFile => {
-                if !matches!(
-                    self.mode,
-                    EditorMode::Command
-                        | EditorMode::Search
-                        | EditorMode::Finder
-                        | EditorMode::PinSelect
-                        | EditorMode::LspMarketplace
-                        | EditorMode::DiagnosticsList
-                        | EditorMode::CodeActions
-                        | EditorMode::SymbolInfo
-                ) {
-                    self.begin_pin_selection_for_current_buffer();
-                }
-            }
-
-            InputAction::OpenExplorer => {
-                if self.mode == EditorMode::Normal {
-                    self.close_completion();
-                    self.command_open_explorer();
-                }
-            }
-
-            InputAction::ToggleUndoTree => {
-                if self.mode == EditorMode::Normal {
-                    self.close_completion();
-                    self.command_toggle_undo_tree();
-                }
-            }
-
-            InputAction::ToggleZen => self.toggle_zen(),
-
-            InputAction::SurfaceOpenSelected => {
-                if self.mode == EditorMode::Normal {
-                    if self.undo_tree_is_active() {
-                        self.undo_tree_open_selected(viewport_width_cells, text_vh);
-                        return;
-                    }
-                    self.transient_origin_buffer_id = None;
-                    self.transient_origin_dir = None;
-                    self.surface_open_selected();
-                }
-            }
-
-            InputAction::SurfaceGoParent => {
-                if self.mode == EditorMode::Normal {
-                    self.surface_go_parent();
-                }
-            }
-
-            InputAction::ScrollHalfPage { down, count } => {
-                if text_vh > 0
-                    && matches!(
-                        self.mode,
-                        EditorMode::Normal
-                            | EditorMode::Visual
-                            | EditorMode::VisualLine
-                            | EditorMode::VisualBlock
-                    )
-                {
-                    let Some(pane) = self
-                        .panes
-                        .iter_mut()
-                        .find(|pane| pane.id == self.active_pane)
-                    else {
-                        return;
-                    };
-                    if let Some(count) = count {
-                        pane.half_page_rows = Some(count.clamp(1, text_vh));
-                    }
-                    let rows = pane.half_page_rows.unwrap_or(text_vh / 2).clamp(1, text_vh);
-                    self.clear_search_highlights();
-                    self.with_active_buffer_view_mut(|buffer, view| {
-                        view.cursor.scroll_half_page(
-                            buffer,
-                            down,
-                            rows,
-                            viewport_width_cells,
-                            text_vh,
-                        );
-                    });
-                    self.center_active_cursor_line(text_vh);
-                    self.request_redraw();
-                }
-            }
-
-            InputAction::CenterCursorLine => {
-                if self.mode == EditorMode::Normal {
-                    self.clear_search_highlights();
-                    self.center_active_cursor_line(text_vh);
-                }
-            }
-
-            InputAction::SplitFocusLeft => self.focus_split(SplitDirection::Left),
-            InputAction::SplitFocusDown => self.focus_split(SplitDirection::Down),
-            InputAction::SplitFocusUp => self.focus_split(SplitDirection::Up),
-            InputAction::SplitFocusRight => self.focus_split(SplitDirection::Right),
-            InputAction::SplitHorizontal => self.split_active_pane(SplitAxis::Horizontal),
-            InputAction::SplitVertical => self.split_active_pane(SplitAxis::Vertical),
-            InputAction::CloseSplit => self.close_active_split(),
-            InputAction::TogglePaneZoom => self.toggle_pane_zoom(),
-
-            InputAction::Undo => {
-                if self.mode == EditorMode::Normal {
-                    self.undo_active(viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::ConfirmExplorerDelete => {
-                if self.mode == EditorMode::Normal {
-                    self.confirm_pending_explorer_delete();
-                }
-            }
-
-            InputAction::Redo => {
-                if self.mode == EditorMode::Normal {
-                    self.redo_active(viewport_width_cells, text_vh);
-                }
-            }
-
+            InputAction::JoinLineBelow => self.join_line_below(viewport_width_cells, text_vh),
             InputAction::InsertChar(c) => {
-                if self.mode == EditorMode::Insert {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.insert_char_at_cursor(c, viewport_width_cells, text_vh);
-                }
+                self.require_fully_loaded()?;
+                self.insert_char_at_cursor(c, viewport_width_cells, text_vh);
             }
-
             InputAction::Backspace => {
-                if self.mode == EditorMode::Insert {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.close_completion();
-                    let before = self.capture_active_insert_coalesced_checkpoint();
-                    let indent_size = self.active_indent_width();
-                    let active_id = self.session.active_id();
-                    let view = self.views.entry(active_id).or_default();
-                    let selection = Selection::empty(view.cursor.cursor);
-                    let snippet_delete = {
-                        let buffer = self.session.active_buffer();
-                        let cursor_char = buffer.pos_to_char(view.cursor.cursor);
-                        if buffer
-                            .char_before(view.cursor.cursor)
-                            .and_then(matching_auto_pair_closer)
-                            .is_some_and(|closer| {
-                                Some(closer) == buffer.char_at(view.cursor.cursor)
-                            })
-                        {
-                            cursor_char
-                                .checked_sub(1)
-                                .map(|start| (start, cursor_char.saturating_add(1)))
-                        } else if let Some((start, end)) =
-                            soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
-                        {
-                            Some((buffer.pos_to_char(start), buffer.pos_to_char(end)))
-                        } else {
-                            cursor_char.checked_sub(1).map(|start| (start, cursor_char))
-                        }
-                    };
-
-                    {
-                        let buffer = self.session.active_buffer_mut();
-                        if let Some(new_cursor) =
-                            delete_auto_pair_with_backspace(buffer, view.cursor.cursor)
-                        {
-                            view.cursor.cursor = new_cursor;
-                        } else if let Some((start, end)) =
-                            soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
-                        {
-                            view.cursor.cursor = buffer.delete_range(start, end);
-                        } else {
-                            let selection = buffer.backspace(selection);
-                            view.cursor.cursor = selection.cursor;
-                        }
-                        view.cursor
-                            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-                    }
-
-                    if let Some((start_char, end_char)) = snippet_delete {
-                        let _ = self.mirror_active_snippet_delete_after_cursor_delete(
-                            start_char,
-                            end_char,
-                            viewport_width_cells,
-                            text_vh,
-                        );
-                    }
-                    self.invalidate_active_render_caches();
-                    let _ = self.record_active_undo_if_changed(before);
-                    let _ = self.session.recompute_active_dirty();
-                }
+                self.require_fully_loaded()?;
+                self.backspace_at_insert_cursor(viewport_width_cells, text_vh);
             }
-
             InputAction::Enter => {
-                if self.mode == EditorMode::Insert {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.close_completion();
-                    let before = self.capture_active_insert_coalesced_checkpoint();
-                    let active_id = self.session.active_id();
-                    let cursor = self.views.entry(active_id).or_default().cursor.cursor;
-                    let indent_size = self.active_indent_width();
-                    self.seed_indent_parser();
-                    let smart_insert = smart_newline_insert(
-                        &mut self.indent_parser,
-                        self.session.active_buffer(),
-                        self.session.active_meta().path.as_deref(),
-                        cursor,
-                        indent_size,
-                    );
-                    let comment_prefix = smart_insert
-                        .as_ref()
-                        .filter(|insert| insert.comment_prefix_bytes > 0)
-                        .map(|insert| (insert.cursor.line, insert.comment_prefix_bytes));
-                    let view = self.views.entry(active_id).or_default();
-
-                    {
-                        let buffer = self.session.active_buffer_mut();
-                        if let Some(insert) = smart_insert {
-                            let _ = buffer.insert(view.cursor.cursor, &insert.text);
-                            view.cursor.cursor = insert.cursor;
-                        } else {
-                            let selection = Selection::empty(view.cursor.cursor);
-                            let selection = buffer.insert_newline(selection);
-                            view.cursor.cursor = selection.cursor;
-                        }
-                        view.cursor
-                            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
-                    }
-
-                    self.invalidate_active_render_caches();
-                    if let Some((line, end_byte)) = comment_prefix {
-                        self.views
-                            .entry(active_id)
-                            .or_default()
-                            .syntax_highlighter
-                            .preserve_comment_prefix(line, end_byte);
-                    }
-                    let _ = self.record_active_undo_if_changed(before);
-                    let _ = self.session.recompute_active_dirty();
-                }
+                self.require_fully_loaded()?;
+                self.newline_at_insert_cursor(viewport_width_cells, text_vh);
             }
-
-            InputAction::Paste(text) => match self.mode {
-                EditorMode::Insert | EditorMode::Normal => {
-                    if !self.ensure_active_fully_loaded_for_edit_or_save() {
-                        return;
-                    }
-                    self.close_completion();
-                    let coalesce = self.mode == EditorMode::Insert;
-                    self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
-                }
-                EditorMode::Command
-                | EditorMode::Search
-                | EditorMode::Finder
-                | EditorMode::PinSelect
-                | EditorMode::LspMarketplace
-                | EditorMode::CodeActions
-                | EditorMode::SymbolInfo
-                | EditorMode::DiagnosticsList
-                | EditorMode::Visual
-                | EditorMode::VisualLine
-                | EditorMode::VisualBlock => {}
-            },
-
+            InputAction::Paste(text) => {
+                self.require_fully_loaded()?;
+                self.close_completion();
+                let coalesce = self.mode == EditorMode::Insert;
+                self.insert_text_at_cursor(&text, viewport_width_cells, text_vh, coalesce);
+            }
             InputAction::PasteSystemClipboardText(text) => {
-                if self.mode == EditorMode::Normal {
-                    self.paste_system_clipboard_text(&text, viewport_width_cells, text_vh);
-                }
+                self.paste_system_clipboard_text(&text, viewport_width_cells, text_vh);
             }
-
-            InputAction::YankSelectionPrivate => {
-                if let Some(plan) = self.active_visual_selection_edit_plan() {
-                    if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
-                    }
-                    self.private_register = plan.text;
-                    self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
-                    self.mode = EditorMode::Normal;
-                    self.clear_active_visual_anchor();
-                    self.confirm_yank("yanked");
-                }
+            InputAction::PastePrivateRegister => {
+                self.paste_private_register(viewport_width_cells, text_vh);
             }
-
-            InputAction::DeleteSelectionPrivate => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.delete_active_visual_selection_to_private_register(
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+            InputAction::PastePrivateRegisterBefore => {
+                self.paste_private_register_before(viewport_width_cells, text_vh);
             }
-
-            InputAction::ChangeSelectionPrivate => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.change_active_visual_selection_to_private_register(
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+            InputAction::PasteSystemClipboard => {}
+            InputAction::Undo => self.undo_active(viewport_width_cells, text_vh),
+            InputAction::Redo => self.redo_active(viewport_width_cells, text_vh),
+            InputAction::DeleteCharNoYank => {
+                self.delete_char_under_cursor_without_yank(viewport_width_cells, text_vh);
             }
-
-            InputAction::DeleteSelectionNoYank => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.delete_active_visual_selection_without_yank(viewport_width_cells, text_vh);
-                }
-            }
-
             InputAction::DeleteCurrentLinePrivate { count } => {
-                if self.mode == EditorMode::Normal {
-                    self.delete_current_line_to_private_register(
-                        count.max(1),
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+                self.delete_current_line_to_private_register(
+                    count.max(1),
+                    viewport_width_cells,
+                    text_vh,
+                );
             }
-
+            InputAction::YankCurrentLinePrivate { count } => {
+                self.yank_current_line_to_private_register(count.max(1));
+            }
+            InputAction::ChangeCurrentLinePrivate { count } => {
+                self.change_current_line_to_private_register(
+                    count.max(1),
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
             InputAction::OperateCurrentLines { operator, count } => {
-                if self.mode == EditorMode::Normal {
-                    self.operate_current_lines(
-                        operator,
-                        count.max(1),
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+                self.operate_current_lines(operator, count.max(1), viewport_width_cells, text_vh);
             }
-
-            InputAction::ChangeSelectionCase { upper } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.change_case_active_visual_selection(
-                        if upper {
-                            super::editing::CaseChange::Upper
-                        } else {
-                            super::editing::CaseChange::Lower
-                        },
-                        viewport_width_cells,
-                        text_vh,
-                    );
+            InputAction::OperateTarget { operator, target } => {
+                if let crate::input::OperatorTarget::Motion { motion, count } = &target
+                    && is_char_search_motion(*motion)
+                {
+                    self.remember_motion_search(*motion, *count);
                 }
+                self.apply_operator_target(operator, &target, viewport_width_cells, text_vh);
             }
-
             InputAction::IncrementNumbers {
                 count,
                 decrement,
@@ -1090,173 +228,573 @@ impl EditorState {
                     text_vh,
                 );
             }
-
-            InputAction::RestoreVisualSelection => {
-                self.restore_visual_selection(viewport_width_cells, text_vh);
-            }
-
-            InputAction::SwapVisualSelectionEnds => {
-                self.swap_visual_selection_ends(viewport_width_cells, text_vh);
-            }
-
-            InputAction::SelectSearchMatch { forward } => {
-                self.select_search_match(forward, viewport_width_cells, text_vh);
-            }
-
-            InputAction::YankCurrentLinePrivate { count } => {
-                if self.mode == EditorMode::Normal {
-                    self.yank_current_line_to_private_register(count.max(1));
-                }
-            }
-
-            InputAction::ChangeCurrentLinePrivate { count } => {
-                if self.mode == EditorMode::Normal {
-                    self.change_current_line_to_private_register(
-                        count.max(1),
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
-            }
-
-            InputAction::OperateTarget { operator, target } => {
-                if let crate::input::OperatorTarget::Motion { motion, count } = &target
-                    && is_char_search_motion(*motion)
-                {
-                    self.remember_motion_search(*motion, *count);
-                }
-                self.apply_operator_target(operator, &target, viewport_width_cells, text_vh);
-            }
-
-            InputAction::YankSelectionSystem => {
-                if let Some(plan) = self.active_visual_selection_edit_plan() {
-                    if let Some((selection, mode)) = self.active_visual_selection() {
-                        self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
-                    }
-                    self.private_register = plan.text.clone();
-                    self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
-                    self.pending_system_clipboard = Some(plan.text);
-                    self.mode = EditorMode::Normal;
-                    self.clear_active_visual_anchor();
-                }
-            }
-
-            InputAction::PastePrivateRegister => {
-                if self.mode == EditorMode::Normal {
-                    self.paste_private_register(viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::PastePrivateRegisterBefore => {
-                if self.mode == EditorMode::Normal {
-                    self.paste_private_register_before(viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::PasteSystemClipboard => {}
-
-            InputAction::DeleteCharNoYank => {
-                if self.mode == EditorMode::Normal {
-                    self.delete_char_under_cursor_without_yank(viewport_width_cells, text_vh);
-                }
-            }
-
             InputAction::ToggleCase { count } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Normal
-                        | EditorMode::Visual
-                        | EditorMode::VisualLine
-                        | EditorMode::VisualBlock
-                ) {
-                    self.toggle_case_under_cursor_or_selection(
-                        count.max(1),
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+                self.toggle_case_under_cursor_or_selection(
+                    count.max(1),
+                    viewport_width_cells,
+                    text_vh,
+                );
             }
-
             InputAction::ReplaceChar(ch) => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Normal
-                        | EditorMode::Visual
-                        | EditorMode::VisualLine
-                        | EditorMode::VisualBlock
-                ) {
-                    self.replace_under_cursor_or_selection(ch, viewport_width_cells, text_vh);
-                }
+                self.replace_under_cursor_or_selection(ch, viewport_width_cells, text_vh);
             }
-
-            InputAction::RepeatSearch { forward } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Normal
-                        | EditorMode::Search
-                        | EditorMode::Visual
-                        | EditorMode::VisualLine
-                        | EditorMode::VisualBlock
-                ) {
-                    self.repeat_search(forward, viewport_width_cells, text_vh);
-                }
-            }
-
-            InputAction::WrapSelection { opening, closing } => {
-                self.wrap_active_visual_selection(opening, closing, viewport_width_cells, text_vh);
-            }
-
             InputAction::ToggleComments => {
                 self.toggle_active_comments(viewport_width_cells, text_vh);
             }
 
+            // Visual selections.
+            InputAction::YankSelectionPrivate => self.yank_active_visual_selection(false),
+            InputAction::YankSelectionSystem => self.yank_active_visual_selection(true),
+            InputAction::DeleteSelectionPrivate => {
+                self.delete_active_visual_selection_to_private_register(
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
+            InputAction::ChangeSelectionPrivate => {
+                self.change_active_visual_selection_to_private_register(
+                    viewport_width_cells,
+                    text_vh,
+                );
+            }
+            InputAction::DeleteSelectionNoYank => {
+                self.delete_active_visual_selection_without_yank(viewport_width_cells, text_vh);
+            }
+            InputAction::ChangeSelectionCase { upper } => {
+                let case = if upper {
+                    super::editing::CaseChange::Upper
+                } else {
+                    super::editing::CaseChange::Lower
+                };
+                self.change_case_active_visual_selection(case, viewport_width_cells, text_vh);
+            }
+            InputAction::RestoreVisualSelection => {
+                self.restore_visual_selection(viewport_width_cells, text_vh);
+            }
+            InputAction::SwapVisualSelectionEnds => {
+                self.swap_visual_selection_ends(viewport_width_cells, text_vh);
+            }
+            InputAction::SelectSearchMatch { forward } => {
+                self.select_search_match(forward, viewport_width_cells, text_vh);
+            }
+            InputAction::WrapSelection { opening, closing } => {
+                self.wrap_active_visual_selection(opening, closing, viewport_width_cells, text_vh);
+            }
             InputAction::MoveVisualSelectionUp { count } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.move_visual_selection_lines_up(
-                        count.max(1),
-                        viewport_width_cells,
-                        text_vh,
-                    );
-                }
+                self.move_visual_selection_lines_up(count.max(1), viewport_width_cells, text_vh);
             }
-
             InputAction::MoveVisualSelectionDown { count } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.move_visual_selection_lines_down(
-                        count.max(1),
+                self.move_visual_selection_lines_down(count.max(1), viewport_width_cells, text_vh);
+            }
+            InputAction::IndentVisualSelection { count } => {
+                self.indent_visual_selection(count.max(1), viewport_width_cells, text_vh);
+            }
+            InputAction::OutdentVisualSelection { count } => {
+                self.outdent_visual_selection(count.max(1), viewport_width_cells, text_vh);
+            }
+
+            // Viewport.
+            InputAction::ScrollHalfPage { down, count } => {
+                self.scroll_active_half_page(down, count, viewport_width_cells, text_vh)?;
+            }
+            InputAction::CenterCursorLine => {
+                self.clear_search_highlights();
+                self.center_active_cursor_line(text_vh);
+            }
+            InputAction::SplitFocusLeft => self.focus_split(SplitDirection::Left),
+            InputAction::SplitFocusDown => self.focus_split(SplitDirection::Down),
+            InputAction::SplitFocusUp => self.focus_split(SplitDirection::Up),
+            InputAction::SplitFocusRight => self.focus_split(SplitDirection::Right),
+            InputAction::SplitHorizontal => self.split_active_pane(SplitAxis::Horizontal),
+            InputAction::SplitVertical => self.split_active_pane(SplitAxis::Vertical),
+            InputAction::CloseSplit => self.close_active_split(),
+            InputAction::TogglePaneZoom => self.toggle_pane_zoom(),
+            InputAction::ToggleZen => self.toggle_zen(),
+
+            // Command line.
+            InputAction::EnterCommand => self.begin_command(),
+            InputAction::CommandCancel => {
+                self.mode = EditorMode::Normal;
+                self.command_line.clear();
+                self.command_line_cursor = 0;
+                self.reset_command_history_navigation();
+                self.input.reset_prefixes();
+            }
+            InputAction::CommandChar(c) => {
+                self.detach_command_history_navigation();
+                insert_at_cursor(
+                    &mut self.command_line,
+                    &mut self.command_line_cursor,
+                    c.encode_utf8(&mut [0; 4]),
+                );
+            }
+            InputAction::CommandBackspace => {
+                self.detach_command_history_navigation();
+                backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
+            }
+            InputAction::CommandMoveLeft => {
+                self.command_completion_index = 0;
+                move_cursor_left(&self.command_line, &mut self.command_line_cursor);
+            }
+            InputAction::CommandMoveRight => {
+                self.command_completion_index = 0;
+                move_cursor_right(&self.command_line, &mut self.command_line_cursor);
+            }
+            InputAction::CommandHistoryPrev => self.command_history_prev(),
+            InputAction::CommandHistoryNext => self.command_history_next(),
+            InputAction::CommandEnter => self.execute_command_line(),
+            InputAction::CommandComplete => self.accept_command_completion(),
+            InputAction::CommandCompletionNext => self.cycle_command_completion(true),
+            InputAction::CommandCompletionPrev => self.cycle_command_completion(false),
+
+            // Search.
+            InputAction::EnterSearch => self.enter_search_mode(),
+            InputAction::ClearSearch => self.clear_search_highlights(),
+            InputAction::SearchCancel => self.cancel_search(),
+            InputAction::SearchChar(c) => {
+                insert_at_cursor(
+                    &mut self.command_line,
+                    &mut self.command_line_cursor,
+                    c.encode_utf8(&mut [0; 4]),
+                );
+                self.schedule_search_preview(std::time::Instant::now());
+            }
+            InputAction::SearchBackspace => {
+                backspace_at_cursor(&mut self.command_line, &mut self.command_line_cursor);
+                self.schedule_search_preview(std::time::Instant::now());
+            }
+            InputAction::SearchMoveLeft => {
+                move_cursor_left(&self.command_line, &mut self.command_line_cursor);
+            }
+            InputAction::SearchMoveRight => {
+                move_cursor_right(&self.command_line, &mut self.command_line_cursor);
+            }
+            InputAction::SearchEnter => self.execute_search_line(viewport_width_cells, text_vh),
+            InputAction::RepeatSearch { forward } => {
+                self.repeat_search(forward, viewport_width_cells, text_vh);
+            }
+
+            // Insert-mode completion and snippets.
+            InputAction::TriggerCompletion => self.trigger_completion(),
+            InputAction::CompletionMoveNext => {
+                let _ = self.completion_move(1);
+            }
+            InputAction::CompletionMovePrev => {
+                let _ = self.completion_move(-1);
+            }
+            InputAction::CompletionAccept => {
+                if !self.accept_completion(viewport_width_cells, text_vh) {
+                    self.apply_input(
+                        InputAction::Enter,
                         viewport_width_cells,
-                        text_vh,
+                        viewport_height_rows,
+                    );
+                }
+            }
+            InputAction::CompletionCancel => {
+                let had_visible_completion = self.has_visible_completion_popup();
+                let _ = self.close_completion();
+                if !had_visible_completion {
+                    self.apply_input(
+                        InputAction::SetMode(InputMode::Normal),
+                        viewport_width_cells,
+                        viewport_height_rows,
+                    );
+                }
+            }
+            InputAction::SnippetNext => {
+                if !self.snippet_jump_next(viewport_width_cells, text_vh) {
+                    self.apply_input(
+                        InputAction::InsertChar('\t'),
+                        viewport_width_cells,
+                        viewport_height_rows,
                     );
                 }
             }
 
-            InputAction::IndentVisualSelection { count } => {
-                if matches!(
-                    self.mode,
-                    EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
-                ) {
-                    self.indent_visual_selection(count.max(1), viewport_width_cells, text_vh);
-                }
+            // LSP.
+            InputAction::GotoDefinition => self.goto_definition(),
+            InputAction::TriggerCodeActions => self.trigger_code_actions(),
+            InputAction::TriggerSymbolInfo => self.trigger_symbol_info(),
+            InputAction::ToggleDiagnosticsList => {
+                self.close_completion();
+                self.toggle_diagnostics_popup();
             }
+            InputAction::SymbolInfoMoveNext => self.symbol_info_popup_move(1),
+            InputAction::SymbolInfoMovePrev => self.symbol_info_popup_move(-1),
+            InputAction::SymbolInfoCancel => self.close_symbol_info_popup(),
+            InputAction::DiagnosticsListMoveNext => self.diagnostics_popup_move(1),
+            InputAction::DiagnosticsListMovePrev => self.diagnostics_popup_move(-1),
+            InputAction::DiagnosticsListOpenSelected => self.diagnostics_popup_open_selected(),
+            InputAction::DiagnosticsListCancel => self.diagnostics_popup_cancel(),
+            InputAction::CodeActionsMoveNext => self.code_actions_popup_move(1),
+            InputAction::CodeActionsMovePrev => self.code_actions_popup_move(-1),
+            InputAction::CodeActionsApplySelected => self.apply_selected_code_action(),
+            InputAction::CodeActionsCancel => self.close_code_actions_popup(),
+            InputAction::LspMarketplaceMoveNext => self.lsp_marketplace_move(1),
+            InputAction::LspMarketplaceMovePrev => self.lsp_marketplace_move(-1),
+            InputAction::LspMarketplaceInstallSelected => self.install_selected_lsp(),
+            InputAction::LspMarketplaceUninstallSelected => self.uninstall_selected_lsp(),
+            InputAction::LspMarketplaceCancel => self.close_lsp_marketplace(),
 
-            InputAction::OutdentVisualSelection { count } => {
-                if self.mode == EditorMode::Visual || self.mode == EditorMode::VisualLine {
-                    self.outdent_visual_selection(count.max(1), viewport_width_cells, text_vh);
-                }
+            // Finder.
+            InputAction::OpenFinder => {
+                self.close_completion();
+                self.open_finder();
             }
+            InputAction::FinderCancel => self.close_finder(),
+            InputAction::FinderChar(c) => self.finder_insert_text(c.encode_utf8(&mut [0; 4])),
+            InputAction::FinderBackspace => self.finder_backspace(),
+            InputAction::FinderMoveLeft => self.finder_move_query_cursor_left(),
+            InputAction::FinderMoveRight => self.finder_move_query_cursor_right(),
+            InputAction::FinderMoveNext => self.finder_move_selection(1),
+            InputAction::FinderMovePrev => self.finder_move_selection(-1),
+            InputAction::FinderEnter => self.open_selected_finder_entry(),
+            InputAction::FinderBeginPin => self.begin_pin_selection_for_finder_entry(),
 
-            InputAction::None => {}
+            // Pins.
+            InputAction::QuickPinCurrentFile => self.begin_pin_selection_for_current_buffer(),
+            InputAction::OpenPinnedSlot { slot } => self.open_pinned_slot(slot),
+            InputAction::AssignPinSlot { slot } => self.assign_pin_slot(slot),
+            InputAction::PinSelectorMoveNext => self.pin_selector_move(1),
+            InputAction::PinSelectorMovePrev => self.pin_selector_move(-1),
+            InputAction::PinSelectorOpenSelected => self.open_selected_pin_selector_entry(),
+            InputAction::PinSelectorAssign => self.assign_selected_pin_slot(),
+            InputAction::PinSelectorReorderUp => self.pin_selector_reorder_selected(-1),
+            InputAction::PinSelectorReorderDown => self.pin_selector_reorder_selected(1),
+            InputAction::PinSelectorDeleteSelected => self.pin_selector_delete_selected(),
+            InputAction::PinSelectorCancel => self.cancel_pin_selection(),
+
+            // Explorer and undo-tree surfaces.
+            InputAction::OpenExplorer => {
+                self.close_completion();
+                self.command_open_explorer();
+            }
+            InputAction::ToggleUndoTree => {
+                self.close_completion();
+                self.command_toggle_undo_tree();
+            }
+            InputAction::SurfaceOpenSelected => {
+                if self.undo_tree_is_active() {
+                    self.undo_tree_open_selected(viewport_width_cells, text_vh);
+                    return ControlFlow::Break(());
+                }
+                self.transient_origin_buffer_id = None;
+                self.transient_origin_dir = None;
+                self.surface_open_selected();
+            }
+            InputAction::SurfaceGoParent => self.surface_go_parent(),
+            InputAction::ConfirmExplorerDelete => {
+                self.confirm_pending_explorer_delete();
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn require_fully_loaded(&mut self) -> ControlFlow<()> {
+        if self.ensure_active_fully_loaded_for_edit_or_save() {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
+    }
+
+    fn apply_motion_action(
+        &mut self,
+        motion: Motion,
+        count: usize,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> ControlFlow<()> {
+        if let Motion::MarkLine(name) | Motion::MarkExact(name) = motion
+            && self.session.active_buffer().mark(name).is_none()
+        {
+            self.set_status(format!("Mark {name} is not set"));
+            return ControlFlow::Break(());
+        }
+        if self.mode == EditorMode::Insert {
+            let handled_completion = match motion {
+                Motion::Down => self.completion_move(count as isize),
+                Motion::Up => self.completion_move(-(count as isize)),
+                _ => false,
+            };
+            if handled_completion {
+                return ControlFlow::Break(());
+            }
         }
 
-        self.refresh_command_argument_completions();
-        self.refresh_substitute_preview();
-        self.clamp_active_cursor_for_normal_mode();
+        if is_char_search_motion(motion) {
+            self.remember_motion_search(motion, count);
+        } else {
+            self.clear_search_highlights();
+        }
+        if self.apply_undo_tree_motion(motion, count) {
+            return ControlFlow::Break(());
+        }
+        let previous_cursor = self.active_cursor_pos();
+        let is_explorer = self.explorer_is_active();
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        if is_explorer {
+            view.cursor.follow.top_margin_rows = 0;
+            view.cursor.follow.bottom_margin_rows = 0;
+        }
+
+        view.cursor
+            .apply_motion(buffer, motion, count, viewport_width_cells, text_vh);
+        if is_explorer {
+            let total_lines = buffer.len_lines().max(1);
+            let max_top = if text_vh == 0 {
+                total_lines.saturating_sub(1)
+            } else {
+                total_lines.saturating_sub(text_vh)
+            };
+            view.cursor.scroll_y_lines = view.cursor.scroll_y_lines.min(max_top);
+        }
+        if self.undo_tree_is_active() {
+            self.clamp_undo_tree_cursor();
+        }
+        let cursor = self.active_cursor_pos();
+        if cursor != previous_cursor
+            && (cursor.line.abs_diff(previous_cursor.line) >= 5
+                || matches!(
+                    motion,
+                    Motion::FileStart
+                        | Motion::FileEnd
+                        | Motion::LineNumber
+                        | Motion::MatchDelimiter
+                        | Motion::MarkLine(_)
+                        | Motion::MarkExact(_)
+                ))
+        {
+            self.start_jump_highlight(text_vh);
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn set_mode(&mut self, mode: InputMode, viewport_width_cells: usize, text_vh: usize) {
+        let prev_mode = self.mode;
+        let next_mode = EditorMode::from(mode);
+        if prev_mode == EditorMode::Insert && next_mode != EditorMode::Insert {
+            let _ = self.finalize_active_insert_undo_if_changed();
+            self.close_completion();
+            self.close_active_snippet();
+        }
+        if prev_mode == EditorMode::SymbolInfo && next_mode != EditorMode::SymbolInfo {
+            self.clear_symbol_info();
+        }
+
+        self.mode = next_mode;
+
+        if prev_mode == EditorMode::Insert && next_mode == EditorMode::Normal {
+            let active_id = self.session.active_id();
+            let view = self.views.entry(active_id).or_default();
+            let buffer = self.session.active_buffer();
+
+            if view.cursor.cursor.col > 0
+                && !matches!(buffer.char_before(view.cursor.cursor), Some('\t'))
+            {
+                view.cursor.cursor.col -= 1;
+            }
+
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        if next_mode == EditorMode::Normal {
+            self.clear_search_highlights();
+        }
+
+        match (prev_mode.is_visual(), next_mode.is_visual()) {
+            (false, true) => self.set_active_visual_anchor_if_missing(),
+            (true, false) => self.clear_active_visual_anchor(),
+            _ => {}
+        }
+
+        self.input.reset_prefixes();
+    }
+
+    fn enter_insert(&mut self, kind: InsertKind, viewport_width_cells: usize, text_vh: usize) {
+        self.clear_active_visual_anchor();
+        self.mode = EditorMode::Insert;
+        self.clear_status();
+        self.input.reset_prefixes();
+
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let buffer = self.session.active_buffer();
+        let line = buffer.clamp_line(view.cursor.cursor.line);
+
+        match kind {
+            InsertKind::Insert => {}
+            InsertKind::Append => {
+                if view.cursor.cursor.col < buffer.line_len_chars(line) {
+                    view.cursor.cursor.col += 1;
+                }
+            }
+            InsertKind::InsertLineStart => {
+                view.cursor.cursor.col = buffer.line_first_non_whitespace_col(line);
+            }
+            InsertKind::AppendLineEnd => {
+                view.cursor.cursor.col = buffer.line_len_chars(line);
+            }
+        }
+
+        view.cursor
+            .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+    }
+
+    fn yank_active_visual_selection(&mut self, to_system_clipboard: bool) {
+        let Some(plan) = self.active_visual_selection_edit_plan() else {
+            return;
+        };
+        if let Some((selection, mode)) = self.active_visual_selection() {
+            self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
+        }
+        self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
+        self.private_register = plan.text;
+        if to_system_clipboard {
+            self.pending_system_clipboard = Some(self.private_register.clone());
+        }
+        self.mode = EditorMode::Normal;
+        self.clear_active_visual_anchor();
+        if !to_system_clipboard {
+            self.confirm_yank("yanked");
+        }
+    }
+
+    fn scroll_active_half_page(
+        &mut self,
+        down: bool,
+        count: Option<usize>,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) -> ControlFlow<()> {
+        if text_vh == 0 {
+            return ControlFlow::Continue(());
+        }
+        let Some(pane) = self
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == self.active_pane)
+        else {
+            return ControlFlow::Break(());
+        };
+        if let Some(count) = count {
+            pane.half_page_rows = Some(count.clamp(1, text_vh));
+        }
+        let rows = pane.half_page_rows.unwrap_or(text_vh / 2).clamp(1, text_vh);
+        self.clear_search_highlights();
+        self.with_active_buffer_view_mut(|buffer, view| {
+            view.cursor
+                .scroll_half_page(buffer, down, rows, viewport_width_cells, text_vh);
+        });
+        self.center_active_cursor_line(text_vh);
+        self.request_redraw();
+        ControlFlow::Continue(())
+    }
+
+    fn backspace_at_insert_cursor(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        self.close_completion();
+        let before = self.capture_active_insert_coalesced_checkpoint();
+        let indent_size = self.active_indent_width();
+        let active_id = self.session.active_id();
+        let view = self.views.entry(active_id).or_default();
+        let selection = Selection::empty(view.cursor.cursor);
+        let snippet_delete = {
+            let buffer = self.session.active_buffer();
+            let cursor_char = buffer.pos_to_char(view.cursor.cursor);
+            if buffer
+                .char_before(view.cursor.cursor)
+                .and_then(matching_auto_pair_closer)
+                .is_some_and(|closer| Some(closer) == buffer.char_at(view.cursor.cursor))
+            {
+                cursor_char
+                    .checked_sub(1)
+                    .map(|start| (start, cursor_char.saturating_add(1)))
+            } else if let Some((start, end)) =
+                soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
+            {
+                Some((buffer.pos_to_char(start), buffer.pos_to_char(end)))
+            } else {
+                cursor_char.checked_sub(1).map(|start| (start, cursor_char))
+            }
+        };
+
+        {
+            let buffer = self.session.active_buffer_mut();
+            if let Some(new_cursor) = delete_auto_pair_with_backspace(buffer, view.cursor.cursor) {
+                view.cursor.cursor = new_cursor;
+            } else if let Some((start, end)) =
+                soft_tab_backspace_range(buffer, view.cursor.cursor, indent_size)
+            {
+                view.cursor.cursor = buffer.delete_range(start, end);
+            } else {
+                let selection = buffer.backspace(selection);
+                view.cursor.cursor = selection.cursor;
+            }
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        if let Some((start_char, end_char)) = snippet_delete {
+            let _ = self.mirror_active_snippet_delete_after_cursor_delete(
+                start_char,
+                end_char,
+                viewport_width_cells,
+                text_vh,
+            );
+        }
+        self.invalidate_active_render_caches();
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
+    }
+
+    fn newline_at_insert_cursor(&mut self, viewport_width_cells: usize, text_vh: usize) {
+        self.close_completion();
+        let before = self.capture_active_insert_coalesced_checkpoint();
+        let active_id = self.session.active_id();
+        let cursor = self.views.entry(active_id).or_default().cursor.cursor;
+        let indent_size = self.active_indent_width();
+        self.seed_indent_parser();
+        let smart_insert = smart_newline_insert(
+            &mut self.indent_parser,
+            self.session.active_buffer(),
+            self.session.active_meta().path.as_deref(),
+            cursor,
+            indent_size,
+        );
+        let comment_prefix = smart_insert
+            .as_ref()
+            .filter(|insert| insert.comment_prefix_bytes > 0)
+            .map(|insert| (insert.cursor.line, insert.comment_prefix_bytes));
+        let view = self.views.entry(active_id).or_default();
+
+        {
+            let buffer = self.session.active_buffer_mut();
+            if let Some(insert) = smart_insert {
+                let _ = buffer.insert(view.cursor.cursor, &insert.text);
+                view.cursor.cursor = insert.cursor;
+            } else {
+                let selection = Selection::empty(view.cursor.cursor);
+                let selection = buffer.insert_newline(selection);
+                view.cursor.cursor = selection.cursor;
+            }
+            view.cursor
+                .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+        }
+
+        self.invalidate_active_render_caches();
+        if let Some((line, end_byte)) = comment_prefix {
+            self.views
+                .entry(active_id)
+                .or_default()
+                .syntax_highlighter
+                .preserve_comment_prefix(line, end_byte);
+        }
+        let _ = self.record_active_undo_if_changed(before);
+        let _ = self.session.recompute_active_dirty();
     }
 
     fn paste_popup_text(&mut self, text: &str) {
@@ -1715,6 +1253,161 @@ fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
     text[..cursor].char_indices().last().map(|(idx, _)| idx)
 }
 
+/// The modes in which `action` takes effect, or `None` when it applies in every mode. Actions
+/// outside their modes are ignored, though the post-action refreshes still run.
+fn action_modes(action: &InputAction) -> Option<&'static [EditorMode]> {
+    use EditorMode as M;
+    use InputAction as A;
+
+    const NORMAL: &[EditorMode] = &[M::Normal];
+    const INSERT: &[EditorMode] = &[M::Insert];
+    const NORMAL_OR_INSERT: &[EditorMode] = &[M::Normal, M::Insert];
+    const VISUAL: &[EditorMode] = &[M::Visual, M::VisualLine, M::VisualBlock];
+    const NORMAL_OR_VISUAL: &[EditorMode] = &[M::Normal, M::Visual, M::VisualLine, M::VisualBlock];
+
+    let modes = match action {
+        A::OpenLineBelow
+        | A::OpenLineAbove
+        | A::JoinLineBelow
+        | A::PasteSystemClipboardText(_)
+        | A::PastePrivateRegister
+        | A::PastePrivateRegisterBefore
+        | A::Undo
+        | A::Redo
+        | A::DeleteCharNoYank
+        | A::DeleteCurrentLinePrivate { .. }
+        | A::YankCurrentLinePrivate { .. }
+        | A::ChangeCurrentLinePrivate { .. }
+        | A::OperateCurrentLines { .. }
+        | A::CenterCursorLine
+        | A::EnterSearch
+        | A::GotoDefinition
+        | A::OpenFinder
+        | A::OpenExplorer
+        | A::ToggleUndoTree
+        | A::SurfaceOpenSelected
+        | A::SurfaceGoParent
+        | A::ConfirmExplorerDelete => NORMAL,
+        A::InsertChar(_)
+        | A::Backspace
+        | A::Enter
+        | A::TriggerCompletion
+        | A::CompletionMoveNext
+        | A::CompletionMovePrev
+        | A::CompletionAccept
+        | A::CompletionCancel
+        | A::SnippetNext => INSERT,
+        A::Paste(_) | A::TriggerSymbolInfo => NORMAL_OR_INSERT,
+        A::ToggleCase { .. } | A::ReplaceChar(_) | A::ScrollHalfPage { .. } => NORMAL_OR_VISUAL,
+        A::RepeatSearch { .. } => &[
+            M::Normal,
+            M::Search,
+            M::Visual,
+            M::VisualLine,
+            M::VisualBlock,
+        ],
+        A::QuickPinCurrentFile => &[
+            M::Normal,
+            M::Insert,
+            M::Visual,
+            M::VisualLine,
+            M::VisualBlock,
+        ],
+        A::DeleteSelectionPrivate
+        | A::ChangeSelectionPrivate
+        | A::DeleteSelectionNoYank
+        | A::ChangeSelectionCase { .. }
+        | A::MoveVisualSelectionUp { .. }
+        | A::MoveVisualSelectionDown { .. }
+        | A::IndentVisualSelection { .. } => VISUAL,
+        A::OutdentVisualSelection { .. } => &[M::Visual, M::VisualLine],
+        A::ToggleDiagnosticsList | A::TriggerCodeActions => &[M::Normal, M::DiagnosticsList],
+        A::CommandChar(_)
+        | A::CommandBackspace
+        | A::CommandMoveLeft
+        | A::CommandMoveRight
+        | A::CommandHistoryPrev
+        | A::CommandHistoryNext => &[M::Command],
+        A::SearchChar(_) | A::SearchBackspace | A::SearchMoveLeft | A::SearchMoveRight => {
+            &[M::Search]
+        }
+        A::FinderCancel
+        | A::FinderChar(_)
+        | A::FinderBackspace
+        | A::FinderMoveLeft
+        | A::FinderMoveRight
+        | A::FinderMoveNext
+        | A::FinderMovePrev
+        | A::FinderEnter
+        | A::FinderBeginPin => &[M::Finder],
+        A::AssignPinSlot { .. }
+        | A::PinSelectorMoveNext
+        | A::PinSelectorMovePrev
+        | A::PinSelectorOpenSelected
+        | A::PinSelectorAssign
+        | A::PinSelectorReorderUp
+        | A::PinSelectorReorderDown
+        | A::PinSelectorDeleteSelected
+        | A::PinSelectorCancel => &[M::PinSelect],
+        A::LspMarketplaceMoveNext
+        | A::LspMarketplaceMovePrev
+        | A::LspMarketplaceInstallSelected
+        | A::LspMarketplaceUninstallSelected
+        | A::LspMarketplaceCancel => &[M::LspMarketplace],
+        A::DiagnosticsListMoveNext
+        | A::DiagnosticsListMovePrev
+        | A::DiagnosticsListOpenSelected
+        | A::DiagnosticsListCancel => &[M::DiagnosticsList],
+        A::CodeActionsMoveNext
+        | A::CodeActionsMovePrev
+        | A::CodeActionsApplySelected
+        | A::CodeActionsCancel => &[M::CodeActions],
+        A::SymbolInfoMoveNext | A::SymbolInfoMovePrev | A::SymbolInfoCancel => &[M::SymbolInfo],
+        A::None
+        | A::ApplyRecordedInsert { .. }
+        | A::RepeatLastChange { .. }
+        | A::ToggleMacroRecording
+        | A::StartMacroRecording { .. }
+        | A::PlayMacro { .. }
+        | A::ReplaySequence(_)
+        | A::RunCommand(_)
+        | A::WriteQuitIfDirty
+        | A::SetMark(_)
+        | A::Motion { .. }
+        | A::SetMode(_)
+        | A::EnterInsert(_)
+        | A::PasteSystemClipboard
+        | A::OperateTarget { .. }
+        | A::IncrementNumbers { .. }
+        | A::ToggleComments
+        | A::YankSelectionPrivate
+        | A::YankSelectionSystem
+        | A::RestoreVisualSelection
+        | A::SwapVisualSelectionEnds
+        | A::SelectSearchMatch { .. }
+        | A::WrapSelection { .. }
+        | A::SplitFocusLeft
+        | A::SplitFocusDown
+        | A::SplitFocusUp
+        | A::SplitFocusRight
+        | A::SplitHorizontal
+        | A::SplitVertical
+        | A::CloseSplit
+        | A::TogglePaneZoom
+        | A::ToggleZen
+        | A::EnterCommand
+        | A::CommandCancel
+        | A::CommandEnter
+        | A::CommandComplete
+        | A::CommandCompletionNext
+        | A::CommandCompletionPrev
+        | A::ClearSearch
+        | A::SearchCancel
+        | A::SearchEnter
+        | A::OpenPinnedSlot { .. } => return None,
+    };
+    Some(modes)
+}
 fn is_char_search_motion(motion: Motion) -> bool {
     matches!(
         motion,

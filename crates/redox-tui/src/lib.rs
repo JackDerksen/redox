@@ -249,10 +249,8 @@ fn draw_editor_view(
     let background_style = style.dimmed_by(
         style.dim_amount * state.pane_focus_dimming(state.active_pane_id(), Instant::now()),
     );
-    let editor_text = background_style.editor_text;
-    fill_background(window, vw, vh, editor_text)?;
-    let status_h: u16 = STATUS_BAR_HEIGHT_CELLS;
-    let text_h = vh.saturating_sub(status_h);
+    fill_background(window, vw, vh, background_style.editor_text)?;
+    let text_h = vh.saturating_sub(STATUS_BAR_HEIGHT_CELLS);
 
     if let Some(selected) = state.dashboard_selection()
         && matches!(
@@ -260,386 +258,365 @@ fn draw_editor_view(
             app::EditorMode::Normal | app::EditorMode::Finder | app::EditorMode::PinSelect
         )
     {
-        state.set_viewport_size(vw as usize, vh as usize);
-        draw_dashboard(
-            window,
-            &background_style,
-            selected,
-            state.mode == app::EditorMode::Normal,
-            state.dashboard_logo_progress(Instant::now()),
-        )?;
-        if let Some(popup) = state.finder_popup() {
-            let mouse = draw_finder_popup(&popup, style, window)?;
-            state.mouse.popups.push(mouse);
-        } else if let Some(popup) = state.pin_selector_popup() {
-            let mouse = draw_pin_selector_popup(&popup, style, window)?;
-            state.mouse.popups.push(mouse);
-        }
-        let _ = draw_notification_toast(state, style, window)?;
-        return Ok(());
+        return draw_dashboard_view(state, style, &background_style, window, selected);
     }
-
     if let Some(popup) = state.explorer_popup() {
-        let fallback_id = state
-            .explorer_background_buffer_id()
-            .filter(|_| !state.explorer_background_is_placeholder_blank());
-        draw_popup_background(state, style, window, vw, text_h, fallback_id)?;
-        let (inner_w, inner_h) = explorer_popup_inner_size(vw, vh, style);
-        let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
-        let popup_layout = stack_layout.popup;
-        state.set_viewport_size(
-            popup_layout.inner_w as usize,
-            popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-        );
-        let (cursor_spec, mouse) =
-            draw_explorer_popup_view(state, style, window, popup, popup_layout, inner_h)?;
-        state.mouse.popups.push(mouse);
-        if matches!(
-            state.mode,
-            app::EditorMode::Command | app::EditorMode::Search
-        ) && !draw_command_line_below_popup(state, style, window, stack_layout)?
-        {
-            let mouse = draw_command_line_popup(state, style, window)?;
-            state.mouse.popups.extend(mouse);
-        }
-        let toast_layout = draw_notification_toast(state, style, window)?;
-        if !matches!(
-            state.mode,
-            app::EditorMode::Command | app::EditorMode::Search
-        ) && let Some(cursor) = cursor_spec
-        {
-            let cursor_hidden_by_toast = toast_layout
-                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-            if cursor_hidden_by_toast {
-                hide_cursor(window);
-            } else {
-                window.request_cursor(cursor);
-            }
-        }
-        return Ok(());
+        return draw_explorer_view(state, style, window, popup, text_h);
     }
-
     if let Some(popup) = state.about_popup() {
-        draw_popup_background(
-            state,
-            style,
-            window,
-            vw,
-            text_h,
-            state.about_background_buffer_id(),
-        )?;
-        let (inner_w, inner_h) = about_popup_inner_size(vw, vh, style);
-        let stack_layout = popup_stack_layout(state, style, window, (inner_w, inner_h));
-        let popup_layout = stack_layout.popup;
-        state.set_viewport_size(
-            popup_layout.inner_w as usize,
-            popup_layout.inner_h.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
-        );
-        let mouse = draw_about_popup_view(state, style, window, popup, popup_layout)?;
-        state.mouse.popups.push(mouse);
-        if !draw_command_line_below_popup(state, style, window, stack_layout)? {
-            if matches!(
-                state.mode,
-                app::EditorMode::Command | app::EditorMode::Search
-            ) {
-                let mouse = draw_command_line_popup(state, style, window)?;
-                state.mouse.popups.extend(mouse);
-            } else {
-                hide_cursor(window);
-            }
-        }
-        let _ = draw_notification_toast(state, style, window)?;
-        return Ok(());
+        return draw_about_view(state, style, window, popup, text_h);
     }
-
     if let Some(popup) = state.lsp_marketplace_popup() {
         let inner_size = lsp_marketplace_popup_inner_size(vw, vh, style);
-        draw_modal_popup_background(
-            state,
-            style,
-            window,
-            (vw, text_h),
-            Some(state.session.active_id()),
-            inner_size,
-        )?;
-        let mouse = draw_lsp_marketplace_popup(&popup, style, window)?;
-        state.mouse.popups.push(mouse);
-        let _ = draw_notification_toast(state, style, window)?;
-        hide_cursor(window);
-        return Ok(());
+        return draw_modal_list_view(state, style, window, inner_size, |window| {
+            draw_lsp_marketplace_popup(&popup, style, window)
+        });
     }
-
     if let Some(popup) = state.diagnostics_popup() {
         let inner_size = finder_popup_inner_size(vw, vh, style);
-        draw_modal_popup_background(
-            state,
-            style,
-            window,
-            (vw, text_h),
-            Some(state.session.active_id()),
-            inner_size,
-        )?;
-        let mouse = draw_diagnostics_popup(&popup, style, window)?;
-        state.mouse.popups.push(mouse);
-        let _ = draw_notification_toast(state, style, window)?;
-        hide_cursor(window);
-        return Ok(());
+        return draw_modal_list_view(state, style, window, inner_size, |window| {
+            draw_diagnostics_popup(&popup, style, window)
+        });
     }
-
     if let Some(popup) = state.code_actions_popup() {
         let inner_size = finder_popup_inner_size(vw, vh, style);
-        draw_modal_popup_background(
-            state,
-            style,
-            window,
-            (vw, text_h),
-            Some(state.session.active_id()),
-            inner_size,
-        )?;
-        let mouse = draw_code_actions_popup(&popup, style, window)?;
-        state.mouse.popups.push(mouse);
-        let _ = draw_notification_toast(state, style, window)?;
-        hide_cursor(window);
-        return Ok(());
+        return draw_modal_list_view(state, style, window, inner_size, |window| {
+            draw_code_actions_popup(&popup, style, window)
+        });
     }
 
     let active_cursor_line = state.active_cursor_pos().line;
     let gutter = pane_gutter_layout(state, state.active_pane_id());
-    let content_x = gutter.content_x;
-    let text_w = vw.saturating_sub(content_x);
+    let text_w = vw.saturating_sub(gutter.content_x);
     state.set_editor_area_size(vw as usize, text_h as usize);
-    if state.panes().len() > 1 {
-        if let Some(rect) = state
-            .pane_rects(vw, text_h)
-            .into_iter()
-            .find(|rect| rect.pane_id == state.active_pane_id())
-        {
-            let content_x = pane_content_x(state, rect.pane_id);
-            let pane_text_w = rect.width.saturating_sub(content_x);
-            state.set_viewport_size(
-                pane_text_w as usize,
-                rect.height.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+
+    let cursor = if state.panes().len() > 1 {
+        draw_split_editor_view(state, style, window, (vw, text_h))?;
+        EditorCursor {
+            context: active_split_cursor_context(state, vw, text_h),
+            suppressed: state.active_rain_animation().is_some()
+                || state
+                    .undo_tree_surface_role(state.session.active_id())
+                    .is_some(),
+        }
+    } else {
+        state.set_viewport_size(text_w as usize, vh as usize);
+        start_pending_rain(state, style, text_w, text_h);
+        if state.active_rain_animation().is_some() {
+            return draw_rain_view(
+                state,
+                style,
+                &background_style,
+                window,
+                &gutter,
+                (text_w, text_h),
+                active_cursor_line,
             );
-            start_pending_rain(state, style, pane_text_w, rect.height);
         }
-        state.sync_active_pane_view();
-        draw_split_editor_panes(state, style, window, vw, text_h)?;
-        let status_start = Instant::now();
-        let status = build_editor_status_bar(state, style);
-        status.draw(window)?;
-        perf.status += status_start.elapsed();
-
-        let perf_popup_layout = if let Some(popup) = state.perf_popup()
-            && !matches!(
-                state.mode,
-                app::EditorMode::Command
-                    | app::EditorMode::Search
-                    | app::EditorMode::Finder
-                    | app::EditorMode::PinSelect
-            ) {
-            let layout = perf_popup_layout(vw, vh, style);
-            draw_perf_popup_view(style, window, popup)?;
-            let mut mouse = PopupMouseLayout::new(MousePopup::Perf);
-            mouse.add_frame(layout);
-            state.mouse.popups.push(mouse);
-            Some(layout)
-        } else {
-            None
-        };
-
-        let mut cursor_spec: Option<minui::window::CursorSpec> = None;
-        let mut force_hide_cursor = false;
-
-        if matches!(
-            state.mode,
-            app::EditorMode::Command | app::EditorMode::Search
-        ) {
-            let mouse = draw_command_line_popup(state, style, window)?;
-            state.mouse.popups.extend(mouse);
-        } else if let Some(popup) = state.finder_popup() {
-            let mouse = draw_finder_popup(&popup, style, window)?;
-            state.mouse.popups.push(mouse);
-        } else if let Some(popup) = state.pin_selector_popup() {
-            let mouse = draw_pin_selector_popup(&popup, style, window)?;
-            state.mouse.popups.push(mouse);
-        } else if let Some(popup) = state.completion_popup() {
-            if let Some(context) = active_split_cursor_context(state, vw, text_h) {
-                let cursor_x = context.x;
-                if let Some(preview) = state.completion_preview() {
-                    let preview_width =
-                        clipped_cell_width(&preview.text, vw.saturating_sub(cursor_x) as usize);
-                    let active_cursor_line = state.active_cursor_pos().line;
-                    let inline_diagnostic = state
-                        .active_diagnostic_lines(active_cursor_line, 1)
-                        .remove(&active_cursor_line);
-                    let source_line = inline_diagnostic.as_ref().map(|_| {
-                        state
-                            .session
-                            .active_buffer()
-                            .line_string(active_cursor_line)
-                    });
-                    if let Some(source_line) = source_line.as_deref() {
-                        clear_inline_diagnostic(
-                            window,
-                            context.y,
-                            context.content_x,
-                            source_line,
-                            context.scroll_x,
-                            context.text_w as usize,
-                            &background_style,
-                        )?;
-                    }
-                    draw_completion_preview(
-                        window,
-                        style,
-                        cursor_x,
-                        context.y,
-                        vw.saturating_sub(cursor_x),
-                        &preview.text,
-                        &preview.suffix,
-                    )?;
-                    if let Some((diagnostic, source_line)) =
-                        inline_diagnostic.as_ref().zip(source_line.as_deref())
-                    {
-                        draw_inline_diagnostic_shifted(
-                            window,
-                            LineViewport {
-                                row: context.y,
-                                column: context.content_x,
-                                scroll_x: context.scroll_x,
-                                width: context.text_w as usize,
-                            },
-                            source_line,
-                            &background_style,
-                            diagnostic,
-                            preview_width,
-                        )?;
-                    }
-                }
-                let mouse = draw_completion_popup(
-                    &popup,
-                    style,
-                    window,
-                    cursor_x,
-                    context.y,
-                    context.height,
-                )?;
-                state.mouse.popups.extend(mouse);
-                cursor_spec = Some(minui::window::CursorSpec {
-                    x: cursor_x,
-                    y: context.y,
-                    visible: true,
-                });
-            }
-        } else if state.active_rain_animation().is_some()
-            || state
-                .undo_tree_surface_role(state.session.active_id())
-                .is_some()
+        if state
+            .substitute_preview()
+            .is_some_and(|preview| preview.buffer.is_some())
         {
-            force_hide_cursor = true;
-        } else if let Some(cursor) = active_split_cursor(state, vw, text_h) {
-            state.clamp_symbol_info_scroll(vw);
-            if let Some(popup) = state.symbol_info_popup(vw) {
-                let mouse = draw_symbol_info_popup(&popup, style, window, cursor.x, cursor.y)?;
-                state.mouse.popups.extend(mouse);
-            }
-            cursor_spec = Some(cursor);
+            return draw_substitute_preview_view(state, style, &background_style, window, text_h);
         }
-        let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
-            draw_which_key_popup(popup, style, window)?.map(|(layout, mouse)| {
-                state.mouse.popups.push(mouse);
-                layout
-            })
-        } else {
-            None
-        };
-        let toast_layout = draw_notification_toast(state, style, window)?;
-        if force_hide_cursor {
-            hide_cursor(window);
-        } else if let Some(cursor) = cursor_spec {
-            let cursor_hidden_by_perf = perf_popup_layout
-                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-            let cursor_hidden_by_toast = toast_layout
-                .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-            let cursor_hidden_by_which_key =
-                which_key_layout.is_some_and(|layout| layout.occludes(cursor.x, cursor.y));
-            if cursor_hidden_by_perf || cursor_hidden_by_toast || cursor_hidden_by_which_key {
-                hide_cursor(window);
-            } else {
-                window.request_cursor(cursor);
-            }
+        EditorCursor {
+            context: draw_active_buffer(
+                state,
+                &background_style,
+                window,
+                &gutter,
+                (text_w, text_h),
+                active_cursor_line,
+                perf,
+            )?,
+            suppressed: false,
         }
-        return Ok(());
+    };
+    draw_editor_overlays(
+        state,
+        style,
+        &background_style,
+        window,
+        which_key_popup.as_ref(),
+        cursor,
+        perf,
+    )
+}
+
+fn draw_dashboard_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    selected: usize,
+) -> minui::Result<()> {
+    let (vw, vh) = window.get_size();
+    state.set_viewport_size(vw as usize, vh as usize);
+    draw_dashboard(
+        window,
+        background_style,
+        selected,
+        state.mode == app::EditorMode::Normal,
+        state.dashboard_logo_progress(Instant::now()),
+    )?;
+    if let Some(popup) = state.finder_popup() {
+        let mouse = draw_finder_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
+    } else if let Some(popup) = state.pin_selector_popup() {
+        let mouse = draw_pin_selector_popup(&popup, style, window)?;
+        state.mouse.popups.push(mouse);
     }
+    let _ = draw_notification_toast(state, style, window)?;
+    Ok(())
+}
 
-    state.set_viewport_size(text_w as usize, vh as usize);
-    start_pending_rain(state, style, text_w, text_h);
+/// Lays out a popup that replaces the editor surface and sizes the viewport to its interior.
+fn surface_popup_layout(
+    state: &mut EditorState,
+    style: &UiStyle,
+    window: &dyn Window,
+    inner_size: (u16, u16),
+) -> PopupStackLayout {
+    let stack_layout = popup_stack_layout(state, style, window, inner_size);
+    state.set_viewport_size(
+        stack_layout.popup.inner_w as usize,
+        stack_layout
+            .popup
+            .inner_h
+            .saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+    );
+    stack_layout
+}
 
-    if let Some(animation) = state.active_rain_animation() {
-        draw_line_numbers(
-            window,
-            &background_style,
-            (gutter.gutter_w, text_h),
-            u16::from(gutter.show_marker_column),
-            animation.first_line()..gutter.total_lines,
-            active_cursor_line,
-            None,
-        )?;
-        draw_gutter_padding(
-            window,
-            &background_style,
-            gutter.gutter_w,
-            text_h,
-            GUTTER_CONTENT_PADDING,
-            animation.first_line(),
-            (state.active_git_diff(), Some(state.session.active_buffer())),
-        )?;
-        animation.draw(window, 0, content_x, text_w as usize, text_h as usize)?;
-
-        let status = build_editor_status_bar(state, style);
-        status.draw(window)?;
-        if matches!(
-            state.mode,
-            app::EditorMode::Command | app::EditorMode::Search
-        ) {
-            let mouse = draw_command_line_popup(state, style, window)?;
-            state.mouse.popups.extend(mouse);
-            return Ok(());
-        }
-        hide_cursor(window);
-        return Ok(());
-    }
-
-    if state
-        .substitute_preview()
-        .is_some_and(|preview| preview.buffer.is_some())
-    {
-        draw_buffer_snapshot_for_id(
-            state,
-            &background_style,
-            state.session.active_id(),
-            BufferDrawOptions {
-                width: vw,
-                height: text_h,
-                has_line_numbers: state.pane_options(state.active_pane_id()).has_line_numbers,
-                colors: editor_text,
-            },
-            window,
-            BufferHighlights {
-                visual_selection: None,
-                one_shot_highlight: None,
-                search_highlights: &BTreeMap::new(),
-                diagnostic_lines: &BTreeMap::new(),
-                snippet_placeholders: &BTreeMap::new(),
-            },
-        )?;
-        build_editor_status_bar(state, style).draw(window)?;
+fn draw_explorer_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    window: &mut dyn Window,
+    popup: app::ExplorerPopup,
+    text_h: u16,
+) -> minui::Result<()> {
+    let (vw, vh) = window.get_size();
+    let fallback_id = state
+        .explorer_background_buffer_id()
+        .filter(|_| !state.explorer_background_is_placeholder_blank());
+    draw_popup_background(state, style, window, vw, text_h, fallback_id)?;
+    let inner_size = explorer_popup_inner_size(vw, vh, style);
+    let stack_layout = surface_popup_layout(state, style, window, inner_size);
+    let (cursor_spec, mouse) = draw_explorer_popup_view(
+        state,
+        style,
+        window,
+        popup,
+        stack_layout.popup,
+        inner_size.1,
+    )?;
+    state.mouse.popups.push(mouse);
+    let in_command_line = matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    );
+    if in_command_line && !draw_command_line_below_popup(state, style, window, stack_layout)? {
         let mouse = draw_command_line_popup(state, style, window)?;
         state.mouse.popups.extend(mouse);
-        let _ = draw_notification_toast(state, style, window)?;
-        return Ok(());
+    }
+    let toast_layout = draw_notification_toast(state, style, window)?;
+    if !in_command_line && let Some(cursor) = cursor_spec {
+        request_cursor_unless_covered(window, cursor, &[toast_layout], None);
+    }
+    Ok(())
+}
+
+fn draw_about_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    window: &mut dyn Window,
+    popup: app::AboutPopup,
+    text_h: u16,
+) -> minui::Result<()> {
+    let (vw, vh) = window.get_size();
+    let fallback_id = state.about_background_buffer_id();
+    draw_popup_background(state, style, window, vw, text_h, fallback_id)?;
+    let inner_size = about_popup_inner_size(vw, vh, style);
+    let stack_layout = surface_popup_layout(state, style, window, inner_size);
+    let mouse = draw_about_popup_view(state, style, window, popup, stack_layout.popup)?;
+    state.mouse.popups.push(mouse);
+    if !draw_command_line_below_popup(state, style, window, stack_layout)? {
+        if matches!(
+            state.mode,
+            app::EditorMode::Command | app::EditorMode::Search
+        ) {
+            let mouse = draw_command_line_popup(state, style, window)?;
+            state.mouse.popups.extend(mouse);
+        } else {
+            hide_cursor(window);
+        }
+    }
+    let _ = draw_notification_toast(state, style, window)?;
+    Ok(())
+}
+
+/// Draws a modal list popup (LSP marketplace, diagnostics, code actions) over the active buffer.
+fn draw_modal_list_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    window: &mut dyn Window,
+    inner_size: (u16, u16),
+    draw_popup: impl FnOnce(&mut dyn Window) -> minui::Result<PopupMouseLayout>,
+) -> minui::Result<()> {
+    let (vw, vh) = window.get_size();
+    draw_modal_popup_background(
+        state,
+        style,
+        window,
+        (vw, vh.saturating_sub(STATUS_BAR_HEIGHT_CELLS)),
+        Some(state.session.active_id()),
+        inner_size,
+    )?;
+    let mouse = draw_popup(window)?;
+    state.mouse.popups.push(mouse);
+    let _ = draw_notification_toast(state, style, window)?;
+    hide_cursor(window);
+    Ok(())
+}
+
+fn draw_split_editor_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    window: &mut dyn Window,
+    (vw, text_h): (u16, u16),
+) -> minui::Result<()> {
+    if let Some(rect) = state
+        .pane_rects(vw, text_h)
+        .into_iter()
+        .find(|rect| rect.pane_id == state.active_pane_id())
+    {
+        let content_x = pane_content_x(state, rect.pane_id);
+        let pane_text_w = rect.width.saturating_sub(content_x);
+        state.set_viewport_size(
+            pane_text_w as usize,
+            rect.height.saturating_add(STATUS_BAR_HEIGHT_CELLS) as usize,
+        );
+        start_pending_rain(state, style, pane_text_w, rect.height);
+    }
+    state.sync_active_pane_view();
+    draw_split_editor_panes(state, style, window, vw, text_h)
+}
+
+fn draw_active_gutter(
+    state: &EditorState,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    gutter: &PaneGutterLayout,
+    (text_h, first_line, active_cursor_line): (u16, usize, usize),
+    highlighted_lines: Option<(usize, usize)>,
+) -> minui::Result<()> {
+    draw_line_numbers(
+        window,
+        background_style,
+        (gutter.gutter_w, text_h),
+        u16::from(gutter.show_marker_column),
+        first_line..gutter.total_lines,
+        active_cursor_line,
+        highlighted_lines,
+    )?;
+    draw_gutter_padding(
+        window,
+        background_style,
+        gutter.gutter_w,
+        text_h,
+        GUTTER_CONTENT_PADDING,
+        first_line,
+        (state.active_git_diff(), Some(state.session.active_buffer())),
+    )
+}
+
+fn draw_rain_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    gutter: &PaneGutterLayout,
+    (text_w, text_h): (u16, u16),
+    active_cursor_line: usize,
+) -> minui::Result<()> {
+    if let Some(animation) = state.active_rain_animation() {
+        draw_active_gutter(
+            state,
+            background_style,
+            window,
+            gutter,
+            (text_h, animation.first_line(), active_cursor_line),
+            None,
+        )?;
+        animation.draw(
+            window,
+            0,
+            gutter.content_x,
+            text_w as usize,
+            text_h as usize,
+        )?;
     }
 
+    build_editor_status_bar(state, style).draw(window)?;
+    if matches!(
+        state.mode,
+        app::EditorMode::Command | app::EditorMode::Search
+    ) {
+        let mouse = draw_command_line_popup(state, style, window)?;
+        state.mouse.popups.extend(mouse);
+    } else {
+        hide_cursor(window);
+    }
+    Ok(())
+}
+
+fn draw_substitute_preview_view(
+    state: &mut EditorState,
+    style: &UiStyle,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    text_h: u16,
+) -> minui::Result<()> {
+    let (vw, _) = window.get_size();
+    draw_buffer_snapshot_for_id(
+        state,
+        background_style,
+        state.session.active_id(),
+        BufferDrawOptions {
+            width: vw,
+            height: text_h,
+            has_line_numbers: state.pane_options(state.active_pane_id()).has_line_numbers,
+            colors: background_style.editor_text,
+        },
+        window,
+        BufferHighlights {
+            visual_selection: None,
+            one_shot_highlight: None,
+            search_highlights: &BTreeMap::new(),
+            diagnostic_lines: &BTreeMap::new(),
+            snippet_placeholders: &BTreeMap::new(),
+        },
+    )?;
+    build_editor_status_bar(state, style).draw(window)?;
+    let mouse = draw_command_line_popup(state, style, window)?;
+    state.mouse.popups.extend(mouse);
+    let _ = draw_notification_toast(state, style, window)?;
+    Ok(())
+}
+
+/// Draws the active buffer's gutter and text when it fills the editor area, returning where its
+/// cursor sits when visible.
+fn draw_active_buffer(
+    state: &mut EditorState,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    gutter: &PaneGutterLayout,
+    (text_w, text_h): (u16, u16),
+    active_cursor_line: usize,
+    perf: &mut FramePerfSample,
+) -> minui::Result<Option<CursorContext>> {
+    let content_x = gutter.content_x;
+    let editor_text = background_style.editor_text;
     let visual_selection = state.active_visual_selection();
     let one_shot_highlight = state.one_shot_highlight();
     let syntax_language = language_for_path(state.session.active_meta().path.as_deref());
@@ -670,25 +647,15 @@ fn draw_editor_view(
         state.active_snippet_placeholder_ranges(snapshot.first_line(), snapshot.line_count());
     perf.overlays += overlay_start.elapsed();
 
-    draw_line_numbers(
+    draw_active_gutter(
+        state,
+        background_style,
         window,
-        &background_style,
-        (gutter.gutter_w, text_h),
-        u16::from(gutter.show_marker_column),
-        snapshot.first_line()..gutter.total_lines,
-        active_cursor_line,
+        gutter,
+        (text_h, snapshot.first_line(), active_cursor_line),
         visual_selection
             .map(|(selection, _)| selection.line_range())
             .or_else(|| one_shot_highlight.and_then(OneShotHighlight::yank_lines)),
-    )?;
-    draw_gutter_padding(
-        window,
-        &background_style,
-        gutter.gutter_w,
-        text_h,
-        GUTTER_CONTENT_PADDING,
-        snapshot.first_line(),
-        (state.active_git_diff(), Some(state.session.active_buffer())),
     )?;
 
     let focus_scope = state.zen.enabled && state.zen.focus_scope;
@@ -776,7 +743,7 @@ fn draw_editor_view(
                 },
                 SnapshotStyle {
                     default_colors: editor_text,
-                    style: &background_style,
+                    style: background_style,
                     syntax_spans,
                     lexical_fallback_enabled: use_lexical_fallback,
                 },
@@ -799,10 +766,37 @@ fn draw_editor_view(
     perf.overlays += overlay_time;
     perf.lines += lines_time;
 
-    let status_start = Instant::now();
-    let status = build_editor_status_bar(state, style);
+    Ok(spec.visible.then_some(CursorContext {
+        x: spec.x.saturating_add(content_x),
+        y: spec.y,
+        content_x,
+        text_w,
+        height: text_h,
+        scroll_x,
+    }))
+}
 
-    status.draw(window)?;
+/// The active buffer's cursor as the overlays see it.
+struct EditorCursor {
+    /// Where cursor-anchored popups attach, when the cursor is on screen.
+    context: Option<CursorContext>,
+    /// Rain and the undo tree own the pane, so the cursor stays hidden.
+    suppressed: bool,
+}
+
+/// Draws the status bar and the popups layered over the buffer, then places the cursor.
+fn draw_editor_overlays(
+    state: &mut EditorState,
+    style: &UiStyle,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    which_key_popup: Option<&input::WhichKeyPopup>,
+    cursor: EditorCursor,
+    perf: &mut FramePerfSample,
+) -> minui::Result<()> {
+    let (vw, vh) = window.get_size();
+    let status_start = Instant::now();
+    build_editor_status_bar(state, style).draw(window)?;
     perf.status += status_start.elapsed();
 
     let perf_popup_layout = if let Some(popup) = state.perf_popup()
@@ -824,6 +818,7 @@ fn draw_editor_view(
     };
 
     let mut cursor_spec = None;
+    let mut hide_editor_cursor = false;
     if matches!(
         state.mode,
         app::EditorMode::Command | app::EditorMode::Search
@@ -837,88 +832,25 @@ fn draw_editor_view(
         let mouse = draw_pin_selector_popup(&popup, style, window)?;
         state.mouse.popups.push(mouse);
     } else if let Some(popup) = state.completion_popup() {
-        if spec.visible {
-            let cursor_x = spec.x.saturating_add(content_x);
-            if let Some(preview) = state.completion_preview() {
-                let preview_width =
-                    clipped_cell_width(&preview.text, vw.saturating_sub(cursor_x) as usize);
-                let inline_diagnostic = diagnostic_lines.get(&active_cursor_line);
-                let source_line = inline_diagnostic.map(|_| {
-                    state
-                        .session
-                        .active_buffer()
-                        .line_string(active_cursor_line)
-                });
-                if let Some(source_line) = source_line.as_deref() {
-                    clear_inline_diagnostic(
-                        window,
-                        spec.y,
-                        content_x,
-                        source_line,
-                        scroll_x,
-                        text_w as usize,
-                        &background_style,
-                    )?;
-                }
-                draw_completion_preview(
-                    window,
-                    style,
-                    cursor_x,
-                    spec.y,
-                    vw.saturating_sub(cursor_x),
-                    &preview.text,
-                    &preview.suffix,
-                )?;
-                if let Some((diagnostic, source_line)) =
-                    inline_diagnostic.zip(source_line.as_deref())
-                {
-                    draw_inline_diagnostic_shifted(
-                        window,
-                        LineViewport {
-                            row: spec.y,
-                            column: content_x,
-                            scroll_x,
-                            width: text_w as usize,
-                        },
-                        source_line,
-                        &background_style,
-                        diagnostic,
-                        preview_width,
-                    )?;
-                }
-            }
-            let mouse = draw_completion_popup(&popup, style, window, cursor_x, spec.y, text_h)?;
+        if let Some(context) = &cursor.context {
+            draw_completion_preview_at(state, style, background_style, window, context)?;
+            let mouse =
+                draw_completion_popup(&popup, style, window, context.x, context.y, context.height)?;
             state.mouse.popups.extend(mouse);
-            cursor_spec = Some(minui::window::CursorSpec {
-                x: cursor_x,
-                y: spec.y,
-                visible: true,
-            });
+            cursor_spec = Some(context.spec());
         }
-    } else if spec.visible {
-        let cursor_x = spec.x.saturating_add(content_x);
-        if state.symbol_info_popup(vw).is_some() {
-            state.clamp_symbol_info_scroll(vw);
-            let popup = state
-                .symbol_info_popup(vw)
-                .expect("symbol info popup should still exist after clamping");
-            let mouse = draw_symbol_info_popup(&popup, style, window, cursor_x, spec.y)?;
+    } else if cursor.suppressed {
+        hide_editor_cursor = true;
+    } else if let Some(context) = &cursor.context {
+        state.clamp_symbol_info_scroll(vw);
+        if let Some(popup) = state.symbol_info_popup(vw) {
+            let mouse = draw_symbol_info_popup(&popup, style, window, context.x, context.y)?;
             state.mouse.popups.extend(mouse);
-            cursor_spec = Some(minui::window::CursorSpec {
-                x: cursor_x,
-                y: spec.y,
-                visible: true,
-            });
-        } else {
-            cursor_spec = Some(minui::window::CursorSpec {
-                x: spec.x.saturating_add(content_x),
-                y: spec.y,
-                visible: true,
-            });
         }
+        cursor_spec = Some(context.spec());
     }
 
-    let which_key_layout = if let Some(popup) = which_key_popup.as_ref() {
+    let which_key_layout = if let Some(popup) = which_key_popup {
         draw_which_key_popup(popup, style, window)?.map(|(layout, mouse)| {
             state.mouse.popups.push(mouse);
             layout
@@ -927,22 +859,99 @@ fn draw_editor_view(
         None
     };
     let toast_layout = draw_notification_toast(state, style, window)?;
-
-    if let Some(cursor) = cursor_spec {
-        let cursor_hidden_by_perf = perf_popup_layout
-            .is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-        let cursor_hidden_by_toast =
-            toast_layout.is_some_and(|layout| popup_occludes_cursor(layout, cursor.x, cursor.y));
-        let cursor_hidden_by_which_key =
-            which_key_layout.is_some_and(|layout| layout.occludes(cursor.x, cursor.y));
-        if cursor_hidden_by_perf || cursor_hidden_by_toast || cursor_hidden_by_which_key {
-            hide_cursor(window);
-        } else {
-            window.request_cursor(cursor);
-        }
+    if hide_editor_cursor {
+        hide_cursor(window);
+    } else if let Some(cursor) = cursor_spec {
+        request_cursor_unless_covered(
+            window,
+            cursor,
+            &[perf_popup_layout, toast_layout],
+            which_key_layout,
+        );
     }
-
     Ok(())
+}
+
+/// Draws the inline completion ghost text at the cursor, shifting any inline diagnostic on the
+/// cursor line past it.
+fn draw_completion_preview_at(
+    state: &EditorState,
+    style: &UiStyle,
+    background_style: &UiStyle,
+    window: &mut dyn Window,
+    context: &CursorContext,
+) -> minui::Result<()> {
+    let Some(preview) = state.completion_preview() else {
+        return Ok(());
+    };
+    let (vw, _) = window.get_size();
+    let preview_width = clipped_cell_width(&preview.text, vw.saturating_sub(context.x) as usize);
+    let active_cursor_line = state.active_cursor_pos().line;
+    let inline_diagnostic = state
+        .active_diagnostic_lines(active_cursor_line, 1)
+        .remove(&active_cursor_line);
+    let source_line = inline_diagnostic.as_ref().map(|_| {
+        state
+            .session
+            .active_buffer()
+            .line_string(active_cursor_line)
+    });
+    if let Some(source_line) = source_line.as_deref() {
+        clear_inline_diagnostic(
+            window,
+            context.y,
+            context.content_x,
+            source_line,
+            context.scroll_x,
+            context.text_w as usize,
+            background_style,
+        )?;
+    }
+    draw_completion_preview(
+        window,
+        style,
+        context.x,
+        context.y,
+        vw.saturating_sub(context.x),
+        &preview.text,
+        &preview.suffix,
+    )?;
+    if let Some((diagnostic, source_line)) = inline_diagnostic.as_ref().zip(source_line.as_deref())
+    {
+        draw_inline_diagnostic_shifted(
+            window,
+            LineViewport {
+                row: context.y,
+                column: context.content_x,
+                scroll_x: context.scroll_x,
+                width: context.text_w as usize,
+            },
+            source_line,
+            background_style,
+            diagnostic,
+            preview_width,
+        )?;
+    }
+    Ok(())
+}
+
+/// Shows `cursor` unless a floating popup is drawn over it.
+fn request_cursor_unless_covered(
+    window: &mut dyn Window,
+    cursor: minui::window::CursorSpec,
+    popups: &[Option<PopupLayout>],
+    which_key: Option<ui::widgets::which_key::WhichKeyLayout>,
+) {
+    let covered = popups
+        .iter()
+        .flatten()
+        .any(|layout| popup_occludes_cursor(*layout, cursor.x, cursor.y))
+        || which_key.is_some_and(|layout| layout.occludes(cursor.x, cursor.y));
+    if covered {
+        hide_cursor(window);
+    } else {
+        window.request_cursor(cursor);
+    }
 }
 
 fn draw_loading_toast(
@@ -1729,29 +1738,8 @@ fn pane_content_x(state: &EditorState, pane_id: PaneId) -> u16 {
     pane_gutter_layout(state, pane_id).content_x
 }
 
-fn active_split_cursor(
-    state: &mut EditorState,
-    width: u16,
-    height: u16,
-) -> Option<minui::window::CursorSpec> {
-    let rect = state
-        .pane_rects(width, height)
-        .into_iter()
-        .find(|rect| rect.pane_id == state.active_pane_id())?;
-    let content_x = pane_content_x(state, rect.pane_id);
-    let text_w = rect.width.saturating_sub(content_x);
-    let spec = state.with_active_buffer_view_mut(|buffer, view| {
-        view.cursor
-            .cursor_spec(buffer, text_w as usize, rect.height as usize)
-    });
-    spec.visible.then_some(minui::window::CursorSpec {
-        x: rect.x.saturating_add(content_x).saturating_add(spec.x),
-        y: rect.y.saturating_add(spec.y),
-        visible: true,
-    })
-}
-
-struct SplitCursorContext {
+/// Where the active pane's visible cursor sits on screen, and the text area around it.
+struct CursorContext {
     x: u16,
     y: u16,
     content_x: u16,
@@ -1760,11 +1748,21 @@ struct SplitCursorContext {
     scroll_x: usize,
 }
 
+impl CursorContext {
+    fn spec(&self) -> minui::window::CursorSpec {
+        minui::window::CursorSpec {
+            x: self.x,
+            y: self.y,
+            visible: true,
+        }
+    }
+}
+
 fn active_split_cursor_context(
     state: &mut EditorState,
     width: u16,
     height: u16,
-) -> Option<SplitCursorContext> {
+) -> Option<CursorContext> {
     let rect = state
         .pane_rects(width, height)
         .into_iter()
@@ -1780,7 +1778,7 @@ fn active_split_cursor_context(
             scroll_x,
         )
     });
-    spec.visible.then_some(SplitCursorContext {
+    spec.visible.then_some(CursorContext {
         x: content_x.saturating_add(spec.x),
         y: rect.y.saturating_add(spec.y),
         content_x,
@@ -2180,6 +2178,8 @@ fn draw_snapshot_lines(
         }
         ghost
     });
+    // One-shot highlights only show while no visual selection is active.
+    let one_shot = one_shot_highlight.filter(|_| visual_selection.is_none());
     for (row, render_line) in snapshot.iter().enumerate() {
         let line_viewport = LineViewport {
             row: row as u16,
@@ -2267,33 +2267,13 @@ fn draw_snapshot_lines(
             });
 
         let selected_cells = transient_selection.and_then(|(selection, mode, _)| {
-            if visual_selection.is_none()
-                && one_shot_highlight.is_some_and(|highlight| highlight.kind == HighlightKind::Jump)
-            {
-                return (selection.cursor.line == line_idx).then(|| vec![true; text_w]);
-            }
-            if visual_selection.is_none()
-                && one_shot_highlight
-                    .is_some_and(|highlight| highlight.kind == HighlightKind::UndoRedo)
-                && selection.anchor == selection.cursor
-                && selection.cursor.line == line_idx
-                && selection.cursor.col >= source_line.chars().count()
-            {
-                return Some(search_highlight_cells(
-                    source_line,
-                    scroll_x,
-                    text_w,
-                    std::slice::from_ref(&(selection.cursor.col..selection.cursor.col)),
-                ));
-            }
-            visual_selection_visible_cells(
+            transient_selection_cells(
                 buffer,
                 source_line,
-                selection,
-                mode,
+                (selection, mode),
                 line_idx,
-                scroll_x,
-                text_w,
+                (scroll_x, text_w),
+                one_shot,
             )
         });
 
@@ -2316,9 +2296,6 @@ fn draw_snapshot_lines(
                 default_colors,
                 color_column,
             )?;
-            if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
-            }
             continue;
         }
 
@@ -2336,305 +2313,98 @@ fn draw_snapshot_lines(
             .map(|range| {
                 search_highlight_cells(source_line, scroll_x, text_w, std::slice::from_ref(range))
             });
-        let decorations = LineDecorations {
+        let mut decorations = LineDecorations {
             search_cells: search_cells.as_deref().unwrap_or(&[]),
             error_cells,
             current_cells: active_search_cells.as_deref().unwrap_or(&[]),
             search_style: style.search_match,
             current_style: style.search_current,
             error_style: style.error_range,
-            yank_highlight: one_shot_highlight
-                .filter(|highlight| {
-                    visual_selection.is_none() && highlight.kind == HighlightKind::Yank
-                })
-                .zip(selected_cells.as_deref())
-                .and_then(|(highlight, cells)| {
-                    YankHighlight::new(cells, highlight.progress(), default_colors.colors())
-                }),
-            jump_highlight: one_shot_highlight
-                .filter(|highlight| {
-                    visual_selection.is_none()
-                        && highlight.kind == HighlightKind::Jump
-                        && selected_cells.is_some()
-                })
-                .map(|highlight| HighlightFade::new(highlight.progress(), style.editor_text.fg)),
-            delimiter_blink: one_shot_highlight
-                .filter(|highlight| {
-                    visual_selection.is_none() && highlight.kind == HighlightKind::Delimiter
-                })
-                .zip(selected_cells.as_deref())
-                .and_then(|(highlight, cells)| {
-                    let column = cells.iter().position(|selected| *selected)?;
-                    Some((
-                        column,
-                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
-                    ))
-                }),
-            undo_redo_highlight: one_shot_highlight
-                .filter(|highlight| {
-                    visual_selection.is_none() && highlight.kind == HighlightKind::UndoRedo
-                })
-                .zip(selected_cells.as_deref())
-                .map(|(highlight, cells)| {
+            yank_highlight: None,
+            jump_highlight: None,
+            delimiter_blink: None,
+            undo_redo_highlight: None,
+        };
+        if let Some(highlight) = one_shot {
+            add_one_shot_decorations(
+                &mut decorations,
+                highlight,
+                selected_cells.as_deref(),
+                style,
+                default_colors,
+            );
+        }
+
+        let active_search_layer = active_search_cells.as_deref().map(|cells| {
+            (
+                cells,
+                style.search_current.bg,
+                (style.search_current.fg != Color::Transparent).then_some(style.search_current.fg),
+            )
+        });
+        let search_layer = search_cells
+            .as_deref()
+            .map(|cells| (cells, search_background, search_foreground));
+        let diagnostic_layer =
+            diagnostic_cells
+                .as_deref()
+                .zip(diagnostic_line)
+                .map(|(cells, diagnostic)| {
                     (
                         cells,
-                        HighlightFade::new(highlight.progress(), style.editor_text.fg),
+                        style.diagnostic_inline.background(diagnostic.severity),
+                        None,
                     )
-                }),
-        };
-        if let Some((_, _, selection_bg)) = transient_selection
-            && let Some(selected_cells) = selected_cells.as_ref()
+                });
+        let non_empty_syntax_spans = syntax_line_spans.filter(|spans| !spans.is_empty());
+
+        // Layers paint first-match-wins, so the active search match sits on top. The selection
+        // drops below the other layers while a jump fades and is left out during an undo flash.
+        // `guide_backdrop` is what the indent guides draw over.
+        let (highlights, guide_backdrop) = if let Some((_, _, selection_bg)) = transient_selection
+            && let Some(selected_cells) = selected_cells.as_deref()
         {
-            let highlight_empty_line = source_line.is_empty();
-            let mut highlight_layers = if let Some(search_cells) = search_cells.as_ref() {
-                let mut layers = vec![
-                    (selected_cells.as_slice(), selection_bg, None),
-                    (
-                        search_cells.as_slice(),
-                        search_background,
-                        search_foreground,
-                    ),
-                ];
-                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                    layers.push((
-                        diagnostic.0.as_slice(),
-                        style.diagnostic_inline.background(diagnostic.1.severity),
-                        None,
-                    ));
-                }
-                layers
-            } else {
-                let mut layers = vec![(selected_cells.as_slice(), selection_bg, None)];
-                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                    layers.push((
-                        diagnostic.0.as_slice(),
-                        style.diagnostic_inline.background(diagnostic.1.severity),
-                        None,
-                    ));
-                }
-                layers
-            };
-            if decorations.jump_highlight.is_some() {
-                highlight_layers.rotate_left(1);
-            }
-            if decorations.undo_redo_highlight.is_some() {
-                highlight_layers.remove(0);
-            }
-            if let Some(active) = &active_search_cells {
-                highlight_layers.insert(
-                    0,
-                    (
-                        active.as_slice(),
-                        style.search_current.bg,
-                        (style.search_current.fg != Color::Transparent)
-                            .then_some(style.search_current.fg),
-                    ),
-                );
-            }
-            draw_line_with_highlights(
-                window,
-                line_viewport,
-                source_line,
-                default_colors,
-                LineHighlights {
-                    color_column,
-                    layers: &highlight_layers,
-                    empty_line: highlight_empty_line,
-                    decorations,
-                },
-                style,
-                syntax_line_spans,
-            )?;
-            draw_indent_guides(
-                window,
-                (row as u16, content_x),
-                visible_indent_guides,
-                &occupied_text_cells,
-                style,
+            let selection_layer = (selected_cells, selection_bg, None);
+            let selection_on_top =
+                decorations.jump_highlight.is_none() && decorations.undo_redo_highlight.is_none();
+            let layers = active_search_layer
+                .into_iter()
+                .chain(selection_on_top.then_some(selection_layer))
+                .chain(search_layer)
+                .chain(diagnostic_layer)
+                .chain(
+                    decorations
+                        .jump_highlight
+                        .is_some()
+                        .then_some(selection_layer),
+                )
+                .collect::<Vec<_>>();
+            (
+                Some((layers, source_line.is_empty(), syntax_line_spans)),
                 Some((selected_cells, selection_bg)),
-                decorations,
-            )?;
-            draw_delimiter_highlights(
-                window,
-                line_viewport,
-                source_line,
-                (highlighted_chars, decorations),
-                default_colors,
-                style,
-                syntax_line_spans,
-            )?;
-            draw_snippet_placeholders(
-                window,
-                line_viewport,
-                source_line,
-                snippet_ranges,
-                style,
-                decorations,
-                syntax_line_spans,
-            )?;
-            if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
-            }
-            continue;
-        }
-
-        if let Some(search_cells) = search_cells.as_ref()
-            && search_cells.iter().any(|selected| *selected)
+            )
+        } else if search_cells
+            .as_ref()
+            .is_some_and(|cells| cells.contains(&true))
         {
-            let mut highlight_layers =
-                if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                    vec![
-                        (
-                            search_cells.as_slice(),
-                            search_background,
-                            search_foreground,
-                        ),
-                        (
-                            diagnostic.0.as_slice(),
-                            style.diagnostic_inline.background(diagnostic.1.severity),
-                            None,
-                        ),
-                    ]
-                } else {
-                    vec![(
-                        search_cells.as_slice(),
-                        search_background,
-                        search_foreground,
-                    )]
-                };
-            if let Some(active) = &active_search_cells {
-                highlight_layers.insert(
-                    0,
-                    (
-                        active.as_slice(),
-                        style.search_current.bg,
-                        (style.search_current.fg != Color::Transparent)
-                            .then_some(style.search_current.fg),
-                    ),
-                );
-            }
-            draw_line_with_highlights(
-                window,
-                line_viewport,
-                source_line,
-                default_colors,
-                LineHighlights {
-                    color_column,
-                    layers: &highlight_layers,
-                    empty_line: source_line.is_empty(),
-                    decorations,
-                },
-                style,
-                syntax_line_spans,
-            )?;
-            draw_indent_guides(
-                window,
-                (row as u16, content_x),
-                visible_indent_guides,
-                &occupied_text_cells,
-                style,
+            let layers = active_search_layer
+                .into_iter()
+                .chain(search_layer)
+                .chain(diagnostic_layer)
+                .collect::<Vec<_>>();
+            (
+                Some((layers, source_line.is_empty(), syntax_line_spans)),
                 active_search_cells
-                    .as_ref()
-                    .map(|cells| (cells.as_slice(), style.search_current.bg)),
-                decorations,
-            )?;
-            draw_delimiter_highlights(
-                window,
-                line_viewport,
-                source_line,
-                (highlighted_chars, decorations),
-                default_colors,
-                style,
-                syntax_line_spans,
-            )?;
-            draw_snippet_placeholders(
-                window,
-                line_viewport,
-                source_line,
-                snippet_ranges,
-                style,
-                decorations,
-                syntax_line_spans,
-            )?;
-            if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
-            }
-            continue;
-        }
+                    .as_deref()
+                    .map(|cells| (cells, style.search_current.bg)),
+            )
+        } else {
+            let highlights =
+                diagnostic_layer.map(|layer| (vec![layer], false, non_empty_syntax_spans));
+            (highlights, None)
+        };
 
-        if let Some(spans) = syntax_line_spans
-            && !spans.is_empty()
-        {
-            if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-                let highlight_layers = [(
-                    diagnostic.0.as_slice(),
-                    style.diagnostic_inline.background(diagnostic.1.severity),
-                    None,
-                )];
-                draw_line_with_highlights(
-                    window,
-                    line_viewport,
-                    source_line,
-                    default_colors,
-                    LineHighlights {
-                        color_column,
-                        layers: &highlight_layers,
-                        empty_line: false,
-                        decorations,
-                    },
-                    style,
-                    Some(spans),
-                )?;
-            } else {
-                draw_line_with_syntax(
-                    window,
-                    line_viewport,
-                    source_line,
-                    default_colors,
-                    color_column,
-                    style,
-                    spans,
-                )?;
-            }
-            draw_indent_guides(
-                window,
-                (row as u16, content_x),
-                visible_indent_guides,
-                &occupied_text_cells,
-                style,
-                None,
-                decorations,
-            )?;
-            draw_delimiter_highlights(
-                window,
-                line_viewport,
-                source_line,
-                (highlighted_chars, decorations),
-                default_colors,
-                style,
-                Some(spans),
-            )?;
-            draw_snippet_placeholders(
-                window,
-                line_viewport,
-                source_line,
-                snippet_ranges,
-                style,
-                decorations,
-                syntax_line_spans,
-            )?;
-            if let Some(diagnostic) = diagnostic_line {
-                draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
-            }
-            continue;
-        }
-
-        if let Some(diagnostic) = diagnostic_cells.as_ref().zip(diagnostic_line) {
-            let highlight_layers = [(
-                diagnostic.0.as_slice(),
-                style.diagnostic_inline.background(diagnostic.1.severity),
-                None,
-            )];
+        if let Some((layers, empty_line, spans)) = highlights {
             draw_line_with_highlights(
                 window,
                 line_viewport,
@@ -2642,12 +2412,22 @@ fn draw_snapshot_lines(
                 default_colors,
                 LineHighlights {
                     color_column,
-                    layers: &highlight_layers,
-                    empty_line: false,
+                    layers: &layers,
+                    empty_line,
                     decorations,
                 },
                 style,
-                None,
+                spans,
+            )?;
+        } else if let Some(spans) = non_empty_syntax_spans {
+            draw_line_with_syntax(
+                window,
+                line_viewport,
+                source_line,
+                default_colors,
+                color_column,
+                style,
+                spans,
             )?;
         } else {
             draw_plain_line(
@@ -2658,22 +2438,13 @@ fn draw_snapshot_lines(
                 color_column,
             )?;
         }
-        draw_snippet_placeholders(
-            window,
-            line_viewport,
-            source_line,
-            snippet_ranges,
-            style,
-            decorations,
-            syntax_line_spans,
-        )?;
         draw_indent_guides(
             window,
             (row as u16, content_x),
             visible_indent_guides,
             &occupied_text_cells,
             style,
-            None,
+            guide_backdrop,
             decorations,
         )?;
         draw_delimiter_highlights(
@@ -2685,12 +2456,87 @@ fn draw_snapshot_lines(
             style,
             syntax_line_spans,
         )?;
+        draw_snippet_placeholders(
+            window,
+            line_viewport,
+            source_line,
+            snippet_ranges,
+            style,
+            decorations,
+            syntax_line_spans,
+        )?;
         if let Some(diagnostic) = diagnostic_line {
             draw_inline_diagnostic(window, line_viewport, source_line, style, diagnostic)?;
         }
     }
 
     Ok(())
+}
+
+/// The cells a visual selection or one-shot highlight covers on `line_idx`. `one_shot` is only
+/// set when no visual selection is active.
+fn transient_selection_cells(
+    buffer: &redox_core::TextBuffer,
+    source_line: &str,
+    (selection, mode): (redox_core::Selection, redox_core::VisualModeKind),
+    line_idx: usize,
+    (scroll_x, text_w): (usize, usize),
+    one_shot: Option<OneShotHighlight>,
+) -> Option<Vec<bool>> {
+    match one_shot.map(|highlight| highlight.kind) {
+        Some(HighlightKind::Jump) => {
+            return (selection.cursor.line == line_idx).then(|| vec![true; text_w]);
+        }
+        Some(HighlightKind::UndoRedo)
+            if selection.anchor == selection.cursor
+                && selection.cursor.line == line_idx
+                && selection.cursor.col >= source_line.chars().count() =>
+        {
+            return Some(search_highlight_cells(
+                source_line,
+                scroll_x,
+                text_w,
+                std::slice::from_ref(&(selection.cursor.col..selection.cursor.col)),
+            ));
+        }
+        _ => {}
+    }
+    visual_selection_visible_cells(
+        buffer,
+        source_line,
+        selection,
+        mode,
+        line_idx,
+        scroll_x,
+        text_w,
+    )
+}
+
+/// Adds the fading decoration for a one-shot highlight over `selected_cells`.
+fn add_one_shot_decorations<'a>(
+    decorations: &mut LineDecorations<'a>,
+    highlight: OneShotHighlight,
+    selected_cells: Option<&'a [bool]>,
+    style: &UiStyle,
+    default_colors: TextStyle,
+) {
+    let fade = HighlightFade::new(highlight.progress(), style.editor_text.fg);
+    match highlight.kind {
+        HighlightKind::Yank => {
+            decorations.yank_highlight = selected_cells.and_then(|cells| {
+                YankHighlight::new(cells, highlight.progress(), default_colors.colors())
+            });
+        }
+        HighlightKind::Jump => decorations.jump_highlight = selected_cells.map(|_| fade),
+        HighlightKind::Delimiter => {
+            decorations.delimiter_blink = selected_cells
+                .and_then(|cells| cells.iter().position(|selected| *selected))
+                .map(|column| (column, fade));
+        }
+        HighlightKind::UndoRedo => {
+            decorations.undo_redo_highlight = selected_cells.map(|cells| (cells, fade));
+        }
+    }
 }
 
 fn should_use_lexical_fallback(syntax_language: Option<ui::syntax::SyntaxLanguage>) -> bool {

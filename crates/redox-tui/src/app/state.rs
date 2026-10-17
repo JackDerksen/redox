@@ -229,6 +229,13 @@ impl EditorMode {
         )
     }
 
+    pub fn is_visual(self) -> bool {
+        matches!(
+            self,
+            EditorMode::Visual | EditorMode::VisualLine | EditorMode::VisualBlock
+        )
+    }
+
     pub fn as_input_mode(self) -> InputMode {
         match self {
             EditorMode::Normal => InputMode::Normal,
@@ -244,6 +251,26 @@ impl EditorMode {
             EditorMode::Visual => InputMode::Visual,
             EditorMode::VisualLine => InputMode::VisualLine,
             EditorMode::VisualBlock => InputMode::VisualBlock,
+        }
+    }
+}
+
+impl From<InputMode> for EditorMode {
+    fn from(mode: InputMode) -> Self {
+        match mode {
+            InputMode::Normal => EditorMode::Normal,
+            InputMode::Insert => EditorMode::Insert,
+            InputMode::Command => EditorMode::Command,
+            InputMode::Search => EditorMode::Search,
+            InputMode::Finder => EditorMode::Finder,
+            InputMode::PinSelect => EditorMode::PinSelect,
+            InputMode::LspMarketplace => EditorMode::LspMarketplace,
+            InputMode::DiagnosticsList => EditorMode::DiagnosticsList,
+            InputMode::CodeActions => EditorMode::CodeActions,
+            InputMode::SymbolInfo => EditorMode::SymbolInfo,
+            InputMode::Visual => EditorMode::Visual,
+            InputMode::VisualLine => EditorMode::VisualLine,
+            InputMode::VisualBlock => EditorMode::VisualBlock,
         }
     }
 }
