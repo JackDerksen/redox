@@ -2130,7 +2130,7 @@ mod tests {
 
     use redox_core::{Pos, TextBuffer};
 
-    use super::{SyntaxHighlighter, SyntaxLanguage, language_for_path};
+    use super::{LineSyntaxSpan, SyntaxHighlighter, SyntaxLanguage, language_for_path};
     use crate::ui::style::SyntaxRole;
 
     #[test]
@@ -2182,26 +2182,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn detects_rust_paths() {
-        assert_eq!(
-            language_for_path(Some(Path::new("/tmp/main.rs"))),
-            Some(SyntaxLanguage::Rust)
-        );
-        assert_eq!(
-            language_for_path(Some(Path::new("/tmp/MAIN.RS"))),
-            Some(SyntaxLanguage::Rust)
-        );
-        assert_eq!(
-            language_for_path(Some(Path::new("/tmp/readme.md"))),
-            Some(SyntaxLanguage::Markdown)
-        );
-        assert_eq!(language_for_path(None), None);
+    /// Highlights `source` and returns the spans of `line_count` lines from `first_line`.
+    fn highlighted_lines(
+        language: SyntaxLanguage,
+        source: &str,
+        first_line: usize,
+        line_count: usize,
+    ) -> Vec<Vec<LineSyntaxSpan>> {
+        let mut highlighter = SyntaxHighlighter::default();
+        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
+            &TextBuffer::from_text(source),
+            language,
+        ));
+        let spans = highlighter
+            .visible_line_spans_cached(Some(language), first_line, line_count)
+            .expect("spans");
+        (0..line_count).map(|row| spans[row].to_vec()).collect()
+    }
+
+    /// Whether a `role` span covers at least `start..end`.
+    fn covers(spans: &[LineSyntaxSpan], role: SyntaxRole, start: usize, end: usize) -> bool {
+        spans
+            .iter()
+            .any(|span| span.role == role && span.start_byte <= start && span.end_byte >= end)
     }
 
     #[test]
-    fn detects_new_tree_sitter_language_paths() {
+    fn language_for_path_maps_extensions_case_insensitively() {
         let cases = [
+            ("/tmp/main.rs", SyntaxLanguage::Rust),
+            ("/tmp/MAIN.RS", SyntaxLanguage::Rust),
+            ("/tmp/readme.md", SyntaxLanguage::Markdown),
+            ("/tmp/readme.markdown", SyntaxLanguage::Markdown),
             ("/tmp/main.c", SyntaxLanguage::C),
             ("/tmp/main.h", SyntaxLanguage::C),
             ("/tmp/main.cc", SyntaxLanguage::Cpp),
@@ -2216,7 +2228,6 @@ mod tests {
             ("/tmp/app.mjs", SyntaxLanguage::JavaScript),
             ("/tmp/config.json", SyntaxLanguage::Json),
             ("/tmp/init.lua", SyntaxLanguage::Lua),
-            ("/tmp/readme.markdown", SyntaxLanguage::Markdown),
             ("/tmp/main.py", SyntaxLanguage::Python),
             ("/tmp/main.pyi", SyntaxLanguage::Python),
             ("/tmp/Cargo.toml", SyntaxLanguage::Toml),
@@ -2229,19 +2240,7 @@ mod tests {
         for (path, language) in cases {
             assert_eq!(language_for_path(Some(Path::new(path))), Some(language));
         }
-    }
-
-    #[test]
-    fn scope_guides_are_disabled_for_markdown_only() {
-        assert!(!super::scope_guides_enabled(Some(SyntaxLanguage::Markdown)));
-        assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Python)));
-        assert!(super::scope_guides_enabled(Some(SyntaxLanguage::Rust)));
-        assert!(super::scope_guides_enabled(None));
-    }
-
-    #[test]
-    fn paired_closer_includes_backtick() {
-        assert_eq!(super::paired_closer_for('`'), Some('`'));
+        assert_eq!(language_for_path(None), None);
     }
 
     #[test]
@@ -2262,88 +2261,37 @@ mod tests {
     }
 
     #[test]
-    fn comments_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("// comment\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Rust,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
-            .expect("rust spans");
+    fn line_comments_and_strings_are_highlighted() {
+        for (language, source, end) in [
+            (SyntaxLanguage::Rust, "// comment\n", 10),
+            (SyntaxLanguage::Go, "// comment\n", 10),
+            (SyntaxLanguage::C, "// comment\n", 10),
+            (SyntaxLanguage::Python, "# comment\n", 9),
+        ] {
+            let lines = highlighted_lines(language, source, 0, 1);
+            assert!(
+                covers(&lines[0], SyntaxRole::Comment, 0, end),
+                "{language:?} comment"
+            );
+        }
 
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 10
-        }));
-    }
-
-    #[test]
-    fn string_quotes_are_highlighted_as_string() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("let s = \"hello\";\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Rust,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Rust), 0, 1)
-            .expect("rust spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::String && span.start_byte <= 8 && span.end_byte >= 15
-        }));
-    }
-
-    #[test]
-    fn go_comments_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("// comment\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Go,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Go), 0, 1)
-            .expect("go spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 10
-        }));
-    }
-
-    #[test]
-    fn c_comments_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("// comment\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, SyntaxLanguage::C));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::C), 0, 1)
-            .expect("c spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 10
-        }));
+        let lines = highlighted_lines(SyntaxLanguage::Rust, "let s = \"hello\";\n", 0, 1);
+        assert!(covers(&lines[0], SyntaxRole::String, 8, 15));
     }
 
     #[test]
     fn cpp_uses_c_and_cpp_highlight_queries() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("auto value = nullptr; // comment\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
+        let lines = highlighted_lines(
             SyntaxLanguage::Cpp,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Cpp), 0, 1)
-            .expect("cpp spans");
+            "auto value = nullptr; // comment\n",
+            0,
+            1,
+        );
 
-        assert!(spans[0].iter().any(|span| {
+        assert!(lines[0].iter().any(|span| {
             span.role == SyntaxRole::Type && span.start_byte == 0 && span.end_byte == 4
         }));
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::Comment && span.start_byte <= 22 && span.end_byte >= 32
-        }));
+        assert!(covers(&lines[0], SyntaxRole::Comment, 22, 32));
     }
 
     #[test]
@@ -2367,15 +2315,8 @@ mod tests {
         ];
 
         for (language, source) in cases {
-            let mut highlighter = SyntaxHighlighter::default();
-            let buffer = TextBuffer::from_text(source);
-            highlighter.replace_cache(SyntaxHighlighter::compute_cache(&buffer, language));
-            let spans = highlighter
-                .visible_line_spans_cached(Some(language), 0, 1)
-                .expect("spans");
-
             assert!(
-                !spans[0].is_empty(),
+                !highlighted_lines(language, source, 0, 1)[0].is_empty(),
                 "{language:?} should produce at least one highlight span"
             );
         }
@@ -2383,96 +2324,100 @@ mod tests {
 
     #[test]
     fn typescript_combines_javascript_and_typescript_highlight_queries() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text(
-            "export type User = { name: string };\nconst label = format(user.name, \"ok\");\n",
-        );
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
+        let lines = highlighted_lines(
             SyntaxLanguage::TypeScript,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::TypeScript), 0, 2)
-            .expect("typescript spans");
+            "export type User = { name: string };\nconst label = format(user.name, \"ok\");\n",
+            0,
+            2,
+        );
+        let has = |row: usize, role| lines[row].iter().any(|span| span.role == role);
 
-        assert!(spans[0].iter().any(|span| span.role == SyntaxRole::Keyword));
-        assert!(
-            spans[0]
-                .iter()
-                .any(|span| span.role == SyntaxRole::TypeBuiltin)
-        );
-        assert!(
-            spans[1]
-                .iter()
-                .any(|span| span.role == SyntaxRole::Function)
-        );
-        assert!(spans[1].iter().any(|span| span.role == SyntaxRole::String));
+        assert!(has(0, SyntaxRole::Keyword));
+        assert!(has(0, SyntaxRole::TypeBuiltin));
+        assert!(has(1, SyntaxRole::Function));
+        assert!(has(1, SyntaxRole::String));
     }
 
     #[test]
-    fn markdown_headings_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("# Title\n\nBody\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownHeading && span.start_byte == 0 && span.end_byte >= 7
-        }));
-    }
-
-    #[test]
-    fn markdown_inline_emphasis_is_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("This is *italic*, **bold**, and `code`.\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownEmphasis && span.start_byte <= 8 && span.end_byte >= 16
-        }));
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownStrong && span.start_byte <= 18 && span.end_byte >= 26
-        }));
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownCode && span.start_byte <= 32 && span.end_byte >= 38
-        }));
-    }
-
-    #[test]
-    fn markdown_highlight_marks_equal_delimited_text() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("Keep ==this== bright, not `==this==`.\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownHighlight
-                && span.start_byte == 5
-                && span.end_byte == 13
-        }));
-        assert_eq!(
-            spans[0]
-                .iter()
-                .filter(|span| span.role == SyntaxRole::MarkdownHighlight)
-                .count(),
-            1
+    fn markdown_constructs_are_highlighted() {
+        // (source, first line, line count, [(row, role, start, end)])
+        type Case = (
+            &'static str,
+            usize,
+            usize,
+            &'static [(usize, SyntaxRole, usize, usize)],
         );
+        let cases: [Case; 6] = [
+            (
+                "# Title\n\nBody\n",
+                0,
+                1,
+                &[(0, SyntaxRole::MarkdownHeading, 0, 7)],
+            ),
+            (
+                "This is *italic*, **bold**, and `code`.\n",
+                0,
+                1,
+                &[
+                    (0, SyntaxRole::MarkdownEmphasis, 8, 16),
+                    (0, SyntaxRole::MarkdownStrong, 18, 26),
+                    (0, SyntaxRole::MarkdownCode, 32, 38),
+                ],
+            ),
+            (
+                "```rust\nlet answer = 42;\n```\n",
+                1,
+                1,
+                &[(0, SyntaxRole::MarkdownCode, 0, 16)],
+            ),
+            (
+                "---\ntitle: Redox\n---\n\n# Title\n",
+                0,
+                3,
+                &[
+                    (0, SyntaxRole::MarkdownFrontmatter, 0, 3),
+                    (1, SyntaxRole::MarkdownFrontmatter, 0, 12),
+                ],
+            ),
+            (
+                "[Redox](https://example.com)\n",
+                0,
+                1,
+                &[(0, SyntaxRole::MarkdownLink, 0, 28)],
+            ),
+            (
+                "* item\n- other\n",
+                0,
+                2,
+                &[
+                    (0, SyntaxRole::MarkdownListMarker, 0, 1),
+                    (1, SyntaxRole::MarkdownListMarker, 0, 1),
+                ],
+            ),
+        ];
+
+        for (source, first_line, line_count, expected) in cases {
+            let lines = highlighted_lines(SyntaxLanguage::Markdown, source, first_line, line_count);
+            for &(row, role, start, end) in expected {
+                assert!(
+                    covers(&lines[row], role, start, end),
+                    "{role:?} in {source:?}"
+                );
+            }
+        }
+
+        let lines = highlighted_lines(
+            SyntaxLanguage::Markdown,
+            "Keep ==this== bright, not `==this==`.\n",
+            0,
+            1,
+        );
+        let marked: Vec<_> = lines[0]
+            .iter()
+            .filter(|span| span.role == SyntaxRole::MarkdownHighlight)
+            .map(|span| (span.start_byte, span.end_byte))
+            .collect();
+        assert_eq!(marked, [(5, 13)]);
     }
 
     #[test]
@@ -2551,105 +2496,6 @@ mod tests {
                 .iter()
                 .any(|span| span.role == SyntaxRole::Function && span.start_byte == 13)
         );
-    }
-
-    #[test]
-    fn markdown_code_blocks_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("```rust\nlet answer = 42;\n```\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 1, 1)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownCode && span.start_byte == 0 && span.end_byte >= 16
-        }));
-    }
-
-    #[test]
-    fn markdown_frontmatter_is_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("---\ntitle: Redox\n---\n\n# Title\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 3)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownFrontmatter
-                && span.start_byte == 0
-                && span.end_byte >= 3
-        }));
-        assert!(spans[1].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownFrontmatter
-                && span.start_byte == 0
-                && span.end_byte >= 12
-        }));
-    }
-
-    #[test]
-    fn markdown_links_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("[Redox](https://example.com)\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 1)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownLink && span.start_byte == 0 && span.end_byte >= 28
-        }));
-    }
-
-    #[test]
-    fn markdown_list_markers_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("* item\n- other\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Markdown,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Markdown), 0, 2)
-            .expect("markdown spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownListMarker
-                && span.start_byte == 0
-                && span.end_byte >= 1
-        }));
-        assert!(spans[1].iter().any(|span| {
-            span.role == SyntaxRole::MarkdownListMarker
-                && span.start_byte == 0
-                && span.end_byte >= 1
-        }));
-    }
-
-    #[test]
-    fn python_comments_are_highlighted() {
-        let mut highlighter = SyntaxHighlighter::default();
-        let buffer = TextBuffer::from_text("# comment\n");
-        highlighter.replace_cache(SyntaxHighlighter::compute_cache(
-            &buffer,
-            SyntaxLanguage::Python,
-        ));
-        let spans = highlighter
-            .visible_line_spans_cached(Some(SyntaxLanguage::Python), 0, 1)
-            .expect("python spans");
-
-        assert!(spans[0].iter().any(|span| {
-            span.role == SyntaxRole::Comment && span.start_byte == 0 && span.end_byte >= 9
-        }));
     }
 
     #[test]

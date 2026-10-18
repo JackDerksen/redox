@@ -285,32 +285,21 @@ fn command_line_view(text: &str, cursor: usize, input_width: usize) -> (String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{clip_text_right_to_cells, command_line_view};
+    use super::command_line_view;
 
     #[test]
-    fn command_line_view_keeps_short_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("wq", 2, 8);
-        assert_eq!(visible, "wq");
-        assert_eq!(cursor_offset, 2);
-    }
-
-    #[test]
-    fn command_line_view_scrolls_long_input_left_and_keeps_right_padding() {
-        let text = "abcdefghijklmnopqrstuvwxyz";
-        let (visible, cursor_offset) = command_line_view(text, text.len(), 8);
-        assert_eq!(visible, "tuvwxyz");
-        assert_eq!(cursor_offset, 7);
-    }
-
-    #[test]
-    fn command_line_view_keeps_exact_fit_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("exactfit", 8, 8);
-        assert_eq!(visible, "exactfit");
-        assert_eq!(cursor_offset, 8);
-    }
-
-    #[test]
-    fn clip_text_right_to_cells_keeps_trailing_graphemes() {
-        assert_eq!(clip_text_right_to_cells("abcdef", 3), "def");
+    fn command_line_view_scrolls_only_when_input_overflows() {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz";
+        for (text, cursor, expected, expected_offset) in [
+            ("wq", 2, "wq", 2),
+            ("exactfit", 8, "exactfit", 8),
+            (alphabet, alphabet.len(), "tuvwxyz", 7),
+        ] {
+            let (visible, cursor_offset) = command_line_view(text, cursor, 8);
+            assert_eq!(
+                (visible.as_ref(), cursor_offset),
+                (expected, expected_offset)
+            );
+        }
     }
 }

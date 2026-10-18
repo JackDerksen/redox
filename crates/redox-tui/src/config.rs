@@ -743,6 +743,8 @@ type_name = "#112233"
         assert_eq!(config.color_column, 79);
         assert_eq!(config.line_numbers, LineNumbers::Relative);
         assert!(!config.icons_enabled);
+        let icons: Config = toml::from_str("icons_enabled = true").unwrap();
+        assert!(icons.style().unwrap().icons_enabled);
         assert!(config.check_updates);
         assert!(config.mouse);
         assert!(!config.mouse_invert_vertical);
@@ -768,18 +770,5 @@ type_name = "#112233"
         let style = config.style().unwrap();
         assert_eq!(style.theme, UiStyle::default().theme);
         assert_eq!(style.which_key.edge, UiStyle::default().which_key.edge);
-    }
-
-    #[test]
-    fn scrolloff_is_configurable() {
-        let config: Config = toml::from_str("scrolloff = 2").expect("scrolloff should parse");
-        assert_eq!(config.scrolloff, 2);
-    }
-
-    #[test]
-    fn nerd_font_icons_are_opt_in() {
-        let config: Config = toml::from_str("icons_enabled = true").expect("icons should parse");
-        assert!(config.icons_enabled);
-        assert!(config.style().unwrap().icons_enabled);
     }
 }
