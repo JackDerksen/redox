@@ -271,6 +271,107 @@ fn motions_compose_counts_and_operator_ranges() {
 }
 
 #[test]
+fn word_motions_follow_vim_word_classes_and_buffer_edges() {
+    // `foo.bar` is three words but one WORD.
+    let buffer = TextBuffer::from_text("foo.bar  baz\n\nqux");
+    let cases = [
+        (Pos::new(0, 0), Motion::WordStartAfter, Pos::new(0, 3)),
+        (Pos::new(0, 3), Motion::WordStartAfter, Pos::new(0, 4)),
+        (Pos::new(0, 4), Motion::WordStartAfter, Pos::new(0, 9)),
+        (Pos::new(1, 0), Motion::WordStartAfter, Pos::new(2, 0)),
+        (Pos::new(0, 0), Motion::BigWordStartAfter, Pos::new(0, 9)),
+        (Pos::new(0, 0), Motion::WordEndAfter, Pos::new(0, 2)),
+        (Pos::new(0, 2), Motion::WordEndAfter, Pos::new(0, 3)),
+        (Pos::new(0, 3), Motion::WordEndAfter, Pos::new(0, 6)),
+        (Pos::new(0, 0), Motion::BigWordEndAfter, Pos::new(0, 6)),
+        (Pos::new(0, 9), Motion::WordStartBefore, Pos::new(0, 4)),
+        (Pos::new(0, 4), Motion::WordStartBefore, Pos::new(0, 3)),
+        (Pos::new(0, 9), Motion::BigWordStartBefore, Pos::new(0, 0)),
+        (Pos::new(0, 9), Motion::WordEndBefore, Pos::new(0, 6)),
+        // The buffer's ends are hard stops.
+        (Pos::new(0, 0), Motion::WordStartBefore, Pos::new(0, 0)),
+        (Pos::new(2, 2), Motion::WordEndAfter, Pos::new(2, 2)),
+    ];
+
+    let failures: Vec<_> = cases
+        .into_iter()
+        .filter_map(|(from, motion, expected)| {
+            let actual = apply_motion(&buffer, from, motion);
+            (actual != expected)
+                .then(|| format!("{motion:?} from {from:?}: {actual:?}, expected {expected:?}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn text_objects_handle_whitespace_nesting_escapes_and_missing_pairs() {
+    let parens = TextObjectKind::Delimiter(DelimiterKind::Parentheses);
+    let quotes = TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes);
+    let (inner, around) = (TextObjectScope::Inner, TextObjectScope::Around);
+    let cases = [
+        // `aw` takes trailing whitespace, or leading whitespace for the last word.
+        (
+            "foo bar baz",
+            Pos::new(0, 4),
+            around,
+            TextObjectKind::Word,
+            1,
+            Some("bar "),
+        ),
+        (
+            "foo bar",
+            Pos::new(0, 4),
+            around,
+            TextObjectKind::Word,
+            1,
+            Some(" bar"),
+        ),
+        (
+            "foo.bar baz",
+            Pos::new(0, 1),
+            inner,
+            TextObjectKind::BigWord,
+            1,
+            Some("foo.bar"),
+        ),
+        // Counts widen to enclosing pairs, and the cursor may sit on a delimiter.
+        ("f(a(b)c)", Pos::new(0, 4), inner, parens, 1, Some("b")),
+        ("f(a(b)c)", Pos::new(0, 4), inner, parens, 2, Some("a(b)c")),
+        ("(abc)", Pos::new(0, 0), inner, parens, 1, Some("abc")),
+        ("(abc)", Pos::new(0, 4), around, parens, 1, Some("(abc)")),
+        // No pair to select.
+        ("f(a", Pos::new(0, 2), inner, parens, 1, None),
+        ("abc", Pos::new(0, 1), inner, parens, 1, None),
+        // Escaped quotes stay inside the string.
+        (
+            r#""a\"b""#,
+            Pos::new(0, 1),
+            inner,
+            quotes,
+            1,
+            Some(r#"a\"b"#),
+        ),
+    ];
+
+    let failures: Vec<_> = cases
+        .into_iter()
+        .filter_map(|(text, cursor, scope, kind, count, expected)| {
+            let actual = TextBuffer::from_text(text)
+                .text_object_edit_plan(cursor, TextObjectSpec { scope, kind, count })
+                .map(|plan| plan.text);
+            (actual.as_deref() != expected).then(|| {
+                format!(
+                    "{scope:?} {kind:?} x{count} at {cursor:?} in {text:?}: \
+                     {actual:?}, expected {expected:?}"
+                )
+            })
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn undo_history_round_trips_and_preserves_branches() {
     let mut history = UndoHistory::default();
     let mut buffer = TextBuffer::from_text("a");

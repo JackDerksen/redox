@@ -703,6 +703,11 @@ impl EditorState {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
             return;
         }
+        // Like Vim, `x` never deletes a line break, so it does nothing on an empty line.
+        let cursor = self.active_cursor_pos();
+        if cursor.col >= self.session.active_buffer().line_len_chars(cursor.line) {
+            return;
+        }
         let before = self.capture_active_undo_checkpoint();
 
         let active_id = self.session.active_id();

@@ -23,6 +23,18 @@ fn temp_file_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("redox_state_test_{tag}_{nanos}.txt"))
 }
 
+/// Opens an editor on a temporary `.txt` file holding `text`. The file is removed when the
+/// returned path drops, including when the test panics.
+fn scratch_state(text: &str) -> (EditorState, tempfile::TempPath) {
+    let path = tempfile::Builder::new()
+        .prefix("redox_state_test_")
+        .suffix(".txt")
+        .tempfile()
+        .expect("failed to create test file")
+        .into_temp_path();
+    (state_with_text(path.to_path_buf(), text), path)
+}
+
 fn state_with_text(path: PathBuf, text: &str) -> EditorState {
     fs::write(&path, text).expect("failed to write test file");
     let session = EditorSession::open_initial_file(&path).expect("failed to open session");
@@ -41,10 +53,11 @@ fn apply_keys(state: &mut EditorState, keys: &str) {
     use minui::prelude::input::Event;
 
     for character in keys.chars() {
-        let event = if character == '\u{1b}' {
-            Event::Escape
-        } else {
-            Event::Character(character)
+        let event = match character {
+            '\u{1b}' => Event::Escape,
+            '\u{8}' => Event::Backspace,
+            '\r' => Event::Enter,
+            character => Event::Character(character),
         };
         let action = crate::input::map_event_with_state(&mut state.input, state.mode, &event);
         if !matches!(
@@ -59,9 +72,8 @@ fn apply_keys(state: &mut EditorState, keys: &str) {
 
 #[test]
 fn calculator_commands_preview_insert_and_cancel_without_changing_registers() {
-    let path = temp_file_path("calculator");
     let original = "ab猫cd\n";
-    let mut state = state_with_text(path.clone(), original);
+    let (mut state, _path) = scratch_state(original);
     state
         .views
         .entry(state.session.active_id())
@@ -160,13 +172,11 @@ fn calculator_commands_preview_insert_and_cancel_without_changing_registers() {
         assert_eq!(state.command_calculation_preview(), None);
         state.apply_input(InputAction::CommandCancel, 80, 24);
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn replay_dot_preserves_insert_sessions_and_count_override() {
-    let path = temp_file_path("dot_insert_and_count");
-    let mut state = state_with_text(path.clone(), "one two three\n");
+    let (mut state, path) = scratch_state("one two three\n");
 
     apply_keys(&mut state, "cwnew\u{1b}");
     assert_eq!(state.session.active_buffer().to_string(), "new two three\n");
@@ -177,7 +187,7 @@ fn replay_dot_preserves_insert_sessions_and_count_override() {
     apply_keys(&mut state, "u");
     assert_eq!(state.session.active_buffer().to_string(), "new two three\n");
 
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\nfive\nsix\n");
+    let mut state = state_with_text(path.to_path_buf(), "one\ntwo\nthree\nfour\nfive\nsix\n");
     apply_keys(&mut state, "2dd");
     assert_eq!(
         state.session.active_buffer().to_string(),
@@ -191,13 +201,11 @@ fn replay_dot_preserves_insert_sessions_and_count_override() {
         "three\nfour\nfive\nsix\n"
     );
 
-    let mut state = state_with_text(path.clone(), "\n");
+    let mut state = state_with_text(path.to_path_buf(), "\n");
     apply_keys(&mut state, "iab\u{1b}A\u{1b}03.");
     assert_eq!(state.session.active_buffer().to_string(), "abababab\n");
     apply_keys(&mut state, "u.");
     assert_eq!(state.session.active_buffer().to_string(), "abababab\n");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -256,8 +264,7 @@ fn replay_counted_macros_undo_as_one_edit_and_list_session_registers() {
 
 #[test]
 fn replay_macros_handle_undo_recursion_and_insert_pane_changes() {
-    let path = temp_file_path("macro_boundaries");
-    let mut state = state_with_text(path.clone(), "abc\n");
+    let (mut state, _path) = scratch_state("abc\n");
     apply_keys(&mut state, "iZ\u{1b}QaxuQ@a");
     assert_eq!(state.session.active_buffer().to_string(), "Zabc\n");
     apply_keys(&mut state, "Qb@zQ@b");
@@ -279,13 +286,11 @@ fn replay_macros_handle_undo_recursion_and_insert_pane_changes() {
     assert_eq!(state.session.active_id(), original_id);
     assert_eq!(state.session.buffer(second_id).unwrap().to_string(), "x");
     assert_eq!(state.session.active_buffer().to_string(), "yyZabc\n");
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn replay_dot_restores_visual_wrap_extent() {
-    let path = temp_file_path("dot_visual_wrap");
-    let mut state = state_with_text(path.clone(), "one two\nabc xyz\n");
+    let (mut state, _path) = scratch_state("one two\nabc xyz\n");
 
     apply_keys(&mut state, "v2l [");
     assert_eq!(
@@ -304,14 +309,11 @@ fn replay_dot_restores_visual_wrap_extent() {
         state.session.active_buffer().to_string(),
         "[one] two\nabc xyz\n"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn replay_macros_record_calls_once_and_append_registers() {
-    let path = temp_file_path("macro_record_and_replay");
-    let mut state = state_with_text(path.clone(), "abcdefghij\n");
+    let (mut state, _path) = scratch_state("abcdefghij\n");
 
     apply_keys(&mut state, "Qa");
     assert_eq!(state.recording_macro_register(), Some("a"));
@@ -333,15 +335,12 @@ fn replay_macros_record_calls_once_and_append_registers() {
     apply_keys(&mut state, "QAlQ0@a");
     assert_eq!(state.session.active_buffer().to_string(), "ij\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn split_popup_background_preserves_active_surface_buffer() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("split_surface_active");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
+    let (mut state, _path) = scratch_state("alpha\nbeta\n");
     state.set_viewport_size(80, 24);
     state.split_active_pane(SplitAxis::Vertical);
     let surface = state.session.open_ui_buffer("[surface]", "entry\n");
@@ -350,15 +349,12 @@ fn split_popup_background_preserves_active_surface_buffer() {
 
     assert_eq!(state.session.active_id(), surface);
     assert!(state.panes().iter().all(|pane| pane.buffer_id != surface));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn statusline_uses_background_buffer_for_surface_popups() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("statusline_background");
-    let mut state = state_with_text(path.clone(), "alpha\n");
+    let (mut state, _path) = scratch_state("alpha\n");
     let background_id = state.session.active_id();
 
     run_command(&mut state, "about");
@@ -370,16 +366,13 @@ fn statusline_uses_background_buffer_for_surface_popups() {
 
     assert_eq!(state.statusline_buffer_id(), background_id);
     assert_eq!(state.statusline_popup_label(), Some("explorer"));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn splitting_starts_new_pane_at_top_without_dropping_syntax_cache() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("split_cache_cursor");
     let text = "fn main() {\n    let answer = 42;\n    println!(\"{answer}\");\n}\n";
-    let mut state = state_with_text(path.clone(), text);
+    let (mut state, _path) = scratch_state(text);
     let buffer_id = state.session.active_id();
     let buffer = state.session.active_buffer().clone();
     let view = state.views.entry(buffer_id).or_default();
@@ -420,15 +413,12 @@ fn splitting_starts_new_pane_at_top_without_dropping_syntax_cache() {
             .syntax_highlighter
             .has_cache_for(SyntaxLanguage::Rust)
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn split_motion_uses_active_pane_height_for_scrolloff() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("split_scrolloff_height");
-    let mut state = state_with_text(path.clone(), &large_text(80));
+    let (mut state, _path) = scratch_state(&large_text(80));
     state.set_editor_area_size(80, 39);
     state.set_viewport_size(80, 40);
 
@@ -457,15 +447,12 @@ fn split_motion_uses_active_pane_height_for_scrolloff() {
 
     state.close_active_split();
     assert_eq!(state.viewport_size().1, 40);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn horizontal_split_preserves_source_cursor_and_scroll() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("split_nudge_horizontal");
-    let mut state = state_with_text(path.clone(), &large_text(80));
+    let (mut state, _path) = scratch_state(&large_text(80));
     let buffer_id = state.session.active_id();
     state.set_editor_area_size(80, 39);
     state.set_viewport_size(76, 40);
@@ -489,16 +476,13 @@ fn horizontal_split_preserves_source_cursor_and_scroll() {
             .cursor,
         Pos::zero()
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn vertical_split_preserves_source_cursor_and_scroll() {
     let _guard = global_test_state_lock().lock().unwrap();
-    let path = temp_file_path("split_nudge_vertical");
     let text = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n";
-    let mut state = state_with_text(path.clone(), text);
+    let (mut state, _path) = scratch_state(text);
     let buffer_id = state.session.active_id();
     state.set_editor_area_size(80, 20);
     state.set_viewport_size(76, 21);
@@ -522,8 +506,6 @@ fn vertical_split_preserves_source_cursor_and_scroll() {
             .cursor,
         Pos::zero()
     );
-
-    let _ = fs::remove_file(path);
 }
 
 fn large_text(lines: usize) -> String {
@@ -542,19 +524,16 @@ fn run_command(state: &mut EditorState, cmd: &str) {
 
 #[test]
 fn configured_motion_sequence_is_replayed_through_editor_actions() {
-    let path = temp_file_path("configured_motion_sequence");
-    let mut state = state_with_text(path.clone(), &large_text(20));
+    let (mut state, _path) = scratch_state(&large_text(20));
 
     state.apply_input(InputAction::ReplaySequence("10j".to_string()), 80, 24);
 
     assert_eq!(state.active_cursor_pos(), Pos::new(10, 0));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn configured_command_is_executed_through_command_line_parser() {
-    let path = temp_file_path("configured_command");
-    let mut state = state_with_text(path.clone(), "hello\n");
+    let (mut state, _path) = scratch_state("hello\n");
     let active_id = state.session.active_id();
     state.mode = EditorMode::Visual;
     state.views.entry(active_id).or_default().visual_anchor = Some(Pos::zero());
@@ -581,7 +560,6 @@ fn configured_command_is_executed_through_command_line_parser() {
             .as_deref()
             .is_some_and(|message| message.contains(&display_name))
     );
-    let _ = fs::remove_file(path);
 }
 
 fn enter_command_mode(state: &mut EditorState) {
@@ -737,15 +715,12 @@ fn write_executable(path: &std::path::Path, script: &str) {
 
 #[test]
 fn normal_mode_paste_inserts_text_and_marks_dirty() {
-    let path = temp_file_path("paste_normal");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::Paste(" world".to_string()), 80, 24);
 
     assert_eq!(state.session.active_buffer().to_string(), " worldhello");
     assert!(state.session.active_meta().dirty);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -886,8 +861,7 @@ fn finder_does_not_open_while_explorer_popup_is_active() {
 
 #[test]
 fn quick_pin_does_not_open_pinboard_while_perf_popup_is_active() {
-    let path = temp_file_path("quick_pin_blocked_by_perf");
-    let mut state = state_with_text(path.clone(), "alpha\n");
+    let (mut state, _path) = scratch_state("alpha\n");
     state.command_toggle_perf();
 
     assert!(state.perf_popup().is_some());
@@ -897,8 +871,6 @@ fn quick_pin_does_not_open_pinboard_while_perf_popup_is_active() {
     assert!(state.perf_popup().is_some());
     assert!(state.pin_selector_popup().is_none());
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -1355,8 +1327,7 @@ fn finder_reopens_from_cache_and_refreshes_stale_paths() {
 
 #[test]
 fn command_history_up_and_down_restore_previous_draft() {
-    let path = temp_file_path("command_history_draft");
-    let mut state = state_with_text(path.clone(), "hello\n");
+    let (mut state, _path) = scratch_state("hello\n");
 
     run_command(&mut state, "ls");
     run_command(&mut state, "about");
@@ -1376,14 +1347,11 @@ fn command_history_up_and_down_restore_previous_draft() {
 
     state.apply_input(InputAction::CommandHistoryNext, 80, 24);
     assert_eq!(state.command_line, "e ");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_history_editing_recalled_entry_detaches_navigation() {
-    let path = temp_file_path("command_history_detach");
-    let mut state = state_with_text(path.clone(), "hello\n");
+    let (mut state, _path) = scratch_state("hello\n");
 
     run_command(&mut state, "ls");
     run_command(&mut state, "about");
@@ -1398,8 +1366,6 @@ fn command_history_editing_recalled_entry_detaches_navigation() {
 
     state.apply_input(InputAction::CommandHistoryNext, 80, 24);
     assert_eq!(state.command_line, "about!");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -1486,8 +1452,7 @@ fn invalidate_render_caches_keeps_stale_delimiters_for_display_until_worker_resu
 
 #[test]
 fn stale_analysis_results_are_dropped() {
-    let path = temp_file_path("stale_analysis_result");
-    let mut state = state_with_text(path.clone(), "plain text");
+    let (mut state, _path) = scratch_state("plain text");
     let active_id = state.session.active_id();
     let current_version = {
         let view = state.views.entry(active_id).or_default();
@@ -1522,8 +1487,6 @@ fn stale_analysis_results_are_dropped() {
             .expect("analysis")
             .is_empty()
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -1575,8 +1538,7 @@ fn normal_mode_system_clipboard_paste_sanitizes_text_and_updates_cursor() {
 }
 #[test]
 fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
-    let path = temp_file_path("operate_motion_delete_line");
-    let mut state = state_with_text(path.clone(), "  alpha\n");
+    let (mut state, path) = scratch_state("  alpha\n");
     let id = state.session.active_id();
     state
         .views
@@ -1601,7 +1563,7 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
     assert_eq!(state.private_register, "pha");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
 
-    let mut state = state_with_text(path.clone(), "  alpha\n");
+    let mut state = state_with_text(path.to_path_buf(), "  alpha\n");
     let id = state.session.active_id();
     state
         .views
@@ -1624,8 +1586,6 @@ fn normal_mode_operate_motion_supports_delete_to_line_end_and_start() {
     assert_eq!(state.session.active_buffer().to_string(), "ha\n");
     assert_eq!(state.private_register, "  alp");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -1946,8 +1906,7 @@ fn character_search_repeats_support_operators_and_dot() {
 
 #[test]
 fn operator_find_and_till_char_apply_expected_ranges() {
-    let path = temp_file_path("operator_find_till");
-    let mut state = state_with_text(path.clone(), "abc def ghi\n");
+    let (mut state, path) = scratch_state("abc def ghi\n");
     let id = state.session.active_id();
     state
         .views
@@ -1972,7 +1931,7 @@ fn operator_find_and_till_char_apply_expected_ranges() {
     assert_eq!(state.private_register, "abc def ");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
 
-    let mut state = state_with_text(path.clone(), "abc def ghi\n");
+    let mut state = state_with_text(path.to_path_buf(), "abc def ghi\n");
     let id = state.session.active_id();
     state
         .views
@@ -1996,14 +1955,11 @@ fn operator_find_and_till_char_apply_expected_ranges() {
     assert_eq!(state.private_register, "abc def g");
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn slash_regex_search_handles_unicode_multiline_anchors_and_invalid_patterns() {
-    let path = temp_file_path("regex_search");
-    let mut state = state_with_text(path.clone(), "é12 é34\nab\ncd\n[");
+    let (mut state, _path) = scratch_state("é12 é34\nab\ncd\n[");
     for (pattern, expected) in [
         (r"é\d+", vec![(0, 0, 0, 3), (0, 4, 0, 7)]),
         (r"ab\ncd", vec![(1, 0, 2, 2)]),
@@ -2060,7 +2016,6 @@ fn slash_regex_search_handles_unicode_multiline_anchors_and_invalid_patterns() {
     state.remember_motion_search(Motion::FindChar('['), 1);
     assert_eq!(state.search_error(), None);
     assert_eq!(state.search_match_position().1, 1);
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -2113,8 +2068,7 @@ fn slash_search_previews_centred_matches_and_restores_cancelled_searches() {
 
 #[test]
 fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
-    let path = temp_file_path("slash_search_repeat");
-    let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
+    let (mut state, _path) = scratch_state("alpha beta alpha gamma alpha\n");
     let id = state.session.active_id();
     state
         .views
@@ -2149,14 +2103,11 @@ fn slash_search_caches_matches_and_ctrl_n_ctrl_p_repeat_them() {
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 23));
     state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn hidden_search_matches_refresh_only_when_a_command_needs_them() {
-    let path = temp_file_path("hidden_search_refresh");
-    let mut state = state_with_text(path.clone(), "alpha beta\nbeta\n");
+    let (mut state, _path) = scratch_state("alpha beta\nbeta\n");
     state.apply_input(InputAction::EnterSearch, 80, 24);
     for ch in "alpha".chars() {
         state.apply_input(InputAction::SearchChar(ch), 80, 24);
@@ -2189,14 +2140,11 @@ fn hidden_search_matches_refresh_only_when_a_command_needs_them() {
             .map(|highlights| (highlights.ranges.len(), highlights.ranges[0].clone())),
         Some((1, 0..5))
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn till_char_search_repeat_tracks_the_actual_matched_character() {
-    let path = temp_file_path("till_char_search_repeat_target");
-    let mut state = state_with_text(path.clone(), "aabac\n");
+    let (mut state, _path) = scratch_state("aabac\n");
     let id = state.session.active_id();
     state
         .views
@@ -2217,14 +2165,11 @@ fn till_char_search_repeat_tracks_the_actual_matched_character() {
 
     state.apply_input(InputAction::RepeatSearch { forward: true }, 80, 24);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn repeat_search_reports_when_no_other_instances_exist() {
-    let path = temp_file_path("slash_search_single");
-    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+    let (mut state, _path) = scratch_state("alpha beta gamma\n");
 
     state.apply_input(InputAction::EnterSearch, 80, 24);
     for ch in "beta".chars() {
@@ -2239,14 +2184,11 @@ fn repeat_search_reports_when_no_other_instances_exist() {
         Some("no other pattern instances")
     );
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 6));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn search_reports_match_count_in_status_message() {
-    let path = temp_file_path("slash_search_match_count");
-    let mut state = state_with_text(path.clone(), "test alpha\ntest beta\ngamma test\n");
+    let (mut state, _path) = scratch_state("test alpha\ntest beta\ngamma test\n");
 
     state.apply_input(InputAction::EnterSearch, 80, 24);
     for ch in "test".chars() {
@@ -2256,14 +2198,11 @@ fn search_reports_match_count_in_status_message() {
 
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.status_msg.as_deref(), Some("3 instances of 'test'"));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
-    let path = temp_file_path("slash_search_hide_highlights");
-    let mut state = state_with_text(path.clone(), "alpha beta alpha gamma alpha\n");
+    let (mut state, _path) = scratch_state("alpha beta alpha gamma alpha\n");
     let id = state.session.active_id();
     state
         .views
@@ -2298,14 +2237,11 @@ fn manual_motion_and_escape_hide_search_highlights_but_keep_cached_query() {
 
     state.apply_input(InputAction::ClearSearch, 80, 24);
     assert!(state.active_search_highlight_ranges(0, 1).is_empty());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sync() {
-    let path = temp_file_path("insert_mode_repeated_paste_scroll");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
     let chunk = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
 
     state.apply_input(InputAction::SetMode(EditorMode::Insert), 80, 24);
@@ -2325,14 +2261,11 @@ fn insert_mode_repeated_same_line_paste_keeps_cursor_and_horizontal_scroll_in_sy
     assert_eq!(view.cursor.scroll_x_cells, chunk.len() * 2 - 79);
     assert!(spec.visible);
     assert_eq!(spec.x, 79);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn exiting_insert_mode_after_tab_keeps_cursor_after_tab() {
-    let path = temp_file_path("insert_exit_after_tab");
-    let mut state = state_with_text(path.clone(), "\talpha\n");
+    let (mut state, _path) = scratch_state("\talpha\n");
     let id = state.session.active_id();
     state
         .views
@@ -2345,14 +2278,11 @@ fn exiting_insert_mode_after_tab_keeps_cursor_after_tab() {
     state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
 
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_mode_replace_char_replaces_tab_as_single_logical_character() {
-    let path = temp_file_path("replace_tab_normal");
-    let mut state = state_with_text(path.clone(), "\tab\n");
+    let (mut state, _path) = scratch_state("\tab\n");
     let id = state.session.active_id();
     state
         .views
@@ -2366,8 +2296,6 @@ fn normal_mode_replace_char_replaces_tab_as_single_logical_character() {
     assert_eq!(state.session.active_buffer().to_string(), "xab\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -2403,8 +2331,7 @@ fn normal_mode_tilde_handles_counts_nonletters_and_case_expansion() {
 }
 #[test]
 fn visual_block_tilde_toggles_rectangular_selection() {
-    let path = temp_file_path("toggle_case_visual_block");
-    let mut state = state_with_text(path.clone(), "abC\nDeF\n");
+    let (mut state, _path) = scratch_state("abC\nDeF\n");
 
     state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
     state.apply_input(
@@ -2428,14 +2355,11 @@ fn visual_block_tilde_toggles_rectangular_selection() {
     assert_eq!(state.session.active_buffer().to_string(), "ABC\ndEF\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_char_replace_replaces_entire_selection_and_normalizes_mode() {
-    let path = temp_file_path("replace_visual_char");
-    let mut state = state_with_text(path.clone(), "\tab\n");
+    let (mut state, _path) = scratch_state("\tab\n");
     let id = state.session.active_id();
     state
         .views
@@ -2458,14 +2382,11 @@ fn visual_char_replace_replaces_entire_selection_and_normalizes_mode() {
     assert_eq!(state.session.active_buffer().to_string(), "xxb\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_block_replace_preserves_block_shape_when_replacing_tabs() {
-    let path = temp_file_path("replace_visual_block_tab");
-    let mut state = state_with_text(path.clone(), "\tab\n\tcd\n");
+    let (mut state, _path) = scratch_state("\tab\n\tcd\n");
     let id = state.session.active_id();
     state
         .views
@@ -2496,14 +2417,11 @@ fn visual_block_replace_preserves_block_shape_when_replacing_tabs() {
     assert_eq!(state.session.active_buffer().to_string(), "xxb\nxxd\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_line_replace_preserves_line_structure() {
-    let path = temp_file_path("replace_visual_line");
-    let mut state = state_with_text(path.clone(), "ab\ncde\n");
+    let (mut state, _path) = scratch_state("ab\ncde\n");
     let id = state.session.active_id();
     state
         .views
@@ -2526,8 +2444,6 @@ fn visual_line_replace_preserves_line_structure() {
     assert_eq!(state.session.active_buffer().to_string(), "xx\nxxx\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -2600,8 +2516,7 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
     ];
 
     for (mode, original, anchor, cursor, wrapped, expected_cursor) in cases {
-        let path = temp_file_path("visual_wrap");
-        let mut state = state_with_text(path.clone(), original);
+        let (mut state, _path) = scratch_state(original);
         let active_id = state.session.active_id();
         state.private_register = "keep register".to_string();
         state.apply_input(InputAction::SetMode(mode), 80, 24);
@@ -2635,8 +2550,6 @@ fn visual_wrapping_preserves_text_and_undoes_in_one_step() {
         assert!(!state.session.active_meta().dirty);
         state.apply_input(InputAction::Redo, 80, 24);
         assert_eq!(state.session.active_buffer().to_string(), wrapped);
-
-        let _ = fs::remove_file(path);
     }
 }
 
@@ -2938,8 +2851,7 @@ fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
 
 #[test]
 fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
-    let path = temp_file_path("undo_redo_basic");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::Paste(" world".to_string()), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), " worldhello");
@@ -2949,14 +2861,11 @@ fn normal_mode_u_undoes_and_ctrl_r_redoes_last_edit() {
 
     state.apply_input(InputAction::Redo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), " worldhello");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_and_redo_survive_reopening_a_saved_file() {
-    let path = temp_file_path("undo_redo_across_sessions");
-    let mut state = state_with_text(path.clone(), "hello\n");
+    let (mut state, path) = scratch_state("hello\n");
 
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "Ahello\n");
@@ -2981,13 +2890,11 @@ fn undo_and_redo_survive_reopening_a_saved_file() {
     assert_eq!(reopened.session.active_buffer().to_string(), "Bhello\n");
 
     let _ = crate::storage::remove_undo_history(&path);
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn persisted_undo_history_is_ignored_when_disk_content_changes() {
-    let path = temp_file_path("undo_history_content_guard");
-    let mut state = state_with_text(path.clone(), "hello\n");
+    let (mut state, path) = scratch_state("hello\n");
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     run_command(&mut state, "w");
     drop(state);
@@ -3001,13 +2908,11 @@ fn persisted_undo_history_is_ignored_when_disk_content_changes() {
     assert_eq!(reopened.status_msg.as_deref(), Some("nothing to undo"));
 
     let _ = crate::storage::remove_undo_history(&path);
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn redo_stack_is_cleared_after_new_edit_post_undo() {
-    let path = temp_file_path("redo_cleared_after_new_edit");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "Ahello");
@@ -3020,14 +2925,11 @@ fn redo_stack_is_cleared_after_new_edit_post_undo() {
 
     state.apply_input(InputAction::Redo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "Bhello");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn reload_from_disk_clears_stale_undo_history() {
-    let path = temp_file_path("reload_clears_undo");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, path) = scratch_state("hello");
 
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     let active_id = state.session.active_id();
@@ -3041,14 +2943,11 @@ fn reload_from_disk_clears_stale_undo_history() {
 
     state.apply_input(InputAction::Undo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "disk");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn external_reload_is_an_undoable_change_that_keeps_history_and_marks() {
-    let path = temp_file_path("external_reload_undo");
-    let mut state = state_with_text(path.clone(), "first\nsecond\n");
+    let (mut state, path) = scratch_state("first\nsecond\n");
     state.apply_input(InputAction::Paste("A".to_string()), 80, 24);
     run_command(&mut state, "w");
     state
@@ -3080,14 +2979,11 @@ fn external_reload_is_an_undoable_change_that_keeps_history_and_marks() {
         "Afirst\nsecond\nthird\n"
     );
     assert!(!state.session.active_meta().dirty);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn insert_mode_typing_is_coalesced_into_single_undo_step() {
-    let path = temp_file_path("insert_mode_undo_coalesce");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
@@ -3108,14 +3004,11 @@ fn insert_mode_typing_is_coalesced_into_single_undo_step() {
 
     state.apply_input(InputAction::Redo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "abchello");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn insert_mode_escape_does_not_snapshot_clean_buffer() {
-    let path = temp_file_path("insert_mode_clean_escape");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
@@ -3125,14 +3018,11 @@ fn insert_mode_escape_does_not_snapshot_clean_buffer() {
     let active_id = state.session.active_id();
     assert_eq!(state.session.active_buffer().to_string(), "hello");
     assert_eq!(undo_history_of(&state, active_id).undo_len(), 0);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
-    let path = temp_file_path("insert_mode_undo_separate_sessions");
-    let mut state = state_with_text(path.clone(), "hello");
+    let (mut state, _path) = scratch_state("hello");
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('a'), 80, 24);
@@ -3159,14 +3049,11 @@ fn separate_insert_sessions_at_same_cursor_remain_separate_undo_steps() {
 
     state.apply_input(InputAction::Undo, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "hello");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
-    let path = temp_file_path("undo_tree_select_deep_history");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
 
     state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
     state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
@@ -3255,14 +3142,11 @@ fn undo_tree_rows_are_newest_first_and_selectable_past_first_change() {
             .collect::<Vec<_>>(),
         vec![3, 2, 1, 0]
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_surface_ignores_editor_mutations() {
-    let path = temp_file_path("undo_tree_read_only_surface");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
 
     state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
     state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
@@ -3292,14 +3176,11 @@ fn undo_tree_surface_ignores_editor_mutations() {
         .to_string();
     assert_eq!(after, before);
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_restore_then_edit_creates_branch_without_losing_future_nodes() {
-    let path = temp_file_path("undo_tree_restore_then_branch");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, path) = scratch_state("");
 
     state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
     state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
@@ -3341,14 +3222,11 @@ fn undo_tree_restore_then_edit_creates_branch_without_losing_future_nodes() {
     assert!(entries.iter().any(|entry| entry.id == 3));
     assert!(entries.iter().any(|entry| entry.id == 4));
     assert_eq!(fs::read_to_string(&path).expect("missing fixture"), "");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_navigation_moves_back_up_across_connector_rows() {
-    let path = temp_file_path("undo_tree_navigation_connector_rows");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
 
     state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
     state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
@@ -3433,14 +3311,11 @@ fn undo_tree_navigation_moves_back_up_across_connector_rows() {
             .selected_node,
         4
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_selection_tracks_source_history_changes() {
-    let path = temp_file_path("undo_tree_tracks_source_history");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
 
     state.apply_input(InputAction::Paste("a".to_string()), 80, 24);
     state.apply_input(InputAction::Paste("b".to_string()), 80, 24);
@@ -3507,14 +3382,11 @@ fn undo_tree_selection_tracks_source_history_changes() {
         .expect("missing undo tree buffer")
         .to_string();
     assert!(tree_text.contains("●  1"));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn undo_tree_panes_resize_and_remember_width_for_the_session() {
-    let path = temp_file_path("undo_tree_ui_pane");
-    let mut state = state_with_text(path.clone(), "a");
+    let (mut state, _path) = scratch_state("a");
     state.set_editor_area_size(100, 20);
 
     run_command(&mut state, "undo-tree");
@@ -3644,8 +3516,6 @@ fn undo_tree_panes_resize_and_remember_width_for_the_session() {
             assert_eq!(rect.width, expected_width);
         }
     }
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -3743,8 +3613,7 @@ fn pane_resizing_preserves_nested_neighbours_and_fixed_panes() {
 
 #[test]
 fn pane_focus_crossfades_and_reverses_from_current_brightness() {
-    let path = temp_file_path("pane_focus_fade");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
     state.animations.focus_fade_ms = 420;
     let duration = Duration::from_millis(420);
     let original = state.active_pane_id();
@@ -3823,7 +3692,6 @@ fn pane_focus_crossfades_and_reverses_from_current_brightness() {
             );
         }
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -3890,8 +3758,7 @@ fn popup_dimming_eases_and_reverses_without_restarting_between_popups() {
 
 #[test]
 fn split_focus_skips_inaccessible_panes() {
-    let path = temp_file_path("split_focus_inaccessible");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
     state.set_editor_area_size(80, 20);
     let original_pane = state.active_pane_id();
 
@@ -3908,8 +3775,6 @@ fn split_focus_skips_inaccessible_panes() {
     state.focus_split(SplitDirection::Left);
 
     assert_eq!(state.active_pane_id(), active_after_split);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -4059,8 +3924,7 @@ fn insert_mode_soft_tabs_follow_stops_and_backspace_as_a_unit() {
 }
 #[test]
 fn insert_mode_typing_existing_quote_advances_cursor() {
-    let path = temp_file_path("insert_mode_skip_existing_quote");
-    let mut state = state_with_text(path.clone(), "");
+    let (mut state, _path) = scratch_state("");
 
     state.apply_input(InputAction::EnterInsert(InsertKind::Insert), 80, 24);
     state.apply_input(InputAction::InsertChar('"'), 80, 24);
@@ -4068,8 +3932,6 @@ fn insert_mode_typing_existing_quote_advances_cursor() {
 
     assert_eq!(state.session.active_buffer().to_string(), "\"\"");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 2));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -4605,8 +4467,7 @@ fn command_edit_replaces_empty_startup_buffer() {
 
 #[test]
 fn command_rain_captures_and_stop_clears_animation_state() {
-    let path = temp_file_path("rain_mode");
-    let mut state = state_with_text(path.clone(), "let rain = true;\n");
+    let (mut state, _path) = scratch_state("let rain = true;\n");
 
     run_command(&mut state, "rain");
 
@@ -4630,14 +4491,11 @@ fn command_rain_captures_and_stop_clears_animation_state() {
     assert!(!state.rain_is_active());
     assert!(state.rain_animation.is_none());
     assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_perf_accepts_popup_spellings_and_rejects_other_arguments() {
-    let path = temp_file_path("perf_popup");
-    let mut state = state_with_text(path.clone(), "let perf = true;\n");
+    let (mut state, _path) = scratch_state("let perf = true;\n");
 
     assert!(state.perf_popup().is_none());
     run_command(&mut state, "perf");
@@ -4653,14 +4511,11 @@ fn command_perf_accepts_popup_spellings_and_rejects_other_arguments() {
 
     assert!(state.perf_popup().is_none());
     assert_eq!(state.status_msg.as_deref(), Some("usage: perf [popup]"));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn config_commands_request_runtime_actions() {
-    let path = temp_file_path("config_reload_command");
-    let mut state = state_with_text(path.clone(), "theme preview\n");
+    let (mut state, _path) = scratch_state("theme preview\n");
 
     run_command(&mut state, "config");
     assert!(state.take_config_open_request());
@@ -4690,27 +4545,21 @@ fn config_commands_request_runtime_actions() {
 
     run_command(&mut state, "colorscheme");
     assert_eq!(state.take_colorscheme_request().as_deref(), Some(""));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn perf_popup_escape_dismisses_in_normal_mode() {
-    let path = temp_file_path("perf_escape");
-    let mut state = state_with_text(path.clone(), "let perf = true;\n");
+    let (mut state, _path) = scratch_state("let perf = true;\n");
 
     run_command(&mut state, "perf");
 
     assert!(state.dismiss_perf_popup());
     assert!(state.perf_popup().is_none());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_ls_status_survives_input_before_timeout() {
-    let path = temp_file_path("ls_ephemeral_input");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
 
     run_command(&mut state, "ls");
     assert!(state.status_msg.is_some());
@@ -4725,14 +4574,11 @@ fn command_ls_status_survives_input_before_timeout() {
     );
 
     assert!(state.status_msg.is_some());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_write_confirms_success_until_expiry_or_another_edit() {
-    let path = temp_file_path("write_status_clears");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, path) = scratch_state("alpha");
     state.animations.save_confirmation_ms = 1000;
     state.animations.save_fade_ms = 400;
     let buffer_id = state.session.active_id();
@@ -4786,14 +4632,11 @@ fn command_write_confirms_success_until_expiry_or_another_edit() {
             .unwrap()
             .starts_with("write failed:")
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_write_trims_trailing_whitespace_on_save() {
-    let path = temp_file_path("write_trims_trailing_whitespace");
-    let mut state = state_with_text(path.clone(), "alpha  \nbeta\t \n gamma\t\t\n");
+    let (mut state, path) = scratch_state("alpha  \nbeta\t \n gamma\t\t\n");
 
     run_command(&mut state, "w");
 
@@ -4805,14 +4648,11 @@ fn command_write_trims_trailing_whitespace_on_save() {
         fs::read_to_string(&path).expect("failed to read saved file"),
         "alpha\nbeta\n gamma\n"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_write_softens_leading_hard_tabs_without_external_formatter() {
-    let path = temp_file_path("write_softens_tabs");
-    let mut state = state_with_text(path.clone(), "alpha\tbeta\n\tgamma\n  \tdelta\n");
+    let (mut state, path) = scratch_state("alpha\tbeta\n\tgamma\n  \tdelta\n");
 
     run_command(&mut state, "w");
 
@@ -4824,8 +4664,6 @@ fn command_write_softens_leading_hard_tabs_without_external_formatter() {
         fs::read_to_string(&path).expect("failed to read saved file"),
         "alpha\tbeta\n    gamma\n    delta\n"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -5011,9 +4849,8 @@ fn command_write_keeps_whitespace_where_formats_depend_on_it() {
 
 #[test]
 fn command_write_save_passes_can_be_disabled() {
-    let path = temp_file_path("write_passes_disabled");
     let text = "\tindented  \n";
-    let mut state = state_with_text(path.clone(), text);
+    let (mut state, path) = scratch_state(text);
     state.save = crate::config::SaveConfig {
         trim_trailing_whitespace: false,
         expand_tabs: false,
@@ -5023,13 +4860,11 @@ fn command_write_save_passes_can_be_disabled() {
 
     assert_eq!(state.session.active_buffer().to_string(), text);
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn command_write_save_passes_keep_marks_on_their_lines() {
-    let path = temp_file_path("write_passes_marks");
-    let mut state = state_with_text(path.clone(), "one  \n\ttwo\nthree\t\nfour\n");
+    let (mut state, _path) = scratch_state("one  \n\ttwo\nthree\t\nfour\n");
     let buffer = state.session.active_buffer_mut();
     buffer.set_mark('a', Pos::new(1, 2));
     buffer.set_mark('b', Pos::new(3, 1));
@@ -5040,7 +4875,6 @@ fn command_write_save_passes_keep_marks_on_their_lines() {
     assert_eq!(buffer.to_string(), "one\n    two\nthree\nfour\n");
     assert_eq!(buffer.mark('a'), Some(Pos::new(1, 5)));
     assert_eq!(buffer.mark('b'), Some(Pos::new(3, 1)));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -5132,8 +4966,7 @@ fn external_reload_drops_stale_syntax_cache() {
 
 #[test]
 fn command_write_clamps_cursor_after_trimming_trailing_whitespace() {
-    let path = temp_file_path("write_trim_cursor");
-    let mut state = state_with_text(path.clone(), "alpha   \n");
+    let (mut state, _path) = scratch_state("alpha   \n");
     let active_id = state.session.active_id();
     state
         .views
@@ -5145,8 +4978,6 @@ fn command_write_clamps_cursor_after_trimming_trailing_whitespace() {
     run_command(&mut state, "w");
 
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 4));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -5182,20 +5013,16 @@ fn command_e_requests_syntax_analysis_for_opened_rust_file() {
 
 #[test]
 fn unknown_command_sets_status_message() {
-    let path = temp_file_path("unknown_command");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
 
     run_command(&mut state, "zzzz");
 
     assert_eq!(state.status_msg.as_deref(), Some("unknown command: zzzz"));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn explorer_command_opens_ui_buffer() {
-    let path = temp_file_path("explorer_open");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
 
     run_command(&mut state, "explorer");
 
@@ -5220,8 +5047,6 @@ fn explorer_command_opens_ui_buffer() {
         .expect("explorer popup should be active");
     assert!(popup.title.starts_with('~'));
     assert!(popup.title.ends_with('/'));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -5994,8 +5819,7 @@ fn explorer_delete_of_return_target_creates_placeholder_buffer() {
 
 #[test]
 fn explorer_q_closes_surface_buffer_only() {
-    let path = temp_file_path("explorer_q_close");
-    let mut state = state_with_text(path.clone(), "alpha");
+    let (mut state, _path) = scratch_state("alpha");
     let return_to = state.session.active_id();
 
     run_command(&mut state, "explorer");
@@ -6006,8 +5830,6 @@ fn explorer_q_closes_surface_buffer_only() {
     assert!(!state.should_quit);
     assert!(state.explorer_popup().is_none());
     assert_eq!(state.session.active_id(), return_to);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -6330,8 +6152,7 @@ fn half_page_scroll_centers_cursor_and_remembers_counts() {
         EditorMode::VisualLine,
         EditorMode::VisualBlock,
     ] {
-        let path = temp_file_path("half_page_scroll");
-        let mut state = state_with_text(path.clone(), &"  line\n".repeat(100));
+        let (mut state, _path) = scratch_state(&"  line\n".repeat(100));
         state.scrolloff_rows = 0;
         state.mode = mode;
         let id = state.session.active_id();
@@ -6382,15 +6203,13 @@ fn half_page_scroll_centers_cursor_and_remembers_counts() {
             }
         );
         assert!(!state.session.active_meta().dirty);
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn half_page_scroll_stops_at_file_boundaries_and_handles_tiny_windows() {
     for height in [1, 2, 8, 9] {
-        let path = temp_file_path("half_page_scroll_boundaries");
-        let mut state = state_with_text(path.clone(), &large_text(120));
+        let (mut state, _path) = scratch_state(&large_text(120));
         state.scrolloff_rows = 0;
         let id = state.session.active_id();
         let text_height = height - STATUS_BAR_HEIGHT_ROWS;
@@ -6438,15 +6257,13 @@ fn half_page_scroll_stops_at_file_boundaries_and_handles_tiny_windows() {
         }
         assert_eq!(state.active_cursor_pos().line, 0);
         assert_eq!(state.views.get(&id).unwrap().cursor.scroll_y_lines, 0);
-        let _ = fs::remove_file(path);
     }
 }
 
 #[test]
 fn zz_centers_cursor_line_except_at_top_of_file() {
-    let path = temp_file_path("zz_center_line");
     let text = large_text(120);
-    let mut state = state_with_text(path.clone(), &text);
+    let (mut state, _path) = scratch_state(&text);
     let id = state.session.active_id();
     let viewport_height_rows = 8usize;
     let text_vh = viewport_height_rows.saturating_sub(STATUS_BAR_HEIGHT_ROWS);
@@ -6480,8 +6297,6 @@ fn zz_centers_cursor_line_except_at_top_of_file() {
         last_line.saturating_sub(center_row)
     );
     assert_eq!(view.cursor.cursor.line, last_line);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -6526,9 +6341,8 @@ fn open_line_actions_enter_insert_and_insert_blank_line() {
 }
 #[test]
 fn first_edit_forces_full_load_before_mutation() {
-    let path = temp_file_path("edit_force_full_load");
     let text = large_text(8000);
-    let mut state = state_with_text(path.clone(), &text);
+    let (mut state, _path) = scratch_state(&text);
     assert_eq!(
         state.session.active_buffer_load_status().phase,
         BufferLoadPhase::Loading
@@ -6545,15 +6359,12 @@ fn first_edit_forces_full_load_before_mutation() {
         state.session.active_buffer().to_string(),
         format!("X{text}")
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn write_command_forces_full_load_while_loading() {
-    let path = temp_file_path("write_force_full_load");
     let text = large_text(8500);
-    let mut state = state_with_text(path.clone(), &text);
+    let (mut state, path) = scratch_state(&text);
     assert_eq!(
         state.session.active_buffer_load_status().phase,
         BufferLoadPhase::Loading
@@ -6569,15 +6380,12 @@ fn write_command_forces_full_load_while_loading() {
         fs::read_to_string(&path).expect("failed to read file"),
         text
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn pump_active_loading_extends_loaded_content() {
-    let path = temp_file_path("pump_loading_growth");
     let text = large_text(10_000);
-    let mut state = state_with_text(path.clone(), &text);
+    let (mut state, _path) = scratch_state(&text);
     let before_lines = state.session.active_buffer().len_lines();
 
     for _ in 0..8 {
@@ -6594,8 +6402,6 @@ fn pump_active_loading_extends_loaded_content() {
 
     let after_lines = state.session.active_buffer().len_lines();
     assert!(after_lines > before_lines);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -6625,8 +6431,7 @@ fn load_failure_sets_status_and_blocks_mutation() {
 
 #[test]
 fn visual_mode_tracks_anchor_and_cursor_selection() {
-    let path = temp_file_path("visual_char");
-    let mut state = state_with_text(path.clone(), "abc\ndef\n");
+    let (mut state, _path) = scratch_state("abc\ndef\n");
     let id = state.session.active_id();
     state
         .views
@@ -6659,212 +6464,342 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
 
     state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
     assert!(state.active_visual_selection().is_none());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
-fn visual_yank_private_copies_selection_and_exits_visual_mode() {
-    let path = temp_file_path("visual_yank_private");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 3,
-        },
-        80,
-        24,
-    );
+fn normal_mode_commands_handle_buffer_and_line_edges() {
+    // (text, cursor, keys, buffer after, cursor after)
+    let cases: [(&str, Pos, &str, &str, Option<Pos>); 25] = [
+        // An empty buffer has nothing to move over, delete, paste or undo.
+        ("", Pos::zero(), "G", "", Some(Pos::zero())),
+        ("", Pos::zero(), "dd", "", Some(Pos::zero())),
+        ("", Pos::zero(), "x", "", Some(Pos::zero())),
+        ("", Pos::zero(), "p", "", Some(Pos::zero())),
+        ("", Pos::zero(), "u", "", Some(Pos::zero())),
+        ("", Pos::zero(), "J", "", Some(Pos::zero())),
+        ("alpha\n", Pos::zero(), "J", "alpha\n", Some(Pos::zero())),
+        // Empty lines.
+        ("\nb\n", Pos::zero(), "x", "\nb\n", Some(Pos::zero())),
+        ("\nb\n", Pos::zero(), "D", "\nb\n", Some(Pos::zero())),
+        ("\nb\n", Pos::zero(), "ra", "\nb\n", Some(Pos::zero())),
+        ("\nb\n", Pos::zero(), ">>", "\nb\n", None),
+        // Nothing to repeat, undo or paste yet.
+        ("abc\n", Pos::new(0, 1), ".", "abc\n", Some(Pos::new(0, 1))),
+        ("abc\n", Pos::new(0, 1), "u", "abc\n", Some(Pos::new(0, 1))),
+        ("abc\n", Pos::new(0, 1), "p", "abc\n", Some(Pos::new(0, 1))),
+        // Counts that run past the end of the buffer stop at it. The empty line after a
+        // trailing newline is a real line in Redox, so motions can land on it.
+        (
+            "a\nb\nc\n",
+            Pos::zero(),
+            "999j",
+            "a\nb\nc\n",
+            Some(Pos::new(3, 0)),
+        ),
+        (
+            "a\nb\nc\n",
+            Pos::new(1, 0),
+            "5dd",
+            "a\n",
+            Some(Pos::new(1, 0)),
+        ),
+        (
+            "a\nb\nc\n",
+            Pos::new(1, 0),
+            "dG",
+            "a\n",
+            Some(Pos::new(1, 0)),
+        ),
+        ("a\nb\nc\n", Pos::new(1, 0), "dgg", "c\n", Some(Pos::zero())),
+        // The last line without a trailing newline.
+        (
+            "foo bar",
+            Pos::new(0, 4),
+            "dw",
+            "foo ",
+            Some(Pos::new(0, 3)),
+        ),
+        ("abc", Pos::new(0, 2), "e", "abc", Some(Pos::new(0, 2))),
+        ("a", Pos::zero(), "ob\u{1b}", "a\nb", Some(Pos::new(1, 0))),
+        // Unicode case changes.
+        ("émile\n", Pos::zero(), "~", "Émile\n", Some(Pos::new(0, 1))),
+        // Text objects with nothing inside, no enclosing pair, or escaped delimiters.
+        ("f()\n", Pos::new(0, 1), "ci(\u{1b}", "f()\n", None),
+        (
+            "abc\n",
+            Pos::new(0, 1),
+            "di(",
+            "abc\n",
+            Some(Pos::new(0, 1)),
+        ),
+        (
+            "x = \"a\\\"b\";\n",
+            Pos::new(0, 5),
+            "di\"",
+            "x = \"\";\n",
+            Some(Pos::new(0, 5)),
+        ),
+    ];
 
-    state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
+    let mut failures = Vec::new();
+    for (text, cursor, keys, expected, expected_cursor) in cases {
+        let (mut state, _path) = scratch_state(text);
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = cursor;
 
-    assert_eq!(state.private_register, "alph");
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.status_msg.is_none());
+        apply_keys(&mut state, keys);
+
+        let actual = (
+            state.session.active_buffer().to_string(),
+            state.mode,
+            expected_cursor.map(|_| state.active_cursor_pos()),
+        );
+        if actual != (expected.to_string(), EditorMode::Normal, expected_cursor) {
+            failures.push(format!(
+                "{keys:?} at {cursor:?} in {text:?}: got {actual:?}, expected {:?}",
+                (expected, EditorMode::Normal, expected_cursor)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn insert_mode_edits_handle_buffer_and_line_edges() {
+    // (text, cursor, keys, buffer after, cursor after); `\u{8}` is Backspace, `\r` is Enter.
+    let cases: [(&str, Pos, &str, &str, Option<Pos>); 5] = [
+        ("abc", Pos::zero(), "i\u{8}\u{1b}", "abc", Some(Pos::zero())),
+        ("a\nb", Pos::new(1, 0), "i\u{8}\u{1b}", "ab", None),
+        (
+            "abc",
+            Pos::new(0, 2),
+            "a\r\u{1b}",
+            "abc\n",
+            Some(Pos::new(1, 0)),
+        ),
+        ("", Pos::zero(), "ihi\u{1b}", "hi", Some(Pos::new(0, 1))),
+        (
+            "abc\n",
+            Pos::new(0, 1),
+            "ié\u{1b}",
+            "aébc\n",
+            Some(Pos::new(0, 1)),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (text, cursor, keys, expected, expected_cursor) in cases {
+        let (mut state, _path) = scratch_state(text);
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = cursor;
+
+        apply_keys(&mut state, keys);
+        let edited = (
+            state.session.active_buffer().to_string(),
+            state.mode,
+            expected_cursor.map(|_| state.active_cursor_pos()),
+        );
+        // A whole insert session undoes as one step.
+        state.apply_input(InputAction::Undo, 80, 24);
+        let undone = state.session.active_buffer().to_string();
+
+        if edited != (expected.to_string(), EditorMode::Normal, expected_cursor) || undone != text {
+            failures.push(format!(
+                "{keys:?} at {cursor:?} in {text:?}: got {edited:?} then {undone:?} after undo"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn close_removes_the_active_split_but_never_the_last_pane() {
+    let (mut state, _path) = scratch_state("alpha\n");
+
+    run_command(&mut state, "close");
+    assert_eq!(state.panes().len(), 1);
     assert_eq!(
-        state.one_shot_highlight().map(|highlight| (
-            highlight.selection,
-            highlight.mode,
-            highlight.elapsed
-        )),
-        Some((
-            Selection::new(Pos::new(0, 0), Pos::new(0, 3)),
-            VisualModeKind::Char,
-            Duration::ZERO,
-        ))
+        state.status_msg.as_deref(),
+        Some("cannot close the last split")
     );
-    assert!(state.take_pending_system_clipboard().is_none());
 
-    let _ = fs::remove_file(path);
+    run_command(&mut state, "vsplit");
+    assert_eq!(state.panes().len(), 2);
+    run_command(&mut state, "close extra");
+    assert_eq!(state.panes().len(), 2);
+    assert_eq!(state.status_msg.as_deref(), Some("usage: close"));
+
+    run_command(&mut state, "close");
+    assert_eq!(state.panes().len(), 1);
+    assert_eq!(state.session.active_buffer().to_string(), "alpha\n");
 }
 
 #[test]
-fn visual_line_leader_y_queues_system_clipboard_text() {
-    let path = temp_file_path("visual_yank_system");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
+fn visual_operators_fill_registers_and_leave_the_expected_mode() {
+    // (text, cursor, mode, motion keys, operator, buffer, register, mode after, cursor after)
+    let cases = [
+        (
+            "alpha\nbeta\n",
+            Pos::new(0, 0),
+            EditorMode::Visual,
+            "lll",
+            InputAction::YankSelectionPrivate,
+            "alpha\nbeta\n",
+            "alph",
+            EditorMode::Normal,
+            None,
+        ),
+        (
+            "alpha\n",
+            Pos::new(0, 2),
+            EditorMode::Visual,
+            "",
+            InputAction::YankSelectionPrivate,
+            "alpha\n",
+            "p",
+            EditorMode::Normal,
+            Some(Pos::new(0, 2)),
+        ),
+        (
+            "alpha\n",
+            Pos::new(0, 3),
+            EditorMode::Visual,
+            "hh",
+            InputAction::DeleteSelectionPrivate,
+            "aa\n",
+            "lph",
+            EditorMode::Normal,
+            Some(Pos::new(0, 1)),
+        ),
+        (
+            "one\ntwo\nthree\n",
+            Pos::new(0, 0),
+            EditorMode::VisualLine,
+            "j",
+            InputAction::YankSelectionSystem,
+            "one\ntwo\nthree\n",
+            "one\ntwo\n",
+            EditorMode::Normal,
+            None,
+        ),
+        (
+            "abcd\nefgh\n",
+            Pos::new(0, 1),
+            EditorMode::VisualBlock,
+            "jl",
+            InputAction::YankSelectionPrivate,
+            "abcd\nefgh\n",
+            "bc\nfg",
+            EditorMode::Normal,
+            None,
+        ),
+        (
+            "alpha\nbeta\n",
+            Pos::new(0, 0),
+            EditorMode::Visual,
+            "ll",
+            InputAction::ChangeSelectionPrivate,
+            "ha\nbeta\n",
+            "alp",
+            EditorMode::Insert,
+            Some(Pos::new(0, 0)),
+        ),
+        (
+            "one\ntwo\nthree\n",
+            Pos::new(0, 0),
+            EditorMode::VisualLine,
+            "j",
+            InputAction::ChangeSelectionPrivate,
+            "\nthree\n",
+            "one\ntwo\n",
+            EditorMode::Insert,
+            Some(Pos::new(0, 0)),
+        ),
+        (
+            "one\ntwo\nthree\nfour\n",
+            Pos::new(0, 0),
+            EditorMode::VisualLine,
+            "jj",
+            InputAction::DeleteSelectionPrivate,
+            "four\n",
+            "one\ntwo\nthree\n",
+            EditorMode::Normal,
+            None,
+        ),
+        (
+            "abcd\nefgh\nijkl\n",
+            Pos::new(0, 1),
+            EditorMode::VisualBlock,
+            "jjl",
+            InputAction::ChangeSelectionPrivate,
+            "ad\neh\nil\n",
+            "bc\nfg\njk",
+            EditorMode::Insert,
+            Some(Pos::new(0, 1)),
+        ),
+        (
+            "alpha\nbeta\n",
+            Pos::new(0, 0),
+            EditorMode::Visual,
+            "ll",
+            InputAction::DeleteSelectionNoYank,
+            "ha\nbeta\n",
+            "keep",
+            EditorMode::Normal,
+            None,
+        ),
+    ];
 
-    state.apply_input(InputAction::YankSelectionSystem, 80, 24);
+    for (text, cursor, mode, keys, operator, buffer, register, mode_after, cursor_after) in cases {
+        let label = format!("{mode:?} {keys:?} {operator:?} on {text:?}");
+        let (mut state, _path) = scratch_state(text);
+        state.private_register = "keep".to_string();
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = cursor;
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
+        apply_keys(&mut state, keys);
+        let yanking = matches!(
+            operator,
+            InputAction::YankSelectionPrivate | InputAction::YankSelectionSystem
+        );
+        let to_system_clipboard = operator == InputAction::YankSelectionSystem;
 
-    assert_eq!(state.private_register, "one\ntwo\n");
-    assert_eq!(
-        state.take_pending_system_clipboard().as_deref(),
-        Some("one\ntwo\n")
-    );
-    assert_eq!(state.mode, EditorMode::Normal);
+        state.apply_input(operator, 80, 24);
 
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_yank_private_without_motion_includes_cursor_char() {
-    let path = temp_file_path("visual_yank_single_char");
-    let mut state = state_with_text(path.clone(), "alpha\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 2);
-
-    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
-    state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "p");
-    assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_block_yank_private_copies_rectangular_selection() {
-    let path = temp_file_path("visual_block_yank_private");
-    let mut state = state_with_text(path.clone(), "abcd\nefgh\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "bc\nfg");
-    assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_change_private_cuts_charwise_selection_and_enters_insert() {
-    let path = temp_file_path("visual_change_private");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 2,
-        },
-        80,
-        24,
-    );
-
-    state.apply_input(InputAction::ChangeSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "alp");
-    assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_line_change_private_cuts_full_lines_and_enters_insert() {
-    let path = temp_file_path("visual_line_change_private");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
-
-    state.apply_input(InputAction::ChangeSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "one\ntwo\n");
-    assert_eq!(state.session.active_buffer().to_string(), "\nthree\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 0));
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
+        assert_eq!(state.session.active_buffer().to_string(), buffer, "{label}");
+        assert_eq!(state.private_register, register, "{label}");
+        assert_eq!(state.mode, mode_after, "{label}");
+        if let Some(cursor_after) = cursor_after {
+            assert_eq!(state.active_cursor_pos(), cursor_after, "{label}");
+        }
+        assert_eq!(
+            state.take_pending_system_clipboard().as_deref(),
+            to_system_clipboard.then_some(register),
+            "{label}"
+        );
+        assert_eq!(state.one_shot_highlight().is_some(), yanking, "{label}");
+        assert!(state.status_msg.is_none(), "{label}");
+    }
 }
 
 #[test]
 fn text_object_delete_inner_word_cuts_current_word() {
-    let path = temp_file_path("text_object_delete_inner_word");
-    let mut state = state_with_text(path.clone(), "alpha beta gamma\n");
+    let (mut state, _path) = scratch_state("alpha beta gamma\n");
     let id = state.session.active_id();
     state
         .views
@@ -6889,14 +6824,11 @@ fn text_object_delete_inner_word_cuts_current_word() {
     assert_eq!(state.private_register, "beta");
     assert_eq!(state.session.active_buffer().to_string(), "alpha  gamma\n");
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
-    let path = temp_file_path("text_object_change_inner_parentheses_same_line");
-    let mut state = state_with_text(path.clone(), "let value = foo(bar);\n");
+    let (mut state, _path) = scratch_state("let value = foo(bar);\n");
     let id = state.session.active_id();
     state
         .views
@@ -6925,14 +6857,11 @@ fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
     );
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 16));
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
-    let path = temp_file_path("visual_text_object_inner_word");
-    let mut state = state_with_text(path.clone(), "alpha  beta\n");
+    let (mut state, _path) = scratch_state("alpha  beta\n");
     let id = state.session.active_id();
     state
         .views
@@ -6966,14 +6895,11 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
             .visual_selection_text(selection, mode),
         "beta"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
-    let path = temp_file_path("visual_text_object_inner_paragraph");
-    let mut state = state_with_text(path.clone(), "zero\n\none\ntwo\n\nthree\n");
+    let (mut state, _path) = scratch_state("zero\n\none\ntwo\n\nthree\n");
     let id = state.session.active_id();
     state
         .views
@@ -7007,15 +6933,12 @@ fn visual_text_object_inner_paragraph_switches_to_linewise_selection() {
             .visual_selection_text(selection, mode),
         "one\ntwo\n"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_text_object_selection_forces_full_load_before_resolving() {
-    let path = temp_file_path("visual_text_object_force_full_load");
     let text = large_text(8500);
-    let mut state = state_with_text(path.clone(), &text);
+    let (mut state, _path) = scratch_state(&text);
     assert_eq!(
         state.session.active_buffer_load_status().phase,
         BufferLoadPhase::Loading
@@ -7039,85 +6962,11 @@ fn visual_text_object_selection_forces_full_load_before_resolving() {
         state.session.active_buffer_load_status().phase,
         BufferLoadPhase::Complete
     );
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_line_delete_private_cuts_all_selected_lines() {
-    let path = temp_file_path("visual_line_delete_three_lines");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-
-    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 2,
-        },
-        80,
-        24,
-    );
-    state.apply_input(InputAction::DeleteSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "one\ntwo\nthree\n");
-    assert_eq!(state.session.active_buffer().to_string(), "four\n");
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_block_change_private_cuts_rectangular_selection_and_enters_insert() {
-    let path = temp_file_path("visual_block_change_private");
-    let mut state = state_with_text(path.clone(), "abcd\nefgh\nijkl\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 1);
-
-    state.apply_input(InputAction::SetMode(EditorMode::VisualBlock), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 2,
-        },
-        80,
-        24,
-    );
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 1,
-        },
-        80,
-        24,
-    );
-    state.apply_input(InputAction::ChangeSelectionPrivate, 80, 24);
-
-    assert_eq!(state.private_register, "bc\nfg\njk");
-    assert_eq!(state.session.active_buffer().to_string(), "ad\neh\nil\n");
-    assert_eq!(state.mode, EditorMode::Insert);
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 1));
-    assert!(state.status_msg.is_none());
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn visual_block_delete_private_removes_fully_covered_lines() {
-    let path = temp_file_path("visual_block_delete_full_lines");
-    let mut state = state_with_text(path.clone(), "{\nalpha\nbeta\n}\n");
+    let (mut state, _path) = scratch_state("{\nalpha\nbeta\n}\n");
     let id = state.session.active_id();
     state
         .views
@@ -7138,14 +6987,11 @@ fn visual_block_delete_private_removes_fully_covered_lines() {
     assert_eq!(state.private_register, "alpha\nbeta");
     assert_eq!(state.session.active_buffer().to_string(), "{\n}\n");
     assert_eq!(state.mode, EditorMode::Normal);
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_x_deletes_char_without_modifying_private_register() {
-    let path = temp_file_path("normal_x_no_yank");
-    let mut state = state_with_text(path.clone(), "alpha\n");
+    let (mut state, _path) = scratch_state("alpha\n");
     state.private_register = "keep".to_string();
 
     let id = state.session.active_id();
@@ -7161,13 +7007,11 @@ fn normal_x_deletes_char_without_modifying_private_register() {
     assert_eq!(state.session.active_buffer().to_string(), "apha\n");
     assert_eq!(state.private_register, "keep");
     assert!(state.status_msg.is_none());
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_j_joins_line_below_and_preserves_cursor() {
-    let path = temp_file_path("normal_join_line");
-    let mut state = state_with_text(path.clone(), "alpha\n    beta\ngamma\n");
+    let (mut state, _path) = scratch_state("alpha\n    beta\ngamma\n");
     let id = state.session.active_id();
     state
         .views
@@ -7192,55 +7036,11 @@ fn normal_j_joins_line_below_and_preserves_cursor() {
         state.session.active_buffer().to_string(),
         "alpha\n    beta\ngamma\n"
     );
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn normal_j_on_last_line_is_a_noop() {
-    let path = temp_file_path("normal_join_last_line");
-    let mut state = state_with_text(path.clone(), "alpha\n");
-
-    state.apply_input(InputAction::JoinLineBelow, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "alpha\n");
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn visual_x_deletes_selection_without_modifying_private_register() {
-    let path = temp_file_path("visual_x_no_yank");
-    let mut state = state_with_text(path.clone(), "alpha\nbeta\n");
-    state.private_register = "keep".to_string();
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Right,
-            count: 2,
-        },
-        80,
-        24,
-    );
-
-    state.apply_input(InputAction::DeleteSelectionNoYank, 80, 24);
-
-    assert_eq!(state.session.active_buffer().to_string(), "ha\nbeta\n");
-    assert_eq!(state.private_register, "keep");
-    assert_eq!(state.mode, EditorMode::Normal);
-    assert!(state.status_msg.is_none());
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_mode_shift_p_pastes_private_register_before_cursor() {
-    let path = temp_file_path("paste_before_charwise");
-    let mut state = state_with_text(path.clone(), "abc\n");
+    let (mut state, _path) = scratch_state("abc\n");
     state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
     state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
 
@@ -7255,13 +7055,11 @@ fn normal_mode_shift_p_pastes_private_register_before_cursor() {
 
     assert_eq!(state.session.active_buffer().to_string(), "abac\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_mode_dd_cuts_current_line() {
-    let path = temp_file_path("dd_cut_line");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let (mut state, _path) = scratch_state("one\ntwo\nthree\n");
     let id = state.session.active_id();
     state
         .views
@@ -7275,13 +7073,11 @@ fn normal_mode_dd_cuts_current_line() {
     assert_eq!(state.private_register, "two\n");
     assert_eq!(state.session.active_buffer().to_string(), "one\nthree\n");
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 0));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn normal_mode_yy_yanks_current_line_and_starts_highlight() {
-    let path = temp_file_path("yy_yank_line");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let (mut state, _path) = scratch_state("one\ntwo\nthree\n");
     let id = state.session.active_id();
     state
         .views
@@ -7307,13 +7103,11 @@ fn normal_mode_yy_yanks_current_line_and_starts_highlight() {
             Duration::ZERO,
         ))
     );
-    let _ = fs::remove_file(path);
 }
 
 #[test]
 fn jump_highlight_follows_and_centers_large_motions() {
-    let path = temp_file_path("jump_highlight");
-    let mut state = state_with_text(path.clone(), &"alpha beta\n".repeat(40));
+    let (mut state, _path) = scratch_state(&"alpha beta\n".repeat(40));
     let viewport_height = 8;
     for (motion, count, expected_line) in [
         (Motion::Down, 1, None),
@@ -7339,7 +7133,6 @@ fn jump_highlight_follows_and_centers_large_motions() {
             );
         }
     }
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -7429,8 +7222,7 @@ fn repeat_search_does_not_reuse_active_match_positions_across_buffers() {
 
 #[test]
 fn normal_mode_cc_preserves_current_line_indent() {
-    let path = temp_file_path("cc_preserve_indent");
-    let mut state = state_with_text(path.clone(), "one\n\ttwo\nthree\n");
+    let (mut state, _path) = scratch_state("one\n\ttwo\nthree\n");
     let id = state.session.active_id();
     state
         .views
@@ -7448,7 +7240,6 @@ fn normal_mode_cc_preserves_current_line_indent() {
     );
     assert_eq!(state.mode, EditorMode::Insert);
     assert_eq!(state.active_cursor_pos(), Pos::new(1, 1));
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -7847,8 +7638,7 @@ fn insert_enter_continues_comments_without_commenting_strings_or_code() {
 
 #[test]
 fn visual_shift_j_and_k_move_selected_lines() {
-    let path = temp_file_path("visual_move_lines");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\nfour\n");
+    let (mut state, _path) = scratch_state("one\ntwo\nthree\nfour\n");
     let id = state.session.active_id();
     state
         .views
@@ -7876,8 +7666,6 @@ fn visual_shift_j_and_k_move_selected_lines() {
         state.session.active_buffer().to_string(),
         "one\ntwo\nthree\nfour\n"
     );
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -7959,8 +7747,7 @@ fn visual_line_moves_preserve_eof_boundaries() {
 }
 #[test]
 fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
-    let path = temp_file_path("visual_indent_outdent");
-    let mut state = state_with_text(path.clone(), "one\ntwo\n");
+    let (mut state, _path) = scratch_state("one\ntwo\n");
     let id = state.session.active_id();
     state
         .views
@@ -7986,8 +7773,6 @@ fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
 
     state.apply_input(InputAction::OutdentVisualSelection { count: 1 }, 80, 24);
     assert_eq!(state.session.active_buffer().to_string(), "one\ntwo\n");
-
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -8027,8 +7812,7 @@ fn case_operators_change_motions_text_objects_lines_and_selections() {
 
 #[test]
 fn gv_restores_the_previous_selection_and_o_swaps_its_ends() {
-    let path = temp_file_path("restore_selection");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let (mut state, _path) = scratch_state("one\ntwo\nthree\n");
     let selection = |state: &EditorState| state.active_visual_selection();
 
     apply_keys(&mut state, "gv");
@@ -8079,7 +7863,6 @@ fn gv_restores_the_previous_selection_and_o_swaps_its_ends() {
         selection(&state).map(|(selection, _)| selection.line_range()),
         Some((2, 3))
     );
-    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -8229,9 +8012,8 @@ fn number_increments_work_at_the_cursor_and_on_selections() {
 
 #[test]
 fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
-    let path = temp_file_path("marks");
     let original = "first\n  猫abc\nlast\n";
-    let mut state = state_with_text(path.clone(), original);
+    let (mut state, path) = scratch_state(original);
     let buffer_id = state.session.active_id();
     apply_keys(&mut state, "jllma");
     assert_eq!(
@@ -8286,7 +8068,7 @@ fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
         ("gg0d`a", "abc\nlast\n", RegisterKind::CharWise),
         ("gg0d'b", original, RegisterKind::CharWise),
     ] {
-        let mut state = state_with_text(path.clone(), original);
+        let mut state = state_with_text(path.to_path_buf(), original);
         apply_keys(&mut state, "jlllma");
         apply_keys(&mut state, keys);
         assert_eq!(
@@ -8301,8 +8083,7 @@ fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
 
 #[test]
 fn delmarks_clears_letters_ranges_and_all_marks() {
-    let path = temp_file_path("delmarks");
-    let mut state = state_with_text(path.clone(), "one\ntwo\nthree\n");
+    let (mut state, _path) = scratch_state("one\ntwo\nthree\n");
     let set_marks = |state: &mut EditorState| {
         for name in ['a', 'b', 'c', 'd', 'x'] {
             state
