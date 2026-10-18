@@ -9,10 +9,6 @@ readme = "README.md"
 keywords = ["editor", "tui", "terminal", "vim", "text"]
 categories = ["command-line-utilities", "text-editors"]
 
-[[bin]]
-name = "redox"
-path = "src/main.rs"
-
 [dependencies]
 redox-core = { version = "0.9.0", path = "../redox-core" }
 redox-lsp = { version = "0.2.0", path = "../redox-lsp" }
