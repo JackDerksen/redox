@@ -1073,8 +1073,16 @@ mod tests {
             };
             let dimmed = style.dimmed();
             let mut window = crate::tests::TestWindow::new(20, 8);
-            crate::draw_gutter_padding(&mut window, &style, 3, 8, 1, 0, (Some(&snapshot), None))
-                .unwrap();
+            crate::view::gutter::draw_gutter_padding(
+                &mut window,
+                &style,
+                3,
+                8,
+                1,
+                0,
+                (Some(&snapshot), None),
+            )
+            .unwrap();
             for marker in snapshot.markers.iter() {
                 let expected = if marker.staged { dimmed } else { style };
                 let (glyph, marker_style) = expected.git.gutter_marker(marker.kind);
@@ -1087,7 +1095,7 @@ mod tests {
         buffer.set_mark('a', redox_core::Pos::new(marked_line, 0));
         let style = crate::ui::UiStyle::default();
         let mut window = crate::tests::TestWindow::new(20, 8);
-        crate::draw_gutter_padding(
+        crate::view::gutter::draw_gutter_padding(
             &mut window,
             &style,
             3,

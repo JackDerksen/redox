@@ -1,10 +1,15 @@
 use super::*;
 use crate::app::EditorMode;
+use crate::app::FramePerfSample;
+use crate::input::InputAction;
+use crate::ui::UiStyle;
 use crate::ui::widgets::popup::{MousePopup, MouseRect, MouseScroll, MouseTarget};
+use crate::view::gutter::pane_content_x;
 use minui::MouseButton;
 use redox_core::Pos;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::time::Instant;
 
 struct MouseFiles {
     root: PathBuf,

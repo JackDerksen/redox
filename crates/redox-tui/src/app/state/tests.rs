@@ -2772,19 +2772,19 @@ fn undo_redo_feedback_fades_locally_and_clears_on_edits_or_no_op() {
     let render = |state: &mut EditorState| {
         let highlight = state.one_shot_highlight();
         let mut window = crate::tests::TestWindow::new(40, 8);
-        crate::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
-        crate::draw_buffer_snapshot_for_id(
+        crate::view::fill_background(&mut window, 40, 8, style.editor_text).unwrap();
+        crate::view::buffer::draw_buffer_snapshot_for_id(
             state,
             &style,
             state.session.active_id(),
-            crate::BufferDrawOptions {
+            crate::view::buffer::BufferDrawOptions {
                 width: 40,
                 height: 8,
                 has_line_numbers: false,
                 colors: style.editor_text,
             },
             &mut window,
-            crate::BufferHighlights {
+            crate::view::buffer::BufferHighlights {
                 visual_selection: None,
                 one_shot_highlight: highlight,
                 search_highlights: &BTreeMap::new(),
@@ -3424,7 +3424,7 @@ fn undo_tree_panes_resize_and_remember_width_for_the_session() {
     assert_eq!(diff_rect.height, 8);
 
     for key in [minui::KeyKind::Right, minui::KeyKind::Up] {
-        crate::handle_editor_event(
+        crate::event_loop::handle_editor_event(
             &mut state,
             &mut None,
             minui::Event::KeyWithModifiers(minui::KeyWithModifiers {
@@ -3485,7 +3485,7 @@ fn undo_tree_panes_resize_and_remember_width_for_the_session() {
                 button: minui::MouseButton::Left,
             },
         ] {
-            crate::handle_editor_event(&mut state, &mut None, event);
+            crate::event_loop::handle_editor_event(&mut state, &mut None, event);
         }
     }
     let rects = state.pane_rects(100, 20);

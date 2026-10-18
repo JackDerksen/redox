@@ -289,8 +289,10 @@ impl EditorState {
                     .into_iter()
                     .find(|rect| rect.pane_id == pane)
                 {
-                    self.viewport_width_cells =
-                        rect.width.saturating_sub(crate::pane_content_x(self, pane)) as usize;
+                    self.viewport_width_cells = rect
+                        .width
+                        .saturating_sub(crate::view::gutter::pane_content_x(self, pane))
+                        as usize;
                     self.viewport_height_rows = rect.height as usize + STATUS_BAR_HEIGHT_ROWS;
                 }
                 self.close_completion();
@@ -465,9 +467,9 @@ impl EditorState {
         };
         let gutter = if pane.options.has_line_numbers && !(self.zen.enabled && self.zen.hide_gutter)
         {
-            crate::line_number_gutter_width(
+            crate::view::gutter::line_number_gutter_width(
                 buffer.len_lines(),
-                u16::from(crate::marker_column_visible(
+                u16::from(crate::view::gutter::marker_column_visible(
                     buffer,
                     self.git_diff_for_buffer(buffer_id),
                 )),
