@@ -79,8 +79,10 @@ pub(crate) fn global_test_state_lock() -> &'static std::sync::Mutex<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegisterKind {
-    CharWise,
-    LineWise,
+    Char,
+    Line,
+    /// A visual block: one row per line, pasted back into the same columns.
+    Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,7 +547,7 @@ impl EditorState {
             editor_area_width_cells: 80,
             editor_area_height_rows: 23,
             private_register: String::new(),
-            private_register_kind: RegisterKind::CharWise,
+            private_register_kind: RegisterKind::Char,
             one_shot_highlight: None,
             search_state: None,
             search_origin: None,

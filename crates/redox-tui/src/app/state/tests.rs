@@ -1650,7 +1650,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d}",
             "\n\nthree\nfour\n\nfive",
             "one\ntwo\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1658,7 +1658,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d}",
             "o\n\n\nthree\nfour\n\nfive",
             "ne\ntwo",
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1666,7 +1666,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d}",
             "one\nt\n\n\nthree\nfour\n\nfive",
             "wo",
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1674,7 +1674,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d{",
             "one\ntwo\n\nthree\nfour\n\nfive",
             "\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1682,7 +1682,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d{",
             "one\ntwo\n\nhree\nfour\n\nfive",
             "\nt",
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1690,7 +1690,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d}",
             "one\ntwo\n\n\nthree\nfour\n\n",
             "five",
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1698,7 +1698,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "2d}",
             "\nfive",
             "one\ntwo\n\n\nthree\nfour\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1706,7 +1706,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d2}",
             "\nfive",
             "one\ntwo\n\n\nthree\nfour\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1714,7 +1714,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "2d2}",
             "",
             text,
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1722,7 +1722,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "y}",
             text,
             "one\ntwo\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1730,7 +1730,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "y{",
             text,
             "\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1738,7 +1738,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "c}",
             "\n\n\nthree\nfour\n\nfive",
             "one\ntwo\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Insert,
         ),
         (
@@ -1746,7 +1746,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d}.",
             "\nfive",
             "\n\nthree\nfour\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1754,7 +1754,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "d{",
             text,
             "",
-            RegisterKind::CharWise,
+            RegisterKind::Char,
             EditorMode::Normal,
         ),
         (
@@ -1762,7 +1762,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "dip",
             "one\ntwo\n\n\n\nfive",
             "three\nfour\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
         (
@@ -1770,7 +1770,7 @@ fn paragraph_operators_preserve_exclusive_boundaries_and_register_kinds() {
             "dap",
             "one\ntwo\n\n\nfive",
             "three\nfour\n\n",
-            RegisterKind::LineWise,
+            RegisterKind::Line,
             EditorMode::Normal,
         ),
     ] {
@@ -6745,6 +6745,17 @@ fn visual_operators_fill_registers_and_leave_the_expected_mode() {
             None,
         ),
         (
+            "abcd\nx\nefgh\n",
+            Pos::new(0, 1),
+            EditorMode::VisualBlock,
+            "jjl",
+            InputAction::YankSelectionPrivate,
+            "abcd\nx\nefgh\n",
+            "bc\n\nfg",
+            EditorMode::Normal,
+            Some(Pos::new(0, 1)),
+        ),
+        (
             "abcd\nefgh\nijkl\n",
             Pos::new(0, 1),
             EditorMode::VisualBlock,
@@ -7047,22 +7058,96 @@ fn normal_j_joins_line_below_and_preserves_cursor() {
 }
 
 #[test]
-fn normal_mode_shift_p_pastes_private_register_before_cursor() {
-    let (mut state, _path) = scratch_state("abc\n");
-    state.apply_input(InputAction::SetMode(EditorMode::Visual), 80, 24);
-    state.apply_input(InputAction::YankSelectionPrivate, 80, 24);
+fn pasting_a_register_keeps_its_shape() {
+    // (text, yank from, yank mode, yank motion, paste at, paste key, buffer after, cursor after)
+    type Case = (
+        &'static str,
+        Pos,
+        EditorMode,
+        &'static str,
+        Pos,
+        &'static str,
+        &'static str,
+        Pos,
+    );
+    let cases: &[Case] = &[
+        (
+            "abc\n",
+            Pos::zero(),
+            EditorMode::Visual,
+            "",
+            Pos::new(0, 2),
+            "P",
+            "abac\n",
+            Pos::new(0, 3),
+        ),
+        // Blocks go back into the same columns on successive lines.
+        (
+            "abc\ndef\n",
+            Pos::zero(),
+            EditorMode::VisualBlock,
+            "j",
+            Pos::new(0, 1),
+            "p",
+            "abac\ndedf\n",
+            Pos::new(0, 2),
+        ),
+        // Short lines are padded to the column, and the block can run past the last line.
+        (
+            "ab\ncd\n",
+            Pos::zero(),
+            EditorMode::VisualBlock,
+            "jl",
+            Pos::new(1, 1),
+            "P",
+            "ab\ncabd\n cd",
+            Pos::new(1, 1),
+        ),
+        // A line too short for the yanked block leaves an empty row in place.
+        (
+            "abcd\nx\nefgh\n",
+            Pos::new(0, 1),
+            EditorMode::VisualBlock,
+            "jjl",
+            Pos::new(0, 3),
+            "p",
+            "abcdbc\nx\nefghfg\n",
+            Pos::new(0, 4),
+        ),
+    ];
 
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 2);
-    state.apply_input(InputAction::PastePrivateRegisterBefore, 80, 24);
+    let mut failures = Vec::new();
+    for &(text, yank_from, mode, motion, paste_at, paste, expected, expected_cursor) in cases {
+        let (mut state, _path) = scratch_state(text);
+        let id = state.session.active_id();
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = yank_from;
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
+        apply_keys(&mut state, &format!("{motion}y"));
+        state
+            .views
+            .get_mut(&id)
+            .expect("missing view")
+            .cursor
+            .cursor = paste_at;
 
-    assert_eq!(state.session.active_buffer().to_string(), "abac\n");
-    assert_eq!(state.active_cursor_pos(), Pos::new(0, 3));
+        apply_keys(&mut state, paste);
+
+        let actual = (
+            state.session.active_buffer().to_string(),
+            state.active_cursor_pos(),
+        );
+        if actual != (expected.to_string(), expected_cursor) {
+            failures.push(format!(
+                "{mode:?} {motion:?} then {paste:?} at {paste_at:?} in {text:?}: got {actual:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -8072,9 +8157,9 @@ fn named_marks_jump_in_modal_modes_and_work_as_operator_targets() {
     );
     assert_ne!(buffer_id, other_id);
     for (keys, expected, kind) in [
-        ("gg0d'a", "last\n", RegisterKind::LineWise),
-        ("gg0d`a", "abc\nlast\n", RegisterKind::CharWise),
-        ("gg0d'b", original, RegisterKind::CharWise),
+        ("gg0d'a", "last\n", RegisterKind::Line),
+        ("gg0d`a", "abc\nlast\n", RegisterKind::Char),
+        ("gg0d'b", original, RegisterKind::Char),
     ] {
         let mut state = state_with_text(path.to_path_buf(), original);
         apply_keys(&mut state, "jlllma");

@@ -154,11 +154,22 @@ impl TextBuffer {
         ranges
     }
 
-    /// Return visual selection text for the current visual mode.
+    /// Return the text of a visual block selection.
+    ///
+    /// Each selected line gives one row, empty when the line is too short to reach the block,
+    /// so the text pastes back into the same shape.
     pub fn visual_blockwise_text(&self, selection: Selection) -> String {
-        self.visual_blockwise_pos_ranges(selection)
-            .into_iter()
-            .map(|(start, end)| self.slice_pos_range(start, end))
+        let (start, end) = selection.ordered();
+        let left = start.col.min(end.col);
+        let right_exclusive = start.col.max(end.col).saturating_add(1);
+        (start.line..=end.line)
+            .map(|line| {
+                let line_len = self.line_len_chars(line);
+                self.slice_pos_range(
+                    Pos::new(line, left.min(line_len)),
+                    Pos::new(line, right_exclusive.min(line_len)),
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
