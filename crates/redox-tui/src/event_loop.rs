@@ -291,6 +291,9 @@ pub(crate) fn reload_runtime_config(
             .unwrap_or_else(|| candidate.theme.clone());
         let candidate_style = candidate.style_for_theme(&candidate_theme)?;
         let candidate_input = configured_input(&candidate)?;
+        // Logging is the last step that can fail, and configured_input has already checked
+        // the bindings on a scratch handler, so nothing below changes state before an error.
+        state.configure_logging(candidate.logging)?;
         install_keyboard_bindings(keyboard, &candidate_input)?;
         state.configure(
             candidate_input,
@@ -312,7 +315,6 @@ pub(crate) fn reload_runtime_config(
         if candidate.check_updates != active_config.check_updates {
             state.configure_update_checks(candidate.check_updates);
         }
-        state.configure_logging(candidate.logging)?;
         state.configure_animations(candidate.animations);
         state.icons_enabled = candidate.icons_enabled;
         state.save = candidate.save;
