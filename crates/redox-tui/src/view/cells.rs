@@ -158,7 +158,29 @@ pub(crate) fn visual_selection_visible_cells(
             }
             let left = start.col.min(end.col);
             let right = start.col.max(end.col).saturating_add(1);
-            visible_cell_range(left, right, scroll_x, width_cells)
+            // Block columns are characters, as in yank and paste: highlight the cells of the
+            // characters in the block, then pad the part past the line's end one cell per column.
+            let line_len = source_line.chars().count();
+            let mut cells = selected_visible_cells(
+                source_line,
+                scroll_x,
+                width_cells,
+                left.min(line_len),
+                right.min(line_len),
+            );
+            if right > line_len {
+                let line_cells: usize = source_line
+                    .graphemes(true)
+                    .map(|grapheme| cell_width(grapheme, TabPolicy::Fixed(4)) as usize)
+                    .sum();
+                mark_visible_cell_range(
+                    &mut cells,
+                    line_cells + left.saturating_sub(line_len),
+                    line_cells + (right - line_len),
+                    scroll_x,
+                );
+            }
+            cells
         }
         redox_core::VisualModeKind::Char => {
             let (start, end) = selection.ordered();

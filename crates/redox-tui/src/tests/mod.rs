@@ -2280,6 +2280,30 @@ fn visual_selection_visible_cells_limit_highlights_to_contents() {
             );
         }
     }
+
+    // Block columns are characters: a tab or wide character widens its column, and the block
+    // stays one cell per column past the end of a short line.
+    let block = redox_core::Selection::new(redox_core::Pos::new(0, 1), redox_core::Pos::new(2, 2));
+    for (text, selected) in [("\tabc", 4..6), ("😁ab", 2..4), ("a", 1..3), ("", 1..3)] {
+        let buffer = redox_core::TextBuffer::from_text(&format!("alpha\n{text}\nomega\n"));
+        let cells = visual_selection_visible_cells(
+            &buffer,
+            text,
+            block,
+            redox_core::VisualModeKind::Block,
+            1,
+            0,
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            cells,
+            (0..8)
+                .map(|cell| selected.contains(&cell))
+                .collect::<Vec<_>>(),
+            "block over {text:?}"
+        );
+    }
 }
 
 #[test]
