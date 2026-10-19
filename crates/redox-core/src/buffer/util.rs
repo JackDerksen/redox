@@ -5,12 +5,11 @@
 
 use super::{Pos, TextBuffer};
 
-/// Returns whether a character is considered part of a "word".
-///
-/// This is intentionally ASCII-focused: `[A-Za-z0-9_]`.
+/// Returns whether a character is considered part of a "word": a letter or digit in any
+/// script, or `_`.
 #[inline]
 pub(crate) fn is_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
+    ch.is_alphanumeric() || ch == '_'
 }
 
 /// Returns the smaller of two positions after clamping them into the buffer.

@@ -1,7 +1,7 @@
 //! Word-motion helpers for `TextBuffer`.
 //!
 //! Vim-like lowercase word motions use three character classes:
-//! - keyword chars (`[A-Za-z0-9_]`)
+//! - keyword chars (letters and digits in any script, and `_`)
 //! - whitespace
 //! - symbols (any non-whitespace, non-keyword char)
 //!

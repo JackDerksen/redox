@@ -272,31 +272,131 @@ fn motions_compose_counts_and_operator_ranges() {
 
 #[test]
 fn word_motions_follow_vim_word_classes_and_buffer_edges() {
-    // `foo.bar` is three words but one WORD.
+    // `foo.bar` is three words but one WORD, and letters in any script are word characters.
     let buffer = TextBuffer::from_text("foo.bar  baz\n\nqux");
+    let accented = TextBuffer::from_text("héllo wörld_2 日本語");
     let cases = [
-        (Pos::new(0, 0), Motion::WordStartAfter, Pos::new(0, 3)),
-        (Pos::new(0, 3), Motion::WordStartAfter, Pos::new(0, 4)),
-        (Pos::new(0, 4), Motion::WordStartAfter, Pos::new(0, 9)),
-        (Pos::new(1, 0), Motion::WordStartAfter, Pos::new(2, 0)),
-        (Pos::new(0, 0), Motion::BigWordStartAfter, Pos::new(0, 9)),
-        (Pos::new(0, 0), Motion::WordEndAfter, Pos::new(0, 2)),
-        (Pos::new(0, 2), Motion::WordEndAfter, Pos::new(0, 3)),
-        (Pos::new(0, 3), Motion::WordEndAfter, Pos::new(0, 6)),
-        (Pos::new(0, 0), Motion::BigWordEndAfter, Pos::new(0, 6)),
-        (Pos::new(0, 9), Motion::WordStartBefore, Pos::new(0, 4)),
-        (Pos::new(0, 4), Motion::WordStartBefore, Pos::new(0, 3)),
-        (Pos::new(0, 9), Motion::BigWordStartBefore, Pos::new(0, 0)),
-        (Pos::new(0, 9), Motion::WordEndBefore, Pos::new(0, 6)),
+        (
+            &buffer,
+            Pos::new(0, 0),
+            Motion::WordStartAfter,
+            Pos::new(0, 3),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 3),
+            Motion::WordStartAfter,
+            Pos::new(0, 4),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 4),
+            Motion::WordStartAfter,
+            Pos::new(0, 9),
+        ),
+        (
+            &buffer,
+            Pos::new(1, 0),
+            Motion::WordStartAfter,
+            Pos::new(2, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 0),
+            Motion::BigWordStartAfter,
+            Pos::new(0, 9),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 0),
+            Motion::WordEndAfter,
+            Pos::new(0, 2),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 2),
+            Motion::WordEndAfter,
+            Pos::new(0, 3),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 3),
+            Motion::WordEndAfter,
+            Pos::new(0, 6),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 0),
+            Motion::BigWordEndAfter,
+            Pos::new(0, 6),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 9),
+            Motion::WordStartBefore,
+            Pos::new(0, 4),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 4),
+            Motion::WordStartBefore,
+            Pos::new(0, 3),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 9),
+            Motion::BigWordStartBefore,
+            Pos::new(0, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 9),
+            Motion::WordEndBefore,
+            Pos::new(0, 6),
+        ),
         // The buffer's ends are hard stops.
-        (Pos::new(0, 0), Motion::WordStartBefore, Pos::new(0, 0)),
-        (Pos::new(2, 2), Motion::WordEndAfter, Pos::new(2, 2)),
+        (
+            &buffer,
+            Pos::new(0, 0),
+            Motion::WordStartBefore,
+            Pos::new(0, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(2, 2),
+            Motion::WordEndAfter,
+            Pos::new(2, 2),
+        ),
+        (
+            &accented,
+            Pos::new(0, 0),
+            Motion::WordStartAfter,
+            Pos::new(0, 6),
+        ),
+        (
+            &accented,
+            Pos::new(0, 0),
+            Motion::WordEndAfter,
+            Pos::new(0, 4),
+        ),
+        (
+            &accented,
+            Pos::new(0, 6),
+            Motion::WordEndAfter,
+            Pos::new(0, 12),
+        ),
+        (
+            &accented,
+            Pos::new(0, 14),
+            Motion::WordStartBefore,
+            Pos::new(0, 6),
+        ),
     ];
 
     let failures: Vec<_> = cases
         .into_iter()
-        .filter_map(|(from, motion, expected)| {
-            let actual = apply_motion(&buffer, from, motion);
+        .filter_map(|(buffer, from, motion, expected)| {
+            let actual = apply_motion(buffer, from, motion);
             (actual != expected)
                 .then(|| format!("{motion:?} from {from:?}: {actual:?}, expected {expected:?}"))
         })
@@ -326,6 +426,14 @@ fn text_objects_handle_whitespace_nesting_escapes_and_missing_pairs() {
             TextObjectKind::Word,
             1,
             Some(" bar"),
+        ),
+        (
+            "ça, été",
+            Pos::new(0, 5),
+            inner,
+            TextObjectKind::Word,
+            1,
+            Some("été"),
         ),
         (
             "foo.bar baz",
