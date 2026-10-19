@@ -6868,7 +6868,7 @@ fn text_object_change_inner_parentheses_can_jump_to_same_line_pair() {
 }
 
 #[test]
-fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
+fn visual_text_object_inner_word_selects_the_blanks_under_the_cursor() {
     let (mut state, _path) = scratch_state("alpha  beta\n");
     let id = state.session.active_id();
     state
@@ -6894,14 +6894,14 @@ fn visual_text_object_inner_word_replaces_selection_and_jumps_to_word() {
 
     let (selection, mode) = state.active_visual_selection().expect("visual selection");
     assert_eq!(mode, VisualModeKind::Char);
-    assert_eq!(selection.anchor, Pos::new(0, 7));
-    assert_eq!(selection.cursor, Pos::new(0, 10));
+    assert_eq!(selection.anchor, Pos::new(0, 5));
+    assert_eq!(selection.cursor, Pos::new(0, 6));
     assert_eq!(
         state
             .session
             .active_buffer()
             .visual_selection_text(selection, mode),
-        "beta"
+        "  "
     );
 }
 

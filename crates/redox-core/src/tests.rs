@@ -441,6 +441,48 @@ fn text_objects_handle_whitespace_nesting_escapes_and_missing_pairs() {
     let quotes = TextObjectKind::Delimiter(DelimiterKind::DoubleQuotes);
     let (inner, around) = (TextObjectScope::Inner, TextObjectScope::Around);
     let cases = [
+        // On blanks, `iw` selects them and `aw` or a count takes in the next word; on
+        // punctuation, `iw` selects the punctuation.
+        (
+            "a  b",
+            Pos::new(0, 1),
+            inner,
+            TextObjectKind::Word,
+            1,
+            Some("  "),
+        ),
+        (
+            "a  b",
+            Pos::new(0, 1),
+            around,
+            TextObjectKind::Word,
+            1,
+            Some("  b"),
+        ),
+        (
+            "a  b c",
+            Pos::new(0, 1),
+            inner,
+            TextObjectKind::Word,
+            2,
+            Some("  b"),
+        ),
+        (
+            "a  b.c d",
+            Pos::new(0, 1),
+            around,
+            TextObjectKind::BigWord,
+            1,
+            Some("  b.c"),
+        ),
+        (
+            "foo.bar baz",
+            Pos::new(0, 3),
+            inner,
+            TextObjectKind::Word,
+            1,
+            Some("."),
+        ),
         // `aw` takes trailing whitespace, or leading whitespace for the last word.
         (
             "foo bar baz",
