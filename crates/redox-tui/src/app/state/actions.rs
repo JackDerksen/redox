@@ -1310,8 +1310,8 @@ fn action_modes(action: &InputAction) -> Option<&'static [EditorMode]> {
         | A::ChangeSelectionCase { .. }
         | A::MoveVisualSelectionUp { .. }
         | A::MoveVisualSelectionDown { .. }
-        | A::IndentVisualSelection { .. } => VISUAL,
-        A::OutdentVisualSelection { .. } => &[M::Visual, M::VisualLine],
+        | A::IndentVisualSelection { .. }
+        | A::OutdentVisualSelection { .. } => VISUAL,
         A::ToggleDiagnosticsList | A::TriggerCodeActions => &[M::Normal, M::DiagnosticsList],
         A::CommandChar(_)
         | A::CommandBackspace

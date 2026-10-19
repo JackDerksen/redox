@@ -7840,32 +7840,29 @@ fn visual_line_moves_preserve_eof_boundaries() {
 }
 #[test]
 fn visual_tab_and_shift_tab_indent_and_outdent_selection() {
-    let (mut state, _path) = scratch_state("one\ntwo\n");
-    let id = state.session.active_id();
-    state
-        .views
-        .get_mut(&id)
-        .expect("missing view")
-        .cursor
-        .cursor = Pos::new(0, 0);
-    state.apply_input(InputAction::SetMode(EditorMode::VisualLine), 80, 24);
-    state.apply_input(
-        InputAction::Motion {
-            motion: Motion::Down,
-            count: 1,
-        },
-        80,
-        24,
-    );
+    for mode in [
+        EditorMode::Visual,
+        EditorMode::VisualLine,
+        EditorMode::VisualBlock,
+    ] {
+        let (mut state, _path) = scratch_state("one\ntwo\n");
+        state.apply_input(InputAction::SetMode(mode), 80, 24);
+        apply_keys(&mut state, "j");
 
-    state.apply_input(InputAction::IndentVisualSelection { count: 1 }, 80, 24);
-    assert_eq!(
-        state.session.active_buffer().to_string(),
-        "    one\n    two\n"
-    );
+        state.apply_input(InputAction::IndentVisualSelection { count: 1 }, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "    one\n    two\n",
+            "{mode:?}"
+        );
 
-    state.apply_input(InputAction::OutdentVisualSelection { count: 1 }, 80, 24);
-    assert_eq!(state.session.active_buffer().to_string(), "one\ntwo\n");
+        state.apply_input(InputAction::OutdentVisualSelection { count: 1 }, 80, 24);
+        assert_eq!(
+            state.session.active_buffer().to_string(),
+            "one\ntwo\n",
+            "{mode:?}"
+        );
+    }
 }
 
 #[test]
