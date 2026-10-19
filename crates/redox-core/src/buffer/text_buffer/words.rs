@@ -6,7 +6,8 @@
 //! - symbols (any non-whitespace, non-keyword char)
 //!
 //! This setup lets `w`/`b`/`e` visit punctuation such as `(`, `)`, `/`, `-`, etc.
-//! Uppercase `W`/`B`/`E` treat each non-whitespace run as one WORD.
+//! Uppercase `W`/`B`/`E` treat each non-whitespace run as one WORD. As in Vim, `w`/`b`/`W`/`B`
+//! also stop on empty lines.
 
 use super::super::util::is_word_char;
 use super::TextBuffer;
@@ -71,6 +72,9 @@ impl TextBuffer {
             && classify(self.rope.char(character_index - 1), big_word) == CharClass::Whitespace
         {
             character_index -= 1;
+            if self.is_empty_line_start(character_index) {
+                return self.char_to_pos(character_index);
+            }
         }
 
         if character_index == 0 {
@@ -179,12 +183,23 @@ impl TextBuffer {
             }
         }
 
+        let start_index = self.pos_to_char(pos);
         while character_index < character_count
             && classify(self.rope.char(character_index), big_word) == CharClass::Whitespace
         {
+            if character_index > start_index && self.is_empty_line_start(character_index) {
+                break;
+            }
             character_index += 1;
         }
 
         self.char_to_pos(character_index)
+    }
+
+    /// Whether `character_index` starts a line with no characters.
+    fn is_empty_line_start(&self, character_index: usize) -> bool {
+        let at_line_break =
+            character_index == self.len_chars() || self.rope.char(character_index) == '\n';
+        at_line_break && (character_index == 0 || self.rope.char(character_index - 1) == '\n')
     }
 }

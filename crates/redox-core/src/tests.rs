@@ -294,11 +294,42 @@ fn word_motions_follow_vim_word_classes_and_buffer_edges() {
             Motion::WordStartAfter,
             Pos::new(0, 9),
         ),
+        // Empty lines count as words for `w` and `b`.
+        (
+            &buffer,
+            Pos::new(0, 9),
+            Motion::WordStartAfter,
+            Pos::new(1, 0),
+        ),
         (
             &buffer,
             Pos::new(1, 0),
             Motion::WordStartAfter,
             Pos::new(2, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(0, 9),
+            Motion::BigWordStartAfter,
+            Pos::new(1, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(2, 0),
+            Motion::WordStartBefore,
+            Pos::new(1, 0),
+        ),
+        (
+            &buffer,
+            Pos::new(1, 0),
+            Motion::WordStartBefore,
+            Pos::new(0, 9),
+        ),
+        (
+            &buffer,
+            Pos::new(2, 0),
+            Motion::BigWordStartBefore,
+            Pos::new(1, 0),
         ),
         (
             &buffer,

@@ -6469,7 +6469,7 @@ fn visual_mode_tracks_anchor_and_cursor_selection() {
 #[test]
 fn normal_mode_commands_handle_buffer_and_line_edges() {
     // (text, cursor, keys, buffer after, cursor after)
-    let cases: [(&str, Pos, &str, &str, Option<Pos>); 25] = [
+    let cases: &[(&str, Pos, &str, &str, Option<Pos>)] = &[
         // An empty buffer has nothing to move over, delete, paste or undo.
         ("", Pos::zero(), "G", "", Some(Pos::zero())),
         ("", Pos::zero(), "dd", "", Some(Pos::zero())),
@@ -6519,6 +6519,14 @@ fn normal_mode_commands_handle_buffer_and_line_edges() {
             "foo ",
             Some(Pos::new(0, 3)),
         ),
+        // `dw` on a line's last word stops at the line end, even before an empty line.
+        (
+            "baz\n\nqux\n",
+            Pos::zero(),
+            "dw",
+            "\n\nqux\n",
+            Some(Pos::zero()),
+        ),
         ("abc", Pos::new(0, 2), "e", "abc", Some(Pos::new(0, 2))),
         ("a", Pos::zero(), "ob\u{1b}", "a\nb", Some(Pos::new(1, 0))),
         // Unicode case changes.
@@ -6542,7 +6550,7 @@ fn normal_mode_commands_handle_buffer_and_line_edges() {
     ];
 
     let mut failures = Vec::new();
-    for (text, cursor, keys, expected, expected_cursor) in cases {
+    for &(text, cursor, keys, expected, expected_cursor) in cases {
         let (mut state, _path) = scratch_state(text);
         let id = state.session.active_id();
         state
@@ -6572,7 +6580,7 @@ fn normal_mode_commands_handle_buffer_and_line_edges() {
 #[test]
 fn insert_mode_edits_handle_buffer_and_line_edges() {
     // (text, cursor, keys, buffer after, cursor after); `\u{8}` is Backspace, `\r` is Enter.
-    let cases: [(&str, Pos, &str, &str, Option<Pos>); 5] = [
+    let cases: &[(&str, Pos, &str, &str, Option<Pos>)] = &[
         ("abc", Pos::zero(), "i\u{8}\u{1b}", "abc", Some(Pos::zero())),
         ("a\nb", Pos::new(1, 0), "i\u{8}\u{1b}", "ab", None),
         (
@@ -6593,7 +6601,7 @@ fn insert_mode_edits_handle_buffer_and_line_edges() {
     ];
 
     let mut failures = Vec::new();
-    for (text, cursor, keys, expected, expected_cursor) in cases {
+    for &(text, cursor, keys, expected, expected_cursor) in cases {
         let (mut state, _path) = scratch_state(text);
         let id = state.session.active_id();
         state
