@@ -1,7 +1,9 @@
+use crate::ui::helpers::text_width;
 use crate::ui::text_style::TextStyle;
+use crate::ui::widgets::popup::selection_aware_color;
 use std::ops::Range;
 
-use minui::{TabPolicy, Window, cell_width};
+use minui::Window;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{CompletionEntry, CompletionPopup};
@@ -338,20 +340,6 @@ fn completion_keyword_role(kind: Option<&str>) -> SyntaxRole {
         Some("module") => SyntaxRole::KeywordImport,
         _ => SyntaxRole::VariableParameter,
     }
-}
-
-fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
-    if is_selected {
-        base.selected(selected)
-    } else {
-        base
-    }
-}
-
-fn text_width(text: &str) -> usize {
-    text.chars()
-        .map(|ch| cell_width(&ch.to_string(), TabPolicy::Fixed(4)) as usize)
-        .sum()
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
+use crate::ui::helpers::text_width;
 use crate::ui::text_style::TextStyle;
+use crate::ui::widgets::popup::{draw_section_header, selection_aware_color};
 use minui::widgets::WindowView;
-use minui::{TabPolicy, Window, cell_width};
-use unicode_segmentation::UnicodeSegmentation;
+use minui::{TabPolicy, Window};
 
 use crate::app::state::{
     CodeActionPopup, DiagnosticSeverity, DiagnosticsCodeActionsPane, DiagnosticsPopup,
@@ -868,19 +869,6 @@ fn draw_code_action_entries(
     Ok(mouse)
 }
 
-fn draw_section_header(
-    window: &mut WindowView<'_>,
-    row: u16,
-    text: &str,
-    colors: TextStyle,
-) -> minui::Result<u16> {
-    if row >= window.height {
-        return Ok(row);
-    }
-    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
-    Ok(row.saturating_add(1))
-}
-
 fn severity_glyph(severity: DiagnosticSeverity, icons_enabled: bool) -> &'static str {
     let glyphs = if icons_enabled {
         DIAGNOSTIC_ICONS
@@ -910,20 +898,6 @@ fn severity_color(style: &UiStyle, severity: DiagnosticSeverity) -> TextStyle {
             .hint
             .with_colors(style.diagnostic_inline.hint.fg, popup_bg),
     }
-}
-
-fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
-    if is_selected {
-        base.selected(selected)
-    } else {
-        base
-    }
-}
-
-fn text_width(text: &str) -> usize {
-    text.graphemes(true)
-        .map(|grapheme| (cell_width(grapheme, TabPolicy::Fixed(4)) as usize).max(1))
-        .sum()
 }
 
 #[cfg(test)]

@@ -4301,7 +4301,7 @@ mod tests {
         state.mode = EditorMode::Insert;
 
         state.apply_input(
-            crate::input::InputAction::SetMode(crate::input::InputMode::Normal),
+            crate::input::InputAction::SetMode(crate::mode::EditorMode::Normal),
             80,
             24,
         );
@@ -5076,7 +5076,7 @@ mod regressions {
 
     #[test]
     fn replay_completion_keeps_text_and_snippets_without_repeating_imports() {
-        use crate::input::{InputAction, InputMode};
+        use crate::input::InputAction;
         let mut state = state("head\n\n\nkeep\n", Pos::new(2, 0));
         state.apply_input(InputAction::InsertChar('f'), 80, 24);
         let items = parse_completion_response(&json!({"result":[{
@@ -5103,7 +5103,7 @@ mod regressions {
         state.apply_input(InputAction::CompletionAccept, 80, 24);
         state.apply_input(InputAction::InsertChar('x'), 80, 24);
         state.apply_input(InputAction::SnippetNext, 80, 24);
-        state.apply_input(InputAction::SetMode(InputMode::Normal), 80, 24);
+        state.apply_input(InputAction::SetMode(EditorMode::Normal), 80, 24);
         let completed = state.session.active_buffer().to_string();
         assert_eq!(completed, "use foo;\nhead\n\nfoo(x)\nkeep\n");
         state
@@ -5176,7 +5176,7 @@ mod regressions {
         let placeholder = &state.lsp.active_snippet.as_ref().unwrap().placeholders[0];
         assert_eq!(placeholder.end_char - placeholder.start_char, 5);
         state.apply_input(
-            crate::input::InputAction::SetMode(crate::input::InputMode::Normal),
+            crate::input::InputAction::SetMode(crate::mode::EditorMode::Normal),
             80,
             24,
         );

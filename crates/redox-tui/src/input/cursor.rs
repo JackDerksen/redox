@@ -1,5 +1,6 @@
 //! TUI cursor and viewport projection over core motion semantics.
 
+use crate::ui::helpers::cell_width_for_char;
 use minui::{TabPolicy, cell_width, window::CursorSpec};
 use redox_core::motion::{Motion, apply_motion_n};
 use redox_core::{Pos, TextBuffer};
@@ -508,13 +509,6 @@ fn cell_width_until_char_col(line: &str, cursor_col_chars: usize, tab_policy: Ta
         }
     }
     width
-}
-
-#[inline]
-fn cell_width_for_char(ch: char, tab_policy: TabPolicy) -> usize {
-    let mut utf8_buffer = [0_u8; 4];
-    let encoded = ch.encode_utf8(&mut utf8_buffer);
-    cell_width(encoded, tab_policy) as usize
 }
 
 #[cfg(test)]

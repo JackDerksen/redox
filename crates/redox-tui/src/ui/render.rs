@@ -3,6 +3,7 @@
 //! Rendering keeps allocations bounded to visible rows, clips by terminal cell
 //! width, and leaves long lines unwrapped.
 
+use crate::ui::helpers::cell_width_for_char;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -422,7 +423,7 @@ fn render_line_window_fast(
     let mut output = String::new();
 
     for character in buffer.chars(range) {
-        let width = cell_width_for_char(character);
+        let width = cell_width_for_char(character, TabPolicy::Fixed(4));
 
         if skipped_cells < scroll_x_cells {
             skipped_cells = skipped_cells.saturating_add(width);
@@ -446,13 +447,6 @@ fn render_line_window_fast(
     }
 
     output
-}
-
-#[inline]
-fn cell_width_for_char(character: char) -> usize {
-    let mut utf8_buffer = [0_u8; 4];
-    let encoded = character.encode_utf8(&mut utf8_buffer);
-    cell_width(encoded, TabPolicy::Fixed(4)) as usize
 }
 
 #[cfg(test)]

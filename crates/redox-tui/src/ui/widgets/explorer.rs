@@ -1,7 +1,8 @@
 use crate::ui::overlays::{LineDecorations, YankHighlight};
 use crate::ui::render::LineViewport;
 use crate::ui::text_style::TextStyle;
-use crate::{draw_line_numbers, line_number_gutter_width};
+use crate::view::gutter::draw_line_numbers;
+use crate::view::gutter::line_number_gutter_width;
 use std::path::Path;
 
 use minui::widgets::{Widget, WindowView};
@@ -203,7 +204,7 @@ pub(crate) fn draw_explorer_popup_view(
             continue;
         }
         if let Some(highlight) = one_shot_highlight
-            && let Some(cells) = crate::visual_selection_visible_cells(
+            && let Some(cells) = crate::view::cells::visual_selection_visible_cells(
                 state.session.active_buffer(),
                 source_line,
                 highlight.selection,
@@ -213,7 +214,7 @@ pub(crate) fn draw_explorer_popup_view(
                 inner_w.saturating_sub(content_x) as usize,
             )
         {
-            crate::draw_line_with_highlights(
+            crate::view::line::draw_line_with_highlights(
                 &mut view,
                 LineViewport {
                     row: row as u16,
@@ -223,7 +224,7 @@ pub(crate) fn draw_explorer_popup_view(
                 },
                 source_line,
                 text_colors,
-                crate::LineHighlights {
+                crate::view::line::LineHighlights {
                     color_column: None,
                     layers: &[(&cells, row_style.text.bg, None)],
                     empty_line: true,

@@ -6,7 +6,7 @@ use redox_core::{
 };
 
 use super::{EditorMode, EditorState};
-use crate::input::{InputAction, InputMode, InsertKind, OperatorTarget, TextObjectOperator};
+use crate::input::{InputAction, InsertKind, OperatorTarget, TextObjectOperator};
 
 const MAX_PLAYBACK_ACTIONS: usize = 10_000;
 const MAX_PLAYBACK_DEPTH: usize = 32;
@@ -211,7 +211,7 @@ impl EditorState {
                 if self.has_visible_completion_popup() {
                     InputAction::None
                 } else {
-                    InputAction::SetMode(InputMode::Normal)
+                    InputAction::SetMode(EditorMode::Normal)
                 }
             }
             InputAction::CompletionAccept if was_insert && !self.has_visible_completion_popup() => {
@@ -382,12 +382,12 @@ impl EditorState {
         }
         if !matches!(
             pending.change.actions.last(),
-            Some(InputAction::SetMode(InputMode::Normal))
+            Some(InputAction::SetMode(EditorMode::Normal))
         ) {
             pending
                 .change
                 .actions
-                .push(InputAction::SetMode(InputMode::Normal));
+                .push(InputAction::SetMode(EditorMode::Normal));
         }
         self.replay.last_change = Some(pending.change);
     }
@@ -426,7 +426,7 @@ impl EditorState {
                 for _ in 0..change.repetitions {
                     actions.extend_from_slice(body);
                 }
-                actions.push(InputAction::SetMode(InputMode::Normal));
+                actions.push(InputAction::SetMode(EditorMode::Normal));
                 self.play_actions(&actions, 1, None, width, height);
             } else {
                 self.set_status("repeat count exceeds replay limit");
@@ -582,7 +582,7 @@ fn is_insert_action(action: &InputAction) -> bool {
             | InputAction::Paste(_)
             | InputAction::ApplyRecordedInsert { .. }
             | InputAction::Motion { .. }
-            | InputAction::SetMode(InputMode::Normal)
+            | InputAction::SetMode(EditorMode::Normal)
     )
 }
 
@@ -590,7 +590,7 @@ fn starts_change(action: &InputAction) -> bool {
     matches!(
         action,
         InputAction::EnterInsert(_)
-            | InputAction::SetMode(InputMode::Insert)
+            | InputAction::SetMode(EditorMode::Insert)
             | InputAction::OpenLineBelow
             | InputAction::OpenLineAbove
             | InputAction::JoinLineBelow

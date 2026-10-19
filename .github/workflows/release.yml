@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Match the stable tag to both binary packages
+      - name: Match the stable tag to the editor and TUI packages
         run: |
           python3 - <<'PY'
           import os

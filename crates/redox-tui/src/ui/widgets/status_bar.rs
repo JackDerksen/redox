@@ -1,8 +1,8 @@
+use crate::ui::helpers::visual_column;
 use crate::ui::text_style::TextStyle;
 use minui::widgets::Widget;
-use minui::{Color, Result, TabPolicy, Window, cell_width};
+use minui::{Color, Result, Window};
 use redox_core::BufferLoadPhase;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{EditorMode, EditorState};
 use crate::ui::helpers::clip_path_with_filename;
@@ -617,28 +617,6 @@ pub fn build_editor_status_bar(state: &EditorState, style: &UiStyle) -> EditorSt
                     .with_min_width(scroll_width),
             ],
         ))
-}
-
-fn visual_column(line: &str, char_col: usize) -> usize {
-    if char_col == 0 {
-        return 0;
-    }
-
-    let mut width = 0usize;
-    let mut chars_seen = 0usize;
-    for grapheme in line.graphemes(true) {
-        let grapheme_chars = grapheme.chars().count();
-        if chars_seen + grapheme_chars > char_col {
-            return width;
-        }
-        width += cell_width(grapheme, TabPolicy::Fixed(4)) as usize;
-        chars_seen += grapheme_chars;
-        if chars_seen == char_col {
-            return width;
-        }
-    }
-
-    width
 }
 
 fn status_bar_mode_presentation(

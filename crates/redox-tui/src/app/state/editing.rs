@@ -1,3 +1,4 @@
+use crate::ui::syntax::leading_indent;
 use redox_core::{
     Pos, Selection, SelectionIncrement, TextObjectSpec, VisualModeKind, VisualSelectionEditPlan,
     motion::{Motion, apply_motion_for_operator, apply_motion_n},
@@ -103,8 +104,9 @@ impl EditorState {
 
     pub(super) fn register_kind_from_visual_mode(mode: VisualModeKind) -> RegisterKind {
         match mode {
-            VisualModeKind::Line => RegisterKind::LineWise,
-            VisualModeKind::Char | VisualModeKind::Block => RegisterKind::CharWise,
+            VisualModeKind::Char => RegisterKind::Char,
+            VisualModeKind::Line => RegisterKind::Line,
+            VisualModeKind::Block => RegisterKind::Block,
         }
     }
 
@@ -282,7 +284,7 @@ impl EditorState {
                         return Some(OperatorTargetPlan {
                             delete_ranges: vec![(start, end)],
                             text: buffer.line_span_text_linewise_register(start_line, end_line),
-                            register_kind: RegisterKind::LineWise,
+                            register_kind: RegisterKind::Line,
                             preserve_blank_line_on_change: true,
                             yank_highlight: Some((
                                 Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
@@ -312,7 +314,7 @@ impl EditorState {
                     return Some(OperatorTargetPlan {
                         delete_ranges: vec![(start, end)],
                         text: buffer.slice_pos_range(start, end),
-                        register_kind: RegisterKind::CharWise,
+                        register_kind: RegisterKind::Char,
                         preserve_blank_line_on_change: false,
                         yank_highlight: Some((
                             Selection::new(start, inclusive_end),
@@ -361,7 +363,7 @@ impl EditorState {
                 (!selection.is_empty()).then(|| OperatorTargetPlan {
                     delete_ranges: vec![(cursor, end)],
                     text: buffer.slice_pos_range(cursor, end),
-                    register_kind: RegisterKind::CharWise,
+                    register_kind: RegisterKind::Char,
                     preserve_blank_line_on_change: false,
                     yank_highlight: {
                         let (start, end) = selection.ordered();
@@ -377,7 +379,7 @@ impl EditorState {
                 (start != end).then(|| OperatorTargetPlan {
                     delete_ranges: vec![(start, end)],
                     text: buffer.slice_pos_range(start, end),
-                    register_kind: RegisterKind::CharWise,
+                    register_kind: RegisterKind::Char,
                     preserve_blank_line_on_change: false,
                     yank_highlight: Some((
                         Selection::new(
@@ -496,14 +498,14 @@ impl EditorState {
                 let start = plan.start().unwrap_or(cursor);
                 // Linewise targets keep the column, like Vim's `gUU` and `gUj`.
                 let new_cursor = match plan.register_kind {
-                    RegisterKind::LineWise if start.line == cursor.line => cursor,
-                    RegisterKind::LineWise => Pos::new(
+                    RegisterKind::Line if start.line == cursor.line => cursor,
+                    RegisterKind::Line => Pos::new(
                         start.line,
                         self.session
                             .active_buffer()
                             .line_first_non_whitespace_col(start.line),
                     ),
-                    RegisterKind::CharWise => start,
+                    RegisterKind::Char | RegisterKind::Block => start,
                 };
                 let case = if operator == TextObjectOperator::Uppercase {
                     CaseChange::Upper
@@ -598,7 +600,7 @@ impl EditorState {
         };
 
         self.private_register = std::mem::take(&mut cut_text);
-        self.private_register_kind = RegisterKind::LineWise;
+        self.private_register_kind = RegisterKind::Line;
 
         let view = self.views.entry(active_id).or_default();
         {
@@ -633,7 +635,7 @@ impl EditorState {
         };
 
         self.private_register = text;
-        self.private_register_kind = RegisterKind::LineWise;
+        self.private_register_kind = RegisterKind::Line;
         self.set_one_shot_highlight(
             Selection::new(Pos::new(start_line, 0), Pos::new(end_line, 0)),
             VisualModeKind::Line,
@@ -668,13 +670,13 @@ impl EditorState {
             let (start_pos, end_pos) = buffer.line_span_pos_range(start_line, end_line);
             let exact_text = buffer.line_span_text(start_line, end_line);
             let text = buffer.line_span_text_linewise_register(start_line, end_line);
-            let indent = leading_line_indent(&buffer.line_string(start_line)).to_string();
+            let indent = leading_indent(&buffer.line_string(start_line)).to_string();
             let line_ending = trailing_line_ending(&exact_text).to_string();
             (start_pos, end_pos, text, indent, line_ending)
         };
 
         self.private_register = std::mem::take(&mut cut_text);
-        self.private_register_kind = RegisterKind::LineWise;
+        self.private_register_kind = RegisterKind::Line;
 
         let view = self.views.entry(active_id).or_default();
         {
@@ -700,6 +702,11 @@ impl EditorState {
         text_vh: usize,
     ) {
         if !self.ensure_active_fully_loaded_for_edit_or_save() {
+            return;
+        }
+        // Like Vim, `x` never deletes a line break, so it does nothing on an empty line.
+        let cursor = self.active_cursor_pos();
+        if cursor.col >= self.session.active_buffer().line_len_chars(cursor.line) {
             return;
         }
         let before = self.capture_active_undo_checkpoint();
@@ -1171,11 +1178,11 @@ impl EditorState {
         let replacements = if closing.is_empty() {
             let uncomment = lines
                 .iter()
-                .all(|(_, text)| text[leading_line_indent(text).len()..].starts_with(opening));
+                .all(|(_, text)| text[leading_indent(text).len()..].starts_with(opening));
             lines
                 .iter()
                 .map(|(line, text)| {
-                    let indent = leading_line_indent(text);
+                    let indent = leading_indent(text);
                     let content = &text[indent.len()..];
                     let replacement = if uncomment {
                         let content = &content[opening.len()..];
@@ -1192,7 +1199,7 @@ impl EditorState {
                 .collect::<Vec<_>>()
         } else {
             let (last_line, last_text) = lines.last().expect("nonempty selection");
-            let start = Pos::new(*first_line, leading_line_indent(first_text).chars().count());
+            let start = Pos::new(*first_line, leading_indent(first_text).chars().count());
             let end = Pos::new(*last_line, last_text.trim_end().chars().count());
             let source = buffer.slice_pos_range(start, end);
             if let Some(content) = uncomment_paired_content(&source, opening, closing) {
@@ -1200,7 +1207,7 @@ impl EditorState {
             } else if let Some(replacements) = lines
                 .iter()
                 .map(|(line, text)| {
-                    let indent = leading_line_indent(text);
+                    let indent = leading_indent(text);
                     let content = uncomment_paired_content(
                         text[indent.len()..].trim_end(),
                         opening,
@@ -1342,13 +1349,18 @@ impl EditorState {
         let before = self.capture_active_undo_checkpoint();
 
         let text = self.private_register.clone();
+        let kind = self.private_register_kind;
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        let linewise = matches!(self.private_register_kind, RegisterKind::LineWise);
 
         {
             let buffer = self.session.active_buffer_mut();
-            view.cursor.cursor = buffer.paste_before(view.cursor.cursor, &text, linewise);
+            view.cursor.cursor = match kind {
+                RegisterKind::Block => buffer.paste_block(view.cursor.cursor, &text, false),
+                RegisterKind::Char | RegisterKind::Line => {
+                    buffer.paste_before(view.cursor.cursor, &text, kind == RegisterKind::Line)
+                }
+            };
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
@@ -1606,13 +1618,18 @@ impl EditorState {
         let before = self.capture_active_undo_checkpoint();
 
         let text = self.private_register.clone();
+        let kind = self.private_register_kind;
         let active_id = self.session.active_id();
         let view = self.views.entry(active_id).or_default();
-        let linewise = matches!(self.private_register_kind, RegisterKind::LineWise);
 
         {
             let buffer = self.session.active_buffer_mut();
-            view.cursor.cursor = buffer.paste_after(view.cursor.cursor, &text, linewise);
+            view.cursor.cursor = match kind {
+                RegisterKind::Block => buffer.paste_block(view.cursor.cursor, &text, true),
+                RegisterKind::Char | RegisterKind::Line => {
+                    buffer.paste_after(view.cursor.cursor, &text, kind == RegisterKind::Line)
+                }
+            };
             view.cursor
                 .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
         }
@@ -1675,14 +1692,6 @@ fn uncomment_paired_content<'source>(
     }
     let content = content.strip_prefix(' ').unwrap_or(content);
     Some(content.strip_suffix(' ').unwrap_or(content))
-}
-
-fn leading_line_indent(text: &str) -> &str {
-    let end = text
-        .char_indices()
-        .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))
-        .unwrap_or(text.len());
-    &text[..end]
 }
 
 fn trailing_line_ending(text: &str) -> &str {

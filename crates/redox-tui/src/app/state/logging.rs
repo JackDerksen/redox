@@ -628,36 +628,60 @@ mod tests {
         assert!(state.status_msg.as_ref().unwrap().contains("disabled"));
         state.event_log = Some(EventLog::open(directory.path().join("logs"), 5_000).unwrap());
         for character in "iprivate-buffer-text".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         for character in ":private-command-draft".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(
+        crate::event_loop::handle_editor_event(
             &mut state,
             &mut clipboard,
             Event::Paste("private-paste-draft".into()),
         );
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         for character in "/private-search-draft".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Escape);
         for character in "/submitted-search".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
         for character in "lh:zen".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
         state.apply_input(InputAction::SplitVertical, 80, 24);
         for character in ":log \"This bug just happened\"".chars() {
-            crate::handle_editor_event(&mut state, &mut clipboard, Event::Character(character));
+            crate::event_loop::handle_editor_event(
+                &mut state,
+                &mut clipboard,
+                Event::Character(character),
+            );
         }
-        crate::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
+        crate::event_loop::handle_editor_event(&mut state, &mut clipboard, Event::Enter);
         assert!(state.status_msg.as_ref().unwrap().starts_with("log saved:"));
         let history = recent(state.event_log.as_ref().unwrap());
         let text = serde_json::to_string(&history).unwrap();
@@ -701,7 +725,7 @@ mod tests {
 
         fs::rename(root.join("recent"), root.join("unavailable-history")).unwrap();
         fs::write(root.join("recent"), "not a directory").unwrap();
-        assert!(crate::handle_editor_event(
+        assert!(crate::event_loop::handle_editor_event(
             &mut state,
             &mut clipboard,
             Event::Character('h')

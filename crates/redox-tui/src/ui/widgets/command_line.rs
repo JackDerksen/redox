@@ -1,3 +1,4 @@
+use crate::ui::helpers::clip_text_right_to_cells;
 use minui::{TabPolicy, Window, cell_width};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -190,7 +191,9 @@ fn draw_command_line_popup_after(
         state.command_line_cursor,
         input_width as usize,
     );
-    let cursor = clamp_cursor(&state.command_line, state.command_line_cursor);
+    let cursor = state
+        .command_line
+        .floor_char_boundary(state.command_line_cursor);
     let start_byte = cursor.saturating_sub(
         clip_text_right_to_cells(&state.command_line[..cursor], cursor_offset).len(),
     );
@@ -217,7 +220,9 @@ fn draw_command_line_popup_after(
         .as_deref()
         .or_else(|| state.command_completion_suffix())
     {
-        let cursor = clamp_cursor(&state.command_line, state.command_line_cursor);
+        let cursor = state
+            .command_line
+            .floor_char_boundary(state.command_line_cursor);
         let ghost_offset = cursor_offset + command_text_width(&state.command_line[cursor..]);
         let ghost = clip_text_to_cells(suffix, (input_width as usize).saturating_sub(ghost_offset));
         if !ghost.is_empty() {
@@ -254,7 +259,7 @@ fn command_line_view(text: &str, cursor: usize, input_width: usize) -> (String, 
         return (String::new(), 0);
     }
 
-    let cursor = clamp_cursor(text, cursor);
+    let cursor = text.floor_char_boundary(cursor);
     let text_width = command_text_width(text);
     if text_width <= input_width {
         let clipped = clip_text_to_cells(text, input_width);
@@ -278,63 +283,23 @@ fn command_line_view(text: &str, cursor: usize, input_width: usize) -> (String, 
     (clipped, cursor_offset)
 }
 
-fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
-    cursor = cursor.min(text.len());
-    while cursor > 0 && !text.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    cursor
-}
-
-fn clip_text_right_to_cells(text: &str, max_cells: usize) -> String {
-    if max_cells == 0 || text.is_empty() {
-        return String::new();
-    }
-
-    let graphemes = text.graphemes(true).collect::<Vec<_>>();
-    let mut used = 0usize;
-    let mut start = graphemes.len();
-    while start > 0 {
-        let grapheme = graphemes[start - 1];
-        let grapheme_width = (cell_width(grapheme, COMMAND_TAB_POLICY) as usize).max(1);
-        if used + grapheme_width > max_cells {
-            break;
-        }
-        used += grapheme_width;
-        start -= 1;
-    }
-
-    graphemes[start..].concat()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{clip_text_right_to_cells, command_line_view};
+    use super::command_line_view;
 
     #[test]
-    fn command_line_view_keeps_short_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("wq", 2, 8);
-        assert_eq!(visible, "wq");
-        assert_eq!(cursor_offset, 2);
-    }
-
-    #[test]
-    fn command_line_view_scrolls_long_input_left_and_keeps_right_padding() {
-        let text = "abcdefghijklmnopqrstuvwxyz";
-        let (visible, cursor_offset) = command_line_view(text, text.len(), 8);
-        assert_eq!(visible, "tuvwxyz");
-        assert_eq!(cursor_offset, 7);
-    }
-
-    #[test]
-    fn command_line_view_keeps_exact_fit_input_unclipped() {
-        let (visible, cursor_offset) = command_line_view("exactfit", 8, 8);
-        assert_eq!(visible, "exactfit");
-        assert_eq!(cursor_offset, 8);
-    }
-
-    #[test]
-    fn clip_text_right_to_cells_keeps_trailing_graphemes() {
-        assert_eq!(clip_text_right_to_cells("abcdef", 3), "def");
+    fn command_line_view_scrolls_only_when_input_overflows() {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz";
+        for (text, cursor, expected, expected_offset) in [
+            ("wq", 2, "wq", 2),
+            ("exactfit", 8, "exactfit", 8),
+            (alphabet, alphabet.len(), "tuvwxyz", 7),
+        ] {
+            let (visible, cursor_offset) = command_line_view(text, cursor, 8);
+            assert_eq!(
+                (visible.as_ref(), cursor_offset),
+                (expected, expected_offset)
+            );
+        }
     }
 }

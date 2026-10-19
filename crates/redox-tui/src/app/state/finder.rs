@@ -848,8 +848,7 @@ impl EditorState {
 
     pub(super) fn finder_position_query_cursor(&mut self, cursor: usize) {
         if let Some(finder) = self.finder.as_mut() {
-            finder.query_cursor = cursor;
-            super::actions::clamp_str_cursor(&finder.query, &mut finder.query_cursor);
+            finder.query_cursor = finder.query.floor_char_boundary(cursor);
         }
     }
 

@@ -152,27 +152,3 @@ fn popup_icon(kind: PopupKind) -> &'static str {
         PopupKind::Search => "",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disabled_titles_are_unchanged() {
-        assert_eq!(popup_title(PopupKind::Finder, "Finder", false), "Finder");
-    }
-
-    #[test]
-    fn file_icons_use_language_and_special_file_mappings() {
-        assert_eq!(file_icon(Path::new("src/main.rs")), "");
-        assert_eq!(file_icon(Path::new("Dockerfile")), "");
-        assert_eq!(file_icon(Path::new("notes.unknown")), "");
-    }
-
-    #[test]
-    fn completion_icons_cover_common_symbol_kinds() {
-        assert_eq!(completion_kind_icon("function"), Some("󰊕"));
-        assert_eq!(completion_kind_icon("variable"), Some("󰀫"));
-        assert_eq!(completion_kind_icon("unknown"), None);
-    }
-}

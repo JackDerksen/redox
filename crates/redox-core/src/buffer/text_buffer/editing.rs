@@ -327,6 +327,50 @@ impl TextBuffer {
         }
     }
 
+    /// Paste a blockwise register: each `\n`-separated row goes into the same column on
+    /// successive lines, starting after the cursor char (`p`) or at it (`P`).
+    ///
+    /// As in Vim, lines too short to reach the column are padded with spaces (unless their row
+    /// is empty), rows are padded to the block's width when text follows them, and lines are
+    /// added past the end of the buffer as needed. Returns the block's top-left corner.
+    pub fn paste_block(&mut self, cursor: Pos, block: &str, after: bool) -> Pos {
+        if block.is_empty() {
+            return self.clamp_pos(cursor);
+        }
+        let top = self.clamp_line(cursor.line);
+        let line_len = self.line_len_chars(top);
+        let column = if after && cursor.col < line_len {
+            cursor.col + 1
+        } else {
+            cursor.col.min(line_len)
+        };
+        let rows: Vec<&str> = block.split('\n').collect();
+        let width = rows
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for (offset, row) in rows.iter().enumerate() {
+            let line = top + offset;
+            if line >= self.len_lines() {
+                let end = self.char_to_pos(self.len_chars());
+                self.insert(end, "\n");
+            }
+            let line_len = self.line_len_chars(line);
+            if row.is_empty() && column >= line_len {
+                continue;
+            }
+            let mut text = " ".repeat(column.saturating_sub(line_len));
+            text.push_str(row);
+            if column < line_len {
+                text.push_str(&" ".repeat(width - row.chars().count()));
+            }
+            self.insert(Pos::new(line, column.min(line_len)), &text);
+        }
+        Pos::new(top, column)
+    }
+
     /// Move a contiguous line range up by one line.
     ///
     /// Returns the moved range after the operation, or `None` when movement is

@@ -9,8 +9,8 @@ use super::resize::ResizeTarget;
 use super::{
     EditorMode, EditorState, PaneId, PaneRect, UndoTreeSurfaceRole, char_col_at_or_before_cell,
 };
+use crate::input::InputAction;
 use crate::input::cursor::CursorController;
-use crate::input::{InputAction, InputMode};
 use crate::ui::widgets::popup::{MousePopup, MouseScroll, MouseTarget, PopupMouseLayout};
 use crate::ui::{STATUS_BAR_HEIGHT_CELLS, STATUS_BAR_HEIGHT_ROWS, UNDO_TREE_HEADER_ROWS};
 
@@ -275,7 +275,7 @@ impl EditorState {
                 let (width, height) = self.viewport_size();
                 let scroll =
                     self.with_active_buffer_view_mut(|_, view| view.cursor.viewport_scroll());
-                self.apply_input(InputAction::SetMode(InputMode::Normal), width, height);
+                self.apply_input(InputAction::SetMode(EditorMode::Normal), width, height);
                 self.with_active_buffer_view_mut(|_, view| {
                     view.cursor.scroll_x_cells = scroll.0;
                     view.cursor.scroll_y_lines = scroll.1;
@@ -289,8 +289,10 @@ impl EditorState {
                     .into_iter()
                     .find(|rect| rect.pane_id == pane)
                 {
-                    self.viewport_width_cells =
-                        rect.width.saturating_sub(crate::pane_content_x(self, pane)) as usize;
+                    self.viewport_width_cells = rect
+                        .width
+                        .saturating_sub(crate::view::gutter::pane_content_x(self, pane))
+                        as usize;
                     self.viewport_height_rows = rect.height as usize + STATUS_BAR_HEIGHT_ROWS;
                 }
                 self.close_completion();
@@ -465,9 +467,9 @@ impl EditorState {
         };
         let gutter = if pane.options.has_line_numbers && !(self.zen.enabled && self.zen.hide_gutter)
         {
-            crate::line_number_gutter_width(
+            crate::view::gutter::line_number_gutter_width(
                 buffer.len_lines(),
-                u16::from(crate::marker_column_visible(
+                u16::from(crate::view::gutter::marker_column_visible(
                     buffer,
                     self.git_diff_for_buffer(buffer_id),
                 )),
@@ -541,7 +543,7 @@ impl EditorState {
         }
         let (width, height) = self.viewport_size();
         if self.mode != EditorMode::Visual {
-            self.apply_input(InputAction::SetMode(InputMode::Visual), width, height);
+            self.apply_input(InputAction::SetMode(EditorMode::Visual), width, height);
         }
         self.with_active_buffer_view_mut(|buffer, view| {
             // Visual selections include their upper endpoint. Keep the entire

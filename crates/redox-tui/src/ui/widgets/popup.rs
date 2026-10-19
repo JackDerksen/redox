@@ -457,6 +457,47 @@ pub fn wrap_text_to_cells(text: &str, max_cells: usize) -> Vec<String> {
     )
 }
 
+pub fn selection_aware_color(base: TextStyle, selected: TextStyle, is_selected: bool) -> TextStyle {
+    if is_selected {
+        base.selected(selected)
+    } else {
+        base
+    }
+}
+
+pub fn draw_section_header(
+    window: &mut WindowView<'_>,
+    row: u16,
+    text: &str,
+    colors: TextStyle,
+) -> minui::Result<u16> {
+    if row >= window.height {
+        return Ok(row);
+    }
+    window.write_str_styled(row, 1, text, minui::Style::from(colors))?;
+    Ok(row.saturating_add(1))
+}
+
+/// Writes `text` clipped to `width` cells.
+pub fn write_clipped_line(
+    view: &mut WindowView<'_>,
+    row: u16,
+    col: u16,
+    text: &str,
+    style: impl Into<minui::Style>,
+    width: u16,
+) -> minui::Result<()> {
+    if width == 0 {
+        return Ok(());
+    }
+    view.write_str_styled(
+        row,
+        col,
+        &clip_text_to_cells(text, width as usize),
+        style.into(),
+    )
+}
+
 pub fn clip_text_to_cells(text: &str, max_cells: usize) -> String {
     if max_cells == 0 || text.is_empty() {
         return String::new();

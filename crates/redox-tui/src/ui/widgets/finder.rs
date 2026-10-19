@@ -1,6 +1,7 @@
+use crate::ui::helpers::{clip_text_right_to_cells, text_width};
 use crate::ui::text_style::TextStyle;
 use minui::widgets::WindowView;
-use minui::{Color, Style, TabPolicy, Window, cell_width, window::CursorSpec};
+use minui::{Color, Style, Window, window::CursorSpec};
 use std::ops::Range;
 use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
@@ -21,7 +22,6 @@ use crate::ui::widgets::status_bar::{
     STATUS_MODULE_EDGE_LEFT, STATUS_MODULE_EDGE_RIGHT, STATUS_MODULE_SEPARATOR, scroll_minimap_cell,
 };
 
-const FINDER_TAB_POLICY: TabPolicy = TabPolicy::Fixed(4);
 const PREVIEW_THRESHOLD_COLS: u16 = 130;
 const QUERY_TITLE: &str = "Finder";
 const PREVIEW_TITLE: &str = "File Preview";
@@ -174,7 +174,7 @@ pub(crate) fn draw_finder_popup(
         .max(1) as usize;
     let cursor_offset = finder_input_cursor_offset(&popup.query, popup.query_cursor, input_w);
     let visible_query = finder_input_view(&popup.query, popup.query_cursor, input_w);
-    let cursor = clamp_cursor(&popup.query, popup.query_cursor);
+    let cursor = popup.query.floor_char_boundary(popup.query_cursor);
     let start_byte = cursor
         .saturating_sub(clip_text_right_to_cells(&popup.query[..cursor], cursor_offset).len());
     mouse.add_input(
@@ -749,7 +749,7 @@ fn finder_input_view(text: &str, cursor: usize, max_cells: usize) -> String {
         return clip_text_to_cells(text, max_cells);
     }
 
-    let cursor = clamp_cursor(text, cursor);
+    let cursor = text.floor_char_boundary(cursor);
     let (left, right) = text.split_at(cursor);
     let left_width = text_width(left);
     if left_width <= max_cells {
@@ -763,32 +763,12 @@ fn finder_input_view(text: &str, cursor: usize, max_cells: usize) -> String {
     format!("{visible_left}{visible_right}")
 }
 
-fn clip_text_right_to_cells(text: &str, max_cells: usize) -> String {
-    if max_cells == 0 || text.is_empty() {
-        return String::new();
-    }
-
-    let mut used = 0usize;
-    let graphemes = text.graphemes(true).collect::<Vec<_>>();
-    let mut start = graphemes.len();
-    while start > 0 {
-        let grapheme = graphemes[start - 1];
-        let grapheme_w = text_width(grapheme).max(1);
-        if used + grapheme_w > max_cells {
-            break;
-        }
-        used += grapheme_w;
-        start -= 1;
-    }
-    graphemes[start..].concat()
-}
-
 fn finder_input_cursor_offset(text: &str, cursor: usize, max_cells: usize) -> usize {
     if max_cells == 0 || text.is_empty() {
         return 0;
     }
 
-    let cursor = clamp_cursor(text, cursor);
+    let cursor = text.floor_char_boundary(cursor);
     let left_width = text_width(&text[..cursor]);
     if text_width(text) <= max_cells || left_width <= max_cells {
         return left_width.min(max_cells);
@@ -796,14 +776,6 @@ fn finder_input_cursor_offset(text: &str, cursor: usize, max_cells: usize) -> us
 
     let visible_left = clip_text_right_to_cells(&text[..cursor], max_cells);
     text_width(&visible_left)
-}
-
-fn clamp_cursor(text: &str, mut cursor: usize) -> usize {
-    cursor = cursor.min(text.len());
-    while cursor > 0 && !text.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    cursor
 }
 
 fn finder_right_footer(popup: &FinderPopup, style: &UiStyle) -> FinderRightFooter {
@@ -854,12 +826,6 @@ fn finder_file_scroll_position(selected: usize, pinned_count: usize, file_count:
     }
 
     selected.saturating_sub(pinned_count).min(file_count - 1)
-}
-
-fn text_width(text: &str) -> usize {
-    text.graphemes(true)
-        .map(|grapheme| (cell_width(grapheme, FINDER_TAB_POLICY) as usize).max(1))
-        .sum()
 }
 
 #[cfg(test)]

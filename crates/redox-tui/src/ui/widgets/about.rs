@@ -1,12 +1,13 @@
 use crate::ui::text_style::TextStyle;
+use crate::ui::widgets::popup::write_clipped_line;
 use minui::widgets::Widget;
 use minui::{Style, Window};
 
 use crate::app::AboutPopup;
 use crate::ui::icons::{PopupKind, popup_title};
 use crate::ui::widgets::popup::{
-    MousePopup, PopupChrome, PopupLayout, PopupMouseLayout, clip_text_to_cells,
-    draw_popup_frame_at, popup_inner_size, popup_window_view, wrap_text_to_cells,
+    MousePopup, PopupChrome, PopupLayout, PopupMouseLayout, draw_popup_frame_at, popup_inner_size,
+    popup_window_view, wrap_text_to_cells,
 };
 use crate::ui::{UiStyle, build_editor_status_bar};
 
@@ -37,7 +38,7 @@ pub(crate) fn draw_about_popup_view(
     let content_height = about_content_height(max_line_w, &popup.message, &repo_line, &crates_line);
     let top = layout.inner_h.saturating_sub(content_height) / 2;
 
-    write_line(
+    write_clipped_line(
         &mut view,
         top,
         left,
@@ -45,7 +46,7 @@ pub(crate) fn draw_about_popup_view(
         Style::from(style.about.logo_red),
         max_line_w,
     )?;
-    write_line(
+    write_clipped_line(
         &mut view,
         top.saturating_add(1),
         left,
@@ -53,7 +54,7 @@ pub(crate) fn draw_about_popup_view(
         Style::from(style.about.logo_white),
         max_line_w,
     )?;
-    write_line(
+    write_clipped_line(
         &mut view,
         top.saturating_add(1),
         left.saturating_add(6),
@@ -61,7 +62,7 @@ pub(crate) fn draw_about_popup_view(
         style.about.text,
         inner_w.saturating_sub(left.saturating_add(7)),
     )?;
-    write_line(
+    write_clipped_line(
         &mut view,
         top.saturating_add(2),
         left,
@@ -123,22 +124,6 @@ pub fn about_popup_inner_size(term_w: u16, term_h: u16, style: &UiStyle) -> (u16
         style.about.min_width,
         style.about.min_height,
     )
-}
-
-fn write_line(
-    view: &mut minui::widgets::WindowView<'_>,
-    row: u16,
-    col: u16,
-    text: &str,
-    style: impl Into<Style>,
-    width: u16,
-) -> minui::Result<()> {
-    if width == 0 {
-        return Ok(());
-    }
-
-    let clipped = clip_text_to_cells(text, width as usize);
-    view.write_str_styled(row, col, &clipped, style.into())
 }
 
 fn write_wrapped_block(
