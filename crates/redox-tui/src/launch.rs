@@ -57,30 +57,33 @@ pub(crate) fn parse_launch_options() -> anyhow::Result<Option<LaunchOptions>> {
     let color_enabled = stdout_is_terminal
         && env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
         && env::var("TERM").as_deref() != Ok("dumb");
-    let mut args = env::args().skip(1);
+    let mut args = env::args_os().skip(1);
     let mut config = LaunchConfig::default();
     let mut target_path = None;
     let mut parse_options = true;
     let mut show_help = None;
     while let Some(raw) = args.next() {
-        if parse_options && raw == "--" {
+        // Options are plain text, so an argument that is not UTF-8, such as a file name in
+        // another encoding, can only be a path.
+        let option = raw.to_str().filter(|_| parse_options);
+        if option == Some("--") {
             parse_options = false;
-        } else if parse_options && matches!(raw.as_str(), "--version" | "-V") {
+        } else if matches!(option, Some("--version" | "-V")) {
             show_help.get_or_insert(false);
-        } else if parse_options && matches!(raw.as_str(), "--help" | "-h") {
+        } else if matches!(option, Some("--help" | "-h")) {
             show_help.get_or_insert(true);
-        } else if parse_options && raw == "--default-config" {
+        } else if option == Some("--default-config") {
             config.default_only = true;
-        } else if parse_options && raw == "--config" {
+        } else if option == Some("--config") {
             config.path =
                 Some(PathBuf::from(args.next().ok_or_else(|| {
                     anyhow::anyhow!("--config requires a path")
                 })?));
-        } else if parse_options && let Some(path) = raw.strip_prefix("--config=") {
+        } else if let Some(path) = option.and_then(|option| option.strip_prefix("--config=")) {
             config.path = Some(PathBuf::from(path));
-        } else if parse_options && raw.starts_with('-') {
-            anyhow::bail!("unknown option: {raw}");
-        } else if target_path.replace(PathBuf::from(&raw)).is_some() {
+        } else if parse_options && raw.as_encoded_bytes().starts_with(b"-") {
+            anyhow::bail!("unknown option: {}", raw.to_string_lossy());
+        } else if target_path.replace(PathBuf::from(raw)).is_some() {
             anyhow::bail!("only one file or directory may be opened at launch");
         }
     }
