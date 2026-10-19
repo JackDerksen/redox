@@ -238,8 +238,12 @@ impl EditorState {
             }
 
             // Visual selections.
-            InputAction::YankSelectionPrivate => self.yank_active_visual_selection(false),
-            InputAction::YankSelectionSystem => self.yank_active_visual_selection(true),
+            InputAction::YankSelectionPrivate => {
+                self.yank_active_visual_selection(false, viewport_width_cells, text_vh);
+            }
+            InputAction::YankSelectionSystem => {
+                self.yank_active_visual_selection(true, viewport_width_cells, text_vh);
+            }
             InputAction::DeleteSelectionPrivate => {
                 self.delete_active_visual_selection_to_private_register(
                     viewport_width_cells,
@@ -639,12 +643,29 @@ impl EditorState {
             .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
     }
 
-    fn yank_active_visual_selection(&mut self, to_system_clipboard: bool) {
+    fn yank_active_visual_selection(
+        &mut self,
+        to_system_clipboard: bool,
+        viewport_width_cells: usize,
+        text_vh: usize,
+    ) {
         let Some(plan) = self.active_visual_selection_edit_plan() else {
             return;
         };
         if let Some((selection, mode)) = self.active_visual_selection() {
             self.set_one_shot_highlight(selection, mode, super::HighlightKind::Yank);
+            // Like Vim, the cursor returns to the start of the yanked text: the top-left
+            // corner of a block.
+            let (start, end) = selection.ordered();
+            let yank_start = match mode {
+                redox_core::VisualModeKind::Block => Pos::new(start.line, start.col.min(end.col)),
+                redox_core::VisualModeKind::Char | redox_core::VisualModeKind::Line => start,
+            };
+            self.with_active_buffer_view_mut(|buffer, view| {
+                view.cursor.cursor = buffer.clamp_pos(yank_start);
+                view.cursor
+                    .reconcile_after_edit(buffer, viewport_width_cells, text_vh);
+            });
         }
         self.private_register_kind = Self::register_kind_from_visual_mode(plan.mode);
         self.private_register = plan.text;
