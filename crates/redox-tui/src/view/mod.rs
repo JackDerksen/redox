@@ -346,8 +346,12 @@ pub(crate) fn draw_completion_preview_at(
     let Some(preview) = state.completion_preview() else {
         return Ok(());
     };
-    let (vw, _) = window.get_size();
-    let preview_width = clipped_cell_width(&preview.text, vw.saturating_sub(context.x) as usize);
+    // Stop at the active pane's right edge so a long preview never draws over a neighbour.
+    let available_width = context
+        .content_x
+        .saturating_add(context.text_w)
+        .saturating_sub(context.x);
+    let preview_width = clipped_cell_width(&preview.text, available_width as usize);
     let active_cursor_line = state.active_cursor_pos().line;
     let inline_diagnostic = state
         .active_diagnostic_lines(active_cursor_line, 1)
@@ -374,7 +378,7 @@ pub(crate) fn draw_completion_preview_at(
         style,
         context.x,
         context.y,
-        vw.saturating_sub(context.x),
+        available_width,
         &preview.text,
         &preview.suffix,
     )?;
