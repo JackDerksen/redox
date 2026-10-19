@@ -442,7 +442,56 @@ fn text_objects_handle_whitespace_nesting_escapes_and_missing_pairs() {
     let (inner, around) = (TextObjectScope::Inner, TextObjectScope::Around);
     let cases = [
         // On blanks, `iw` selects them and `aw` or a count takes in the next word; on
-        // punctuation, `iw` selects the punctuation.
+        // punctuation, `iw` selects the punctuation. Counts step through runs of each class,
+        // and blanks never use up an `aw` count.
+        (
+            ".foo bar.baz",
+            Pos::new(0, 0),
+            inner,
+            TextObjectKind::Word,
+            2,
+            Some(".foo"),
+        ),
+        (
+            "foo bar baz",
+            Pos::new(0, 0),
+            inner,
+            TextObjectKind::Word,
+            2,
+            Some("foo "),
+        ),
+        (
+            "foo.bar baz",
+            Pos::new(0, 0),
+            around,
+            TextObjectKind::Word,
+            2,
+            Some("foo."),
+        ),
+        (
+            "foo bar baz",
+            Pos::new(0, 0),
+            around,
+            TextObjectKind::Word,
+            2,
+            Some("foo bar "),
+        ),
+        (
+            "a  b c d",
+            Pos::new(0, 1),
+            around,
+            TextObjectKind::Word,
+            2,
+            Some("  b c"),
+        ),
+        (
+            "a  b c d",
+            Pos::new(0, 1),
+            around,
+            TextObjectKind::BigWord,
+            2,
+            Some("  b c"),
+        ),
         (
             "a  b",
             Pos::new(0, 1),

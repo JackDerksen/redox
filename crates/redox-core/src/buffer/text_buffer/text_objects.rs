@@ -139,15 +139,10 @@ impl TextBuffer {
         scope: TextObjectScope,
         count: usize,
     ) -> Option<TextObjectRange> {
-        // Like Vim, the object is whichever run the cursor is on: word characters, punctuation
-        // or blanks.
-        match self.char_under(cursor) {
-            Some(ch) if is_blank(ch) => self.blank_text_object_range(cursor, scope, count, false),
-            Some(ch) if !ch.is_whitespace() && !is_word_char(ch) => {
-                self.run_text_object_range(cursor, scope, count, is_punctuation)
-            }
-            _ => self.run_text_object_range(cursor, scope, count, is_word_char),
+        if self.char_under(cursor).is_some_and(|ch| ch != '\n') {
+            return self.class_run_text_object_range(cursor, scope, count, false);
         }
+        self.run_text_object_range(cursor, scope, count, is_word_char)
     }
 
     fn big_word_text_object_range(
@@ -156,42 +151,74 @@ impl TextBuffer {
         scope: TextObjectScope,
         count: usize,
     ) -> Option<TextObjectRange> {
-        if self.char_under(cursor).is_some_and(is_blank) {
-            return self.blank_text_object_range(cursor, scope, count, true);
+        if self.char_under(cursor).is_some_and(|ch| ch != '\n') {
+            return self.class_run_text_object_range(cursor, scope, count, true);
         }
         self.run_text_object_range(cursor, scope, count, |ch| !ch.is_whitespace())
     }
 
-    /// `iw`/`iW` on blanks select the blanks on the line, and each extra count or `aw` takes in
-    /// the following word, as in Vim.
-    fn blank_text_object_range(
+    /// Word objects as in Vim: start from the run under the cursor (word characters,
+    /// punctuation or blanks; for WORDs, blanks or not) and stay on its line. For `iw` each run
+    /// counts, blanks included. For `aw` only words count: blanks under the cursor lead into the
+    /// next word, and otherwise trailing blanks are taken, or leading ones when there are none.
+    fn class_run_text_object_range(
         &self,
         cursor: Pos,
         scope: TextObjectScope,
         count: usize,
         big_word: bool,
     ) -> Option<TextObjectRange> {
-        let cursor_char = self.pos_to_char(cursor);
-        let start = self.run_start(cursor_char, is_blank);
-        let mut end = self.run_end(cursor_char, is_blank);
-        let extra_runs = count.max(1) - 1 + usize::from(scope == TextObjectScope::Around);
-        for _ in 0..extra_runs {
-            let Some(next) = (end < self.len_chars())
-                .then(|| self.char_at_index(end))
+        let count = count.max(1);
+        let class_at = |index: usize| {
+            (index < self.len_chars())
+                .then(|| self.char_at_index(index))
                 .filter(|ch| *ch != '\n')
-            else {
-                break;
-            };
-            end = if is_blank(next) {
-                self.run_end(end, is_blank)
-            } else if big_word {
-                self.run_end(end, |ch| !ch.is_whitespace())
-            } else if is_word_char(next) {
-                self.run_end(end, is_word_char)
-            } else {
-                self.run_end(end, is_punctuation)
-            };
+                .map(|ch| word_class(ch, big_word))
+        };
+        let run_end = |index: usize, class: WordClass| {
+            let mut index = index;
+            while class_at(index) == Some(class) {
+                index += 1;
+            }
+            index
+        };
+
+        let cursor_char = self.pos_to_char(cursor);
+        let class = class_at(cursor_char)?;
+        let mut start = cursor_char;
+        while start > 0 && class_at(start - 1) == Some(class) {
+            start -= 1;
         }
+        let mut end = run_end(cursor_char, class);
+
+        match scope {
+            TextObjectScope::Inner => {
+                for _ in 1..count {
+                    let Some(next) = class_at(end) else { break };
+                    end = run_end(end, next);
+                }
+            }
+            TextObjectScope::Around => {
+                let mut words = usize::from(class != WordClass::Blank);
+                while words < count {
+                    end = run_end(end, WordClass::Blank);
+                    let Some(next) = class_at(end) else { break };
+                    end = run_end(end, next);
+                    words += 1;
+                }
+                if class != WordClass::Blank {
+                    let trailing = run_end(end, WordClass::Blank);
+                    if trailing > end {
+                        end = trailing;
+                    } else {
+                        while start > 0 && class_at(start - 1) == Some(WordClass::Blank) {
+                            start -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
         Some(TextObjectRange {
             start,
             end,
@@ -504,13 +531,21 @@ impl TextBuffer {
     }
 }
 
-/// Whitespace within a line: everything but the line break.
-fn is_blank(ch: char) -> bool {
-    ch.is_whitespace() && ch != '\n'
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordClass {
+    Blank,
+    Word,
+    Punctuation,
 }
 
-fn is_punctuation(ch: char) -> bool {
-    !ch.is_whitespace() && !is_word_char(ch)
+fn word_class(ch: char, big_word: bool) -> WordClass {
+    if ch.is_whitespace() {
+        WordClass::Blank
+    } else if big_word || is_word_char(ch) {
+        WordClass::Word
+    } else {
+        WordClass::Punctuation
+    }
 }
 
 fn delimiter_chars(kind: DelimiterKind) -> (char, char) {
