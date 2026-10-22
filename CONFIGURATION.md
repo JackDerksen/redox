@@ -102,7 +102,7 @@ use kebab-case consistently, and legacy data is preserved rather than deleted.
 
 Language-tool choices are managed through `:lsp list`: enable or install a tool
 with `i`, and disable or uninstall it with `u`. Redox saves those choices in
-`installed-tools.json`. See the [language tools guide](README.md#language-tools)
+`installed-tools.json`. See the [language tools guide](WIKI.md#language-tools)
 for available controls.
 
 ## Top-level options

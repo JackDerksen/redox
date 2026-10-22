@@ -14,7 +14,7 @@
 <p align="center">
     Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
     <br><br>
-    <strong>PLEASE NOTE</strong>: This editor is in no way associated with
+    Redox is not associated with
     <a href="https://www.redox-os.org/">Redox OS</a>.
 </p>
 
@@ -22,798 +22,121 @@
     <img width="2419" height="1520" alt="Redox Demo" src="assets/redox-demo.png" />
 </p>
 
-## Project structure
+## Why Redox?
 
-Redox is a Cargo workspace with an editor core, an LSP library, and a MinUI
-frontend. The core crate owns editor logic that should stay UI-agnostic. The LSP
-crate owns protocol and process mechanisms. The TUI crate owns input mapping,
-app state, rendering, popups, syntax highlighting, and terminal interaction.
+Redox is essentially supposed to be an opinionated version of Neovim, built
+from the ground up to be highly pleasant to use by default. It is made with my
+personal preferences in mind, but remains highly configurable for your own
+needs.
+- Vim-style editing with visual modes, text objects, macros, and an undo tree.
+- Tree-sitter syntax highlighting, smart indentation, and scope guides.
+- Language server completions, diagnostics, formatting, and quick fixes.
+- A fuzzy file finder, editable file explorer, and pinned files.
+- Splits, an integrated terminal, and a dashboard for restoring sessions.
+- Built-in defaults with configurable themes, keybindings, and zen mode.
 
-```text
-redox/
-├── Cargo.toml                  # Workspace manifest and published redox binary wrapper
-├── src/main.rs                 # Thin entrypoint that calls redox-tui
-└── crates/
-    ├── redox-core/
-    │   └── src/
-    │       ├── buffer/         # Rope-backed text buffer, selections, edits, text objects
-    │       ├── logic/          # Shared editor logic helpers
-    │       ├── session/        # Multi-buffer session model and background loading
-    │       ├── text/           # Shared text indexing and clamp helpers
-    │       ├── fuzzy.rs        # Fuzzy matching and path ranking helpers
-    │       ├── io.rs           # File read/write helpers
-    │       ├── motion.rs       # Vim-style motion logic
-    │       └── lib.rs          # Shared editor library helpers
-    ├── redox-lsp/
-    │   └── src/
-    │       ├── transport.rs    # JSON-RPC framing and language-server processes
-    │       ├── protocol.rs     # Shared LSP positions, ranges, and definition parsing
-    │       ├── provider.rs     # Built-in provider catalogue and installers
-    │       ├── lint.rs         # Linter processes and output parsing
-    │       └── snippet.rs      # LSP snippet expansion
-    └── redox-tui/
-        └── src/
-            ├── app/            # Main editor state and mode model
-            ├── input/          # Key/event mapping, counts, operators, cursor controller
-            └── ui/             # UI rendering, widgets, animations, styling
-```
+## Install
 
-This split keeps buffer operations, indexing, motions, fuzzy scoring, session
-behaviour, and LSP mechanics testable without a terminal. The frontend can
-evolve the interface without pulling UI details into `redox-core` or
-`redox-lsp`.
+Use a terminal with ANSI, raw-mode, and full colour support. Use a nerd font or
+a terminal emulator with icons built-in for the optimal experience.
 
-**The subcrates can be found here**:
-
-- [redox-core](https://crates.io/crates/redox-core)
-- [redox-lsp](https://crates.io/crates/redox-lsp)
-- [redox-tui](https://crates.io/crates/redox-tui)
-
-## Getting Started
-
-### Requirements
-
-- Rust toolchain (`cargo` + `rustc`) for Cargo installs and source builds.
-  Homebrew installs build tools automatically.
-- A terminal that supports basic ANSI features and raw mode (and ideally full
-  colour support). I'd **highly** recommend [Ghostty](https://ghostty.org/) for
-  the best experience!
-- Optional Go linting: golangci-lint v2.0.0 or newer. v1 is unsupported; see
-  [Language tools](#language-tools) for setup.
-
-
-### Install with Homebrew
-
-On macOS or Linux:
+### Homebrew (macOS and Linux)
 
 ```sh
 brew install jackderksen/tap/redox
 ```
 
-To update:
+### Cargo
+
+With a Rust toolchain installed:
 
 ```sh
-brew update
-brew upgrade redox
+cargo install redox-editor --locked
 ```
 
-The [personal tap](https://github.com/JackDerksen/homebrew-tap) builds from a
-pinned release source archive. It checks for new stable releases hourly and
-tests formula updates on macOS and Linux before publishing them.
+The package is named `redox-editor`; the installed command is `redox`.
+Cargo installs it into `~/.cargo/bin` by default, which must be on your `PATH`.
 
-### Install with Cargo
+Prebuilt binaries are also available from
+[GitHub releases](https://github.com/JackDerksen/redox/releases/latest).
+See the [update guide](WIKI.md#updates) for upgrading and automatic update checks.
 
-Install the binary from Crates.io:
-```
-cargo install redox-editor
-```
+## Get started
 
-### Build from source
-
-Build from source after cloning the repository:
-```bash
-cargo build --release -p redox-editor
+```sh
+redox             # Open the dashboard
+redox README.md   # Edit a file
+redox .           # Browse a directory
 ```
 
-Then install the created binary:
-```
-cargo install --path .
-```
+Redox uses Vim-style modes. Start with these defaults:
 
-This installs the `redox` binary into `~/.cargo/bin` by default.
-
-If needed, add that location to your `PATH` (example for zsh):
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-### Updates
-
-Redox checks GitHub's latest stable release in the background on startup and
-shows a toast when a newer version is available. Successful checks are cached
-for 24 hours under the Redox state directory. **Note**: Checks require `curl`;
-missing `curl`, offline connections, and other startup check failures stay
-quiet.
-
-Run `:check-update` to check immediately, bypassing the cache, and see the
-result or any connection error. Set `check_updates = false` in your
-configuration to disable automatic checks (manual checks remain available).
-
-For Homebrew installs, run `brew update && brew upgrade redox`. For Cargo
-installs, run `cargo install redox-editor --locked` in your terminal to install
-the newest published crate. For release binaries, download the matching archive
-from [GitHub releases](https://github.com/JackDerksen/redox/releases/latest) and
-replace your installed `redox` binary after closing the editor. GitHub releases
-may appear before the corresponding crate is published. Redox only notifies you;
-it does not download or install updates itself.
-
-
-## Usage guide
-
-### Configuration
-
-Redox was designed from the ground-up to be pleasant without the need for
-configuration. Despite this, it is highly configurable, should you choose to
-modify the default behaviour or appearance.
-
-It looks for configuration at `$REDOX_CONFIG`,
-`$XDG_CONFIG_HOME/redox/config.toml`, or `~/.config/redox/config.toml` (in that
-order). A different file can be selected with
-`redox --config /path/to/config.toml`.
-Launch with `redox --default-config` to use only the built-in defaults,
-ignoring configuration files for the session.
-
-Configuration supports features like named themes, the complete base palette,
-every syntax role, per-role colours and font formatting, a global plain-text
-switch, optional Nerd Font icons, background dimming, popup dimensions,
-colour-column position, zen mode, undo-tree history size, the leader character,
-and mode-specific keybindings. See the
-[`config.example.toml`](config.example.toml) starter file and the complete
-[`CONFIGURATION.md`](CONFIGURATION.md) reference. Unspecified values always use
-the built-in defaults.
-
-Editor-managed data (such as undo history and LSP metadata) lives separately
-under `$XDG_STATE_HOME/redox/` (or `~/.local/state/redox/`), leaving the
-configuration directory for `config.toml` alone. Existing legacy state is
-migrated automatically.
-
-Optional logging is disabled by default and stays entirely on your machine.
-Enable `[logging] enabled = true` in your config to retain up to 5,000 recent
-events per session (about 2 MB), or set `max_events` to another positive limit.
-Older session logs are pruned as needed. Run `:log "This is a description of
-what happened"` to preserve a report under `~/.local/state/redox/logs/reports/`.
-Redox never sends logs anywhere; share a report with the developer only if you
-choose to. See [optional logging](CONFIGURATION.md#optional-logging) for
-recorded events, exclusions, and storage details.
-
-<details>
-<summary>Command, navigation, editing, and search reference</summary>
-
-### Run Redox
-```bash
-redox <file_path>
-```
-
-Use `redox --help` for launch options and `redox --version` to print the
-installed version.
-
-Run `redox` without a path to open the startup dashboard. Press a shortcut
-directly, or move with `j`/`k` and press `Enter`:
-
-| Key | Action |
+| Keys | Action |
 | --- | --- |
-| `r` | Restore the previous session for the current directory. |
-| `f` | Open Finder. |
-| `e` | Open the file explorer. |
-| `n` | Create an empty, unnamed file. |
-| `c` | Open the configuration file. |
-| `q` | Quit. |
-
-Use `:dashboard` to reopen it while editing. Open buffers and unsaved edits are
-preserved; `Escape` returns to the previous buffer.
-
-Sessions remember saved files, their cursor positions, and the active file when
-Redox exits. They live under the Redox state directory in `sessions/`. Exiting
-an empty dashboard leaves the previous session intact. Unsaved contents and
-split layouts are not restored.
-
-Name a new buffer on its first write, for example `:w file.rs`. The extension
-selects syntax highlighting and the existing formatting tools. A failed write
-keeps the buffer's previous name and contents, and a different existing file is
-never overwritten.
-
-Example:
-```bash
-redox ./README.md
-```
-
-Open straight into the explorer for any specified directory (including `.`):
-```bash
-redox src
-```
-
-### Command mode
-
-Enter command mode with `:`. This also stops rain mode and opens the command
-line.
-
-| Command | Behaviour |
-| ------- | --------- |
-| `:<number>` | Jump to that line's first non-blank character. Line numbers start at 1; out-of-range numbers clamp to the first or last line. |
-| `:w [path]` | Write the current buffer, optionally saving under a new name. Explorer buffers apply pending filesystem edits. |
-| `:q` / `:quit` | Quit when all buffers are clean, or close the active surface buffer. |
-| `:q!` | Force quit. |
-| `:wq [path]` | Write the current buffer, optionally saving under a new name, then quit when all buffers are clean. |
-| `:wa` / `:wall` | Write every modified file buffer, including hidden buffers, using the usual formatting and save checks. Unnamed buffers need `:w <path>` first. |
-| `:qa` / `:qall` | Quit the editor and all its panes when all buffers are clean. Use `:qa!` / `:qall!` to discard unsaved changes. |
-| `:wqa` / `:wqall` | Write every modified file buffer, then quit when all buffers are clean. Failed writes or pending explorer edits keep the editor open. |
-| `:e <path>` | Open or switch to a file buffer. |
-| `:e!` / `:reload` | Reload the active file from disk. |
-| `:split [path]` / `:sp [path]` | Open a horizontal split, optionally showing another file. |
-| `:vsplit [path]` / `:vs [path]` / `:vsp [path]` | Open a vertical split, optionally showing another file. |
-| `:close` / `:clo` | Close the active split, keeping its buffer and unsaved edits. The last split stays open. |
-| `:only` / `:on` | Keep the active editor pane and close the other splits, keeping their buffers and unsaved edits. |
-| `:zoom` | Toggle maximising the active pane while preserving the other panes and their layout. |
-| `:whichkey [prefix]` / `:which-key [prefix]` | Show key hints immediately. With no prefix, show common motions and key groups; try `ctrl`, `ctrl-shift`, `g`, `d`, or `<leader>` for specific hints. `Esc` dismisses the popup. |
-| `:config` | Open the active configuration file, creating its parent directory when needed. |
-| `:config reload` | Reload configuration, themes, and keybindings without restarting. |
-| `:log "What happened"` | Preserve the recent log with a note, when optional logging is enabled. |
-| `:dashboard` | Open the dashboard, keeping existing buffers and unsaved edits. |
-| `:s/pattern/replacement[/g]` | Preview and apply regex replacements in the whole file, or just the visual selection. |
-| `:10,20s/pattern/replacement/g` | Substitute within an inclusive line range. A single line number is also supported; `%` explicitly selects the whole file. |
-| `:s/pattern/replacement/gc` | Confirm each replacement: `y` accepts, `n` skips, `a` accepts all remaining matches, `l` accepts and stops, and `q` or `Escape` stops. Accepted replacements form one undo step. |
-| `:convert <value> <source> to <target>` | Preview a base, unit or colour conversion. Press `Enter` to insert the result. |
-| `:check-update` | Check GitHub for a newer stable release and show update instructions. |
-| `:colorscheme <name>` | Apply a named theme for the current session. Bare `:colorscheme` shows the active theme. |
-| `:bn` / `:bnext` | Switch to the next buffer in MRU order. |
-| `:bp` / `:bprev` | Switch to the previous buffer in MRU order. |
-| `:b <name/number>` / `:buffer <name/number>` | Show an existing buffer in the current pane using its ID from `:ls`, filename, full path, or unique partial name. Switching preserves unsaved edits. |
-| `:bd [name/number]` / `:bdelete [name/number]` | Delete the current or specified buffer from the session and close its panes. The last pane switches to another buffer or a blank buffer. Files on disk are kept; unsaved buffers require `:bd!` to discard changes. |
-| `:enew` / `:ene` | Open a new unnamed buffer in the current pane, keeping the previous buffer and its unsaved edits. |
-| `:ls` | List one row per buffer: `>` marks the current buffer, `[1,2]` lists its panes, `[hidden]` marks a hidden buffer, `+` marks unsaved edits, and `!` marks changes on disk. A fullscreen icon (or `^`) marks the zoomed pane; the other panes are minimised. File-type icons appear when icons are enabled. |
-| `:delm {marks}` / `:delmarks {marks}` | Delete the current buffer's named marks, given as letters and ranges, e.g. `:delm a c-e`. `:delm!` deletes all of them. |
-| `:macros` | List the current session's macro registers and recorded key sequences. |
-| `:ex` / `:explorer` | Toggle the file explorer. |
-| `:about` | Toggle the about popup. |
-| `:rain` | Toggle rain mode. |
-| `:zen` | Toggle zen mode. |
-| `:perf` / `:perf popup` | Toggle the performance metrics popup. |
-| `:undo-tree` | Toggle the undo tree pane. |
-| `:lsp list` | Open the language tools marketplace. |
-| `:lsp status` | Show the active buffer's detected language tools. |
-
-Command and subcommand completions appear as ghost text at the end of the input,
-regardless of cursor position. Press `Tab` from anywhere in the input to accept
-and move the cursor to the end, `ctrl+n` / `ctrl+p` to cycle suggestions, or
-`Shift+Tab` to cycle backwards. `Enter` runs only the text you have typed or
-accepted. Use `Up` / `Down` for command history, `Left` / `Right` to move within
-the command line, and `Escape` / `ctrl+c` to cancel.
-
-Command, search, and Finder inputs accept `ctrl+v` to paste from the system
-clipboard, as well as terminal paste. Text is inserted at the input cursor; line
-breaks become spaces and pasting does not submit the input.
-
-The command line calculator supports arithmetic, base and unit conversions, and
-RGB/hex colours, with live result previews. `Enter` pastes the result at the
-buffer cursor as one undoable edit.
-
-<details>
-<summary>Calculator usage</summary>
-
-Type an arithmetic expression after `:`, or use `:convert` for base, unit and
-colour conversions. The answer appears as ghost text and updates while you edit
-anywhere in the input. `Enter` inserts the result at the buffer cursor; `Escape`
-leaves the buffer untouched. Number and unit conversions insert just the
-resulting number. Colour conversions insert `#rrggbb` or `rgb(r, g, b)`.
-
-| Input | Result |
-| ----- | ------ |
-| `5+(2x3)` | `11` |
-| `convert 100 binary to decimal` | `4` |
-| `convert 255 decimal to hex` | `ff` |
-| `convert FF hex to decimal` | `255` |
-| `convert 5 kg to lbs` | `11.0231131092439` |
-| `convert (5+2) kg to g` | `7000` |
-| `convert 12 in to ft` | `1` |
-| `convert 1 acre to m2` | `4046.8564224` |
-| `convert 1 usgal to L` | `3.785411784` |
-| `convert 100 km/h to mph` | `62.1371192237334` |
-| `convert 90 min to h` | `1.5` |
-| `convert 90 minutes to seconds` | `5400` |
-| `convert 5 kilograms to pounds` | `11.0231131092439` |
-| `convert 180 deg to rad` | `3.14159265358979` |
-| `convert 0 C to F` | `32` |
-| `convert 273.15 K to C` | `0` |
-| `convert 1 MiB to B` | `1048576` |
-| `convert 8 Mb to MB` | `1` |
-| `convert rgb(255, 128, 0) to hex` | `#ff8000` |
-| `convert 255,128,0 rgb to hex` | `#ff8000` |
-| `convert #ff8000 to rgb` | `rgb(255, 128, 0)` |
-| `convert FF8000 hex to rgb` | `rgb(255, 128, 0)` |
-| `convert #abc to rgb` | `rgb(170, 187, 204)` |
-
-Arithmetic supports `+`, `-`, `*` or `x`, `/`, `%`, `^`, parentheses, decimals
-and scientific notation.
-
-Conversions use `convert value source to target`, such as `convert 100 km/h to
-mph`. All supported units accept spaces. Underscores remain accepted between the
-value and source, and before the target, within the `convert` command. Unit
-conversions can take an arithmetic expression as their value, such as `convert
-(5 + 2) kg to g`.
-
-Base conversions take signed integers. Use `binary` / `bin`, `octal` / `oct`,
-`decimal` / `dec`, or `hexadecimal` / `hex`. Any base from 2 through 36 can also
-be written as a number, such as `convert z 36 to decimal`. Hexadecimal numbers
-and colours share the name `hex`; the other format makes the conversion clear,
-as in `convert FF hex to decimal` and `convert FF8000 hex to rgb`.
-
-Base conversions retain exact values within the signed 128-bit range, including
-integers beyond the arithmetic calculator's safe literal range of
-±9,007,199,254,740,991. Unit conversions use the calculator's floating-point
-precision.
-
-Unit symbols are case-sensitive and must measure the same quantity:
-
-| Quantity | Units and aliases |
-| -------- | ----------------- |
-| Distance | `mm`, `cm`, `m`, `km`, `in`, `ft`, `yd`, `mi`, `nmi` |
-| Mass | `mg`, `g`, `kg`, `t`, `oz`, `lb` / `lbs`, `st` |
-| Area | `mm2`, `cm2`, `m2`, `km2`, `in2`, `ft2`, `ha`, `acre` / `acres` |
-| Volume | `ml` / `mL` / `cm3`, `l` / `L`, `m3`, `usgal`, `impgal`, `uscup`, `usfloz`, `impfloz` |
-| Speed | `m/s`, `km/h` / `kph`, `mph`, `kn` / `knots` |
-| Time | `ns`, `us`, `ms`, `s` / `sec`, `min`, `h` / `hr`, `d` / `day`, `wk` |
-| Temperature | `C`, `F`, `K` |
-| Angles | `deg`, `rad`, `turn` |
-| Data sizes | `b` / `bit`, `B` / `byte`, `kb`, `Mb`, `Gb`, `Tb`, `kB` / `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, `TiB` |
-
-Full names accept singular and plural forms, including irregular plurals such as
-`feet` and `inches`. They ignore case and accept Canadian/European and American
-spellings, so `metres` / `meters` and `litres` / `liters` both work. This
-applies on either side of `to`, and full names can be mixed with symbols.
-
-| Quantity | Full name examples |
-| -------- | ------------------ |
-| Distance | `millimetres`, `centimetres`, `metres`, `kilometres`, `inches`, `feet`, `yards`, `miles`, `nautical miles` |
-| Mass | `milligrams`, `grams`, `kilograms`, `tonnes`, `metric tons`, `ounces`, `pounds`, `stones` |
-| Area | `square millimetres`, `square centimetres`, `square metres`, `square kilometres`, `square inches`, `square feet`, `hectares`, `acres` |
-| Volume | `millilitres`, `litres`, `cubic centimetres`, `cubic metres`, `US gallons`, `Imperial gallons`, `US cups`, `US fluid ounces`, `Imperial fluid ounces` |
-| Speed | `metres per second`, `kilometres per hour`, `miles per hour`, `knots` |
-| Time | `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `days`, `weeks` |
-| Temperature | `Celsius`, `degrees Celsius`, `Fahrenheit`, `degrees Fahrenheit`, `kelvins` |
-| Angles | `degrees`, `radians`, `turns` |
-| Data sizes | `bits`, `bytes`, `kilobits`, `megabits`, `gigabits`, `terabits`, `kilobytes`, `megabytes`, `gigabytes`, `terabytes`, `kibibytes`, `mebibytes`, `gibibytes`, `tebibytes` |
-
-For example, `convert 100 kilometres per hour to miles per hour` and `convert
-(5 + 2) square metres to square feet` work directly. `secs`, `mins`, `hrs`, and
-`wks` are also accepted. Regional measures still need their qualifier: use `US
-gallons`, `Imperial gallons`, or `metric tons` rather than bare `gallons` or
-`tons`.
-
-`t` is a metric tonne, `st` is a stone, and `oz` is an ounce of mass. Volume
-names beginning with `us` use US customary measures; `imp` means Imperial. A day
-is 24 hours and a week is seven days. Months, years and currencies are excluded
-because their conversions depend on context. Temperature conversions use
-absolute temperatures, with `C` for Celsius, `F` for Fahrenheit and `K` for
-kelvin.
-
-`MB` is decimal megabytes; `MiB` is binary mebibytes. Lowercase `b` denotes bits
-and uppercase `B` denotes bytes. These distinctions follow the
-[NIST binary prefix definitions](https://physics.nist.gov/cuu/Units/binary.html).
-Physical units follow standard definitions documented in the
-[NIST conversion reference](https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b9).
-
-RGB inputs require three integers from 0 to 255. Hex colours accept three or six
-digits, with an optional `#` when specifying `hex` as the source. Alpha channels
-are not supported, at least not yet.
-
-</details>
-
-`:colorscheme ` also completes theme names from your configuration, plus the
-built-in `default`. Commands from `[[bind]]` entries with a `command` field are
-included too. Suggestions refresh after `:config reload`.
-
-### File navigation
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `<space><space>` | Open the fuzzy file finder for the launch directory. |
+| `i` / `Escape` | Enter insert mode / return to normal mode. |
+| `h` / `j` / `k` / `l` or arrow keys | Move the cursor. |
+| `:w` / `:w path` | Save the file / give a new buffer a filename. |
+| `:q` / `:q!` | Quit when buffers are clean / discard unsaved changes and quit. |
+| `<space><space>` | Find a file. |
 | `<space>e` | Toggle the file explorer. |
-| `<space>z` | Toggle zen mode, with a centred viewport and syntax colour in the current scope. |
-| `<space>u` | Toggle the undo tree pane. |
-| `<space>x` | Toggle the diagnostics list for the current file. |
-| `<space>ca` | Show quick fixes for the diagnostic under the cursor. |
-| `gd` | Go to symbol definition using the active LSP. |
-| `ctrl+shift+k` | Request LSP completions in insert mode. |
-| `Enter` | Open the selected explorer/finder entry. |
-| `-` | Navigate to the parent directory in the explorer. |
-| `ctrl+shift+p` | Open the pinboard for the current file or selected finder entry. |
-| `ctrl+1` ... `ctrl+5` | Open a pinned file slot. |
-
-Undo tree controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `<space>u` or `:undo-tree` | Toggle the undo tree pane. |
-| `j` / `k` or `Down` / `Up` | Move between undo states. |
-| `h` / `l` or `Left` / `Right` | Move to the parent state / newest child state. |
-| `Enter` | Restore the selected undo state. |
-| `Escape` / `ctrl+c` | Close the undo tree pane. |
-
-Finder controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| Type text | Filter files with fuzzy matching. |
-| `Backspace` | Delete the previous query character. |
-| `Up` / `Down` | Move through results. |
-| `ctrl+p` / `ctrl+n` | Move through results. |
-| `Enter` | Open the selected file. |
-| `ctrl+shift+p` | Pin the selected finder entry. |
-| `ctrl+1` ... `ctrl+5` | Open a pinned file slot. |
-| `Escape` / `ctrl+c` | Close the finder. |
-
-Pinboard controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `j` / `k` or `Down` / `Up` | Move between pin slots. |
-| `ctrl+n` / `ctrl+p` | Move between pin slots. |
-| `p` or `shift+Enter` | Assign the current file to the selected slot. |
-| `ctrl+1` ... `ctrl+5` | Assign directly to a slot while the pinboard is open. |
-| `Enter` | Open the selected pinned file. |
-| `shift+j` / `shift+k` | Reorder the selected pin down/up. |
-| `d` | Delete the selected pin. |
-| `Escape` / `ctrl+c` | Close the pinboard. |
-
-### Language tools
-
-Redox can start installed language servers for supported file types and display
-diagnostics inline, in the status bar, and in a diagnostics popup.
-
-Open the language tools marketplace with `:lsp list`.
-
-Go linting requires golangci-lint v2.0.0 or newer because Redox uses the v2-only
-`--output.json.path stdout` and `--output.text.path stderr` flags. Check
-`golangci-lint --version` before enabling it. If it reports v1, upgrade using the
-[golangci-lint installation guide](https://golangci-lint.run/docs/welcome/install/local/)
-and ensure the v2 binary is first on `PATH`. Existing v1 configurations also
-need the [v2 migration](https://golangci-lint.run/docs/product/migration-guide/).
-
-Completion controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| Typing code | Request completions automatically after a short pause. |
-| `ctrl+i` | Show type, signature, or documentation for the symbol under the cursor. |
-| `ctrl+shift+k` | Request completions in insert mode. |
-| `ctrl+n` / `ctrl+p` or `Down` / `Up` | Move through completion results. |
-| `Enter` | Accept the selected completion. |
-| `tab` | Jump to the next snippet placeholder. |
-| `ctrl+e` | Close completions. |
-| `Escape` | Leave insert mode. |
-
-Marketplace controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `j` / `k` or `Down` / `Up` | Move through tools. |
-| `i` | Enable or install the selected tool. If the executable is already on `PATH`, Redox just enables it. |
-| `u` | Disable or uninstall the selected tool when Redox knows how it was installed. |
-| `Escape` / `ctrl+c` | Close the marketplace. |
-
-Diagnostics controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `<space>x` | Toggle the diagnostics list for the current file. |
-| `j` / `k` or `Down` / `Up` | Move through diagnostics. |
-| `Enter` | Jump to the selected diagnostic. |
-| `a` | Open quick fixes for the selected diagnostic in a lower split. |
-| `Escape` / `ctrl+c` | Close the lower quick-fix split, or close the diagnostics list when no split is open. |
-
-Code action controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `<space>ca` | Open quick fixes for the diagnostic under the cursor. |
-| `j` / `k` or `Down` / `Up` | Move through available actions. |
-| `Enter` | Apply the selected quick fix. |
-| `Escape` / `ctrl+c` | Close the quick-fix popup. |
-
-Symbol info controls:
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `ctrl+i` | Show symbol info in normal or insert mode. |
-| `ctrl+tab` | Show symbol info in insert mode. |
-| `j` / `k` or `Down` / `Up` | Scroll the symbol info popup. |
-| `Escape` / `ctrl+c` | Close the symbol info popup. |
-
-Other language tool commands:
-
-| Command / keys | Behaviour |
-| -------------- | --------- |
-| `:lsp status` | Show the detected language, LSP, and linter for the current file. |
-| `gd` | Go to symbol definition. |
-| `ctrl+i` | Show symbol info. |
-| Typing code or `ctrl+shift+k` | Request completions. |
-
-### Editing and motion
-
-Mouse support is enabled by default; set `mouse = false` to disable it. It
-supports vertical and horizontal scrolling, click-to-position, and drag
-selection into visual mode. Popups support scrolling, entry selection,
-double-click opening, and outside-click dismissal. Set
-`mouse_scroll_step_vertical` and `mouse_scroll_step_horizontal` to choose the
-number of rows and columns per wheel event in buffers and scrollable popups.
-Both default to `3` and accept integers from `1` to `65535` (although I wouldn't
-recommend that); use `1` for finer scrolling. Apply changes with `:config
-reload`. The `mouse_invert_vertical` and `mouse_invert_horizontal` settings
-reverse each axis independently.
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `h` / `j` / `k` / `l` | Move left / down / up / right. |
-| Arrow keys | Basic directional motion. |
-| `w` / `b` / `e` | Move by word starts and word ends. |
-| `W` / `B` / `E` | Move by whitespace-separated WORD starts and ends; punctuation stays within the WORD. |
-| `ge` / `gE` | Move backward to a word/WORD's end. Supports counts and operators. |
-| `{` / `}` | Move backward/forward by paragraph, using empty or whitespace-only lines as separators. Supports counts and operators. |
-| `m[a-z]` | Set a buffer-local mark at the cursor. |
-| `'[a-z]` / `` `[a-z] `` | Jump to the marked line's first non-whitespace character / exact position. Supports visual selections and operators. |
-| `0` / `_` / `$` | Move to line start, first non-whitespace, or line end. |
-| `gg` / `G` | Jump to the start or end of the file. |
-| `<number>gg` / `<number>G` | Jump to that line's first non-blank character. |
-| `%` | Jump to the matching delimiter under or near the cursor. |
-| `f` / `t` / `F` / `T` | Find/till a character forward or backward on the current line. |
-| `;` / `,` | Repeat the last character search in the same/opposite direction. Supports counts and operators. |
-| `i` / `I` | Insert before the cursor / at first non-whitespace. |
-| `a` / `A` | Insert after the cursor / at line end. |
-| `o` / `O` | Open a line below / above. |
-| `J` | Join the line below onto the current line. |
-| `x` | Delete the character under the cursor without touching the private register. |
-| `r` | Replace the character under the cursor. |
-| `dd` / `cc` / `yy` | Delete, change, or yank the current line. |
-| `>>` / `<<` | Indent/outdent the current line by one level. A count shifts that many lines. |
-| `>{motion}` / `<{motion}` | Indent/outdent every line the motion or text object covers, e.g. `>ip`, `>j`, `<'a`. Empty lines are left alone. |
-| `D` | Delete from the cursor to the end of the line. |
-| `p` / `P` | Paste after/before from the private register. |
-| `<space>p` | Paste from the system clipboard. |
+| `/` | Search the current buffer. |
 | `u` / `ctrl+r` | Undo / redo. |
-| `ZZ` | Write the current buffer if modified, then quit when all buffers are clean. Failed writes keep the editor open. |
-| `gcc` | Toggle a comment on the current line. |
-| `.` | Repeat the last edit at the cursor. A count replaces the edit's previous count. |
-| `ctrl+d` / `ctrl+u` | Move down/up by half a window and centre the cursor. |
-| `zz` | Centre the cursor line in the viewport. |
-| `~` | Toggle character case, or the whole visual selection. |
-| `gu{motion}` / `gU{motion}` | Lowercase/uppercase the text a motion or text object covers, e.g. `gUiw`, `gu$`. |
-| `guu` / `gUU` | Lowercase/uppercase the current line (`gugu` / `gUgU` also work). A count changes that many lines. |
-| `gv` | Reselect the previous visual selection. The saved selection follows later edits. |
-| `alt+a` / `alt+x` | Increment / decrement the number under or after the cursor. Counts, negatives, leading zeros, hex (`0x`) and binary (`0b`) work. `ctrl+a` also increments; `ctrl+x` stays on closing splits. |
+| `:whichkey` | Show keybinding hints. |
+| `:lsp list` | Install or enable language tools. |
 
-Marks follow edits and undo within the open buffer. Mark letters share the leftmost
-gutter column with git symbols and take precedence on marked lines. When several
-marks share a line, the alphabetically first is shown. Marks are kept for the
-current session and are cleared when a buffer is reloaded or closed, or with
-`:delmarks`.
+Run `redox --help` for launch options. The [user guide](WIKI.md) covers the full
+command and keybinding reference, language tools, splits, sessions, and more.
 
-### Splits
+## Configure
 
-| Keys | Behaviour |
-| ---- | --------- |
-| `ctrl+-` | Split the active pane horizontally. |
-| <code>ctrl+\</code> | Split the active pane vertically. |
-| `ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l` | Focus the split to the left / down / up / right. |
-| `ctrl+left` / `ctrl+right` | Shrink / grow the current pane's width by one column. |
-| `ctrl+down` / `ctrl+up` | Shrink / grow the current pane's height by one row. |
-| `ctrl+x` | Close the active split. |
-| `ctrl+z` | Toggle zoom for the active pane. While zoomed, `ctrl+h/j/k/l` switches to the neighbouring pane using the original layout. |
+Redox is designed to work without a configuration file. Run `:config` to open yours, and
+`:config reload` to apply saved changes without restarting.
 
-Inactive editor panes show their filename centred in a muted strip along the top.
-With mouse input enabled, drag a split line to resize its neighbouring panes.
-Resizing stops at minimum pane sizes; fixed interface panes keep their sizes.
-Layout changes preserve cursor positions and buffer scroll offsets. If a cursor
-is clipped by a smaller pane, the next editing motion brings it back into view.
+The default location is `~/.config/redox/config.toml`. You can override it with
+`XDG_CONFIG_HOME`, `REDOX_CONFIG`, or `redox --config /path/to/config.toml`.
+Use `redox --default-config` to try the built-in defaults for a session.
 
-### Integrated terminal
+- [Example configuration](config.example.toml): a starting point with a complete theme.
+- [Configuration reference](CONFIGURATION.md): path precedence, themes, keybindings, and every setting.
+- [User guide](WIKI.md): commands, navigation, editing, and language tools.
 
-Press <code>ctrl+`</code> to toggle a terminal pane across the bottom third of
-the editor. In zen mode, it follows the editor's centred width and keeps the
-dark side margins. `ctrl+space` works as an alias for terminals that encode both
-shortcuts identically. `:terminal` or `:term` also toggles the pane.
+## Development
 
-The terminal starts in the directory where Redox was launched. Hiding the pane
-keeps its process, current directory, command history and output alive. The
-editor's statusline separates the panes. Use `ctrl+j` to move down through
-editor splits into the terminal, and `ctrl+k` to return to the last active
-editor pane. Clicking either pane also moves focus. Unfocused panes dim,
-including the terminal. Resize the terminal with `ctrl+up` / `ctrl+down`, or
-drag the statusline separator with mouse input enabled. The chosen height is
-kept when the pane is hidden and reopened. While the terminal has focus, other
-keys go to it, including Tab, arrow keys, Escape, Ctrl+C and Ctrl+D. Scroll with
-the mouse wheel or Shift+PageUp/PageDown. The pane keeps up to 5,000 lines of
-scrollback.
+From a cloned repository, build and install with a Rust toolchain:
 
-Redox runs the program named by `$SHELL`, falling back to `/bin/sh`, in
-interactive mode. Its startup files, aliases, prompt and history settings apply.
-The terminal inherits the editor's environment and PATH. Terminal input is
-excluded from editor macros and event logs. After `exit`, hide and reopen the
-pane to start a fresh terminal. Closing Redox terminates the terminal and its
-foreground job.
+```sh
+cargo install --path . --locked
+```
 
-### Repeating edits and macros
+To run locally and check changes:
 
-`.` repeats the last edit, including its inserted text or visual selection
-dimensions. Moving, searching, yanking, and undoing leave that edit available to
-repeat.
+```sh
+cargo run -p redox-editor -- ./README.md
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked
+cargo test --workspace --locked
+```
 
-| Keys | Behaviour |
-| ---- | --------- |
-| `Qa` ... `Q` | Record a macro into register `a`, then stop. |
-| `QA` ... `Q` | Append to the macro in register `a`. |
-| `@a` / `3@a` | Play macro `a` once / three times. |
-| `Q3` ... `Q` / `@3` | Record / play numeric register `3`. |
-| `Q!` ... `Q` / `@!` | Record / play punctuation register `!`. |
-| `@@` | Play the last-used macro again. |
+Redox is a Cargo workspace built with MinUI. The root package provides the
+`redox` binary; the libraries are also published separately.
 
-Registers accept letters, digits, punctuation, Space, Tab, Enter, Backspace,
-arrow keys, and supported Ctrl/Alt combinations. Function keys are excluded.
-Escape cancels register selection, and `@` is reserved for `@@`. Uppercase
-letters append to their lowercase register. Counts go before `@`: `3@a` plays
-register `a` three times, while `@3` plays register `3`.
-
-A persistent toast shows the recording register. Stopping displays the recorded
-key sequence. Lowercase `q` is unused; `Q` is ordinary text in insert mode.
-Macros last for the current editor session and replay recorded actions,
-including captured clipboard text. `:macros` lists saved registers and their
-sequences in a toast, like `:ls`. Playback groups the entire invocation into one
-undo step per buffer, including every repetition, nested macro call, and any
-undo/redo commands in the macro. Recursive or excessively long playback stops at
-a limit.
-
-### Visual modes
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `v` / `V` / `ctrl+v` | Enter visual, visual line, or visual block mode. |
-| `y` / `d` / `c` | Yank, delete, or change the active selection. |
-| `x` | Delete the selection without copying to the private register. |
-| `r` | Replace the active selection. |
-| `<space>y` | Yank the selection to the system clipboard. |
-| `tab` / `shift+tab` | Indent / outdent the selection. |
-| `u` / `U` | Lowercase / uppercase the selection. |
-| `o` | Move the cursor to the other end of the selection. |
-| `gv` | Swap the current selection with the previous one. |
-| `gn` / `gN` | Extend the selection to the end of the next match / start of the previous match. |
-| `alt+a` / `alt+x` | Increment / decrement the selected numbers. A column of equal numbers becomes a sequence, so `1 1 1` lines become `1 2 3`, and `[0, 0, 0]` becomes `[0, 1, 2]`. Other numbers change by one step (or the count). |
-| `g alt+a` / `g alt+x` | Vim's progressive increment: the nth number in each column changes by n steps. |
-| `J` / `K` | Move selected lines down/up. |
-| `gc` | Toggle comments on the selected lines using the file type's comment syntax. |
-| `<leader>[` / `<leader>]` | Wrap the selection in `[...]`. |
-| `<leader>{` / `<leader>}` | Wrap the selection in `{...}`. |
-| `<leader>(` / `<leader>)` | Wrap the selection in `(...)`. |
-| `<leader><` / `<leader>>` | Wrap the selection in `<...>`. |
-| `<leader>"` / `<leader>'` / <code>&lt;leader&gt;`</code> | Wrap the selection in double quotes, single quotes, or backticks. |
-
-The leader defaults to `Space`. Wrapping returns to normal mode and can be
-undone in one step. Visual line mode wraps the selected lines together, before
-the final newline. Visual block mode wraps each selected row separately,
-skipping rows with no selected text.
-
-Selection increments group numbers into columns: the first number on each
-selected line forms one column, the second number another, and so on. A
-single-line selection treats all of its numbers as one column. Digits inside
-identifiers (`v1`) and after a decimal point are left alone. On macOS, the
-terminal must send Option as Alt (Meta) for the `alt` bindings to arrive.
-
-### Search and text objects
-
-`/` opens a compact search popup in the top-right corner. Matches highlight as
-you type, with the current result and total count shown in the title. `Down` /
-`Up` or `ctrl+n` / `ctrl+p` cycle through results and centre the active match
-where the file position allows. `Enter` keeps the result; `Escape` / `ctrl+c`
-restore the previous cursor, viewport, and search.
-
-The active result uses a distinct highlight while the popup is open. Searches
-accept regular expressions, such as `\bword\b`, `name\d+`, `^fn`, or `(?i)text`
-for case-insensitive matches. Escape punctuation to match it literally, for
-example `\.`. Anchors apply per line; `\n` and `(?s)` allow matches across
-lines. Invalid expressions show an error in the popup. Look-around and
-backreferences are unsupported. Character searches with `f` / `t` remain
-literal.
-
-| Keys | Behaviour |
-| ---- | --------- |
-| `/` | Search in the current buffer. |
-| `ctrl+n` / `ctrl+p` | Repeat the cached search forward/backward. |
-| `gn` / `gN` | Select the match under the cursor, or the next/previous one, wrapping around the buffer. |
-| `cgn` / `dgn` / `gUgn` | Apply an operator to that match. `.` repeats it on the next match, so `cgn` + `.` replaces matches one at a time. |
-| `d$`, `c$`, `y$` | Apply an operator through a motion. |
-| `de`, `ce`, `ye` | Delete, change, or yank through the word's final character. |
-| `dj`, `yj`, `dk`, `yk` | Delete or yank whole lines, including the current and destination lines. |
-| `cw` | Change through the current word's end, preserving following whitespace. On whitespace, change up to the next word. |
-| `cW` | Change through the current WORD's end, preserving following whitespace. On whitespace, change up to the next WORD. |
-| `daw`, `ci"`, `yi(` | Apply operators to text objects. |
-
-Notes:
-- Count prefixes are supported for motions and many operators, for example `3w`,
-  `5j`, `2G`, and `2ci]`.
-- Text objects include words, big words, paragraphs, parentheses, brackets,
-  braces, single quotes, double quotes, and backticks.
-- Compound motions are functional, such as `dap`, `ci"`, `d$`, `dt,`, and `ygg`.
-- Redox is intentionally opinionated, so keybindings may still move around as
-  the editor settles.
-
-</details>
+| Crate | Responsibility |
+| --- | --- |
+| [redox-core](crates/redox-core/README.md) | UI-independent text buffers, motions, fuzzy matching, and sessions. |
+| [redox-lsp](crates/redox-lsp/README.md) | Language-server transport, protocol handling, providers, and linters. |
+| [redox-tui](crates/redox-tui/README.md) | Input, editor state, rendering, syntax highlighting, and terminal interaction. |
 
 ## Roadmap
 
-<details>
-<summary>Current progress and planned work</summary>
+Planned work, in no particular order:
 
-These have roughly been categorized, and so aren't necessarily in chronological
-order.
+- Project-wide symbol renaming.
+- Searching text across files.
+- More persistent project and session state.
+- Broader fuzzy finder indexing and asynchronous refresh for large repositories.
+- A fuzzy command palette.
+- More Vim motions.
 
-- [x] Rope-backed text buffer core (`redox-core`)
-- [x] TUI rendering with statusline + cursor projection
-- [x] Text insertion, newline insertion, and backspace editing
-- [x] Vim-style mode system (Normal / Insert / Command)
-- [x] Core motion model with reusable UI-agnostic logic
-- [x] Unit test coverage across core and TUI state logic
-- [x] Per-buffer cursor/viewport state preservation
-- [x] File open and write flows
-- [x] Multi-buffer session architecture in core
-- [x] Incremental loading for large files
-- [x] Buffer switching commands (`:e`, `:bn`, `:bp`, `:ls`)
-- [x] Intelligent dirty tracking (dirty clears when content returns to saved/original state)
-- [x] Editable file explorer/picker widget
-- [x] Fuzzy file finder for project directory search
-- [x] Global file pinning and pinboard popup
-- [x] Style module with explicit RGB-ish theme colours
-- [x] `:about` screen with version info
-- [x] Relative line numbers (no standard line numbers because those are objectively worse)
-- [x] Directory launch mode with `redox .`
-- [x] Visual mode and visual line mode
-- [x] Visual block mode
-- [x] Basic session-bound undo/redo
-- [x] Tree-sitter syntax highlighting for
-    - [x] Rust
-    - [x] Markdown
-    - [x] C/C++
-    - [x] Go
-    - [x] Lua
-    - [x] Python
-    - [x] HTML
-    - [x] CSS
-    - [x] JS/TS
-    - [x] JSON
-    - [x] TOML
-    - [x] YAML
-- [x] Smart indenting with Tree-sitter
-- [x] Subtle colour column at col=80
-- [x] Scope indicator lines and delimiter pair highlighting
-- [x] Compound motions (like `daw` or `ci"`)
-- [x] Basic local search (`/`, `f`, `F`)
-- [x] Performance popup for frame timing
-- [x] Toast/status popups for longer messages
-- [x] LSP diagnostics, go-to-definition, completion, snippets, and language tool management
-- [ ] LSP symbol renaming (project-wide)
-- [x] LSP document formatting
-- [x] LSP code actions and quick fixes
-- [x] Basic git integration (diff stats)
-- [x] In-editor splits
-- [x] Undo-tree UI
-- [x] Custom configuration support
-- [x] More extendable leader key system with "whichkey" functionality
-- [ ] Grep-based finder for searching text patterns across files
-- [x] A dashboard screen with similar functionality to nvim dashboards
-- [ ] More persistent project/session state
-- [ ] Broader fuzzy finder indexing and async refresh for very large repositories
-- [ ] Editor command palette, making use of the fuzzy matching logic
-- [ ] More Vim motions (ongoing, not marking this complete until I've caught them all!)
+## Licence
 
-</details>
-
-## License
-
-Redox is under the terms of the MIT License.
+[MIT](LICENSE).
