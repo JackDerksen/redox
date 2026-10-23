@@ -1,10 +1,12 @@
+<h1 align="center">
+    A terminal-based text editor that's tasteful by default.
+</h1>
+
 <p align="center">
     <img width="2419" height="1520" alt="Redox Dashboard" src="assets/dashboard.png" />
 </p>
 
-<h1 align="center">
-    A terminal-based text editor that's tasteful by default.
-</h1>
+---
 
 <p align="center">
     Redox is a terminal-based, Vim-like text editor written in Rust. It was originally made for my university capstone project, but development is ongoing!
