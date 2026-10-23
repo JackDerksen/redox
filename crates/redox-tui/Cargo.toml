@@ -1,6 +1,6 @@
 [package]
 name = "redox-tui"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 description = "TUI frontend runtime for redox-editor"
 license = "MIT"
@@ -10,8 +10,8 @@ keywords = ["editor", "tui", "terminal", "vim", "text"]
 categories = ["command-line-utilities", "text-editors"]
 
 [dependencies]
-redox-core = { version = "0.9.0", path = "../redox-core" }
-redox-lsp = { version = "0.2.0", path = "../redox-lsp" }
+redox-core = { version = "0.10.0", path = "../redox-core" }
+redox-lsp = { version = "0.3.0", path = "../redox-lsp" }
 minui = { version = "0.8.2", features = ["clipboard"] }
 anyhow = { workspace = true }
 serde = { version = "1.0.229", features = ["derive"] }
