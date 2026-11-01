@@ -66,7 +66,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --release --locked -p redox-editor
       - name: Package and verify the executable
         env:
@@ -80,7 +80,7 @@ jobs:
           mkdir unpacked
           tar -xzf "dist/redox-${GITHUB_REF_NAME}-${PLATFORM}.tar.gz" -C unpacked
           test "$(unpacked/redox --version)" = "redox ${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: redox-${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -96,7 +96,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: redox-*
           path: dist
